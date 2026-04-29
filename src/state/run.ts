@@ -506,11 +506,24 @@ async function writeCurrentUnlocked(paths: RunPaths, state: RunState): Promise<v
  * For each phase that has a GATE_<PHASE>_PASSED.json on disk but no
  * gate_written event in the log, append the missing event. Returns true if
  * any recovery was performed. CALLER must hold the per-run lock.
+ *
+ * Cross-run safety: each orphan gate's runId AND phase are verified against
+ * the active run before any event is appended. A gate whose runId belongs to
+ * a different run (e.g., copied from `state/runs/<other>/`) or whose
+ * frontmatter phase doesn't match its filename is treated as cross-run
+ * contamination and surfaced as a typed gate error rather than silently
+ * advancing this run on someone else's decision.
  */
 async function recoverOrphanGates(
   paths: RunPaths,
   events: readonly PhaseEvent[],
 ): Promise<boolean> {
+  const expectedRunId = events.find((e) => e.type === 'run_started')?.runId
+  if (expectedRunId === undefined) {
+    // No run_started — let downstream reducer surface the contract error.
+    return false
+  }
+
   const gateWrittenPhases = new Set<Phase>()
   for (const e of events) {
     if (e.type === 'gate_written') gateWrittenPhases.add(e.phase)
@@ -538,6 +551,31 @@ async function recoverOrphanGates(
       }
       throw err
     }
+
+    // Cross-run safety: refuse to recover a gate that belongs to a
+    // different run. Without this check, a stale gate file copied into
+    // this run's directory would advance the wrong run.
+    if (gate.runId !== expectedRunId) {
+      throw new GateLoadError([
+        {
+          file: filePath,
+          code: 'gate_invalid_runid',
+          rule: 'orphan gate file belongs to a different runId; refusing to recover cross-run contamination',
+          detail: `gate.runId=${gate.runId}, run_started.runId=${expectedRunId}`,
+        },
+      ])
+    }
+    if (gate.phase !== phase) {
+      throw new GateLoadError([
+        {
+          file: filePath,
+          code: 'gate_invalid_phase',
+          rule: 'orphan gate file phase does not match its filename; refusing to recover',
+          detail: `gate.phase=${gate.phase}, expected ${phase} (from filename ${gateFilename(phase)})`,
+        },
+      ])
+    }
+
     orphans.push({ phase, gate })
   }
 
@@ -741,18 +779,42 @@ async function completeTransitionForPhase(opts: {
 }
 
 /**
- * For every gate_written event, verify the referenced gate file exists,
- * is schema-valid, has matching runId/phase, and (when artifactSha256 is
- * set) hashes the artifact correctly. Surfaces the most actionable typed
- * gate error otherwise.
+ * Multi-axis integrity check. For every gate_written event verify:
+ *   - the referenced gate file exists, is schema-valid, and (when
+ *     artifactSha256 is set) hashes the referenced artifact correctly.
+ *   - gate.runId === event.runId (cross-checks the file vs. the trace).
+ *   - gate.phase === event.phase.
+ *   - event.file is the canonical filename for the event's phase.
  *
- * This closes the M3 review block-push: bare stat() did not catch artifact
- * mutation between gate write and resume. CALLER must hold the per-run lock.
+ * Also enforces a global integrity invariant: every event in the log must
+ * carry the same runId as run_started. This blocks the cross-run
+ * contamination scenario where a stale gate file from another run, plus a
+ * matching gate_written event, would otherwise pass the per-event checks
+ * because gate.runId === event.runId is self-consistent on its own.
+ *
+ * CALLER must hold the per-run lock.
  */
 async function validateRunIntegrity(
   paths: RunPaths,
   events: readonly PhaseEvent[],
 ): Promise<void> {
+  // Global runId invariant: every event must match run_started.runId.
+  const runStarted = events.find((e) => e.type === 'run_started')
+  if (runStarted !== undefined) {
+    for (const e of events) {
+      if (e.runId !== runStarted.runId) {
+        throw new GateLoadError([
+          {
+            file: paths.eventsFile,
+            code: 'gate_invalid_runid',
+            rule: 'event runId does not match run_started runId; the log mixes events from multiple runs',
+            detail: `event.type=${e.type}, event.runId=${e.runId}, run_started.runId=${runStarted.runId}`,
+          },
+        ])
+      }
+    }
+  }
+
   for (const e of events) {
     if (e.type !== 'gate_written') continue
     const filePath = join(paths.runDir, e.file)

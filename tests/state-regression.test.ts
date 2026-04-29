@@ -341,6 +341,55 @@ describe('orphan recovery completes the transition deterministically', () => {
   })
 })
 
+describe('cross-run contamination is blocked', () => {
+  test('orphan gate from a different runId is refused; this run does not advance', async () => {
+    const { runId, paths } = await setupProject()
+    await writeArtifactsFor(['define'], paths.runDir)
+    await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+
+    // Manually craft a gate file whose runId belongs to a DIFFERENT run.
+    // Without the cross-run safety check, recoverOrphanGates would happily
+    // append a gate_written event for this phase and silently advance this
+    // run on someone else's decision.
+    const otherRunId = generateUlid({ now: 2_000_000_000_000, random: new Uint8Array(10) })
+    const gatePath = join(paths.runDir, 'GATE_DEFINE_PASSED.json')
+    const { writeFile: wf } = await import('node:fs/promises')
+    // Compute a real sha256 for the existing SPEC.md so readGate doesn't trip
+    // on the integrity binding before the runId check fires.
+    const { createHash } = await import('node:crypto')
+    const specBuf = await readFile(join(paths.artifactRoot, 'SPEC.md'))
+    const sha = createHash('sha256').update(specBuf).digest('hex')
+    await wf(
+      gatePath,
+      JSON.stringify(
+        {
+          version: 1,
+          runId: otherRunId,
+          phase: 'define',
+          artifact: 'SPEC.md',
+          artifactSha256: sha,
+          agent: 'ba',
+          agentProvider: 'claude',
+          approvedBy: 'user',
+          approvedAt: FIXED_TS,
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+
+    try {
+      await loadRun(paths)
+      throw new Error('expected GateLoadError on cross-run gate')
+    } catch (err) {
+      const e = err as { issues?: { code: string; rule: string }[] }
+      expect(e.issues?.[0]?.code).toBe('gate_invalid_runid')
+      expect(e.issues?.[0]?.rule).toContain('different runId')
+    }
+  })
+})
+
 describe('artifact mutation after gate write fails resume (rule 9 sha256 binding)', () => {
   test('mutating an approved artifact causes loadRun to reject with gate_artifact_sha256_mismatch', async () => {
     const { runId, paths } = await setupProject()
