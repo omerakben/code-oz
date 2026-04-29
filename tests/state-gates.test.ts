@@ -117,6 +117,20 @@ describe('writeGate — path safety on `artifact`', () => {
     ).rejects.toBeInstanceOf(GateLoadError)
   })
 
+  test('rejects raw `..` segments that would normalize away (foo/../SPEC.md)', async () => {
+    // Regression for the path-safety bug Codex flagged in M3 review:
+    // path.normalize collapses `foo/../SPEC.md` to `SPEC.md`, so a
+    // post-normalize check alone misses this attack vector. The pre-
+    // normalize raw-segment check is what catches it.
+    await writeArtifact('SPEC.md', 'spec body')
+    await expect(
+      writeGate({ paths, gate: validGate({ artifact: 'foo/../SPEC.md' }) }),
+    ).rejects.toBeInstanceOf(GateLoadError)
+    await expect(
+      writeGate({ paths, gate: validGate({ artifact: './SPEC.md' }) }),
+    ).rejects.toBeInstanceOf(GateLoadError)
+  })
+
   test('rejects backslash separators', async () => {
     await writeArtifact('SPEC.md', 'spec body')
     await expect(

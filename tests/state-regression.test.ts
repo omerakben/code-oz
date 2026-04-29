@@ -243,13 +243,15 @@ describe('M1 + M2 regression invariants', () => {
   })
 })
 
-describe('idempotent recovery interplay with cross-file recovery', () => {
-  test('recovered orphan + subsequent approve does not duplicate events', async () => {
+describe('orphan recovery completes the transition deterministically', () => {
+  test('crash between gate rename and event append leaves the run resumable at the next phase', async () => {
     const { runId, paths } = await setupProject()
     await writeArtifactsFor(['define', 'plan'], paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
 
-    // Orphan: gate file written, gate_written event missing.
+    // Crash window: gate file written, but no gate_written, phase_exited, or
+    // phase_entered events appended (i.e., the worst-case crash right after
+    // the gate rename succeeded).
     await writeGate({
       paths: {
         runDir: paths.runDir,
@@ -268,19 +270,95 @@ describe('idempotent recovery interplay with cross-file recovery', () => {
       },
     })
 
-    // loadRun recovers the missing event.
-    await loadRun(paths)
-
-    // approveGate via runApprove should detect the existing gate (idempotent)
-    // but currentPhase is still 'define' because phase_exited never fired.
-    // The recovery left gate_written but not phase_exited/phase_entered, so
-    // the run is in a partial state — approve completes the transition.
-    const result = await runApprove({ cwd, phase: 'define', now: () => FIXED_TS })
-    expect(result.gateExisted).toBe(true)
+    const reloaded = await loadRun(paths)
+    expect(reloaded?.recovered).toBe(true)
+    // Recovery must advance currentPhase to plan — the run is no longer stuck
+    // on define just because the original transition crashed.
+    expect(reloaded?.state.currentPhase).toBe('plan')
+    expect(reloaded?.state.phasesCompleted).toEqual(['define'])
 
     const types = await eventTypes(paths.eventsFile)
-    // gate_written should appear exactly once even though both recovery and
-    // approveGate could have written it.
+    // After recovery the log contains exactly: run_started, phase_entered(define),
+    // gate_written(define), phase_exited(define), phase_entered(plan).
+    expect(types).toEqual([
+      'run_started',
+      'phase_entered',
+      'gate_written',
+      'phase_exited',
+      'phase_entered',
+    ])
+
+    // Subsequent approval of the new currentPhase succeeds without
+    // duplicating events.
+    const next = await runApprove({ cwd, phase: 'plan', now: () => FIXED_TS })
+    expect(next.approved).toBe(true)
+    expect(next.phase).toBe('plan')
+
+    const finalTypes = await eventTypes(paths.eventsFile)
+    expect(finalTypes.filter((t) => t === 'gate_written').length).toBe(2)
+  })
+
+  test('idempotent re-approve tolerates approvedAt drift (different now() values)', async () => {
+    const { runId, paths } = await setupProject()
+    await writeArtifactsFor(['define'], paths.runDir)
+    await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+
+    // First approval at one timestamp.
+    const first = await runApprove({
+      cwd,
+      phase: 'define',
+      now: () => '2026-04-29T17:00:00Z',
+    })
+    expect(first.approved).toBe(true)
+
+    // The run is now at currentPhase=plan, so re-running approve --phase
+    // define would fail the FSM check. Use approveGate directly to simulate
+    // a crash-recovery retry on the SAME phase but with a different
+    // timestamp — this is the exact scenario that broke before the fix:
+    // approvedAt drift trips gate_idempotency_violation.
+    const { approveGate } = await import('../src/state/run.ts')
+    const result = await approveGate({
+      paths,
+      gate: {
+        version: 1,
+        runId,
+        phase: 'define',
+        artifact: 'SPEC.md',
+        agent: 'ba',
+        agentProvider: 'claude',
+        approvedBy: 'user',
+        approvedAt: '2026-04-29T17:05:00Z', // different from first
+      },
+      profile: 'greenfield',
+      now: () => '2026-04-29T17:05:00Z',
+    })
+    // gate file should have existed (recovery short-circuit), not throw.
+    expect(result.gateExisted).toBe(true)
+
+    // No duplicate gate_written event.
+    const types = await eventTypes(paths.eventsFile)
     expect(types.filter((t) => t === 'gate_written').length).toBe(1)
+  })
+})
+
+describe('artifact mutation after gate write fails resume (rule 9 sha256 binding)', () => {
+  test('mutating an approved artifact causes loadRun to reject with gate_artifact_sha256_mismatch', async () => {
+    const { runId, paths } = await setupProject()
+    await writeArtifactsFor(['define'], paths.runDir)
+    await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+
+    await runApprove({ cwd, phase: 'define', now: () => FIXED_TS })
+
+    // Mutate SPEC.md after the gate was written.
+    await writeFile(join(paths.artifactRoot, 'SPEC.md'), 'modified after approval', 'utf8')
+
+    try {
+      await loadRun(paths)
+      throw new Error('expected GateLoadError on artifact mutation')
+    } catch (err) {
+      // The full validation path through readGate enforces sha256 binding.
+      const e = err as { issues?: { code: string }[] }
+      expect(e.issues?.[0]?.code).toBe('gate_artifact_sha256_mismatch')
+    }
   })
 })

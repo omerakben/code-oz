@@ -12,11 +12,17 @@
 //
 // Cross-file recovery (validation rule 9 in the pinned spec): if a
 // GATE_<PHASE>_PASSED.json file exists on disk but the corresponding
-// gate_written event is absent, loadRun() appends the missing event before
-// returning. The reverse condition (event present, file absent) surfaces as
-// gate_written_event_missing_file from validateRunIntegrity().
+// gate_written event is absent, loadRun() appends the missing event AND
+// any missing transition events (phase_exited, phase_entered/run_ended)
+// before returning. This handles every crash window between gate rename
+// and the final transition append.
+//
+// Cross-file integrity check (also rule 9): if a gate_written event exists
+// but the gate file is absent OR fails to validate, validateRunIntegrity
+// surfaces gate_written_event_missing_file (or the underlying gate error)
+// from readGate.
 
-import { open, rename, rm, readFile, mkdir, stat } from 'node:fs/promises'
+import { open, rename, rm, readFile, mkdir } from 'node:fs/promises'
 import { Buffer } from 'node:buffer'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
@@ -79,6 +85,10 @@ function gatePathsFor(paths: RunPaths): GatePaths {
   return { runDir: paths.runDir, artifactRoot: paths.artifactRoot, lockDir: paths.lockDir }
 }
 
+function activeLockDirFor(activeFile: string): string {
+  return join(dirname(activeFile), '.active.lock')
+}
+
 // --- pure reducer --------------------------------------------------
 
 /**
@@ -133,7 +143,8 @@ export function reduceEvents(events: readonly PhaseEvent[]): RunState | null {
 /**
  * Initialize a fresh run: create the run subdirectory, write run_started +
  * phase_entered(initial) events, build current.json, and update the
- * active-run pointer. Used by future `code-oz run`.
+ * active-run pointer. The per-run lock and the active-pointer lock are held
+ * sequentially (never concurrently) to avoid deadlocks.
  */
 export async function initRun(opts: {
   readonly paths: RunPaths
@@ -201,7 +212,7 @@ export async function initRun(opts: {
         },
       ])
     }
-    await writeCurrent(opts.paths, derived)
+    await writeCurrentUnlocked(opts.paths, derived)
     return derived
   }).catch((err: unknown) => {
     if (err instanceof LockBusyError) {
@@ -223,7 +234,9 @@ export async function initRun(opts: {
 
 /**
  * Load a run from disk: read events, perform cross-file recovery (rule 9),
- * derive the current state, and rebuild current.json if needed.
+ * derive the current state, and rebuild current.json. The whole transaction
+ * runs under one per-run lock so concurrent processes can't observe an
+ * inconsistent intermediate state.
  *
  * Returns null when the run has no events (run never started).
  */
@@ -232,32 +245,66 @@ export async function loadRun(paths: RunPaths): Promise<{
   readonly recovered: boolean
 } | null> {
   const eventPaths = eventPathsFor(paths)
-  let events = await readEvents(eventPaths)
-  if (events.length === 0) return null
 
-  const recovered = await recoverMissingGateWrittenEvents(paths, events)
-  if (recovered) {
-    events = await readEvents(eventPaths)
-  }
+  // Quick existence probe outside the lock — if no events file at all, there
+  // is nothing to recover or rebuild.
+  const initialEvents = await readEvents(eventPaths)
+  if (initialEvents.length === 0) return null
 
-  // Validate: any gate_written event must have a corresponding gate file.
-  await validateRunIntegrity(paths, events)
+  return await withLock(paths.lockDir, async () => {
+    let events = await readEvents(eventPaths)
+    if (events.length === 0) return null
 
-  const state = reduceEvents(events)
-  if (state === null) {
-    throw new EventLogError([
-      {
-        file: paths.eventsFile,
-        code: 'event_invalid_value',
-        rule: 'event log has events but no run_started — cannot derive state',
-      },
-    ])
-  }
+    // Recover orphan gate files (rule 9 forward direction): gate file
+    // exists, gate_written event missing.
+    const recoveredGateWritten = await recoverOrphanGates(paths, events)
+    if (recoveredGateWritten) events = await readEvents(eventPaths)
 
-  // current.json may be stale or missing; rebuild on every load.
-  await writeCurrent(paths, state)
+    // Complete any incomplete transitions: gate_written present but
+    // phase_exited / phase_entered (or run_ended) missing. Idempotent.
+    const profileGuess = events.find((e) => e.type === 'run_started')
+    const profile = profileGuess?.type === 'run_started' ? profileGuess.profile : null
+    const recoveredTransitions =
+      profile === null
+        ? false
+        : await completeIncompleteTransitions(paths, events, profile)
+    if (recoveredTransitions) events = await readEvents(eventPaths)
 
-  return Object.freeze({ state, recovered })
+    // Validate (rule 9 reverse direction): every gate_written event must
+    // have a matching, schema-valid gate file with sha256 matching the
+    // referenced artifact.
+    await validateRunIntegrity(paths, events)
+
+    const state = reduceEvents(events)
+    if (state === null) {
+      throw new EventLogError([
+        {
+          file: paths.eventsFile,
+          code: 'event_invalid_value',
+          rule: 'event log has events but no run_started — cannot derive state',
+        },
+      ])
+    }
+
+    await writeCurrentUnlocked(paths, state)
+
+    return Object.freeze({
+      state,
+      recovered: recoveredGateWritten || recoveredTransitions,
+    })
+  }).catch((err: unknown) => {
+    if (err instanceof LockBusyError) {
+      throw new EventLogError([
+        {
+          file: paths.eventsFile,
+          code: 'event_lock_busy',
+          rule: 'per-run lock is busy during loadRun',
+          detail: err.lockDir,
+        },
+      ])
+    }
+    throw err
+  })
 }
 
 /**
@@ -265,8 +312,12 @@ export async function loadRun(paths: RunPaths): Promise<{
  * under a single per-run lock acquisition. Sequence matches the layering
  * rule pinned in docs/references/file-based-gates.md anti-patterns.
  *
- * Idempotent: if the gate file already exists with matching content, the
- * write is a no-op for the gate, but missing events are appended (recovery).
+ * Idempotent: if the gate file already exists with matching content
+ * (approvedAt drift is tolerated, see gates.ts:gatesEqual), the gate write
+ * is a no-op. Any missing events for that phase (gate_written, phase_exited,
+ * phase_entered/run_ended) are then appended deterministically — so a
+ * mid-transition crash + retry leaves the run in the same final state as
+ * a clean approval.
  */
 export interface ApproveGateOptions {
   readonly paths: RunPaths
@@ -304,69 +355,20 @@ export async function approveGate(opts: ApproveGateOptions): Promise<ApproveGate
       skipLock: true,
     })
 
-    const eventsBefore = await readEvents(eventPaths)
-    const hasGateWritten = eventsBefore.some(
-      (e) => e.type === 'gate_written' && e.phase === opts.gate.phase,
-    )
+    // Read the (possibly post-recovery) event log once; the helpers below
+    // only append events that are missing.
+    let events = await readEvents(eventPaths)
+    const appendedAny = await completeTransitionForPhase({
+      paths: opts.paths,
+      events,
+      phase: opts.gate.phase,
+      runId: opts.gate.runId,
+      profile: opts.profile,
+      gateFilename: writeResult.filename,
+      now,
+    })
+    if (appendedAny) events = await readEvents(eventPaths)
 
-    if (!writeResult.existed || !hasGateWritten) {
-      await appendEvent(
-        eventPaths,
-        {
-          version: 1,
-          type: 'gate_written',
-          ts: now(),
-          runId: opts.gate.runId,
-          phase: opts.gate.phase,
-          file: writeResult.filename,
-        },
-        { skipLock: true },
-      )
-    }
-
-    if (!writeResult.existed) {
-      // Fresh approval: emit the standard transition events.
-      await appendEvent(
-        eventPaths,
-        {
-          version: 1,
-          type: 'phase_exited',
-          ts: now(),
-          runId: opts.gate.runId,
-          phase: opts.gate.phase,
-          outcome: 'passed',
-        },
-        { skipLock: true },
-      )
-      const next = nextPhase(opts.gate.phase, opts.profile)
-      if (next !== null) {
-        await appendEvent(
-          eventPaths,
-          {
-            version: 1,
-            type: 'phase_entered',
-            ts: now(),
-            runId: opts.gate.runId,
-            phase: next,
-          },
-          { skipLock: true },
-        )
-      } else {
-        await appendEvent(
-          eventPaths,
-          {
-            version: 1,
-            type: 'run_ended',
-            ts: now(),
-            runId: opts.gate.runId,
-            outcome: 'shipped',
-          },
-          { skipLock: true },
-        )
-      }
-    }
-
-    const events = await readEvents(eventPaths)
     const state = reduceEvents(events)
     if (state === null) {
       throw new GateLoadError([
@@ -377,7 +379,7 @@ export async function approveGate(opts: ApproveGateOptions): Promise<ApproveGate
         },
       ])
     }
-    await writeCurrent(opts.paths, state)
+    await writeCurrentUnlocked(opts.paths, state)
 
     return Object.freeze({
       gateExisted: writeResult.existed,
@@ -417,6 +419,11 @@ export async function readActiveRun(activeFile: string): Promise<string | null> 
   return data.runId
 }
 
+/**
+ * Atomically update `<stateDir>/active.json`, serialized via a dedicated
+ * `<stateDir>/.active.lock/` mkdir-lock so two `code-oz init`+`run` racers
+ * cannot clobber each other's pointer mid-write.
+ */
 export async function writeActiveRun(activeFile: string, runId: string): Promise<void> {
   if (!isUlid(runId)) {
     throw new EventLogError([
@@ -427,10 +434,31 @@ export async function writeActiveRun(activeFile: string, runId: string): Promise
       },
     ])
   }
+
+  await mkdir(dirname(activeFile), { recursive: true })
+  const lockDir = activeLockDirFor(activeFile)
+
+  await withLock(lockDir, async () => {
+    await writeActiveRunUnlocked(activeFile, runId)
+  }).catch((err: unknown) => {
+    if (err instanceof LockBusyError) {
+      throw new EventLogError([
+        {
+          file: activeFile,
+          code: 'event_lock_busy',
+          rule: 'active-run lock is busy; another writer holds it',
+          detail: err.lockDir,
+        },
+      ])
+    }
+    throw err
+  })
+}
+
+async function writeActiveRunUnlocked(activeFile: string, runId: string): Promise<void> {
   const pointer: ActiveRunPointer = { version: 1, runId }
   const json = JSON.stringify(pointer, null, 2) + '\n'
   const buf = Buffer.from(json, 'utf8')
-  await mkdir(dirname(activeFile), { recursive: true })
   const tmpPath = `${activeFile}.tmp-${randomBytes(6).toString('hex')}`
   const fh = await open(tmpPath, 'w')
   try {
@@ -449,7 +477,12 @@ export async function writeActiveRun(activeFile: string, runId: string): Promise
 
 // --- helpers -------------------------------------------------------
 
-async function writeCurrent(paths: RunPaths, state: RunState): Promise<void> {
+/**
+ * Write current.json atomically. The CALLER must already hold the per-run
+ * lock — this function does not acquire it. All call sites in this module
+ * are inside withLock blocks.
+ */
+async function writeCurrentUnlocked(paths: RunPaths, state: RunState): Promise<void> {
   await mkdir(paths.runDir, { recursive: true })
   const json = JSON.stringify(state, null, 2) + '\n'
   const buf = Buffer.from(json, 'utf8')
@@ -472,9 +505,9 @@ async function writeCurrent(paths: RunPaths, state: RunState): Promise<void> {
 /**
  * For each phase that has a GATE_<PHASE>_PASSED.json on disk but no
  * gate_written event in the log, append the missing event. Returns true if
- * any recovery was performed. Holds the per-run lock for the duration.
+ * any recovery was performed. CALLER must hold the per-run lock.
  */
-async function recoverMissingGateWrittenEvents(
+async function recoverOrphanGates(
   paths: RunPaths,
   events: readonly PhaseEvent[],
 ): Promise<boolean> {
@@ -487,18 +520,23 @@ async function recoverMissingGateWrittenEvents(
   for (const phase of PHASES) {
     if (gateWrittenPhases.has(phase)) continue
     const filePath = join(paths.runDir, gateFilename(phase))
-    try {
-      await stat(filePath)
-    } catch {
-      continue
-    }
     let gate: GateFile
     try {
+      // readGate enforces full schema + sha256 binding. If the orphan gate
+      // is corrupt, this throws and the recovery aborts — the corruption
+      // surface is more important than auto-recovery.
       gate = await readGate(filePath, paths.artifactRoot)
-    } catch {
-      // Gate file exists but doesn't validate. Don't auto-recover an invalid
-      // gate; let the next loader call surface the schema error.
-      continue
+    } catch (err: unknown) {
+      if (err instanceof GateLoadError) {
+        const issue = err.issues[0]
+        if (issue?.code === 'gate_io_error' && issue.rule.includes('not found')) {
+          // Truly missing — no orphan, skip.
+          continue
+        }
+        // Existing-but-invalid gate is a corruption signal; surface it.
+        throw err
+      }
+      throw err
     }
     orphans.push({ phase, gate })
   }
@@ -507,43 +545,209 @@ async function recoverMissingGateWrittenEvents(
 
   const eventPaths = eventPathsFor(paths)
   const now = () => new Date().toISOString()
-
-  await withLock(paths.lockDir, async () => {
-    for (const { phase, gate } of orphans) {
-      await appendEvent(
-        eventPaths,
-        {
-          version: 1,
-          type: 'gate_written',
-          ts: now(),
-          runId: gate.runId,
-          phase,
-          file: gateFilename(phase),
-        },
-        { skipLock: true },
-      )
-    }
-  }).catch((err: unknown) => {
-    if (err instanceof LockBusyError) {
-      throw new EventLogError([
-        {
-          file: paths.eventsFile,
-          code: 'event_lock_busy',
-          rule: 'per-run lock is busy during cross-file recovery',
-          detail: err.lockDir,
-        },
-      ])
-    }
-    throw err
-  })
-
+  for (const { phase, gate } of orphans) {
+    await appendEvent(
+      eventPaths,
+      {
+        version: 1,
+        type: 'gate_written',
+        ts: now(),
+        runId: gate.runId,
+        phase,
+        file: gateFilename(phase),
+      },
+      { skipLock: true },
+    )
+  }
   return true
 }
 
 /**
- * Detect the reverse condition: a gate_written event exists in the log but
- * the gate file is missing on disk. This is unrecoverable in v0.1 (we do not
- * synthesize gate files from events) and produces gate_written_event_missing_file.
+ * For every phase with a gate_written event, ensure the phase_exited and
+ * either the next phase_entered or run_ended events also exist. Idempotent.
+ * CALLER must hold the per-run lock.
+ *
+ * This handles every crash window between gate rename and the final
+ * transition append. Combined with recoverOrphanGates above, the recovery
+ * step deterministically advances to the same end state as a clean approval.
+ */
+async function completeIncompleteTransitions(
+  paths: RunPaths,
+  events: readonly PhaseEvent[],
+  profile: Profile,
+): Promise<boolean> {
+  const eventPaths = eventPathsFor(paths)
+  const now = () => new Date().toISOString()
+
+  // Walk gate_written events in their on-disk order so the appended
+  // transition events land in the same order they would have during a
+  // clean approval.
+  const gateWrittenList = events
+    .map((e, i) => ({ e, i }))
+    .filter((x) => x.e.type === 'gate_written')
+    .sort((a, b) => a.i - b.i)
+
+  // Working copy that grows as we append.
+  let working: PhaseEvent[] = [...events]
+  let appendedAny = false
+
+  for (const { e } of gateWrittenList) {
+    if (e.type !== 'gate_written') continue
+    const runId = e.runId
+    const phase = e.phase
+    const next = nextPhase(phase, profile)
+
+    const hasPhaseExited = working.some(
+      (x) => x.type === 'phase_exited' && x.phase === phase && x.outcome === 'passed',
+    )
+    if (!hasPhaseExited) {
+      const ev: PhaseEvent = {
+        version: 1,
+        type: 'phase_exited',
+        ts: now(),
+        runId,
+        phase,
+        outcome: 'passed',
+      }
+      await appendEvent(eventPaths, ev, { skipLock: true })
+      working.push(ev)
+      appendedAny = true
+    }
+
+    if (next !== null) {
+      const hasPhaseEntered = working.some(
+        (x) => x.type === 'phase_entered' && x.phase === next,
+      )
+      if (!hasPhaseEntered) {
+        const ev: PhaseEvent = {
+          version: 1,
+          type: 'phase_entered',
+          ts: now(),
+          runId,
+          phase: next,
+        }
+        await appendEvent(eventPaths, ev, { skipLock: true })
+        working.push(ev)
+        appendedAny = true
+      }
+    } else {
+      const hasRunEnded = working.some((x) => x.type === 'run_ended')
+      if (!hasRunEnded) {
+        const ev: PhaseEvent = {
+          version: 1,
+          type: 'run_ended',
+          ts: now(),
+          runId,
+          outcome: 'shipped',
+        }
+        await appendEvent(eventPaths, ev, { skipLock: true })
+        working.push(ev)
+        appendedAny = true
+      }
+    }
+  }
+
+  return appendedAny
+}
+
+/**
+ * Approve-time helper called after writeGate. Appends gate_written +
+ * phase_exited + phase_entered/run_ended events that are missing for
+ * the given phase. Idempotent; safe to call multiple times. CALLER must
+ * hold the per-run lock.
+ */
+async function completeTransitionForPhase(opts: {
+  paths: RunPaths
+  events: readonly PhaseEvent[]
+  phase: Phase
+  runId: string
+  profile: Profile
+  gateFilename: string
+  now: () => string
+}): Promise<boolean> {
+  const eventPaths = eventPathsFor(opts.paths)
+  let working: PhaseEvent[] = [...opts.events]
+  let appendedAny = false
+
+  const hasGateWritten = working.some(
+    (e) => e.type === 'gate_written' && e.phase === opts.phase,
+  )
+  if (!hasGateWritten) {
+    const ev: PhaseEvent = {
+      version: 1,
+      type: 'gate_written',
+      ts: opts.now(),
+      runId: opts.runId,
+      phase: opts.phase,
+      file: opts.gateFilename,
+    }
+    await appendEvent(eventPaths, ev, { skipLock: true })
+    working.push(ev)
+    appendedAny = true
+  }
+
+  const hasPhaseExited = working.some(
+    (e) =>
+      e.type === 'phase_exited' && e.phase === opts.phase && e.outcome === 'passed',
+  )
+  if (!hasPhaseExited) {
+    const ev: PhaseEvent = {
+      version: 1,
+      type: 'phase_exited',
+      ts: opts.now(),
+      runId: opts.runId,
+      phase: opts.phase,
+      outcome: 'passed',
+    }
+    await appendEvent(eventPaths, ev, { skipLock: true })
+    working.push(ev)
+    appendedAny = true
+  }
+
+  const next = nextPhase(opts.phase, opts.profile)
+  if (next !== null) {
+    const hasPhaseEntered = working.some(
+      (e) => e.type === 'phase_entered' && e.phase === next,
+    )
+    if (!hasPhaseEntered) {
+      const ev: PhaseEvent = {
+        version: 1,
+        type: 'phase_entered',
+        ts: opts.now(),
+        runId: opts.runId,
+        phase: next,
+      }
+      await appendEvent(eventPaths, ev, { skipLock: true })
+      working.push(ev)
+      appendedAny = true
+    }
+  } else {
+    const hasRunEnded = working.some((e) => e.type === 'run_ended')
+    if (!hasRunEnded) {
+      const ev: PhaseEvent = {
+        version: 1,
+        type: 'run_ended',
+        ts: opts.now(),
+        runId: opts.runId,
+        outcome: 'shipped',
+      }
+      await appendEvent(eventPaths, ev, { skipLock: true })
+      working.push(ev)
+      appendedAny = true
+    }
+  }
+
+  return appendedAny
+}
+
+/**
+ * For every gate_written event, verify the referenced gate file exists,
+ * is schema-valid, has matching runId/phase, and (when artifactSha256 is
+ * set) hashes the artifact correctly. Surfaces the most actionable typed
+ * gate error otherwise.
+ *
+ * This closes the M3 review block-push: bare stat() did not catch artifact
+ * mutation between gate write and resume. CALLER must hold the per-run lock.
  */
 async function validateRunIntegrity(
   paths: RunPaths,
@@ -552,20 +756,58 @@ async function validateRunIntegrity(
   for (const e of events) {
     if (e.type !== 'gate_written') continue
     const filePath = join(paths.runDir, e.file)
+    let gate: GateFile
     try {
-      await stat(filePath)
+      gate = await readGate(filePath, paths.artifactRoot)
     } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new GateLoadError([
-          {
-            file: filePath,
-            code: 'gate_written_event_missing_file',
-            rule: 'gate_written event exists but the referenced gate file is missing on disk',
-            detail: `phase=${e.phase}, file=${e.file}`,
-          },
-        ])
+      if (err instanceof GateLoadError) {
+        const issue = err.issues[0]
+        if (issue?.code === 'gate_io_error' && issue.rule.includes('not found')) {
+          throw new GateLoadError([
+            {
+              file: filePath,
+              code: 'gate_written_event_missing_file',
+              rule: 'gate_written event exists but the referenced gate file is missing on disk',
+              detail: `phase=${e.phase}, file=${e.file}`,
+            },
+          ])
+        }
+        throw err
       }
       throw err
     }
+
+    if (gate.runId !== e.runId) {
+      throw new GateLoadError([
+        {
+          file: filePath,
+          code: 'gate_invalid_runid',
+          rule: 'gate file runId does not match gate_written event runId',
+          detail: `gate=${gate.runId}, event=${e.runId}`,
+        },
+      ])
+    }
+    if (gate.phase !== e.phase) {
+      throw new GateLoadError([
+        {
+          file: filePath,
+          code: 'gate_invalid_phase',
+          rule: 'gate file phase does not match gate_written event phase',
+          detail: `gate=${gate.phase}, event=${e.phase}`,
+        },
+      ])
+    }
+    const expectedFilename = gateFilename(e.phase)
+    if (e.file !== expectedFilename) {
+      throw new GateLoadError([
+        {
+          file: filePath,
+          code: 'gate_invalid_value',
+          rule: 'gate_written.file is not the canonical filename for its phase',
+          detail: `expected ${expectedFilename}, got ${e.file}`,
+        },
+      ])
+    }
+    // sha256 binding is enforced by readGate when artifactSha256 is present.
   }
 }

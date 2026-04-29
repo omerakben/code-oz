@@ -507,6 +507,21 @@ function validateArtifactSyncPath(artifact: string, file: string): GateLoadIssue
       detail: artifact,
     }
   }
+  // Reject `.` or `..` segments BEFORE normalization. After normalization,
+  // `foo/../SPEC.md` collapses to `SPEC.md` and would otherwise pass — but
+  // the literal `..` in the source string is a path-traversal attempt and
+  // must be refused regardless of how it cancels out.
+  const rawSegments = artifact.split('/')
+  if (rawSegments.some((seg) => seg === '..' || seg === '.')) {
+    return {
+      file,
+      code: 'gate_artifact_path_unsafe',
+      rule: 'gate.artifact must not contain `.` or `..` segments',
+      detail: artifact,
+    }
+  }
+  // Defense in depth: even if the raw-segment check ever regressed, the
+  // post-normalize check would still catch a successful escape.
   const normalized = normalize(artifact)
   if (normalized === '..' || normalized.startsWith('../')) {
     return {
@@ -619,6 +634,14 @@ async function tryReadGate(filePath: string): Promise<GateFile | null> {
   return raw as GateFile
 }
 
+/**
+ * Decision-content equality. The intentional decision a gate records is
+ * what artifact (and its sha256) was approved by which agent, runId, phase,
+ * and approver. The decision time (`approvedAt`) is metadata about *when*
+ * that decision was recorded — drift on retry must NOT be treated as a
+ * different decision, otherwise idempotent crash recovery breaks whenever
+ * Date.now() advances between attempts.
+ */
 function gatesEqual(a: GateFile, b: GateFile): boolean {
   return (
     a.version === b.version &&
@@ -629,7 +652,6 @@ function gatesEqual(a: GateFile, b: GateFile): boolean {
     a.agent === b.agent &&
     a.agentProvider === b.agentProvider &&
     a.approvedBy === b.approvedBy &&
-    a.approvedAt === b.approvedAt &&
     a.notes === b.notes
   )
 }
