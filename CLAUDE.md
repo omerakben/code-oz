@@ -63,6 +63,20 @@ The `templates/` collection in `~/Projects/agents/templates/` is the influence l
 5. **Never push to GitHub without explicit user approval.** Local commits are fine.
 6. **Skills available in this repo:** any skill from the user's global skill set applies. The non-negotiable rules above override anything that conflicts.
 
+## Cross-model peer review (durable rule)
+
+This project is high-stakes. Single-model output has blind spots; cross-family review structurally mitigates them. The rule fires on every milestone:
+
+7. **Codex debate at planning convergence.** Before starting implementation of any milestone (M2, M3, ...), run a Codex debate round on the milestone scope: write a structured `CODEX_BRIEFING.md` (goal, constraints, acceptance, the recommended plan, debate prompts), invoke `mcp__plugin_agent-codex_codex-native__codex` with `gpt-5.5` xhigh and `sandbox: read-only`, capture `CODEX_RESPONSE.md`, and synthesize before any code lands. The user's preference: never present "ready to proceed" without the debate.
+
+8. **Codex review at implementation completion.** Before tagging or pushing any milestone, run a Codex review on the latest commit. Codex returns one of `push` / `fix-first` / `debate-required`. Block-push and block-next-milestone severity findings get addressed in a follow-up commit (never amend) before the milestone is closed.
+
+9. **Codex's verdict is data, not authority.** Weigh disagreement, sanity-check agreement, push back when warranted. The point is structural review, not deference.
+
+10. **Codex model fallback.** Globally configured `gpt-5.5` at xhigh effort. The `gpt-5.5-codex` and `gpt-5.1-codex-max` variants do NOT work on Ozzy's ChatGPT-account auth — fall back to `gpt-5.5` if they fail. Reasoning effort `xhigh` is set in `~/.codex/config.toml` defaults; pass `{model_reasoning_effort: "xhigh"}` in the config override only when overriding.
+
+This rule was empirically validated 2026-04-29: Codex's planning-convergence debate flipped the MVP from Option C to Option E (spine-first end-to-end), and Codex's M1 implementation review caught five real issues including a doc/code lie in the scaffold (`.code-oz/.gitignore` promised but not written), `--force` semantics that were the "dangerous middle," and brownfield detection that ignored `.git` despite the locked rule. See `docs/design/CODEX_RESPONSE.md` for the original debate.
+
 ## Quick references
 
 - Run dev CLI: `bun run dev init`, `bun run dev run`, `bun run dev doctor`
