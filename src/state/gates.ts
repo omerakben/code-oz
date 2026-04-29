@@ -280,19 +280,33 @@ export async function readGate(
 
 // --- intervention/control gates ------------------------------------
 
+export interface WriteControlGateOptions {
+  /** When true, the caller already holds the per-run lock; do not re-acquire. */
+  readonly skipLock?: boolean
+}
+
 export function writeNeedsInterventionGate(
   paths: GatePaths,
   gate: NeedsInterventionGate,
+  options: WriteControlGateOptions = {},
 ): Promise<void> {
-  return writeControlGate(paths, 'NEEDS_INTERVENTION.json', gate, validateNeedsIntervention)
+  return writeControlGate(paths, 'NEEDS_INTERVENTION.json', gate, validateNeedsIntervention, options)
 }
 
-export function writePauseGate(paths: GatePaths, gate: PauseGate): Promise<void> {
-  return writeControlGate(paths, 'PAUSE.json', gate, validatePauseOrStop)
+export function writePauseGate(
+  paths: GatePaths,
+  gate: PauseGate,
+  options: WriteControlGateOptions = {},
+): Promise<void> {
+  return writeControlGate(paths, 'PAUSE.json', gate, validatePauseOrStop, options)
 }
 
-export function writeStopGate(paths: GatePaths, gate: StopGate): Promise<void> {
-  return writeControlGate(paths, 'STOP.json', gate, validatePauseOrStop)
+export function writeStopGate(
+  paths: GatePaths,
+  gate: StopGate,
+  options: WriteControlGateOptions = {},
+): Promise<void> {
+  return writeControlGate(paths, 'STOP.json', gate, validatePauseOrStop, options)
 }
 
 async function writeControlGate<T extends object>(
@@ -300,6 +314,7 @@ async function writeControlGate<T extends object>(
   filename: string,
   gate: T,
   validate: (raw: unknown, file: string) => GateLoadIssue | null,
+  options: WriteControlGateOptions,
 ): Promise<void> {
   const targetPath = join(paths.runDir, filename)
   const issue = validate(gate, targetPath)
@@ -308,23 +323,29 @@ async function writeControlGate<T extends object>(
   const json = JSON.stringify(gate, null, 2) + '\n'
   const buf = Buffer.from(json, 'utf8')
 
+  const writeOnce = async (): Promise<void> => {
+    const tmpPath = `${targetPath}.tmp-${randomBytes(6).toString('hex')}`
+    const fh = await open(tmpPath, 'w')
+    try {
+      await fh.write(buf, 0, buf.length)
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    try {
+      await rename(tmpPath, targetPath)
+    } catch (err: unknown) {
+      await rm(tmpPath, { force: true }).catch(() => undefined)
+      throw err
+    }
+  }
+
   try {
-    await withLock(paths.lockDir, async () => {
-      const tmpPath = `${targetPath}.tmp-${randomBytes(6).toString('hex')}`
-      const fh = await open(tmpPath, 'w')
-      try {
-        await fh.write(buf, 0, buf.length)
-        await fh.sync()
-      } finally {
-        await fh.close()
-      }
-      try {
-        await rename(tmpPath, targetPath)
-      } catch (err: unknown) {
-        await rm(tmpPath, { force: true }).catch(() => undefined)
-        throw err
-      }
-    })
+    if (options.skipLock) {
+      await writeOnce()
+    } else {
+      await withLock(paths.lockDir, writeOnce)
+    }
   } catch (err: unknown) {
     if (err instanceof LockBusyError) {
       throw new GateLoadError([
