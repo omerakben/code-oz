@@ -88,3 +88,51 @@ Also missing: deterministic load order, duplicate key rejection in YAML, stable 
    Add final regression fixtures for default collision override, phase mismatch rejection, invalid project-local fail-fast, and unchanged M1 `init` behavior.
 
 Verdict: `proceed-with-modifications`
+
+---
+
+## Claude synthesis (post-debate)
+
+Per rule 9 (Codex's verdict is data, not authority): each Codex finding judged below. Net result is a locked M2 plan that updates two of my original six leans, refines one, and adopts every "what's missing" addition.
+
+### Six leans, judged
+
+| # | Decision | Verdict | Reason |
+|---|---|---|---|
+| 1 | Hand-rolled schema | Hold | `yaml` is already a dependency; schema is ~10 fields and stable; custom diagnostics serve the future `NEEDS_INTERVENTION.json` shape (rule 11). |
+| 2 | Single `AgentLoadError` class | Refine | One thrown error carrying `issues: AgentLoadIssue[]`, not throwing arrays. One file can report multiple violations cleanly. |
+| 3 | `Bun.embeddedFiles()` for defaults | **Flip** | Use `import baPath from './defaults/ba.md' with { type: 'file' }` + `Bun.file(path).text()`. File imports give stable path in dev and `$bunfs/...` after `--compile`; `embeddedFiles` uses hashed names by default and would break registry discovery in the compiled binary. Add a small `*.md` TS declaration. |
+| 4 | Fail-fast on invalid project-local | Hold | Reasoning matches rule 1 (no LLM-text-parsed pass/fail). The non-tech UX counter is weakened — "configuration corruption" with file path + rule name is the right signal. |
+| 5 | Five default personas | Hold | Option E spine needs all 5; deferring builder/verifier/reviewer means duplicating M2 work in M5/M6/M7. Skeleton bodies are honest when marked as such. |
+| 6 | Allow phase-changing override | **Flip** | Override = replace this slot; phase is part of slot identity. Same name must match `type` and `phase`; for variants, use a different name (`ba-plan.md`). Surfaces typos at load time. |
+
+### Adopted from "what's missing"
+
+All Codex additions accepted (none expand M2 scope materially):
+
+- **Thread safety:** freeze `AgentDefinition` objects; `listAll()` returns a readonly array.
+- **Watch mode:** not in M2. Loader is pure, cache-free, deterministic — `code-oz dev` can wire reload later.
+- **`src/agentpacks/schema.ts`:** type-only forward-compat. `AgentPackManifestV1`, `codeOzVersion`, `agents`, optional `permissions`. No marketplace behavior, no validation.
+- **Missing `.code-oz/agents/`:** treat absent dir as empty overrides; invalid files inside still fail.
+- **Encoding:** UTF-8, strip leading BOM, accept CRLF delimiters, reject malformed frontmatter. No body normalization.
+- **Name regex:** ASCII-only `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`. Reject unicode.
+- **Load order:** sort discovered files by path before validation. Deterministic.
+- **YAML duplicate keys:** reject (use `yaml`'s `uniqueKeys: true`).
+- **Path reporting:** cwd-relative consistently in all error messages.
+- **Symlink policy:** reject symlinks whose target escapes the agents directory.
+- **Body validation:** non-empty body **and** (top-level `# ...` heading **or** `## Overview` section).
+
+### Locked implementation order
+
+Codex's seven commits, accepted as-is. Branch: `feat/m2-agent-loader`. Each commit self-contained, `bun test` + `bun run typecheck` green at each step.
+
+1. `feat(agents): parse markdown frontmatter`
+2. `feat(agents): validate agent schema`
+3. `feat(agents): load registry from directories`
+4. `feat(agents): add bundled default personas`
+5. `feat(agents): wire bundled defaults for compiled binary`
+6. `feat(agentpacks): add forward-compatible manifest types`
+7. `test(agents): lock override and failure semantics`
+
+Approved by Ozzy 2026-04-29. Implementation begins on `feat/m2-agent-loader`.
+
