@@ -154,6 +154,29 @@ These are the high-leverage decisions the planning round must converge on. Each 
 
 These nine prompts are the substance of `CODEX_BRIEFING_M4.md`. Add them; the planning round adds verdicts.
 
+## Cross-cutting addendum from `CODEX_RESPONSE_TEMPLATES_PLAN_MEM.md` (2026-04-29)
+
+A separate forward-looking design round happened just before M4 kickoff: planning + memory borrow strategy from two new templates (`agentic-canvas`, `Mimir`). The synthesis is locked in [`CODEX_RESPONSE_TEMPLATES_PLAN_MEM.md`](./CODEX_RESPONSE_TEMPLATES_PLAN_MEM.md). Three decisions from that round directly affect M4 — fold them into the M4 design before the planning round, do not re-debate.
+
+1. **Context metrics on `agent_invoked` events.** The wrapper layer must record per-call telemetry that proves the manifest narrowing is doing real work. Extend the existing `agent_invoked.manifest` shape (or add sibling fields on the event) with:
+   - `filesSent: number` — count of files in the manifest sent to the provider
+   - `bytesSent: number` — total content bytes across the manifest
+   - `tokensEstimate: number` — wrapper-layer token estimate (the same heuristic used by the cost-budget pre-call check)
+   - `fieldsRemovedByScope: number` — count of fields the phase-owned manifest builder dropped relative to the upper-bound `permissions.read` (zero if no narrowing happened)
+
+   Surface in `code-oz status` only when verbose. Validator in `src/state/events.ts` must accept these as required-when-`agent_invoked` (not optional) so the audit trail is complete from M4 onward.
+
+2. **No `contextScope` field in agent frontmatter.** The synthesis explicitly rejected user-editable persona-level context narrowing. Scope enforcement happens in code: M4 ships a **provider-request DTO + phase-owned manifest builders** (per phase, per persona pair) that intersect the explicit phase logic with `permissions.read` (upper bound). Persona files describe identity, not runtime narrowing. Do not add a `contextScope` block to `src/agents/schema.ts`. The narrowing-evidence is the `fieldsRemovedByScope` metric on `agent_invoked` (item 1), not a frontmatter declaration.
+
+3. **Tool-call circuit-breaker is config-only, not PLAN-encoded.** The pre-call cost-budget check (M4 prompt 8) is the **only** place a multiplier lives. Read it from `.code-oz/config.yaml` (`maxToolCallsPerTurn`, optional `toolCallBudgetMultiplier`). PLAN.md tasks (M6) will carry an advisory `estimatedToolCalls` field but the runtime ignores it for budget enforcement — the cap is policy, not per-task estimate. (Mimir contradicts itself between 1.5x in its docs and 10x in `task-executor.ts`; we don't inherit either number — we pick our own at config-load time.)
+
+Items 4–10 from the synthesis affect M5+/M6/M7/W3/v0.3+ and are out of scope for M4. Two are worth keeping in mind so M4's design doesn't paint future milestones into a corner:
+
+- M7 will add a `failure_recorded` event type. M4's event-schema validator must already tolerate unknown event types via the existing `version: 1` versioning rule (no allow-list of types). Confirm during planning that the validator doesn't lock the type union.
+- W3+ may add a project memory directory at `.code-oz/memory/project/`. M4 doesn't need to reserve the path, but the `.gitignore` policy in M4's tests should not write rules that would later block memory files.
+
+**Authority:** if any M4 prompt above conflicts with this addendum, the addendum wins (it is the more recent locked decision). If the M4 planning round wants to challenge an addendum item, do it explicitly in `CODEX_BRIEFING_M4.md` with a citation to `CODEX_RESPONSE_TEMPLATES_PLAN_MEM.md` so the cross-reference is auditable.
+
 ## Cross-model peer review (rules 7–10 in CLAUDE.md, non-negotiable)
 
 Same process as M2/M3 — `gpt-5.5` at `xhigh` effort, `sandbox: read-only`, via `mcp__plugin_agent-codex_codex-native__codex`. Three rounds (planning + implementation + re-review) is the M3 pattern; M4 should expect at least one re-review cycle given the surface area is comparable.

@@ -12,6 +12,7 @@ Status: **v0.1.0-alpha.0 — M1 milestone (CLI bootstrap)**. M2–M7 build out t
 
 - `docs/design/ROADMAP.md` — full milestone plan, decision matrix, day-by-day PR plan
 - `docs/adr/0001-mvp-option-e.md` — MVP scope decision (Option E, spine-first end-to-end)
+- `docs/design/SESSION_CYCLE.md` — the empirical session cycle (boot → plan → implement → review → tag → handoff). Every milestone session follows it.
 - `docs/design/CODEX_BRIEFING.md` and `docs/design/CODEX_RESPONSE.md` — debate transcripts that produced the roadmap
 
 ## Non-negotiable rules (audit-derived)
