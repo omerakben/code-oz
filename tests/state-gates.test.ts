@@ -304,6 +304,51 @@ describe('readGate', () => {
   })
 })
 
+describe('writeGate refuses to overwrite a corrupt existing gate (no-tech-debt rule)', () => {
+  test('malformed JSON existing gate file produces gate_invalid_json instead of silent overwrite', async () => {
+    // Closes the M3 review block-next-milestone finding: success gates are
+    // append-only decision records, so a corrupt existing gate must STOP
+    // rather than be repaired by replacement. The user has to either fix
+    // the file or start a new runId.
+    await writeArtifact('SPEC.md', 'spec body')
+    const filename = gateFilename('define')
+    await writeFile(join(runDir, filename), '{ "version": 1, broken json', 'utf8')
+
+    try {
+      await writeGate({ paths, gate: validGate() })
+      throw new Error('expected GateLoadError')
+    } catch (err) {
+      const e = err as GateLoadError
+      expect(e.issues[0]?.code).toBe('gate_invalid_json')
+    }
+    // Verify the corrupt file is unchanged on disk.
+    const after = await readFile(join(runDir, filename), 'utf8')
+    expect(after).toContain('broken json')
+  })
+
+  test('schema-invalid existing gate produces a typed error instead of silent overwrite', async () => {
+    await writeArtifact('SPEC.md', 'spec body')
+    const filename = gateFilename('define')
+    // Gate JSON parses but fails schema (wrong version).
+    await writeFile(
+      join(runDir, filename),
+      JSON.stringify({ version: 99, runId: RUN, phase: 'define' }),
+      'utf8',
+    )
+
+    try {
+      await writeGate({ paths, gate: validGate() })
+      throw new Error('expected GateLoadError')
+    } catch (err) {
+      const e = err as GateLoadError
+      // Either gate_invalid_version or gate_missing_field — both are valid
+      // typed surfaces for "existing gate is invalid; refuse to overwrite."
+      const code = e.issues[0]?.code ?? 'no-issue'
+      expect(['gate_invalid_version', 'gate_missing_field']).toContain(code)
+    }
+  })
+})
+
 describe('intervention/control gates', () => {
   test('writeNeedsInterventionGate writes a valid file', async () => {
     const gate: NeedsInterventionGate = {

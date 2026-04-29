@@ -620,17 +620,48 @@ async function sha256File(absPath: string): Promise<string> {
   return hash.digest('hex')
 }
 
+/**
+ * Read an existing gate for the idempotency check. Returns null only when
+ * the file is genuinely absent (ENOENT). A malformed or schema-invalid
+ * existing gate is a corruption signal — success gates are append-only
+ * decision records, so a parse or validation failure must stop, not be
+ * silently repaired by replacement. The caller is expected to surface the
+ * thrown GateLoadError.
+ */
 async function tryReadGate(filePath: string): Promise<GateFile | null> {
-  let raw: unknown
+  let content: string
   try {
-    const content = await readFile(filePath, 'utf8')
-    raw = JSON.parse(content)
+    content = await readFile(filePath, 'utf8')
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
-    return null // best effort; idempotency only matters when the existing file is parseable
+    throw new GateLoadError([
+      {
+        file: filePath,
+        code: 'gate_io_error',
+        rule: 'failed to read existing gate file during idempotency check',
+        detail: (err as Error).message,
+      },
+    ])
   }
+
+  let raw: unknown
+  try {
+    raw = JSON.parse(content)
+  } catch (err: unknown) {
+    throw new GateLoadError([
+      {
+        file: filePath,
+        code: 'gate_invalid_json',
+        rule: 'existing gate file is not valid JSON; refusing to overwrite a corrupt gate',
+        detail: (err as Error).message,
+      },
+    ])
+  }
+
   const issue = validateGate(raw, filePath)
-  if (issue !== null) return null
+  if (issue !== null) {
+    throw new GateLoadError([issue])
+  }
   return raw as GateFile
 }
 
