@@ -60,6 +60,8 @@ export interface WriteGateOptions {
   readonly gate: GateFile
   /** When true (default), compute and overwrite artifactSha256 from the artifact file. */
   readonly computeSha256?: boolean
+  /** When true, the caller already holds the per-run lock; do not re-acquire. */
+  readonly skipLock?: boolean
 }
 
 // --- success gate (GATE_<PHASE>_PASSED.json) -----------------------
@@ -138,37 +140,43 @@ export async function writeGate(opts: WriteGateOptions): Promise<WriteGateResult
   const json = JSON.stringify(gateWithSha, null, 2) + '\n'
   const buf = Buffer.from(json, 'utf8')
 
-  try {
-    await withLock(opts.paths.lockDir, async () => {
-      const tmpPath = `${targetPath}.tmp-${randomBytes(6).toString('hex')}`
-      const fh = await open(tmpPath, 'w')
+  const writeOnce = async (): Promise<void> => {
+    const tmpPath = `${targetPath}.tmp-${randomBytes(6).toString('hex')}`
+    const fh = await open(tmpPath, 'w')
+    try {
+      await fh.write(buf, 0, buf.length)
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    try {
+      await rename(tmpPath, targetPath)
+    } catch (err: unknown) {
+      await rm(tmpPath, { force: true }).catch(() => undefined)
+      throw err
+    }
+    // Best-effort directory fsync. Errors here mean the platform doesn't
+    // support fsync on a directory handle (e.g., some Windows filesystems).
+    try {
+      const dirfh = await open(opts.paths.runDir, 'r')
       try {
-        await fh.write(buf, 0, buf.length)
-        await fh.sync()
+        await dirfh.sync()
       } finally {
-        await fh.close()
+        await dirfh.close()
       }
-      try {
-        await rename(tmpPath, targetPath)
-      } catch (err: unknown) {
-        await rm(tmpPath, { force: true }).catch(() => undefined)
-        throw err
-      }
-      // Best-effort directory fsync. Errors here mean the platform doesn't
-      // support fsync on a directory handle (e.g., some Windows filesystems).
-      try {
-        const dirfh = await open(opts.paths.runDir, 'r')
-        try {
-          await dirfh.sync()
-        } finally {
-          await dirfh.close()
-        }
-      } catch {
-        // Best-effort: rename itself is durable on POSIX once the destination
-        // file's fsync has succeeded; the dir-fsync only ensures the directory
-        // entry survives a power loss. Skipped silently when unsupported.
-      }
-    })
+    } catch {
+      // Best-effort: rename itself is durable on POSIX once the destination
+      // file's fsync has succeeded; the dir-fsync only ensures the directory
+      // entry survives a power loss. Skipped silently when unsupported.
+    }
+  }
+
+  try {
+    if (opts.skipLock) {
+      await writeOnce()
+    } else {
+      await withLock(opts.paths.lockDir, writeOnce)
+    }
   } catch (err: unknown) {
     if (err instanceof LockBusyError) {
       throw new GateLoadError([

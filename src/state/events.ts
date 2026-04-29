@@ -290,13 +290,25 @@ function nonEmptyString(
   return null
 }
 
+export interface AppendEventOptions {
+  /** When true, the caller already holds the per-run lock; do not re-acquire. */
+  readonly skipLock?: boolean
+}
+
 /**
  * Append a validated event to events.jsonl. Acquires the per-run lock,
  * appends one JSON line + newline, fsyncs, then releases the lock.
  *
+ * Pass `skipLock: true` when the caller (e.g., run.ts) already holds the
+ * per-run lock for a multi-step transaction.
+ *
  * Throws EventLogError on validation failure, lock contention, or I/O error.
  */
-export async function appendEvent(paths: EventLogPaths, event: PhaseEvent): Promise<void> {
+export async function appendEvent(
+  paths: EventLogPaths,
+  event: PhaseEvent,
+  options: AppendEventOptions = {},
+): Promise<void> {
   const issue = validateEvent(event, paths.file)
   if (issue !== null) {
     throw new EventLogError([issue])
@@ -304,16 +316,22 @@ export async function appendEvent(paths: EventLogPaths, event: PhaseEvent): Prom
 
   const buf = Buffer.from(JSON.stringify(event) + '\n', 'utf8')
 
+  const writeOnce = async (): Promise<void> => {
+    const fh = await open(paths.file, 'a')
+    try {
+      await fh.write(buf, 0, buf.length)
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+  }
+
   try {
-    await withLock(paths.lockDir, async () => {
-      const fh = await open(paths.file, 'a')
-      try {
-        await fh.write(buf, 0, buf.length)
-        await fh.sync()
-      } finally {
-        await fh.close()
-      }
-    })
+    if (options.skipLock) {
+      await writeOnce()
+    } else {
+      await withLock(paths.lockDir, writeOnce)
+    }
   } catch (err: unknown) {
     if (err instanceof LockBusyError) {
       throw new EventLogError([
