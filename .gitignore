@@ -23,6 +23,9 @@ bun.lockb
 .vscode/
 .idea/
 
+# remember plugin (Claude Code) — per-project session-state cache
+.remember/
+
 # code-oz runtime artifacts (when run inside another project; not in our repo)
 .code-oz/runs/
 .code-oz/state/events.jsonl
