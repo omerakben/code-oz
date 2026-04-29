@@ -147,13 +147,13 @@ Append-only JSON Lines event log. One event per line. Schemas validated on appen
 
 **Maestro does not have this.** It is a `code-oz` innovation that supports replay, telemetry export, and resume. Per the ROADMAP: "the append-only run trace."
 
-**Event types (v0.1):**
+**Event types (v0.1 known set):**
 
 ```json
 { "version": 1, "type": "run_started",     "ts": "...", "runId": "...", "profile": "greenfield" }
 { "version": 1, "type": "phase_entered",   "ts": "...", "runId": "...", "phase": "define" }
 { "version": 1, "type": "phase_exited",    "ts": "...", "runId": "...", "phase": "define", "outcome": "passed" }
-{ "version": 1, "type": "agent_invoked",   "ts": "...", "runId": "...", "phase": "define", "agent": "ba", "provider": "claude", "manifest": { "files": [{ "path": "...", "sha256": "...", "sizeBytes": 0 }] } }
+{ "version": 1, "type": "agent_invoked",   "ts": "...", "runId": "...", "phase": "define", "agent": "ba", "provider": "claude", "manifest": { "files": [{ "path": "...", "sha256": "...", "sizeBytes": 0 }] }, "filesSent": 1, "bytesSent": 0, "tokensEstimate": 0, "fieldsRemovedByScope": 0 }
 { "version": 1, "type": "agent_completed", "ts": "...", "runId": "...", "phase": "define", "agent": "ba", "tokensUsed": 1834 }
 { "version": 1, "type": "gate_written",    "ts": "...", "runId": "...", "phase": "define", "file": "GATE_DEFINE_PASSED.json" }
 { "version": 1, "type": "gate_required",   "ts": "...", "runId": "...", "phase": "define", "blockedOn": "user signoff" }
@@ -163,7 +163,17 @@ Append-only JSON Lines event log. One event per line. Schemas validated on appen
 
 Required on every event: `version` (currently `1`), `type`, `ts` (ISO 8601), `runId`. Other fields are type-specific. Lines without `version` are rejected by the canonical reader; future schema bumps increment this number.
 
-`agent_invoked.manifest` is **optional** and records the explicit list of files the runtime sent to the provider for that turn. M3 defines the slot; M4 populates it. The shape is `{ files: { path, sha256, sizeBytes }[] }` — `path` is the file path sent, `sha256` is the content hash at send time (audit trail), `sizeBytes` is the size for budget tracking. The manifest is a record of *what was sent*, not an upper-bound permission check; permissions semantics are defined in `agent-skill-format.md`.
+**The known event-type set is open after `version: 1`.** Canonical readers must accept events whose `type` is a non-empty string they don't recognize, so long as `version`, `ts`, and `runId` are valid. Recognized types still get strict per-type field validation; unknown types pass shape validation and survive verbatim in the log. This is the forward-compat rule that lets later milestones (e.g., M7's `failure_recorded`) extend the type set without a schema-version bump. Reducers in `src/state/run.ts` ignore unknown types via a `default:` no-op case.
+
+**`agent_invoked` manifest + metric fields (M4 contract).** Wrapper-emitted `agent_invoked` events ALWAYS carry both an explicit file manifest and four context metrics:
+
+- `manifest`: `{ files: { path, sha256, sizeBytes }[] }` — the explicit list of files sent to the provider for that turn. `path` is the file path sent, `sha256` is the content hash at send time (audit trail), `sizeBytes` is the size for budget tracking. The manifest is a record of *what was sent*, not an upper-bound permission check; permissions semantics are defined in `agent-skill-format.md`.
+- `filesSent`: non-negative integer. Count of files in the manifest. `0` is legal (no-files invocation).
+- `bytesSent`: non-negative integer. Sum of `sizeBytes` across the manifest.
+- `tokensEstimate`: non-negative integer. Wrapper-layer pre-call token estimate (the same heuristic used by the cost-budget pre-call check). `0` means "estimator returned zero," not "absent."
+- `fieldsRemovedByScope`: non-negative integer. Count of fields the phase-owned manifest builder dropped relative to the upper-bound `permissions.read`. `0` means "no narrowing happened or nothing was removed" (single semantics; never use `null` to distinguish the two cases — the metric tracks evidence of narrowing work, and zero means "no evidence").
+
+Manifest and the four metrics are required-when-`type === 'agent_invoked'` for any event the wrapper emits. The validator in `src/state/events.ts` enforces presence on `agent_invoked` from M4 onward.
 
 `gate_written.file` is the gate filename relative to the run's subdirectory (e.g., `GATE_DEFINE_PASSED.json`), not a full path.
 
@@ -212,9 +222,9 @@ Maestro's `.claudeignore` prevents Claude sessions from reading orchestrator cod
 
 M5+ phases write to these paths by default; `code-oz approve <PHASE>` reads them by default. Override is supported via `--artifact <path>` on the approve command (still subject to path-safety rule 7 below). The map is exported from `src/state/schemas.ts` as `CANONICAL_ARTIFACTS`.
 
-## Validation rules (M3 loader contract)
+## Validation rules (M3 + M4 loader contract)
 
-The M3 `src/state/gates.ts` and `src/state/events.ts` modules enforce:
+The `src/state/gates.ts` and `src/state/events.ts` modules enforce:
 
 1. Every gate file is valid JSON with `version: 1`. Every line of `events.jsonl` is a valid JSON event with `version: 1`.
 2. `runId` is a ULID (Crockford base32, 26 chars).
@@ -227,6 +237,8 @@ The M3 `src/state/gates.ts` and `src/state/events.ts` modules enforce:
 9. Cross-file recovery: on resume, if a `GATE_<PHASE>_PASSED.json` file exists and validates but the corresponding `gate_written` event is absent from `events.jsonl`, the orchestrator appends the missing event before continuing. The reverse (event present, file absent) produces `gate_written_event_missing_file` and stops the run.
 10. Concurrency: gate writes, event appends, active-pointer updates, and `current.json` rebuilds are protected by a per-run lock file. Concurrent attempts produce `lock_busy`.
 11. Idempotent approve: re-running `code-oz approve <PHASE>` against an existing `GATE_<PHASE>_PASSED.json` recovers missing events (rule 9) or no-ops if the gate content matches; same phase with different content produces `gate_idempotency_violation`.
+12. Open-type-union (M4): the `type` field on event lines is a non-empty string. Recognized types (`run_started`, `phase_entered`, `phase_exited`, `agent_invoked`, `agent_completed`, `gate_written`, `gate_required`, `intervention`, `run_ended`) get strict per-type field validation. Unknown `type` values pass shape validation (`version === 1`, `ts`, `runId`) and survive verbatim in the log. Reducers ignore unknown types via a `default:` no-op. Future milestones extend the recognized set without bumping `version`.
+13. `agent_invoked` metric fields (M4): every `agent_invoked` event the wrapper emits carries `manifest`, `filesSent`, `bytesSent`, `tokensEstimate`, `fieldsRemovedByScope`. Each metric is a non-negative integer (`0` is legal). `manifest` is `{ files: { path, sha256, sizeBytes }[] }` with `path` non-empty, `sha256` a 64-char lowercase hex string, `sizeBytes` a non-negative integer. The wrapper layer in `src/providers/invoke.ts` is the only path that emits `agent_invoked`; its events always satisfy this rule.
 
 Any validation failure is reported as a typed `GateLoadError` (gates) or `EventLogError` (events) with `{ file, code, rule, detail? }` — the same shape as `AgentLoadError` from M2.
 
