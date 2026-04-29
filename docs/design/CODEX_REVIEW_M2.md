@@ -41,3 +41,30 @@ Verbatim reply below.
 fix-first
 
 Land the two `block-push` fixes before tag: enforce cross-family BUILD/REVIEW provider separation in the loader or update the pinned spec deliberately, and bump release metadata if tagging `v0.2.0-alpha.0`.
+
+---
+
+## Re-review (after fix commits 9283271 and 325a57c)
+
+- **Date:** 2026-04-29
+- **Thread ID:** `019dda93-3892-78d3-8c97-1c20ec5e77ca`
+- **Verdict:** `push`
+
+Verbatim reply below.
+
+### Confirmations
+
+- #1 cross-family: Confirmed, `enforceCrossFamilyReview()` runs after merge, rejects every same-provider BUILD/REVIEW pair, and the direct `builder=claude`/`reviewer=claude` repro returns `loader_cross_family_violation`.
+- #2 version: Confirmed, `package.json`, `src/cli.ts`, `src/config/schema.ts`, and `./dist/code-oz --version` all report `0.2.0-alpha.0`; no live runtime/config version surface still self-identifies as `0.1.0-alpha.0`.
+- #3 I/O wrapping: Confirmed, `readdir`, `lstat`, `realpath`, and `readFile` are wrapped through `wrapIO`, with cwd-relative paths and specific rule messages; the broken-symlink test exists, though full temp-dir execution is sandbox-blocked.
+- #4 permissions doc: Confirmed, the permissions section is unambiguous that `read`/`write` are upper bounds, not context generators, and `src/agents/schema.ts` cross-references the spec.
+
+### Remaining issues
+
+None found. `fyi`: full `bun test` still hits read-only sandbox `EPERM` on `mkdtemp` after 92 passes; `bun run typecheck`, `./dist/code-oz --version`, and targeted cross-family tests passed.
+
+### Verdict
+
+push
+
+The four prior findings are closed, and the only validation gap is the expected read-only temp-dir sandbox limitation.
