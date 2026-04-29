@@ -2,8 +2,9 @@
 import { initCommand } from './commands/init.ts'
 import { runCommand } from './commands/run.ts'
 import { doctorCommand } from './commands/doctor.ts'
+import { approveCommand } from './commands/approve.ts'
 
-const PKG_VERSION = '0.2.0-alpha.0'
+const PKG_VERSION = '0.3.0-alpha.0'
 
 function printHelp(): void {
   process.stdout.write(`code-oz v${PKG_VERSION}
@@ -13,6 +14,7 @@ Usage: code-oz <command> [options]
 Commands:
   init             Scaffold a code-oz project in the current directory
   run              Execute the phase pipeline (M5+, stub in v0.1-alpha.0)
+  approve          Approve the current phase of the active run
   doctor           Check provider auth and environment health (M4, stub in v0.1-alpha.0)
   help             Show this help
 
@@ -48,6 +50,9 @@ async function main(): Promise<void> {
       return
     case 'run':
       await runCommand(subArgs)
+      return
+    case 'approve':
+      await approveCommand(subArgs)
       return
     case 'doctor':
       await doctorCommand(subArgs)
