@@ -10,6 +10,21 @@ export interface PhaseBudget {
 
 export interface GlobalBudget extends PhaseBudget {
   maxReviewRounds: number
+  /**
+   * Hard cap on tool_call events per provider turn. Enforced at the wrapper
+   * layer in src/providers/invoke.ts as a streaming counter — the cap fires
+   * exactly when the (toolCallBudgetMultiplier-scaled) ceiling is exceeded.
+   * PLAN.md advisory estimatedToolCalls (M6+) is recorded for observability
+   * but never compared against this value (addendum item c).
+   */
+  maxToolCallsPerTurn: number
+  /**
+   * Optional multiplier on top of maxToolCallsPerTurn. The hard ceiling is
+   * floor(maxToolCallsPerTurn * toolCallBudgetMultiplier); when omitted, the
+   * default multiplier is 1.5. Lets users set a soft cap (maxToolCallsPerTurn)
+   * with a hard ceiling (maxToolCallsPerTurn * 1.5) without two config keys.
+   */
+  toolCallBudgetMultiplier?: number
 }
 
 export interface Budgets {
@@ -33,7 +48,7 @@ export interface CodeOzConfig {
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {
-  version: '0.3.0-alpha.0',
+  version: '0.4.0-alpha.0',
   profile: 'greenfield',
   defaultProvider: 'claude',
   models: {
@@ -46,6 +61,8 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
       maxProviderCalls: 50,
       maxTokensEstimate: 2_000_000,
       maxReviewRounds: 4,
+      maxToolCallsPerTurn: 10,
+      toolCallBudgetMultiplier: 1.5,
     },
     perPhase: {
       define: { maxTurns: 30, maxProviderCalls: 15, maxTokensEstimate: 300_000 },
