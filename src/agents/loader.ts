@@ -2,7 +2,7 @@ import { readFile, readdir, stat, lstat, realpath } from 'node:fs/promises'
 import { join, relative, isAbsolute } from 'node:path'
 import { parseFrontmatter } from './frontmatter.ts'
 import { validateAgent, type AgentDefinition, type AgentPhase } from './schema.ts'
-import { AgentLoadError } from './errors.ts'
+import { AgentLoadError, type AgentLoadIssue } from './errors.ts'
 
 export interface SourceFile {
   readonly file: string
@@ -73,7 +73,33 @@ export function buildRegistry(opts: BuildRegistryOptions): AgentRegistry {
     map.set(def.name, def)
   }
 
-  return makeRegistry(Array.from(map.values()))
+  const definitions = Array.from(map.values())
+  enforceCrossFamilyReview(definitions)
+
+  return makeRegistry(definitions)
+}
+
+function enforceCrossFamilyReview(definitions: readonly AgentDefinition[]): void {
+  const buildAgents = definitions.filter((d) => d.phase === 'build')
+  const reviewAgents = definitions.filter((d) => d.phase === 'review')
+  if (buildAgents.length === 0 || reviewAgents.length === 0) return
+
+  const conflicts: AgentLoadIssue[] = []
+  for (const review of reviewAgents) {
+    for (const build of buildAgents) {
+      if (review.provider === build.provider) {
+        conflicts.push({
+          file: review.file,
+          code: 'loader_cross_family_violation',
+          rule: 'REVIEW agent provider must differ from BUILD agent provider (CLAUDE.md non-negotiable rule 2)',
+          detail: `'${review.name}' (review, provider=${review.provider}) shares provider family with '${build.name}' (build)`,
+        })
+      }
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new AgentLoadError(conflicts)
+  }
 }
 
 async function readProjectLocalSources(

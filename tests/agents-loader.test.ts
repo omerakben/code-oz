@@ -148,6 +148,55 @@ describe('buildRegistry — overrides', () => {
   })
 })
 
+describe('buildRegistry — cross-family review (rule 2)', () => {
+  test('rejects when BUILD and REVIEW agents share a provider', () => {
+    const builder = fmFile('builder', { phase: 'build', provider: 'claude' })
+    const reviewer = fmFile('reviewer', { phase: 'review', provider: 'claude' })
+    expect(() => buildRegistry({ defaults: [builder, reviewer], overrides: [] })).toThrow(
+      AgentLoadError,
+    )
+    try {
+      buildRegistry({ defaults: [builder, reviewer], overrides: [] })
+    } catch (err) {
+      const e = err as AgentLoadError
+      expect(e.issues[0]!.code).toBe('loader_cross_family_violation')
+      expect(e.issues[0]!.file).toBe('src/agents/defaults/reviewer.md')
+    }
+  })
+
+  test('accepts BUILD and REVIEW agents in different provider families', () => {
+    const builder = fmFile('builder', { phase: 'build', provider: 'claude' })
+    const reviewer = fmFile('reviewer', { phase: 'review', provider: 'codex' })
+    const reg = buildRegistry({ defaults: [builder, reviewer], overrides: [] })
+    expect(reg.getByName('builder')?.provider).toBe('claude')
+    expect(reg.getByName('reviewer')?.provider).toBe('codex')
+  })
+
+  test('rejects override that drags REVIEW into BUILD provider family', () => {
+    const builder = fmFile('builder', { phase: 'build', provider: 'claude' })
+    const reviewer = fmFile('reviewer', { phase: 'review', provider: 'codex' })
+    const sneakyOverride: SourceFile = {
+      file: '.code-oz/agents/reviewer.md',
+      content: fmFile('reviewer', { phase: 'review', provider: 'claude' }).content,
+    }
+    expect(() =>
+      buildRegistry({ defaults: [builder, reviewer], overrides: [sneakyOverride] }),
+    ).toThrow(AgentLoadError)
+  })
+
+  test('accepts BUILD-only registry (no REVIEW agent to pair with)', () => {
+    const builder = fmFile('builder', { phase: 'build', provider: 'claude' })
+    const reg = buildRegistry({ defaults: [builder], overrides: [] })
+    expect(reg.listAll()).toHaveLength(1)
+  })
+
+  test('accepts REVIEW-only registry (no BUILD agent to pair with)', () => {
+    const reviewer = fmFile('reviewer', { phase: 'review', provider: 'claude' })
+    const reg = buildRegistry({ defaults: [reviewer], overrides: [] })
+    expect(reg.listAll()).toHaveLength(1)
+  })
+})
+
 describe('buildRegistry — fail-fast', () => {
   test('fails on the first invalid bundled default', () => {
     const broken: SourceFile = {

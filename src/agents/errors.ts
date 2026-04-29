@@ -13,6 +13,7 @@ export type AgentLoadErrorCode =
   | 'loader_invalid_symlink'
   | 'loader_io_error'
   | 'loader_phase_mismatch_override'
+  | 'loader_cross_family_violation'
 
 export interface AgentLoadIssue {
   readonly file: string
