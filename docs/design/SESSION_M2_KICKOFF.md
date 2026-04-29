@@ -10,6 +10,26 @@
 - **Binary:** `bun run build:binary` produces `dist/code-oz` (~61 MB)
 - **What works:** `code-oz init` scaffolds `.code-oz/` with greenfield/brownfield auto-detection. `run` and `doctor` are stubs that exit non-zero pointing at later milestones.
 
+## Template references (read-only via `/add-dir`)
+
+M2 borrows patterns from the influence library at `~/Projects/agents/templates/`. **Code stays referenced; specs get pinned.** The canonical contract lives inside this repo so Codex review can verify against named sources without leaving the working tree.
+
+**Pinned canonical spec (read this first):**
+
+- [`docs/references/agent-skill-format.md`](../references/agent-skill-format.md) — full frontmatter + section anatomy, `code-oz` extensions, validation rules. This is the authoritative spec for M2; if it disagrees with upstream, this file wins.
+
+**Live template (read-only, `/add-dir` only when you need an example beyond the pinned spec):**
+
+- `~/Projects/agents/templates/agent-skills` — pinned at upstream commit `19e49a094d79540e635b107cb3490926ddeac7a3` (2026-04-27). Source for the frontmatter and section anatomy. Useful files inside: `docs/skill-anatomy.md`, `agents/code-reviewer.md`, `skills/spec-driven-development/SKILL.md`, `README.md` (phase taxonomy table).
+
+**Rules for using the template:**
+
+1. Open it via `/add-dir ~/Projects/agents/templates/agent-skills`. Do not `cp`, do not symlink, do not add as a submodule.
+2. Do not modify the upstream — it's a different git repo with its own drift.
+3. If you discover a contract worth pinning that isn't in `agent-skill-format.md`, **extract it into the references file in the same commit**. Do not let the kickoff cite live template files for canonical decisions — Codex review at the M2 gate must be able to verify against in-repo sources.
+
+If a future milestone needs a different template (e.g., M5 will reach for `Auto-claude-code-research-in-sleep` for the 4-round review-loop cap), pin it the same way: live template via `/add-dir`, canonical spec in `docs/references/`.
+
 ## Your task — M2: Markdown agent loader + 5 default agents
 
 Canonical scope: `docs/design/ROADMAP.md` § M2.
