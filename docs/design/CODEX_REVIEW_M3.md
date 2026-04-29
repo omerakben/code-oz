@@ -47,3 +47,60 @@ Verbatim reply below.
 fix-first
 
 The branch is close structurally, but not push-ready. The blockers are not style issues: they affect resume correctness, gate integrity, idempotent crash recovery, and the lock contract that M3 explicitly adopted.
+
+---
+
+## Re-review (after fix commits 6429bfd and b36aebc)
+
+- **Date:** 2026-04-29
+- **Thread ID:** `019ddaf4-56bd-7b51-b8bb-756e8eff7eb4`
+- **Verdict:** `fix-first` (one new block-push surfaced)
+
+Verbatim reply below.
+
+### Confirmations
+
+- Finding 1 closed: `validateRunIntegrity` validates every `gate_written` through `readGate` and checks runId/phase/canonical filename; regression covers artifact mutation.
+- Finding 2 closed for the stated crash window: recovery runs under one lock, `recoverOrphanGates` appends missing `gate_written`, `completeIncompleteTransitions` appends missing transitions.
+- Finding 3 closed: `gatesEqual` excludes `approvedAt`; drift regression added.
+- Finding 4 closed: `loadRun`, `initRun`, `approveGate` hold the per-run lock; `writeCurrentUnlocked` is internal and documented; active-pointer lock is separate.
+- Finding 5 closed: `validateArtifactSyncPath` rejects raw `.`/`..` segments before normalization.
+- Finding 6 closed: `tryReadGate` returns `null` only for `ENOENT` and throws typed errors for malformed/schema-invalid gates.
+
+### Remaining issues
+
+- `block-push`: orphan recovery can append events for a gate that does not belong to the run. `recoverOrphanGates` appended `gate_written` with `runId: gate.runId` and `phase` from the filename loop, without first comparing `gate.runId` to `run_started.runId` or `gate.phase` to the filename phase. `validateRunIntegrity`'s `gate.runId === e.runId` check is self-fulfilling for recovered events. A copied/stale valid gate from another run could advance this run during `loadRun`.
+
+### Verdict
+
+fix-first
+
+---
+
+## Re-re-review (after fix commit fb0544f)
+
+- **Date:** 2026-04-29
+- **Thread ID:** `019ddafb-082e-71b1-a023-624b320e712f`
+- **Verdict:** `push`
+
+Verbatim reply below.
+
+### Confirmations
+
+- HEAD is `fb0544f` on `feat/m3-state-machine`; working tree is clean.
+- `src/state/run.ts:521-525` derives `expectedRunId` from `run_started` before orphan recovery.
+- `src/state/run.ts:558-577` refuses orphan recovery when `gate.runId !== expectedRunId` or `gate.phase !== filename phase`, surfacing `gate_invalid_runid` / `gate_invalid_phase`.
+- `src/state/run.ts:801-816` adds the global log invariant: every event runId must match `run_started.runId`.
+- `src/state/run.ts:842-872` still validates each `gate_written` event against the gate file runId, phase, and canonical filename.
+- `tests/state-regression.test.ts:344-390` adds the cross-run orphan gate regression with a real artifact sha and asserts `gate_invalid_runid`.
+
+### Remaining issues
+
+- No new block-push or block-next-milestone findings.
+- FYI, non-blocking: the global mixed-run invariant runs after transition recovery in `loadRun`, so a pre-existing malicious `gate_written` event with a foreign runId can be rejected only after `completeIncompleteTransitions` has had a chance to append transition events. It still throws before `reduceEvents`/`current.json`, so it does not silently advance the run. The original stale orphan-gate path is closed.
+
+### Verdict
+
+push
+
+The seven prior findings (six original + one re-review) are closed. The branch is push-ready for `v0.3.0-alpha.0`.
