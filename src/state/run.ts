@@ -31,9 +31,11 @@ import {
   type Phase,
   type Profile,
   type GateFile,
+  type LoggedEvent,
   type PhaseEvent,
   type RunState,
   type ActiveRunPointer,
+  isKnownPhaseEvent,
   isPhase,
   isProfile,
   isUlid,
@@ -95,8 +97,12 @@ function activeLockDirFor(activeFile: string): string {
  * Reduce a sequence of validated events into the derived RunState. File order
  * is the ordering authority (validation rule 8). Returns null if the events
  * don't include a `run_started` event.
+ *
+ * Tolerates unknown event types (validation rule 12, M4): future milestones
+ * may add event types without bumping `version: 1`. Unknown variants flow to
+ * the default no-op case and never alter derived phase state.
  */
-export function reduceEvents(events: readonly PhaseEvent[]): RunState | null {
+export function reduceEvents(events: readonly LoggedEvent[]): RunState | null {
   let runId: string | null = null
   let profile: Profile | null = null
   let currentPhase: Phase | null = null
@@ -105,6 +111,10 @@ export function reduceEvents(events: readonly PhaseEvent[]): RunState | null {
 
   for (const e of events) {
     lastEventAt = e.ts
+    // Narrow at the top of each iteration so the switch discriminates
+    // PhaseEvent variants. Unknown / future event types fall through and
+    // never alter derived phase state.
+    if (!isKnownPhaseEvent(e)) continue
     switch (e.type) {
       case 'run_started':
         runId = e.runId
@@ -121,6 +131,8 @@ export function reduceEvents(events: readonly PhaseEvent[]): RunState | null {
         break
       // gate_written, gate_required, agent_invoked, agent_completed,
       // intervention, run_ended: do not change derived phase state.
+      default:
+        break
     }
   }
 
@@ -263,7 +275,10 @@ export async function loadRun(paths: RunPaths): Promise<{
     // Complete any incomplete transitions: gate_written present but
     // phase_exited / phase_entered (or run_ended) missing. Idempotent.
     const profileGuess = events.find((e) => e.type === 'run_started')
-    const profile = profileGuess?.type === 'run_started' ? profileGuess.profile : null
+    const profile =
+      profileGuess !== undefined && isKnownPhaseEvent(profileGuess) && profileGuess.type === 'run_started'
+        ? profileGuess.profile
+        : null
     const recoveredTransitions =
       profile === null
         ? false
@@ -516,16 +531,19 @@ async function writeCurrentUnlocked(paths: RunPaths, state: RunState): Promise<v
  */
 async function recoverOrphanGates(
   paths: RunPaths,
-  events: readonly PhaseEvent[],
+  events: readonly LoggedEvent[],
 ): Promise<boolean> {
-  const expectedRunId = events.find((e) => e.type === 'run_started')?.runId
+  // Narrow once at the top so subsequent type literal checks discriminate
+  // against PhaseEvent variants. Unknown event types are inert for recovery.
+  const known = events.filter(isKnownPhaseEvent)
+  const expectedRunId = known.find((e) => e.type === 'run_started')?.runId
   if (expectedRunId === undefined) {
     // No run_started — let downstream reducer surface the contract error.
     return false
   }
 
   const gateWrittenPhases = new Set<Phase>()
-  for (const e of events) {
+  for (const e of known) {
     if (e.type === 'gate_written') gateWrittenPhases.add(e.phase)
   }
 
@@ -611,22 +629,25 @@ async function recoverOrphanGates(
  */
 async function completeIncompleteTransitions(
   paths: RunPaths,
-  events: readonly PhaseEvent[],
+  events: readonly LoggedEvent[],
   profile: Profile,
 ): Promise<boolean> {
   const eventPaths = eventPathsFor(paths)
   const now = () => new Date().toISOString()
 
+  // Narrow up-front so type-literal checks below discriminate properly.
+  const known = events.filter(isKnownPhaseEvent)
+
   // Walk gate_written events in their on-disk order so the appended
   // transition events land in the same order they would have during a
   // clean approval.
-  const gateWrittenList = events
+  const gateWrittenList = known
     .map((e, i) => ({ e, i }))
     .filter((x) => x.e.type === 'gate_written')
     .sort((a, b) => a.i - b.i)
 
   // Working copy that grows as we append.
-  let working: PhaseEvent[] = [...events]
+  let working: PhaseEvent[] = [...known]
   let appendedAny = false
 
   for (const { e } of gateWrittenList) {
@@ -696,7 +717,7 @@ async function completeIncompleteTransitions(
  */
 async function completeTransitionForPhase(opts: {
   paths: RunPaths
-  events: readonly PhaseEvent[]
+  events: readonly LoggedEvent[]
   phase: Phase
   runId: string
   profile: Profile
@@ -704,7 +725,8 @@ async function completeTransitionForPhase(opts: {
   now: () => string
 }): Promise<boolean> {
   const eventPaths = eventPathsFor(opts.paths)
-  let working: PhaseEvent[] = [...opts.events]
+  // Narrow up-front so working[].type discriminates properly.
+  let working: PhaseEvent[] = [...opts.events.filter(isKnownPhaseEvent)]
   let appendedAny = false
 
   const hasGateWritten = working.some(
@@ -796,9 +818,10 @@ async function completeTransitionForPhase(opts: {
  */
 async function validateRunIntegrity(
   paths: RunPaths,
-  events: readonly PhaseEvent[],
+  events: readonly LoggedEvent[],
 ): Promise<void> {
-  // Global runId invariant: every event must match run_started.runId.
+  // The global runId invariant applies to ALL events (known or unknown):
+  // every line in the log must carry the same runId as run_started.
   const runStarted = events.find((e) => e.type === 'run_started')
   if (runStarted !== undefined) {
     for (const e of events) {
@@ -815,7 +838,9 @@ async function validateRunIntegrity(
     }
   }
 
-  for (const e of events) {
+  // Gate-written validation only applies to known PhaseEvent variants.
+  const known = events.filter(isKnownPhaseEvent)
+  for (const e of known) {
     if (e.type !== 'gate_written') continue
     const filePath = join(paths.runDir, e.file)
     let gate: GateFile

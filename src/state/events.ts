@@ -28,6 +28,7 @@ import {
   isProfile,
   isIsoTimestamp,
   type PhaseEvent,
+  type LoggedEvent,
 } from './schemas.ts'
 import { EventLogError, type EventLogIssue } from './errors.ts'
 import { LockBusyError, withLock } from './lock.ts'
@@ -70,11 +71,11 @@ export function validateEvent(
       line,
     }
   }
-  if (typeof e.type !== 'string' || !(EVENT_TYPES as readonly string[]).includes(e.type)) {
+  if (typeof e.type !== 'string' || e.type.length === 0) {
     return {
       file,
       code: 'event_invalid_type',
-      rule: `event.type must be one of: ${EVENT_TYPES.join(' | ')}`,
+      rule: 'event.type must be a non-empty string',
       detail: `got ${JSON.stringify(e.type)}`,
       line,
     }
@@ -96,6 +97,16 @@ export function validateEvent(
       detail: `got ${JSON.stringify(e.runId)}`,
       line,
     }
+  }
+  // Open-type-union (validation rule 12, M4): the four-field envelope above
+  // (version, type, ts, runId) applies to ALL events. Recognized types fall
+  // through to the per-type switch below for strict per-type field
+  // validation; unrecognized types are accepted as-is and survive verbatim
+  // in the log so future milestones can extend the type set without bumping
+  // `version: 1`.
+  const isKnown = (EVENT_TYPES as readonly string[]).includes(e.type)
+  if (!isKnown) {
+    return null
   }
 
   switch (e.type) {
@@ -136,57 +147,64 @@ export function validateEvent(
         nonEmptyString(file, e.agent, 'agent_invoked.agent', line) ??
         nonEmptyString(file, e.provider, 'agent_invoked.provider', line)
       if (stringIssue) return stringIssue
-      if (e.manifest !== undefined) {
-        const m = e.manifest
-        if (m === null || typeof m !== 'object' || Array.isArray(m)) {
+      // Manifest + four metric fields are required-when-agent_invoked per
+      // validation rule 13 (M4). The wrapper layer in src/providers/invoke.ts
+      // is the only emitter; its events always satisfy this rule.
+      const m = e.manifest
+      if (m === null || m === undefined || typeof m !== 'object' || Array.isArray(m)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'agent_invoked.manifest is required and must be { files: [...] }',
+          line,
+        }
+      }
+      const files = (m as Record<string, unknown>).files
+      if (!Array.isArray(files)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'agent_invoked.manifest.files must be an array',
+          line,
+        }
+      }
+      for (const entry of files) {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
           return {
             file,
             code: 'event_invalid_value',
-            rule: 'agent_invoked.manifest must be { files: [...] } when present',
+            rule: 'agent_invoked.manifest.files[] entries must be objects',
             line,
           }
         }
-        const files = (m as Record<string, unknown>).files
-        if (!Array.isArray(files)) {
+        const f = entry as Record<string, unknown>
+        const pathIssue = nonEmptyString(file, f.path, 'agent_invoked.manifest.files[].path', line)
+        if (pathIssue) return pathIssue
+        if (typeof f.sha256 !== 'string' || !SHA256_REGEX.test(f.sha256)) {
           return {
             file,
             code: 'event_invalid_value',
-            rule: 'agent_invoked.manifest.files must be an array',
+            rule: 'agent_invoked.manifest.files[].sha256 must be a 64-char lowercase hex string',
+            detail: `got ${JSON.stringify(f.sha256)}`,
             line,
           }
         }
-        for (const entry of files) {
-          if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-            return {
-              file,
-              code: 'event_invalid_value',
-              rule: 'agent_invoked.manifest.files[] entries must be objects',
-              line,
-            }
-          }
-          const f = entry as Record<string, unknown>
-          const pathIssue = nonEmptyString(file, f.path, 'agent_invoked.manifest.files[].path', line)
-          if (pathIssue) return pathIssue
-          if (typeof f.sha256 !== 'string' || !SHA256_REGEX.test(f.sha256)) {
-            return {
-              file,
-              code: 'event_invalid_value',
-              rule: 'agent_invoked.manifest.files[].sha256 must be a 64-char lowercase hex string',
-              detail: `got ${JSON.stringify(f.sha256)}`,
-              line,
-            }
-          }
-          if (typeof f.sizeBytes !== 'number' || !Number.isInteger(f.sizeBytes) || f.sizeBytes < 0) {
-            return {
-              file,
-              code: 'event_invalid_value',
-              rule: 'agent_invoked.manifest.files[].sizeBytes must be a non-negative integer',
-              detail: `got ${JSON.stringify(f.sizeBytes)}`,
-              line,
-            }
+        if (typeof f.sizeBytes !== 'number' || !Number.isInteger(f.sizeBytes) || f.sizeBytes < 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: 'agent_invoked.manifest.files[].sizeBytes must be a non-negative integer',
+            detail: `got ${JSON.stringify(f.sizeBytes)}`,
+            line,
           }
         }
       }
+      const metricIssue =
+        nonNegativeInteger(file, e.filesSent, 'agent_invoked.filesSent', line) ??
+        nonNegativeInteger(file, e.bytesSent, 'agent_invoked.bytesSent', line) ??
+        nonNegativeInteger(file, e.tokensEstimate, 'agent_invoked.tokensEstimate', line) ??
+        nonNegativeInteger(file, e.fieldsRemovedByScope, 'agent_invoked.fieldsRemovedByScope', line)
+      if (metricIssue) return metricIssue
       break
     }
 
@@ -290,6 +308,24 @@ function nonEmptyString(
   return null
 }
 
+function nonNegativeInteger(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be a non-negative integer`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
+  return null
+}
+
 export interface AppendEventOptions {
   /** When true, the caller already holds the per-run lock; do not re-acquire. */
   readonly skipLock?: boolean
@@ -359,8 +395,12 @@ export async function appendEvent(
  * Read every validated event from events.jsonl in file order. Throws
  * EventLogError on any malformed line; missing file returns an empty
  * frozen array.
+ *
+ * Returns LoggedEvent (PhaseEvent | UnknownPhaseEvent) so callers can
+ * tolerate forward-extended event types written by future milestones
+ * without needing a schema-version bump (validation rule 12, M4).
  */
-export async function readEvents(paths: EventLogPaths): Promise<readonly PhaseEvent[]> {
+export async function readEvents(paths: EventLogPaths): Promise<readonly LoggedEvent[]> {
   let content: string
   try {
     content = await readFile(paths.file, 'utf8')
@@ -385,7 +425,7 @@ export async function readEvents(paths: EventLogPaths): Promise<readonly PhaseEv
   }
 
   const issues: EventLogIssue[] = []
-  const events: PhaseEvent[] = []
+  const events: LoggedEvent[] = []
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
@@ -416,7 +456,7 @@ export async function readEvents(paths: EventLogPaths): Promise<readonly PhaseEv
     if (issue !== null) {
       issues.push(issue)
     } else {
-      events.push(raw as PhaseEvent)
+      events.push(raw as LoggedEvent)
     }
   }
 

@@ -118,16 +118,59 @@ export interface AgentManifest {
   readonly files: readonly AgentManifestEntry[]
 }
 
+// PhaseEvent is the STRICT write-side type. Code that constructs and appends
+// events uses this discriminated union of every known event variant. The
+// agent_invoked variant requires manifest + four metric fields per the M4
+// contract pinned in docs/references/file-based-gates.md § 13.
 export type PhaseEvent =
   | { readonly version: 1; readonly type: 'run_started'; readonly ts: string; readonly runId: string; readonly profile: Profile }
   | { readonly version: 1; readonly type: 'phase_entered'; readonly ts: string; readonly runId: string; readonly phase: Phase }
   | { readonly version: 1; readonly type: 'phase_exited'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly outcome: PhaseOutcome }
-  | { readonly version: 1; readonly type: 'agent_invoked'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly agent: string; readonly provider: string; readonly manifest?: AgentManifest }
+  | {
+      readonly version: 1
+      readonly type: 'agent_invoked'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly provider: string
+      readonly manifest: AgentManifest
+      readonly filesSent: number
+      readonly bytesSent: number
+      readonly tokensEstimate: number
+      readonly fieldsRemovedByScope: number
+    }
   | { readonly version: 1; readonly type: 'agent_completed'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly agent: string; readonly tokensUsed?: number }
   | { readonly version: 1; readonly type: 'gate_written'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly file: string }
   | { readonly version: 1; readonly type: 'gate_required'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly blockedOn: string }
   | { readonly version: 1; readonly type: 'intervention'; readonly ts: string; readonly runId: string; readonly code: string; readonly phase?: Phase }
   | { readonly version: 1; readonly type: 'run_ended'; readonly ts: string; readonly runId: string; readonly outcome: RunOutcome }
+
+// UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)
+// accepts events whose `type` is a non-empty string it doesn't recognize, so
+// long as version + ts + runId are valid. Future milestones (e.g., M7's
+// failure_recorded) extend the known set without bumping `version: 1`.
+export interface UnknownPhaseEvent {
+  readonly version: 1
+  readonly type: string
+  readonly ts: string
+  readonly runId: string
+}
+
+// LoggedEvent is the READ-side type. readEvents() returns these; reducers and
+// recovery code switch on `type` and ignore unknown variants via default:
+// no-op.
+export type LoggedEvent = PhaseEvent | UnknownPhaseEvent
+
+/**
+ * Narrows a LoggedEvent to a known PhaseEvent by checking against EVENT_TYPES.
+ * Required for TypeScript discriminant narrowing — UnknownPhaseEvent's
+ * `type: string` would otherwise subsume literal types in the PhaseEvent
+ * variants, defeating switch-case narrowing on `e.type`.
+ */
+export function isKnownPhaseEvent(e: LoggedEvent): e is PhaseEvent {
+  return (EVENT_TYPES as readonly string[]).includes(e.type)
+}
 
 // Success gate: GATE_<PHASE>_PASSED.json
 export interface GateFile {
