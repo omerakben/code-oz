@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.local
+*.local
+
+# Bun
+bun.lockb
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+
+# code-oz runtime artifacts (when run inside another project; not in our repo)
+.code-oz/runs/
+.code-oz/state/events.jsonl
