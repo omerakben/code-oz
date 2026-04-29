@@ -21,14 +21,20 @@ Brownfield: `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP`. Auto-dete
 ## Try it (M1 alpha)
 
 ```bash
+# Clone and install
 git clone https://github.com/omerakben/code-oz.git
 cd code-oz
 bun install
 bun test
-bun run dev init   # in a fresh directory, scaffolds .code-oz/
+bun run build:binary
+
+# Scaffold a project in a fresh directory (don't dirty the cloned repo)
+mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
+~/Projects/code-oz/dist/code-oz init
+ls -la .code-oz/
 ```
 
-`run` and `doctor` commands are stubs in M1 — full implementations land in M2–M7.
+`run` and `doctor` commands are stubs in M1 — full implementations land in M2–M7. See `docs/design/ROADMAP.md` for the milestone plan.
 
 ## Influence library
 

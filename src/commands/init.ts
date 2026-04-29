@@ -1,4 +1,4 @@
-import { mkdir, writeFile, access, readdir } from 'node:fs/promises'
+import { mkdir, writeFile, access, readdir, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { stringify } from 'yaml'
@@ -47,20 +47,70 @@ const BROWNFIELD_LOCKFILES = [
   'pom.xml',
   'build.gradle',
   'build.gradle.kts',
+  'build.sbt',
+  'stack.yaml',
+  'cabal.project',
+  'project.clj',
 ]
 
-const BROWNFIELD_SOURCE_DIRS = ['src', 'app', 'lib', 'pkg', 'cmd']
+const BROWNFIELD_MARKER_FILES = [
+  'Makefile',
+  'GNUmakefile',
+  'deno.json',
+  'deno.jsonc',
+  'Package.swift',
+  'Package.resolved',
+  'pubspec.yaml',
+  'pubspec.lock',
+  'flake.nix',
+  'shell.nix',
+  'default.nix',
+  'elm.json',
+  'CMakeLists.txt',
+  'meson.build',
+  'BUILD.bazel',
+  'BUILD',
+  'WORKSPACE',
+]
+
+const BROWNFIELD_MARKER_EXTENSIONS = ['.sln', '.csproj', '.fsproj', '.vbproj', '.xcodeproj', '.xcworkspace']
+
+const BROWNFIELD_SOURCE_DIRS = ['src', 'app', 'lib', 'pkg', 'cmd', 'tests', 'test', 'spec']
+
+async function gitTracksFiles(cwd: string): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(['git', '-C', cwd, 'ls-files'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const text = await new Response(proc.stdout).text()
+    await proc.exited
+    return text.trim().length > 0
+  } catch {
+    return false
+  }
+}
 
 export async function detectProfile(cwd: string): Promise<Profile> {
+  if (await gitTracksFiles(cwd)) return 'brownfield'
+
   for (const f of BROWNFIELD_LOCKFILES) {
     if (await pathExists(join(cwd, f))) return 'brownfield'
   }
+
+  const entries = await readdir(cwd).catch(() => [] as string[])
+  for (const e of entries) {
+    if (BROWNFIELD_MARKER_FILES.includes(e)) return 'brownfield'
+    if (BROWNFIELD_MARKER_EXTENSIONS.some((ext) => e.endsWith(ext))) return 'brownfield'
+  }
+
   for (const dir of BROWNFIELD_SOURCE_DIRS) {
     const dirPath = join(cwd, dir)
     if (!(await pathExists(dirPath))) continue
-    const entries = await readdir(dirPath).catch(() => [] as string[])
-    if (entries.length > 0) return 'brownfield'
+    const dirEntries = await readdir(dirPath).catch(() => [] as string[])
+    if (dirEntries.length > 0) return 'brownfield'
   }
+
   return 'greenfield'
 }
 
@@ -71,9 +121,10 @@ export async function initProject(opts: InitOptions = {}): Promise<InitResult> {
   if (await pathExists(p.root)) {
     if (!opts.force) {
       throw new Error(
-        `${p.root} already exists. Pass --force to overwrite (this is destructive).`,
+        `${p.root} already exists. Pass --force to overwrite (this is destructive — the entire .code-oz/ directory will be removed and recreated).`,
       )
     }
+    await rm(p.root, { recursive: true, force: true })
   }
 
   const profile = await detectProfile(cwd)
@@ -86,11 +137,26 @@ export async function initProject(opts: InitOptions = {}): Promise<InitResult> {
 
   const config = { ...DEFAULT_CONFIG, profile }
   await writeFile(p.config, stringify(config), 'utf8')
-
-  const readme = renderProjectReadme(profile)
-  await writeFile(join(p.root, 'README.md'), readme, 'utf8')
+  await writeFile(join(p.root, '.gitignore'), renderScaffoldGitignore(), 'utf8')
+  await writeFile(join(p.root, 'README.md'), renderProjectReadme(profile), 'utf8')
 
   return { paths: p, profile }
+}
+
+function renderScaffoldGitignore(): string {
+  return `# code-oz runtime artifacts (per-run, transient, or sensitive)
+runs/
+state/events.jsonl
+state/current.json
+state/NEEDS_INTERVENTION.json
+state/PAUSE.json
+state/STOP.json
+
+# Tooling and editor scratch
+*.tmp
+*.bak
+.DS_Store
+`
 }
 
 function renderProjectReadme(profile: Profile): string {
@@ -102,10 +168,11 @@ This directory was scaffolded by \`code-oz init\`.
 - **agents/** — agent and skill Markdown files (frontmatter + system prompt)
 - **artifacts/** — phase outputs (\`SPEC.md\`, \`PLAN.md\`, \`SOURCE_CHECK.md\`, etc.)
 - **state/** — run state machine, event log (\`events.jsonl\`), gate signals (\`GATE_*_PASSED.json\`)
-- **runs/** — per-run worktrees (gitignored)
+- **runs/** — per-run worktrees (gitignored by the bundled \`.code-oz/.gitignore\`)
 - **config.yaml** — provider, model, and budget configuration
+- **.gitignore** — runtime artifact paths excluded from version control
 
-This directory should be committed to your project repo so the team shares the same agent definitions and gate history. The \`runs/\` and \`state/events.jsonl\` paths are gitignored by default.
+Commit \`config.yaml\`, \`agents/\`, \`artifacts/\`, and the gate signal files in \`state/GATE_*_PASSED.json\` so the team shares the same agent definitions, phase outputs, and gate history. The bundled \`.gitignore\` excludes \`runs/\` and the transient state files (\`events.jsonl\`, \`current.json\`, \`NEEDS_INTERVENTION.json\`, \`PAUSE.json\`, \`STOP.json\`).
 
 See https://github.com/omerakben/code-oz for the full milestone plan.
 `
@@ -127,7 +194,8 @@ export async function initCommand(args: string[]): Promise<void> {
 Usage: code-oz init [--force]
 
 Options:
-  --force      Overwrite an existing .code-oz/ directory (destructive)
+  --force      Destructively reset an existing .code-oz/ directory: the entire
+               directory is removed and recreated from scratch
   -h, --help   Show this help
 `)
     return

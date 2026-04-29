@@ -6,18 +6,22 @@ import { parse as parseYaml } from 'yaml'
 import { initProject, detectProfile } from '../src/commands/init.ts'
 
 describe('code-oz init', () => {
-  let tempDir: string
+  let tempDir: string | undefined
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'code-oz-test-'))
   })
 
   afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true })
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true })
+      tempDir = undefined
+    }
   })
 
   test('scaffolds the .code-oz directory tree', async () => {
-    const { paths } = await initProject({ cwd: tempDir })
+    const cwd = tempDir!
+    const { paths } = await initProject({ cwd })
 
     expect((await stat(paths.root)).isDirectory()).toBe(true)
     expect((await stat(paths.agents)).isDirectory()).toBe(true)
@@ -26,73 +30,144 @@ describe('code-oz init', () => {
     expect((await stat(paths.runs)).isDirectory()).toBe(true)
   })
 
-  test('writes a valid config.yaml with expected defaults', async () => {
-    const { paths } = await initProject({ cwd: tempDir })
-    const raw = await readFile(paths.config, 'utf8')
-    const config = parseYaml(raw)
-
-    expect(config.version).toBe('0.1.0-alpha.0')
-    expect(config.defaultProvider).toBe('claude')
-    expect(config.models.primary).toBe('claude-opus-4-7')
-    expect(config.budgets.maxReviewRounds).toBe(4)
-    expect(config.permissions.allowEscapeHatch).toBe(false)
-  })
-
   test('writes a project README inside .code-oz/', async () => {
-    const { paths } = await initProject({ cwd: tempDir })
+    const { paths } = await initProject({ cwd: tempDir! })
     const readme = await readFile(join(paths.root, 'README.md'), 'utf8')
     expect(readme).toContain('This directory was scaffolded by')
     expect(readme).toContain('agents/')
     expect(readme).toContain('artifacts/')
   })
 
+  test('writes .code-oz/.gitignore covering runtime paths', async () => {
+    const { paths } = await initProject({ cwd: tempDir! })
+    const gi = await readFile(join(paths.root, '.gitignore'), 'utf8')
+    expect(gi).toContain('runs/')
+    expect(gi).toContain('state/events.jsonl')
+    expect(gi).toContain('state/current.json')
+    expect(gi).toContain('NEEDS_INTERVENTION.json')
+    expect(gi).toContain('PAUSE.json')
+    expect(gi).toContain('STOP.json')
+  })
+
+  test('writes a valid config.yaml with expected defaults', async () => {
+    const { paths } = await initProject({ cwd: tempDir! })
+    const raw = await readFile(paths.config, 'utf8')
+    const config = parseYaml(raw)
+
+    expect(config.version).toBe('0.1.0-alpha.0')
+    expect(config.defaultProvider).toBe('claude')
+    expect(config.models.primary).toBe('claude-opus-4-7')
+    expect(config.permissions.allowEscapeHatch).toBe(false)
+  })
+
+  test('config.yaml includes global and per-phase budgets with maxTokensEstimate', async () => {
+    const { paths } = await initProject({ cwd: tempDir! })
+    const config = parseYaml(await readFile(paths.config, 'utf8'))
+
+    expect(config.budgets.global.maxTurns).toBeGreaterThan(0)
+    expect(config.budgets.global.maxProviderCalls).toBeGreaterThan(0)
+    expect(config.budgets.global.maxTokensEstimate).toBeGreaterThan(0)
+    expect(config.budgets.global.maxReviewRounds).toBe(4)
+
+    for (const phase of ['define', 'plan', 'build', 'verify', 'review', 'ship', 'audit']) {
+      expect(config.budgets.perPhase[phase]).toBeDefined()
+      expect(config.budgets.perPhase[phase].maxTurns).toBeGreaterThan(0)
+      expect(config.budgets.perPhase[phase].maxProviderCalls).toBeGreaterThan(0)
+      expect(config.budgets.perPhase[phase].maxTokensEstimate).toBeGreaterThan(0)
+    }
+  })
+
   test('detects greenfield in an empty directory', async () => {
-    const profile = await detectProfile(tempDir)
-    expect(profile).toBe('greenfield')
+    expect(await detectProfile(tempDir!)).toBe('greenfield')
+  })
+
+  test('treats empty git-init directory as greenfield', async () => {
+    const proc = Bun.spawn(['git', '-C', tempDir!, 'init', '-q'])
+    await proc.exited
+    expect(await detectProfile(tempDir!)).toBe('greenfield')
+  })
+
+  test('detects brownfield via git tracking files', async () => {
+    const cwd = tempDir!
+    await Bun.spawn(['git', '-C', cwd, 'init', '-q']).exited
+    await writeFile(join(cwd, 'README.md'), '# x\n', 'utf8')
+    await Bun.spawn(['git', '-C', cwd, 'add', 'README.md']).exited
+    expect(await detectProfile(cwd)).toBe('brownfield')
   })
 
   test('detects brownfield via package.json', async () => {
-    await writeFile(join(tempDir, 'package.json'), '{"name":"existing"}', 'utf8')
-    expect(await detectProfile(tempDir)).toBe('brownfield')
+    await writeFile(join(tempDir!, 'package.json'), '{"name":"existing"}', 'utf8')
+    expect(await detectProfile(tempDir!)).toBe('brownfield')
   })
 
   test('detects brownfield via Cargo.toml', async () => {
-    await writeFile(join(tempDir, 'Cargo.toml'), '[package]\nname="x"\n', 'utf8')
-    expect(await detectProfile(tempDir)).toBe('brownfield')
+    await writeFile(join(tempDir!, 'Cargo.toml'), '[package]\nname="x"\n', 'utf8')
+    expect(await detectProfile(tempDir!)).toBe('brownfield')
   })
 
   test('detects brownfield via pyproject.toml', async () => {
-    await writeFile(join(tempDir, 'pyproject.toml'), '[project]\nname="x"\n', 'utf8')
-    expect(await detectProfile(tempDir)).toBe('brownfield')
+    await writeFile(join(tempDir!, 'pyproject.toml'), '[project]\nname="x"\n', 'utf8')
+    expect(await detectProfile(tempDir!)).toBe('brownfield')
+  })
+
+  test('detects brownfield via Makefile', async () => {
+    await writeFile(join(tempDir!, 'Makefile'), 'all:\n\techo hi\n', 'utf8')
+    expect(await detectProfile(tempDir!)).toBe('brownfield')
+  })
+
+  test('detects brownfield via .csproj extension', async () => {
+    await writeFile(join(tempDir!, 'MyApp.csproj'), '<Project/>\n', 'utf8')
+    expect(await detectProfile(tempDir!)).toBe('brownfield')
+  })
+
+  test('detects brownfield via pubspec.yaml', async () => {
+    await writeFile(join(tempDir!, 'pubspec.yaml'), 'name: x\n', 'utf8')
+    expect(await detectProfile(tempDir!)).toBe('brownfield')
   })
 
   test('detects brownfield via populated src/ directory', async () => {
-    await mkdir(join(tempDir, 'src'), { recursive: true })
-    await writeFile(join(tempDir, 'src', 'main.go'), 'package main\n', 'utf8')
-    expect(await detectProfile(tempDir)).toBe('brownfield')
+    await mkdir(join(tempDir!, 'src'), { recursive: true })
+    await writeFile(join(tempDir!, 'src', 'main.go'), 'package main\n', 'utf8')
+    expect(await detectProfile(tempDir!)).toBe('brownfield')
   })
 
   test('treats empty src/ directory as greenfield', async () => {
-    await mkdir(join(tempDir, 'src'), { recursive: true })
-    expect(await detectProfile(tempDir)).toBe('greenfield')
+    await mkdir(join(tempDir!, 'src'), { recursive: true })
+    expect(await detectProfile(tempDir!)).toBe('greenfield')
   })
 
   test('init records the detected profile in config.yaml', async () => {
-    await writeFile(join(tempDir, 'package.json'), '{"name":"x"}', 'utf8')
-    const { profile, paths } = await initProject({ cwd: tempDir })
+    await writeFile(join(tempDir!, 'package.json'), '{"name":"x"}', 'utf8')
+    const { profile, paths } = await initProject({ cwd: tempDir! })
     expect(profile).toBe('brownfield')
     const config = parseYaml(await readFile(paths.config, 'utf8'))
     expect(config.profile).toBe('brownfield')
   })
 
   test('refuses to overwrite an existing .code-oz/ without --force', async () => {
-    await initProject({ cwd: tempDir })
-    await expect(initProject({ cwd: tempDir })).rejects.toThrow(/already exists/)
+    await initProject({ cwd: tempDir! })
+    await expect(initProject({ cwd: tempDir! })).rejects.toThrow(/already exists/)
   })
 
-  test('overwrites with --force', async () => {
-    await initProject({ cwd: tempDir })
-    const result = await initProject({ cwd: tempDir, force: true })
-    expect(result.paths.root).toBeDefined()
+  test('--force destructively resets the .code-oz/ directory', async () => {
+    const cwd = tempDir!
+    const { paths } = await initProject({ cwd })
+
+    // Place a sentinel that represents stale state from a prior run
+    const sentinel = join(paths.state, 'STALE_FROM_PRIOR_RUN.json')
+    await writeFile(sentinel, '{"stale":true}', 'utf8')
+    expect((await stat(sentinel)).isFile()).toBe(true)
+
+    // --force should remove the entire .code-oz/ tree before recreating
+    const result = await initProject({ cwd, force: true })
+    expect(result.paths.root).toBe(paths.root)
+
+    // Sentinel must be gone (proves rm -rf happened)
+    await expect(stat(sentinel)).rejects.toThrow()
+
+    // Fresh tree should exist with config.yaml + .gitignore + README.md
+    expect((await stat(paths.config)).isFile()).toBe(true)
+    expect((await stat(join(paths.root, '.gitignore'))).isFile()).toBe(true)
+    expect((await stat(join(paths.root, 'README.md'))).isFile()).toBe(true)
   })
 })
