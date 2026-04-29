@@ -102,6 +102,25 @@ function enforceCrossFamilyReview(definitions: readonly AgentDefinition[]): void
   }
 }
 
+async function wrapIO<T>(
+  op: () => Promise<T>,
+  file: string,
+  rule: string,
+): Promise<T> {
+  try {
+    return await op()
+  } catch (err: unknown) {
+    throw new AgentLoadError([
+      {
+        file,
+        code: 'loader_io_error',
+        rule,
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    ])
+  }
+}
+
 async function readProjectLocalSources(
   projectDir: string,
   cwd: string,
@@ -132,7 +151,11 @@ async function readProjectLocalSources(
     ])
   }
 
-  const entries = await readdir(projectDir, { withFileTypes: true })
+  const entries = await wrapIO(
+    () => readdir(projectDir, { withFileTypes: true }),
+    relative(cwd, projectDir),
+    'failed to enumerate the project agents directory',
+  )
   const names = entries
     .filter((e) => (e.isFile() || e.isSymbolicLink()) && e.name.endsWith('.md'))
     .map((e) => e.name)
@@ -141,14 +164,23 @@ async function readProjectLocalSources(
   const sources: SourceFile[] = []
   for (const name of names) {
     const full = join(projectDir, name)
-    const linkStat = await lstat(full)
+    const fileRel = relative(cwd, full)
+    const linkStat = await wrapIO(
+      () => lstat(full),
+      fileRel,
+      'failed to stat agent file',
+    )
     if (linkStat.isSymbolicLink()) {
-      const target = await realpath(full)
+      const target = await wrapIO(
+        () => realpath(full),
+        fileRel,
+        'failed to resolve symlink target',
+      )
       const targetRel = relative(projectDir, target)
       if (targetRel.startsWith('..') || isAbsolute(targetRel)) {
         throw new AgentLoadError([
           {
-            file: relative(cwd, full),
+            file: fileRel,
             code: 'loader_invalid_symlink',
             rule: 'symlinks in agents/ must not escape the agents directory',
             detail: `target=${target}`,
@@ -156,8 +188,12 @@ async function readProjectLocalSources(
         ])
       }
     }
-    const content = await readFile(full, 'utf8')
-    sources.push({ file: relative(cwd, full), content })
+    const content = await wrapIO(
+      () => readFile(full, 'utf8'),
+      fileRel,
+      'failed to read agent file content',
+    )
+    sources.push({ file: fileRel, content })
   }
   return sources
 }

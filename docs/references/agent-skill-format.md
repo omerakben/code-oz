@@ -119,6 +119,16 @@ description: |
 - **`modelPolicy`** — non-negotiable rule 4 (Opus default; warn on downgrade). Encoding the policy per agent (rather than globally) lets the M3 state machine warn or error at run time.
 - **`permissions`** — non-negotiable rule 9 (permission manifest required for any `.ts` escape hatch). The frontmatter is the manifest; default-deny is the safe posture.
 
+### Permissions semantics: upper bound, not glob expansion
+
+This is load-bearing for non-negotiable rule 13 (privacy by default). `permissions.read` and `permissions.write` declare what the agent **may** read or write — they are **upper bounds**, not instructions to recursively send the matching files to the provider.
+
+- `read: '*'` means "this agent is allowed to receive any file the runtime decides to send." It does **not** mean "expand the glob and send the entire repository on every turn." The bundled BA, Lead, Builder, Verifier, and Reviewer personas all declare `read: '*'` because their legitimate scope is broad — but the runtime sends an explicit, per-phase manifest of files to the provider, never a silent recursive context.
+- `write: ['./docs/**']` means "if the agent attempts to write outside `./docs/**`, the runtime rejects the write." It does not pre-create files or pre-load anything.
+- `bash: deny` is the default and the only legal value in v0.1. Any other value requires an explicit per-file permission manifest contract (rule 9), which v0.1 deliberately does not implement.
+
+Concrete consequence for the M3 phase machinery: when assembling the file manifest sent to a provider for a turn, M3 must check that every file in the manifest is *allowed* by the agent's `permissions.read` (i.e., matches the glob or `'*'` is set), but the manifest's *contents* come from explicit phase logic (e.g., DEFINE sends the user's request transcript; PLAN sends `SPEC.md`; REVIEW sends the changed file paths from BUILD). Treat permissions as a check, never as a generator.
+
 ## File layout in code-oz
 
 `code-oz` does not use the `skills/<name>/SKILL.md` convention from upstream. It uses the simpler `agents/<name>.md` convention from upstream, applied to all artifact types:

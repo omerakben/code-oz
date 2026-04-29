@@ -36,6 +36,10 @@ export const MAX_DESCRIPTION_LENGTH = 1024
 
 const NAME_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 
+// Permissions are upper bounds, not glob expansions. read/write declare what
+// the runtime is allowed to send/accept on this agent's behalf — never a
+// signal to recursively scan the repo. See docs/references/agent-skill-format.md
+// "Permissions semantics" for the full contract that M3+ must honor.
 export interface AgentPermissions {
   readonly read: '*' | readonly string[]
   readonly write: '*' | readonly string[]

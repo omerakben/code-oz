@@ -327,6 +327,22 @@ describe('loadRegistry — I/O wrapper', () => {
     }
   })
 
+  test('wraps a broken symlink (target does not exist) as a typed AgentLoadError', async () => {
+    const dir = join(tempDir!, 'agents')
+    await mkdir(dir, { recursive: true })
+    await symlink(join(tempDir!, 'does-not-exist.md'), join(dir, 'broken.md'))
+
+    try {
+      await loadRegistry({ defaults: [], projectDir: dir, cwd: tempDir! })
+      throw new Error('expected AgentLoadError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(AgentLoadError)
+      const e = err as AgentLoadError
+      expect(e.issues[0]!.code).toBe('loader_io_error')
+      expect(e.issues[0]!.file).toBe(join('agents', 'broken.md'))
+    }
+  })
+
   test('rejects when project path is a file, not a directory', async () => {
     const file = join(tempDir!, 'not-a-dir.md')
     await writeFile(file, 'irrelevant', 'utf8')
