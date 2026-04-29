@@ -1,0 +1,235 @@
+import { describe, test, expect } from 'bun:test'
+import { Buffer } from 'node:buffer'
+
+import { ClaudeProvider } from '../src/providers/claude.ts'
+import { ProviderError } from '../src/providers/errors.ts'
+import { collectProviderResponse } from '../src/providers/fake.ts'
+import type { Runner, RunnerOptions, RunnerResult } from '../src/providers/runner.ts'
+import type { PreparedProviderRequest } from '../src/providers/types.ts'
+import type { AgentDefinition } from '../src/agents/schema.ts'
+
+const RUN = '01J0000000000000000000000A'
+
+function agent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
+  return Object.freeze({
+    file: '/tmp/builder.md',
+    name: 'builder',
+    type: 'agent' as const,
+    phase: 'build' as const,
+    provider: 'claude' as const,
+    modelPolicy: 'opus-default' as const,
+    permissions: {
+      read: '*' as const,
+      write: '*' as const,
+      bash: 'deny' as const,
+    },
+    description: 'builder',
+    body: '# stub\n## Overview\nstub',
+    ...overrides,
+  })
+}
+
+function preparedRequest(
+  overrides: Partial<PreparedProviderRequest> = {},
+): PreparedProviderRequest {
+  return {
+    agent: agent(),
+    phase: 'build',
+    runId: RUN,
+    prompt: 'do the thing',
+    files: [],
+    manifest: { files: [] },
+    metrics: { filesSent: 0, bytesSent: 0, tokensEstimate: 0, fieldsRemovedByScope: 0 },
+    ...overrides,
+  }
+}
+
+interface Call {
+  cmd: string
+  args: readonly string[]
+  options?: RunnerOptions
+}
+
+function makeRecordingRunner(result: RunnerResult): { runner: Runner; calls: Call[] } {
+  const calls: Call[] = []
+  const runner: Runner = async (cmd, args, options) => {
+    calls.push({ cmd, args, options })
+    return result
+  }
+  return { runner, calls }
+}
+
+function throwingRunner(err: Error): Runner {
+  return async () => {
+    throw err
+  }
+}
+
+describe('ClaudeProvider — health', () => {
+  test('--version exit 0 reports authStatus ok', async () => {
+    const { runner, calls } = makeRecordingRunner({
+      stdout: '2.1.119 (Claude Code)',
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    const h = await c.health()
+    expect(h.authStatus).toBe('ok')
+    expect(h.modelDefaultAvailable).toBe(true)
+    expect(calls[0]?.cmd).toBe('claude')
+    expect(calls[0]?.args).toEqual(['--version'])
+  })
+
+  test('--version ENOENT reports authStatus missing', async () => {
+    const enoent = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    const c = new ClaudeProvider({ runner: throwingRunner(enoent) })
+    const h = await c.health()
+    expect(h.authStatus).toBe('missing')
+    expect(h.lastError?.rule).toContain('not found in PATH')
+  })
+
+  test('--version non-zero exit reports authStatus unknown', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: '',
+      stderr: 'broken install',
+      exitCode: 7,
+    })
+    const c = new ClaudeProvider({ runner })
+    const h = await c.health()
+    expect(h.authStatus).toBe('unknown')
+    expect(h.lastError?.rule).toContain('exited with status 7')
+  })
+})
+
+describe('ClaudeProvider — invoke', () => {
+  test('happy path: JSON response parses content + tokensUsed + model', async () => {
+    const json = JSON.stringify({
+      result: 'the answer',
+      model: 'claude-opus-4-7',
+      usage: { output_tokens: 17 },
+    })
+    const { runner, calls } = makeRecordingRunner({
+      stdout: json,
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe('the answer')
+    expect(response.tokensUsed).toBe(17)
+    expect(response.model).toBe('claude-opus-4-7')
+    expect(calls[0]?.args).toContain('--print')
+    expect(calls[0]?.args).toContain('--output-format')
+    expect(calls[0]?.args).toContain('json')
+  })
+
+  test('plain text stdout (not JSON) is returned as content', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: 'plain answer\n',
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe('plain answer')
+  })
+
+  test('omits tokensUsed when JSON has no usage block', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: JSON.stringify({ result: 'hi' }),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe('hi')
+    expect('tokensUsed' in response).toBe(false)
+  })
+
+  test('passes --model when req.model is set', async () => {
+    const { runner, calls } = makeRecordingRunner({
+      stdout: JSON.stringify({ result: 'ok' }),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    await collectProviderResponse(c.invoke(preparedRequest({ model: 'claude-opus-4-7' })))
+    expect(calls[0]?.args).toContain('--model')
+    expect(calls[0]?.args).toContain('claude-opus-4-7')
+  })
+
+  test('renders prompt + files into stdin', async () => {
+    const { runner, calls } = makeRecordingRunner({
+      stdout: JSON.stringify({ result: 'ok' }),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    await collectProviderResponse(
+      c.invoke(
+        preparedRequest({
+          prompt: 'analyze this',
+          files: [
+            {
+              path: 'data.txt',
+              content: Buffer.from('hello world', 'utf8'),
+              sha256: 'a'.repeat(64),
+              sizeBytes: 11,
+            },
+          ],
+        }),
+      ),
+    )
+    const stdin = calls[0]?.options?.stdin ?? ''
+    expect(stdin).toContain('analyze this')
+    expect(stdin).toContain('=== data.txt ===')
+    expect(stdin).toContain('hello world')
+  })
+
+  test('non-zero exit with auth-related stderr → provider_auth_missing', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: '',
+      stderr: 'Error: Not logged in. Please run claude login.',
+      exitCode: 1,
+    })
+    const c = new ClaudeProvider({ runner })
+    let caught: ProviderError | null = null
+    try {
+      await collectProviderResponse(c.invoke(preparedRequest()))
+    } catch (err) {
+      if (err instanceof ProviderError) caught = err
+    }
+    expect(caught?.issues[0]?.code).toBe('provider_auth_missing')
+    expect(caught?.issues[0]?.actionableSuggestions[0]).toContain('claude login')
+  })
+
+  test('non-zero exit otherwise → provider_io_error', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: '',
+      stderr: 'unexpected internal error',
+      exitCode: 2,
+    })
+    const c = new ClaudeProvider({ runner })
+    let caught: ProviderError | null = null
+    try {
+      await collectProviderResponse(c.invoke(preparedRequest()))
+    } catch (err) {
+      if (err instanceof ProviderError) caught = err
+    }
+    expect(caught?.issues[0]?.code).toBe('provider_io_error')
+    expect(caught?.issues[0]?.rule).toContain('non-zero status 2')
+  })
+
+  test('ENOENT during invoke → provider_io_error with CLI-not-found rule', async () => {
+    const enoent = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    const c = new ClaudeProvider({ runner: throwingRunner(enoent) })
+    let caught: ProviderError | null = null
+    try {
+      await collectProviderResponse(c.invoke(preparedRequest()))
+    } catch (err) {
+      if (err instanceof ProviderError) caught = err
+    }
+    expect(caught?.issues[0]?.code).toBe('provider_io_error')
+    expect(caught?.issues[0]?.rule).toContain('not found in PATH')
+  })
+})

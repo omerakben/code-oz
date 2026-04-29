@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bootstrap } from '../src/cli/bootstrap.ts'
+import { bootstrap, getProviderRegistry } from '../src/cli/bootstrap.ts'
 import { initProject } from '../src/commands/init.ts'
 
 let cwd: string
@@ -56,5 +56,39 @@ describe('bootstrap', () => {
     expect(names).toContain('builder')
     expect(names).toContain('verifier')
     expect(names).toContain('reviewer')
+  })
+})
+
+describe('getProviderRegistry (M4 commit 8 keepalive)', () => {
+  test('exposes all four v0.1 providers with stable ids and families', () => {
+    const reg = getProviderRegistry()
+    expect([...reg.ids()].sort()).toEqual(['claude', 'codex', 'fake', 'gemini'])
+    expect(reg.familyOf('claude')).toBe('claude')
+    expect(reg.familyOf('codex')).toBe('codex')
+    expect(reg.familyOf('gemini')).toBe('gemini')
+    expect(reg.familyOf('fake')).toBe('fake')
+  })
+
+  test('runner option flows through to the subprocess-backed adapters', async () => {
+    const observed: string[] = []
+    const reg = getProviderRegistry({
+      runner: async (cmd) => {
+        observed.push(cmd)
+        return { stdout: '2.1.119', stderr: '', exitCode: 0 }
+      },
+    })
+    await reg.get('claude').health()
+    await reg.get('codex').health()
+    expect(observed).toEqual(['claude', 'codex'])
+  })
+
+  test('Gemini stays a stub regardless of runner option', async () => {
+    const reg = getProviderRegistry({
+      runner: async () => {
+        throw new Error('gemini should never spawn')
+      },
+    })
+    const h = await reg.get('gemini').health()
+    expect(h.authStatus).toBe('unsupported')
   })
 })
