@@ -198,17 +198,17 @@ Maestro's `.claudeignore` prevents Claude sessions from reading orchestrator cod
 
 ## Canonical phase → artifact map
 
-`GATE_<PHASE>_PASSED.json.artifact` defaults to a per-phase canonical path, relative to the run's artifact root (v0.1: `.code-oz/artifacts/`):
+`GATE_<PHASE>_PASSED.json.artifact` defaults to a per-phase canonical filename, **relative to the run's artifact root** (v0.1: `.code-oz/artifacts/`). Values below are bare filenames; `resolveArtifactPath` joins them with the artifact root at I/O time.
 
-| Phase | Canonical artifact |
+| Phase | Canonical artifact (relative to artifact root) |
 |---|---|
-| `define` | `artifacts/SPEC.md` |
-| `audit` | `artifacts/AUDIT.md` |
-| `plan` | `artifacts/PLAN.md` |
-| `build` | `artifacts/BUILD_REPORT.md` |
-| `verify` | `artifacts/VERIFY.md` |
-| `review` | `artifacts/REVIEW.md` |
-| `ship` | `artifacts/SHIP.md` |
+| `define` | `SPEC.md` |
+| `audit` | `AUDIT.md` |
+| `plan` | `PLAN.md` |
+| `build` | `BUILD_REPORT.md` |
+| `verify` | `VERIFY.md` |
+| `review` | `REVIEW.md` |
+| `ship` | `SHIP.md` |
 
 M5+ phases write to these paths by default; `code-oz approve <PHASE>` reads them by default. Override is supported via `--artifact <path>` on the approve command (still subject to path-safety rule 7 below). The map is exported from `src/state/schemas.ts` as `CANONICAL_ARTIFACTS`.
 

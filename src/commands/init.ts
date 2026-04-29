@@ -144,13 +144,11 @@ export async function initProject(opts: InitOptions = {}): Promise<InitResult> {
 }
 
 function renderScaffoldGitignore(): string {
-  return `# code-oz runtime artifacts (per-run, transient, or sensitive)
+  return `# code-oz runtime artifacts. Per-run state and worktrees are gitignored by
+# default; sharing a run is an explicit bundle/export step (W4+).
 runs/
-state/events.jsonl
-state/current.json
-state/NEEDS_INTERVENTION.json
-state/PAUSE.json
-state/STOP.json
+state/active.json
+state/runs/
 
 # Tooling and editor scratch
 *.tmp
@@ -167,12 +165,12 @@ This directory was scaffolded by \`code-oz init\`.
 - **Profile:** \`${profile}\` (auto-detected at init time; edit \`config.yaml\` to override)
 - **agents/** — agent and skill Markdown files (frontmatter + system prompt)
 - **artifacts/** — phase outputs (\`SPEC.md\`, \`PLAN.md\`, \`SOURCE_CHECK.md\`, etc.)
-- **state/** — run state machine, event log (\`events.jsonl\`), gate signals (\`GATE_*_PASSED.json\`)
-- **runs/** — per-run worktrees (gitignored by the bundled \`.code-oz/.gitignore\`)
+- **state/** — top-level state directory. The active-run pointer lives at \`state/active.json\`; per-run state (events, gate files, current.json) lives at \`state/runs/<runId>/\`.
+- **runs/** — per-run worktrees (M7+). Distinct from \`state/runs/\`.
 - **config.yaml** — provider, model, and budget configuration
 - **.gitignore** — runtime artifact paths excluded from version control
 
-Commit \`config.yaml\`, \`agents/\`, \`artifacts/\`, and the gate signal files in \`state/GATE_*_PASSED.json\` so the team shares the same agent definitions, phase outputs, and gate history. The bundled \`.gitignore\` excludes \`runs/\` and the transient state files (\`events.jsonl\`, \`current.json\`, \`NEEDS_INTERVENTION.json\`, \`PAUSE.json\`, \`STOP.json\`).
+Commit \`config.yaml\`, \`agents/\`, and the contents of \`artifacts/\` so the team shares agent definitions and phase outputs. The bundled \`.gitignore\` excludes \`state/active.json\`, \`state/runs/\`, and \`runs/\` — runs are local by default; sharing a run is an explicit bundle/export step (W4+).
 
 See https://github.com/omerakben/code-oz for the full milestone plan.
 `

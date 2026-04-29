@@ -54,7 +54,8 @@ describe('phase + profile enums', () => {
 describe('CANONICAL_ARTIFACTS', () => {
   test('has an entry for every phase', () => {
     for (const p of PHASES) {
-      expect(CANONICAL_ARTIFACTS[p]).toMatch(/^artifacts\/.+\.md$/)
+      // Values are bare filenames relative to the artifact root.
+      expect(CANONICAL_ARTIFACTS[p]).toMatch(/^[A-Z_]+\.md$/)
     }
   })
 
@@ -63,13 +64,13 @@ describe('CANONICAL_ARTIFACTS', () => {
   })
 
   test('matches the pinned phase artifact map', () => {
-    expect(CANONICAL_ARTIFACTS.define).toBe('artifacts/SPEC.md')
-    expect(CANONICAL_ARTIFACTS.audit).toBe('artifacts/AUDIT.md')
-    expect(CANONICAL_ARTIFACTS.plan).toBe('artifacts/PLAN.md')
-    expect(CANONICAL_ARTIFACTS.build).toBe('artifacts/BUILD_REPORT.md')
-    expect(CANONICAL_ARTIFACTS.verify).toBe('artifacts/VERIFY.md')
-    expect(CANONICAL_ARTIFACTS.review).toBe('artifacts/REVIEW.md')
-    expect(CANONICAL_ARTIFACTS.ship).toBe('artifacts/SHIP.md')
+    expect(CANONICAL_ARTIFACTS.define).toBe('SPEC.md')
+    expect(CANONICAL_ARTIFACTS.audit).toBe('AUDIT.md')
+    expect(CANONICAL_ARTIFACTS.plan).toBe('PLAN.md')
+    expect(CANONICAL_ARTIFACTS.build).toBe('BUILD_REPORT.md')
+    expect(CANONICAL_ARTIFACTS.verify).toBe('VERIFY.md')
+    expect(CANONICAL_ARTIFACTS.review).toBe('REVIEW.md')
+    expect(CANONICAL_ARTIFACTS.ship).toBe('SHIP.md')
   })
 })
 

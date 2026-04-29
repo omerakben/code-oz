@@ -41,12 +41,11 @@ describe('code-oz init', () => {
   test('writes .code-oz/.gitignore covering runtime paths', async () => {
     const { paths } = await initProject({ cwd: tempDir! })
     const gi = await readFile(join(paths.root, '.gitignore'), 'utf8')
+    // Per the M3 spec amendment: runs are local by default; sharing is an
+    // explicit bundle/export. Per-run state lives under state/runs/<runId>/.
     expect(gi).toContain('runs/')
-    expect(gi).toContain('state/events.jsonl')
-    expect(gi).toContain('state/current.json')
-    expect(gi).toContain('NEEDS_INTERVENTION.json')
-    expect(gi).toContain('PAUSE.json')
-    expect(gi).toContain('STOP.json')
+    expect(gi).toContain('state/runs/')
+    expect(gi).toContain('state/active.json')
   })
 
   test('writes a valid config.yaml with expected defaults', async () => {

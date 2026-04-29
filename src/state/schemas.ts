@@ -26,15 +26,16 @@ export const BROWNFIELD_SEQUENCE: readonly Phase[] = Object.freeze([
 ])
 
 // Canonical phase -> artifact mapping. Pinned in docs/references/file-based-gates.md
-// "Canonical phase -> artifact map". Paths are relative to the run's artifact root.
+// "Canonical phase -> artifact map". Paths are relative to the run's artifact
+// root (v0.1: .code-oz/artifacts/), so the values here are bare filenames.
 export const CANONICAL_ARTIFACTS: Readonly<Record<Phase, string>> = Object.freeze({
-  define: 'artifacts/SPEC.md',
-  audit: 'artifacts/AUDIT.md',
-  plan: 'artifacts/PLAN.md',
-  build: 'artifacts/BUILD_REPORT.md',
-  verify: 'artifacts/VERIFY.md',
-  review: 'artifacts/REVIEW.md',
-  ship: 'artifacts/SHIP.md',
+  define: 'SPEC.md',
+  audit: 'AUDIT.md',
+  plan: 'PLAN.md',
+  build: 'BUILD_REPORT.md',
+  verify: 'VERIFY.md',
+  review: 'REVIEW.md',
+  ship: 'SHIP.md',
 })
 
 // ULID: 26-char Crockford base32. 48-bit timestamp + 80-bit random.

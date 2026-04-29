@@ -3,14 +3,20 @@ import { join } from 'node:path'
 export const CODE_OZ_DIR = '.code-oz'
 
 export interface CodeOzPaths {
+  /** `.code-oz/` root directory. */
   root: string
+  /** `.code-oz/config.yaml` */
   config: string
+  /** `.code-oz/agents/` — project-local agent overrides. */
   agents: string
+  /** `.code-oz/artifacts/` — phase outputs (SPEC.md, PLAN.md, ...). */
   artifacts: string
+  /** `.code-oz/state/` — top-level state dir; per-run state lives at `state/runs/<runId>/`. */
   state: string
+  /** `.code-oz/runs/` — per-run worktrees (M7+). Distinct from `state/runs/`. */
   runs: string
-  events: string
-  current: string
+  /** `.code-oz/state/active.json` — single-active-run pointer (v0.1). */
+  activeRun: string
 }
 
 export function paths(cwd: string): CodeOzPaths {
@@ -23,7 +29,6 @@ export function paths(cwd: string): CodeOzPaths {
     artifacts: join(root, 'artifacts'),
     state,
     runs: join(root, 'runs'),
-    events: join(state, 'events.jsonl'),
-    current: join(state, 'current.json'),
+    activeRun: join(state, 'active.json'),
   }
 }
