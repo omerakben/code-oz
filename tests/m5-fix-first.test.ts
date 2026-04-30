@@ -15,7 +15,7 @@ import { runPathsFor, type RunPaths } from '../src/state/run.ts'
 import { generateUlid } from '../src/state/schemas.ts'
 import { DEFAULT_CONFIG } from '../src/config/schema.ts'
 import { initProject } from '../src/commands/init.ts'
-import { initRun } from '../src/state/run.ts'
+import { initRun, requireGate } from '../src/state/run.ts'
 import { runApprove } from '../src/commands/approve.ts'
 import { PKG_VERSION } from '../src/cli.ts'
 import type { ProviderRequest } from '../src/providers/types.ts'
@@ -58,7 +58,7 @@ describe('finding #2: approve define refuses to bind an invalid SPEC.md', () => 
     await rm(cwd, { recursive: true, force: true })
   })
 
-  async function setup(): Promise<RunPaths> {
+  async function setup(opts: { withGateRequired?: boolean } = {}): Promise<RunPaths> {
     await initProject({ cwd })
     const stateDir = join(cwd, '.code-oz', 'state')
     const artifactRoot = join(cwd, '.code-oz', 'artifacts')
@@ -70,6 +70,15 @@ describe('finding #2: approve define refuses to bind an invalid SPEC.md', () => 
       runId: RUN,
       now: () => FIXED_TS,
     })
+    if (opts.withGateRequired !== false) {
+      await requireGate({
+        paths,
+        runId: RUN,
+        phase: 'define',
+        blockedOn: 'test fixture',
+        now: () => FIXED_TS,
+      })
+    }
     return paths
   }
 
@@ -115,7 +124,7 @@ describe('finding #2: approve define refuses to bind an invalid SPEC.md', () => 
 
   test('non-define phases are NOT pre-validated by the SPEC parser', async () => {
     // Build phase has its own future contract; the validator should not fire.
-    const paths = await setup()
+    const paths = await setup() // emits gate_required(define) via fixture
     // Approve define first (with a valid SPEC) so we can transition to plan.
     const validSpec = [
       '# SPEC',
@@ -149,8 +158,157 @@ describe('finding #2: approve define refuses to bind an invalid SPEC.md', () => 
     await runApprove({ cwd, phase: 'define', now: () => FIXED_TS })
     // Plan artifact has placeholder content (no validator yet) — should approve.
     await writeFile(join(paths.artifactRoot, 'PLAN.md'), 'plan body', 'utf8')
+    await requireGate({
+      paths,
+      runId: RUN,
+      phase: 'plan',
+      blockedOn: 'test fixture',
+      now: () => FIXED_TS,
+    })
     const result = await runApprove({ cwd, phase: 'plan', now: () => FIXED_TS })
     expect(result.approved).toBe(true)
+  })
+})
+
+// --- round 2 finding A — --artifact path safety ------------------
+
+describe('round 2 finding A: --artifact path-traversal rejected before readFile', () => {
+  let cwd: string
+  const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
+  const FIXED_TS = '2026-04-30T18:00:00.000Z'
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'code-oz-fix-round2-A-'))
+  })
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true })
+  })
+
+  test('rejects --artifact with `..` traversal before parseSpec runs', async () => {
+    await initProject({ cwd })
+    const stateDir = join(cwd, '.code-oz', 'state')
+    const artifactRoot = join(cwd, '.code-oz', 'artifacts')
+    const paths = runPathsFor(stateDir, artifactRoot, RUN)
+    await initRun({ paths, profile: 'greenfield', runId: RUN, now: () => FIXED_TS })
+    await requireGate({
+      paths,
+      runId: RUN,
+      phase: 'define',
+      blockedOn: 'test fixture',
+      now: () => FIXED_TS,
+    })
+    let err: unknown
+    try {
+      await runApprove({
+        cwd,
+        phase: 'define',
+        artifact: '../../etc/passwd',
+        now: () => FIXED_TS,
+      })
+    } catch (e) {
+      err = e
+    }
+    expect(err).toBeInstanceOf(Error)
+    // Should fail with a path-safety code (gate_artifact_path_unsafe), not an
+    // ENOENT or parseSpec error — proves we rejected before the readFile.
+    const msg = (err as Error).message
+    expect(
+      msg.includes('gate_artifact_path_unsafe') ||
+        msg.includes('must not contain') ||
+        msg.includes('relative to'),
+    ).toBe(true)
+  })
+
+  test('rejects absolute --artifact path', async () => {
+    await initProject({ cwd })
+    const stateDir = join(cwd, '.code-oz', 'state')
+    const artifactRoot = join(cwd, '.code-oz', 'artifacts')
+    const paths = runPathsFor(stateDir, artifactRoot, RUN)
+    await initRun({ paths, profile: 'greenfield', runId: RUN, now: () => FIXED_TS })
+    await requireGate({
+      paths,
+      runId: RUN,
+      phase: 'define',
+      blockedOn: 'test fixture',
+      now: () => FIXED_TS,
+    })
+    let err: unknown
+    try {
+      await runApprove({
+        cwd,
+        phase: 'define',
+        artifact: '/etc/passwd',
+        now: () => FIXED_TS,
+      })
+    } catch (e) {
+      err = e
+    }
+    expect(err).toBeInstanceOf(Error)
+  })
+})
+
+// --- round 2 finding B — stale cross-run SPEC.md cannot be approved -----
+
+describe('round 2 finding B: cannot approve without current-run gate_required', () => {
+  let cwd: string
+  const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
+  const FIXED_TS = '2026-04-30T18:00:00.000Z'
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'code-oz-fix-round2-B-'))
+  })
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true })
+  })
+
+  test('refuses to approve when no gate_required event exists for the target phase', async () => {
+    await initProject({ cwd })
+    const stateDir = join(cwd, '.code-oz', 'state')
+    const artifactRoot = join(cwd, '.code-oz', 'artifacts')
+    const paths = runPathsFor(stateDir, artifactRoot, RUN)
+    await initRun({ paths, profile: 'greenfield', runId: RUN, now: () => FIXED_TS })
+    // Write a perfectly valid SPEC.md (simulating a stale artifact from a
+    // prior run) but DO NOT emit gate_required for the current run.
+    const validSpec = [
+      '# SPEC',
+      '',
+      '## Goals',
+      '',
+      '- A goal.',
+      '',
+      '## Users',
+      '',
+      '- A user.',
+      '',
+      '## Constraints',
+      '',
+      '- A constraint.',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- A criterion.',
+      '',
+      '## Open questions',
+      '',
+      '- None known at define time.',
+      '',
+      '## Explicit non-goals',
+      '',
+      '- A non-goal.',
+      '',
+    ].join('\n')
+    await writeFile(join(artifactRoot, 'SPEC.md'), validSpec, 'utf8')
+
+    let err: unknown
+    try {
+      await runApprove({ cwd, phase: 'define', now: () => FIXED_TS })
+    } catch (e) {
+      err = e
+    }
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('no `gate_required` event for define')
   })
 })
 
@@ -304,6 +462,31 @@ describe('finding #4: invokeAgent rejects empty turn_completed content', () => {
       await readFile(join(paths.runDir, 'NEEDS_INTERVENTION.json'), 'utf8'),
     )
     expect(intervention.code).toBe('provider_malformed_response')
+  })
+
+  test('empty content is allowed when stopReason is tool_use (M7+ tool turns)', async () => {
+    fake.expect({ phase: 'define', agent: 'ba' }).respondWith({
+      content: '',
+      stopReason: 'tool_use',
+    })
+    let lastEv: { type: string } | null = null
+    for await (const ev of invokeAgent(invokeCtx(), request())) {
+      lastEv = ev as { type: string }
+    }
+    expect(lastEv?.type).toBe('turn_completed')
+  })
+
+  test('empty content is allowed when toolCalls are non-empty (end_turn after tools)', async () => {
+    fake.expect({ phase: 'define', agent: 'ba' }).respondWith({
+      content: '',
+      stopReason: 'end_turn',
+      toolCalls: [{ id: 'x', name: 'doit', input: {} }],
+    })
+    let lastEv: { type: string } | null = null
+    for await (const ev of invokeAgent(invokeCtx(), request())) {
+      lastEv = ev as { type: string }
+    }
+    expect(lastEv?.type).toBe('turn_completed')
   })
 
   test('non-empty content still completes successfully', async () => {
