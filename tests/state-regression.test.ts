@@ -46,11 +46,43 @@ async function setupProject(): Promise<{ runId: string; paths: RunPaths }> {
   return { runId, paths }
 }
 
+// Minimal valid SPEC.md content for tests that exercise `runApprove` on the
+// define phase (M5+ validates against parseSpec before binding the gate).
+const MINIMAL_VALID_SPEC = [
+  '# SPEC',
+  '',
+  '## Goals',
+  '',
+  '- A goal.',
+  '',
+  '## Users',
+  '',
+  '- A user.',
+  '',
+  '## Constraints',
+  '',
+  '- A constraint.',
+  '',
+  '## Acceptance criteria',
+  '',
+  '- A criterion.',
+  '',
+  '## Open questions',
+  '',
+  '- None known at define time.',
+  '',
+  '## Explicit non-goals',
+  '',
+  '- A non-goal.',
+  '',
+].join('\n')
+
 async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Promise<void> {
   const artifactRoot = join(cwd, '.code-oz', 'artifacts')
   await mkdir(artifactRoot, { recursive: true })
   for (const p of phases) {
-    await writeFile(join(artifactRoot, CANONICAL_ARTIFACTS[p]), `${p} body`, 'utf8')
+    const body = p === 'define' ? MINIMAL_VALID_SPEC : `${p} body`
+    await writeFile(join(artifactRoot, CANONICAL_ARTIFACTS[p]), body, 'utf8')
   }
   void runDir // unused but kept for parity if signatures change
 }

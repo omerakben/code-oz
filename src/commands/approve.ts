@@ -20,6 +20,8 @@
 import { parseArgs } from 'node:util'
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
+import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { bootstrap } from '../cli/bootstrap.ts'
 import {
   approveGate,
@@ -35,6 +37,8 @@ import {
   type Phase,
 } from '../state/schemas.ts'
 import { GateLoadError } from '../state/errors.ts'
+import { parseSpec } from '../artifacts/spec.ts'
+import { SpecLoadError } from '../artifacts/errors.ts'
 
 export interface RunApproveOptions {
   readonly cwd?: string
@@ -124,6 +128,45 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   const agent = agentsForPhase[0]!
 
   const artifactPath = opts.artifact ?? CANONICAL_ARTIFACTS[targetPhase]
+
+  // Per CODEX_REVIEW_M5 finding #2: validate the canonical artifact's
+  // structure BEFORE binding it into the gate. SPEC.md is intentionally
+  // user-editable between DEFINE write and approval; if the user breaks
+  // the structure during review, refuse to approve rather than sha256-bind
+  // an invalid artifact. The gate writer would otherwise hash the broken
+  // file and PLAN would consume it.
+  if (targetPhase === 'define') {
+    const fullArtifactPath = join(ctx.paths.artifacts, artifactPath)
+    let raw: string
+    try {
+      raw = await readFile(fullArtifactPath, 'utf8')
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(
+          `cannot approve define: ${fullArtifactPath} does not exist. Run \`code-oz run\` first.`,
+        )
+      }
+      throw err
+    }
+    try {
+      parseSpec(raw, fullArtifactPath)
+    } catch (err: unknown) {
+      if (err instanceof SpecLoadError) {
+        const summary = err.issues
+          .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+          .join('\n')
+        throw new Error(
+          [
+            `cannot approve define: ${fullArtifactPath} is not a valid SPEC.md.`,
+            summary,
+            'Edit the file to satisfy the SPEC contract before approving.',
+          ].join('\n'),
+        )
+      }
+      throw err
+    }
+  }
+
   const now = opts.now ?? (() => new Date().toISOString())
   const gate: GateFile = {
     version: 1,

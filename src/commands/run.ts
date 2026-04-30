@@ -19,9 +19,11 @@
 
 import { readFile } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
-import { stat as statAsync } from 'node:fs/promises'
 import * as readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
+
+import { readEvents } from '../state/events.ts'
+import { isKnownPhaseEvent } from '../state/schemas.ts'
 
 import {
   bootstrap,
@@ -83,6 +85,20 @@ export async function runCommand(args: string[]): Promise<void> {
     process.exit(2)
   }
 
+  // PREFLIGHT — every CLI/input check that can exit non-zero MUST run before
+  // initRun creates state on disk. Per CODEX_REVIEW_M5 finding #3: a failed
+  // preflight must NEVER leave an orphan active.json or per-run state dir.
+  const inputSource = await buildInputSource(parsed.input)
+  const initial =
+    inputSource.initial === '__deferred__'
+      ? await inputSource.readNext(0)
+      : inputSource.initial
+  if (initial === null || initial.trim().length === 0) {
+    await inputSource.close()
+    process.stderr.write('code-oz run: no initial user input provided.\n')
+    process.exit(2)
+  }
+
   const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
     providerOverride: parsed.providerOverride,
   })
@@ -101,6 +117,8 @@ export async function runCommand(args: string[]): Promise<void> {
     }
   }
 
+  // STATE MUTATION begins below. Anything before this point can still abort
+  // safely — anything after must follow through to a clean exit.
   const runId = generateUlid()
   const runPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, runId)
   await initRun({ paths: runPaths, profile: 'greenfield', runId })
@@ -111,18 +129,7 @@ export async function runCommand(args: string[]): Promise<void> {
     projectRoot: cwd,
     config,
   }
-
-  const inputSource = await buildInputSource(parsed.input)
   const askMeConfig = config.phases.define.askMe
-  const initial =
-    inputSource.initial === '__deferred__'
-      ? await inputSource.readNext(0)
-      : inputSource.initial
-  if (initial === null || initial.trim().length === 0) {
-    await inputSource.close()
-    process.stderr.write('code-oz run: no initial user input provided.\n')
-    process.exit(2)
-  }
 
   const result: DefineResult = await runDefine({
     invokeCtx,
@@ -412,9 +419,23 @@ async function handleActiveRun(
   }
   const phase = loaded.state.currentPhase
 
+  // Per CODEX_REVIEW_M5 finding #2: do NOT use bare SPEC.md existence as
+  // the "awaiting approval" signal. The canonical artifact at
+  // <artifactRoot>/SPEC.md is shared across runs, so a leftover SPEC.md from
+  // a prior run would falsely advertise the current run as approval-ready.
+  // The current run's `gate_required` event for the same phase IS the signal.
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  }).catch(() => [])
+  const gateRequiredForPhase = events.some((e) => {
+    if (!isKnownPhaseEvent(e)) return false
+    if (e.type !== 'gate_required') return false
+    return e.phase === phase
+  })
+
   if (phase === 'define') {
-    const specStat = await statAsync(`${artifactRoot}/SPEC.md`).catch(() => null)
-    if (specStat !== null && specStat.isFile()) {
+    if (gateRequiredForPhase) {
       process.stderr.write(
         [
           'code-oz run: an active run is awaiting DEFINE approval.',
@@ -426,7 +447,7 @@ async function handleActiveRun(
     }
     process.stderr.write(
       [
-        `code-oz run: an active DEFINE run is in progress (${activeRunId}) without a SPEC.md.`,
+        `code-oz run: an active DEFINE run is in progress (${activeRunId}) without a gate_required event.`,
         '  Mid-DEFINE resume is not implemented in v0.1.',
         `  To start over, manually delete .code-oz/state/active.json and .code-oz/state/runs/${activeRunId}/.`,
         '',
@@ -435,10 +456,20 @@ async function handleActiveRun(
     process.exit(1)
   }
 
+  if (gateRequiredForPhase) {
+    process.stderr.write(
+      [
+        `code-oz run: an active run is awaiting ${phase} approval (${activeRunId}).`,
+        `  Use \`code-oz approve ${phase}\` after reviewing the artifact.`,
+        '',
+      ].join('\n'),
+    )
+    process.exit(1)
+  }
   process.stderr.write(
     [
       `code-oz run: an active run is in progress at phase ${phase} (${activeRunId}).`,
-      `  Use \`code-oz approve ${phase}\` once the artifact is reviewed, or wait for the in-progress phase to complete.`,
+      '  Wait for the in-progress phase to complete, or inspect .code-oz/state/runs/.',
       '',
     ].join('\n'),
   )

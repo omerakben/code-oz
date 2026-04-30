@@ -25,7 +25,40 @@ async function setupGreenfieldRun(): Promise<void> {
   const artifactRoot = join(cwd, '.code-oz', 'artifacts')
   const paths = runPathsFor(stateDir, artifactRoot, RUN)
   await mkdir(artifactRoot, { recursive: true })
-  await writeFile(join(artifactRoot, 'SPEC.md'), 'spec body', 'utf8')
+  // M5+ requires SPEC.md to satisfy parseSpec before `code-oz approve define`
+  // will bind it. Use a minimal valid SPEC.
+  await writeFile(
+    join(artifactRoot, 'SPEC.md'),
+    [
+      '# SPEC',
+      '',
+      '## Goals',
+      '',
+      '- Goal one.',
+      '',
+      '## Users',
+      '',
+      '- Test user.',
+      '',
+      '## Constraints',
+      '',
+      '- A constraint.',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- A criterion.',
+      '',
+      '## Open questions',
+      '',
+      '- None known at define time.',
+      '',
+      '## Explicit non-goals',
+      '',
+      '- A non-goal.',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
   await initRun({
     paths,
     profile: 'greenfield',
@@ -71,8 +104,37 @@ describe('runApprove — happy path', () => {
 
   test('respects --artifact override', async () => {
     await setupGreenfieldRun()
-    // Write an alternate artifact path
-    await writeFile(join(cwd, '.code-oz', 'artifacts', 'MY_SPEC.md'), 'override body', 'utf8')
+    // Write an alternate artifact path. M5+ requires the file to satisfy
+    // parseSpec when the phase is define, so use a minimal valid SPEC body.
+    const validSpec = [
+      '# SPEC',
+      '',
+      '## Goals',
+      '',
+      '- A goal.',
+      '',
+      '## Users',
+      '',
+      '- A user.',
+      '',
+      '## Constraints',
+      '',
+      '- A constraint.',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- A criterion.',
+      '',
+      '## Open questions',
+      '',
+      '- None known at define time.',
+      '',
+      '## Explicit non-goals',
+      '',
+      '- A non-goal.',
+      '',
+    ].join('\n')
+    await writeFile(join(cwd, '.code-oz', 'artifacts', 'MY_SPEC.md'), validSpec, 'utf8')
 
     const result = await runApprove({
       cwd,

@@ -149,6 +149,23 @@ export async function* invokeAgent(
         }
       }
       if (ev.type === 'turn_completed') {
+        // Empty content from a "successful" turn_completed is malformed —
+        // adapters that have nothing to say must surface that as a typed
+        // ProviderError, not as a zero-byte success that bubbles into phase
+        // logic and then gets rejected by downstream event validators (which
+        // would crash the run instead of writing NEEDS_INTERVENTION).
+        if (ev.response.content.length === 0) {
+          throw providerError(
+            'provider_malformed_response',
+            'provider returned an empty turn_completed.response.content',
+            [
+              'check the upstream CLI output (claude / codex) for hidden errors',
+              'rerun with --provider fake to bisect adapter vs. orchestrator behavior',
+              'inspect events.jsonl for the preceding agent_invoked event',
+            ],
+            `agent=${req.agent.name}, phase=${req.phase}, model=${ev.response.model}, stopReason=${ev.response.stopReason}`,
+          )
+        }
         // Adapter-reported only — never post-count streamed text.
         tokensUsed = ev.response.tokensUsed
       }
