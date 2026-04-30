@@ -275,6 +275,7 @@ function makeBuildReport(opts: {
   const cf = opts.attempt === 1
     ? `- None (attempt 1).`
     : [
+        '- Source: verify-fail',
         `- Prior attempt: ${opts.attempt - 1}`,
         '- Prior forensics: .code-oz/runs/01HX/forensics/1/',
         '- Prior validation command: bun test foo.test.ts',
@@ -653,6 +654,7 @@ function makeMinimalBuildReport(opts: {
   const cf = opts.attempt === 1
     ? `- None (attempt 1).`
     : [
+        '- Source: verify-fail',
         `- Prior attempt: ${opts.attempt - 1}`,
         '- Prior forensics: .code-oz/runs/01HX/forensics/1/',
         '- Prior validation command: bun test foo.test.ts',

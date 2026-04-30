@@ -1251,6 +1251,104 @@ export function computeCanonicalVerdict(
   return 'ready'
 }
 
+// --- typed carry-forward for REVIEW round-N → BUILD attempt N+1 ---
+
+import type { BuildReportCarryForward } from './build-report.ts'
+
+export interface BuildReviewCarryForwardInput {
+  /** Path to the canonical REVIEW.md that produced the needs-revision exit
+   *  (e.g., `.code-oz/artifacts/REVIEW.md`). Recorded as
+   *  `Prior forensics` so a BUILD attempt N+1 can read REVIEW.md
+   *  directly. */
+  readonly reviewReportPath: string
+  /** 64-hex sha256 of the canonical REVIEW.md at the moment of the
+   *  needs-revision exit. Recorded in `Prior verdict` for traceability. */
+  readonly reviewReportSha256: string
+  /** REVIEW round N that exited with needs-revision (1..3 — round 4
+   *  exits as cap_exhausted, not as a remediation seed). */
+  readonly priorRound: number
+  /** Persona-authored summary of why the round needs revision; ≤ 200
+   *  chars per BUILD_REPORT.md grammar. Recorded as
+   *  `Prior failure summary`. */
+  readonly summary: string
+  /** Persona-authored directive for BUILD attempt N+1; ≤ 200 chars.
+   *  Recorded as `Constraint`. */
+  readonly constraint: string
+  /** The just-failed BUILD attempt number that REVIEW reviewed (must
+   *  match REVIEW.md.upstreamRefs.attempt). BUILD attempt N+1 will
+   *  validate `priorAttempt + 1 === task.attempt`. */
+  readonly priorAttempt: number
+  /** Persona-authored validation command snapshot for BUILD attempt
+   *  N+1's recall. Typically copied verbatim from the prior attempt's
+   *  BUILD_REPORT.md so BUILD's `priorValidationCommand` field stays
+   *  truthful. */
+  readonly priorValidationCommand: string
+}
+
+/**
+ * Build a typed `Source: review-needs-revision` carry-forward block
+ * suitable for feeding into BUILD attempt N+1 (M9 commit 10's
+ * remediation coordinator). Mirror of restart-policy.prepareCarryForward
+ * for REVIEW exits — produces the same BuildReportCarryForward shape so
+ * BUILD's existing `attempt > 1` validation accepts either source.
+ *
+ * The mapping into BUILD's grammar:
+ *   - source                    = 'review-needs-revision'
+ *   - priorAttempt              = the just-reviewed BUILD attempt's number
+ *   - priorForensicsPath        = the canonical REVIEW.md path
+ *   - priorValidationCommand    = passed through verbatim
+ *   - priorVerdict              = `needs-revision (round <N>, sha <sha>)`
+ *                                 — the orchestrator-authored shape that
+ *                                 carries enough context for the BUILD
+ *                                 persona without inventing exit codes
+ *   - priorFailureSummary       = the persona's summary, ≤ 200 chars
+ *   - constraint                = the persona's directive, ≤ 200 chars
+ *
+ * Codex's M9 substrate catch (decision 8): rebranding a REVIEW
+ * needs-revision exit as `Prior verdict: fail (exit code N, ...)` would
+ * fabricate runtime evidence. The orchestrator-shaped Prior verdict is
+ * honest about origin and the typed Source field lets downstream
+ * tooling differentiate.
+ */
+export function serializeReviewCarryForward(
+  input: BuildReviewCarryForwardInput,
+): BuildReportCarryForward {
+  if (input.priorRound < 1 || input.priorRound > REVIEW_ROUND_CAP) {
+    throw new Error(
+      `serializeReviewCarryForward: priorRound must be in [1, ${REVIEW_ROUND_CAP}]; got ${input.priorRound}`,
+    )
+  }
+  if (input.priorAttempt < 1) {
+    throw new Error(
+      `serializeReviewCarryForward: priorAttempt must be ≥ 1; got ${input.priorAttempt}`,
+    )
+  }
+  if (input.summary.length > 200) {
+    throw new Error(
+      `serializeReviewCarryForward: summary exceeds 200 characters (got ${input.summary.length})`,
+    )
+  }
+  if (input.constraint.length > 200) {
+    throw new Error(
+      `serializeReviewCarryForward: constraint exceeds 200 characters (got ${input.constraint.length})`,
+    )
+  }
+  if (!/^[0-9a-f]{64}$/.test(input.reviewReportSha256)) {
+    throw new Error(
+      `serializeReviewCarryForward: reviewReportSha256 must be 64-char lower-case hex`,
+    )
+  }
+  return Object.freeze({
+    source: 'review-needs-revision' as const,
+    priorAttempt: input.priorAttempt,
+    priorForensicsPath: input.reviewReportPath,
+    priorValidationCommand: input.priorValidationCommand,
+    priorVerdict: `needs-revision (round ${input.priorRound}, sha ${input.reviewReportSha256})`,
+    priorFailureSummary: input.summary,
+    constraint: input.constraint,
+  })
+}
+
 // --- bounded repair prompt grammar -------------------------------
 
 export interface RepairPromptInput {

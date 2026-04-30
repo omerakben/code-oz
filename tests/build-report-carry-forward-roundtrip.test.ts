@@ -44,6 +44,7 @@ function dataWithCarryForward(cf: BuildReportCarryForward | null): BuildReportDa
 describe('BUILD_REPORT.md carry-forward round-trip', () => {
   test('attempt 2 with populated carry-forward survives serialize/parse', () => {
     const cf: BuildReportCarryForward = {
+      source: 'verify-fail',
       priorAttempt: 1,
       priorForensicsPath: '.code-oz/runs/01HX/forensics/1/',
       priorValidationCommand: 'bun test tests/foo.test.ts',
@@ -59,6 +60,7 @@ describe('BUILD_REPORT.md carry-forward round-trip', () => {
 
   test('attempt 4 with priorAttempt 3 (last legal restart before cap)', () => {
     const cf: BuildReportCarryForward = {
+      source: 'verify-fail',
       priorAttempt: 3,
       priorForensicsPath: '.code-oz/runs/01HX/forensics/3/',
       priorValidationCommand: 'bun test tests/foo.test.ts',
@@ -81,6 +83,7 @@ describe('BUILD_REPORT.md carry-forward round-trip', () => {
 
   test('Constraint stays unprefixed (the active directive)', () => {
     const cf: BuildReportCarryForward = {
+      source: 'verify-fail',
       priorAttempt: 2,
       priorForensicsPath: '.code-oz/runs/01HX/forensics/2/',
       priorValidationCommand: 'bun test foo.test.ts',
@@ -99,6 +102,7 @@ describe('BUILD_REPORT.md carry-forward round-trip', () => {
 
   test('200-char caps on Failure summary and Constraint enforced through the round-trip', () => {
     const cf: BuildReportCarryForward = {
+      source: 'verify-fail',
       priorAttempt: 1,
       priorForensicsPath: '/forensics/1/',
       priorValidationCommand: 'bun t',

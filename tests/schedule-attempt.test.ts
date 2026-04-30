@@ -78,6 +78,7 @@ describe('scheduleAttemptNPlus1 — restart path', () => {
       nextAction: 'restart',
       nextAttempt: 2,
       carryForward: {
+        source: 'verify-fail',
         priorAttempt: 1,
         priorForensicsPath: join(paths.runDir, 'forensics', '1'),
         priorValidationCommand: 'bun test foo.test.ts',
@@ -174,6 +175,7 @@ describe('scheduleAttemptNPlus1 — worktree removal failure', () => {
       nextAction: 'restart',
       nextAttempt: 2,
       carryForward: {
+        source: 'verify-fail',
         priorAttempt: 1,
         priorForensicsPath: join(paths.runDir, 'forensics', '1'),
         priorValidationCommand: 'bun test',

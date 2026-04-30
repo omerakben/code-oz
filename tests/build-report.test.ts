@@ -259,6 +259,7 @@ describe('parseBuildReport — Failure carry-forward populated', () => {
       ...VALID_DATA,
       task: { ...VALID_DATA.task, attempt: 2 },
       failureCarryForward: {
+        source: 'verify-fail',
         priorAttempt: 1,
         priorForensicsPath: '.code-oz/runs/abc/forensics/1/',
         priorValidationCommand: 'bun test x',
@@ -278,6 +279,7 @@ describe('parseBuildReport — Failure carry-forward populated', () => {
       ...VALID_DATA,
       task: { ...VALID_DATA.task, attempt: 2 },
       failureCarryForward: {
+        source: 'verify-fail',
         priorAttempt: 1,
         priorForensicsPath: '.code-oz/runs/abc/forensics/1/',
         priorValidationCommand: 'bun test x',
