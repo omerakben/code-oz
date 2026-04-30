@@ -24,10 +24,11 @@ let fake: FakeProvider
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'code-oz-plan-'))
-  projectRoot = join(tmp, 'project')
-  const stateDir = join(tmp, 'state')
-  const artifactRoot = join(tmp, 'artifacts')
-  await mkdir(projectRoot, { recursive: true })
+  // M6 rule 13 fix: artifactRoot lives INSIDE projectRoot so the wrapper's
+  // manifest (which requires paths inside projectRoot) can attach SPEC.md.
+  projectRoot = tmp
+  const stateDir = join(tmp, '.code-oz/state')
+  const artifactRoot = join(tmp, '.code-oz/artifacts')
   await mkdir(stateDir, { recursive: true })
   await mkdir(artifactRoot, { recursive: true })
   paths = runPathsFor(stateDir, artifactRoot, RUN)
@@ -37,7 +38,7 @@ beforeEach(async () => {
   await initRun({ paths, profile: 'greenfield', runId: RUN, now: () => '2026-04-30T11:00:00.000Z' })
   // Seed an approved SPEC.md to enable PLAN.
   await writeFile(
-    join(artifactRoot, 'SPEC.md'),
+    join(paths.artifactRoot, 'SPEC.md'),
     `# SPEC
 
 ## Goals
@@ -239,6 +240,31 @@ describe('runPlan — success path', () => {
     expect(types).toContain('hypothesis_added')
     expect(types).toContain('science_emitted')
     expect(types).toContain('gate_required')
+
+    // Codex M6 review block-push #1: agent_invoked.manifest.files must
+    // include the attachments — SPEC.md for the lead invocation, plus
+    // PLAN.md for the scientist invocation. bytesSent > 0 proves the
+    // wrapper actually loaded the files.
+    const leadInvoked = events.find(
+      (e) => e.type === 'agent_invoked' && 'agent' in e && e.agent === 'lead',
+    )
+    expect(leadInvoked).toBeDefined()
+    if (leadInvoked && 'manifest' in leadInvoked && leadInvoked.type === 'agent_invoked') {
+      expect(leadInvoked.manifest.files.length).toBeGreaterThan(0)
+      expect(leadInvoked.manifest.files[0]!.path).toContain('SPEC.md')
+      expect(leadInvoked.bytesSent).toBeGreaterThan(0)
+    }
+    const sciInvoked = events.find(
+      (e) => e.type === 'agent_invoked' && 'agent' in e && e.agent === 'scientist',
+    )
+    expect(sciInvoked).toBeDefined()
+    if (sciInvoked && 'manifest' in sciInvoked && sciInvoked.type === 'agent_invoked') {
+      expect(sciInvoked.manifest.files.length).toBeGreaterThan(0)
+      expect(
+        sciInvoked.manifest.files.some((f) => f.path.endsWith('PLAN.md')),
+      ).toBe(true)
+      expect(sciInvoked.bytesSent).toBeGreaterThan(0)
+    }
   })
 })
 
@@ -292,6 +318,55 @@ describe('runPlan — interventions', () => {
 
     expect(result.status).toBe('intervention')
     if (result.status === 'intervention') expect(result.code).toBe('plan_validation_failed')
+  })
+})
+
+describe('runPlan — tool dispatch loop (Codex M6 review block-push #2)', () => {
+  test('dispatches a repo-context tool_call mid-PLAN and emits repo_context_searched', async () => {
+    // Seed a glob-able file inside projectRoot so the tool actually finds something.
+    await mkdir(join(projectRoot, 'src'), { recursive: true })
+    await writeFile(join(projectRoot, 'src/dummy.ts'), 'export const x = 1\n')
+
+    // First turn: Lead emits a glob tool_call.
+    fake.expect({ phase: 'plan', agent: 'lead' }).respondWith({
+      content: '',
+      toolCalls: [
+        {
+          id: 'call-1',
+          name: 'glob',
+          input: { pattern: '**/*.ts' },
+        },
+      ],
+      stopReason: 'tool_use' as const,
+    })
+    // Second turn: Lead returns the final PLAN+SOURCE_CHECK.
+    fake.expect({ phase: 'plan', agent: 'lead' }).respondWith({ content: LEAD_RESPONSE })
+    fake.expect({ phase: 'plan', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    const result = await runPlan({
+      invokeCtx: invokeCtx(),
+      runPaths: paths,
+      runId: RUN,
+      leadAgent: leadAgent(),
+      scientistAgent: scientistAgent(),
+      fsyncDir: false,
+    })
+
+    expect(result.status).toBe('complete')
+
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    // The repo_context_searched event proves the orchestrator dispatched
+    // the tool call rather than ignoring it.
+    expect(events.some((e) => e.type === 'repo_context_searched')).toBe(true)
+    const search = events.find((e) => e.type === 'repo_context_searched')
+    if (search && 'tool' in search) {
+      expect(search.tool).toBe('glob')
+    }
+    // Two agent_invoked events for Lead (turn 1 = tool_use, turn 2 = final)
+    const leadInvocations = events.filter(
+      (e) => e.type === 'agent_invoked' && 'agent' in e && e.agent === 'lead',
+    )
+    expect(leadInvocations.length).toBe(2)
   })
 })
 

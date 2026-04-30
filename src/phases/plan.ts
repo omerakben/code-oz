@@ -13,7 +13,7 @@
 //     and a NEEDS_INTERVENTION + intervention event. NEVER the canonical artifact.
 
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 
 import { invokeAgent, type InvokeContext } from '../providers/invoke.ts'
 import { withLock } from '../state/lock.ts'
@@ -41,6 +41,10 @@ import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import { composePlanPrompt } from '../prompts/index.ts'
 import { runScientistPhaseTail } from './scientist.ts'
 import { validateScientistSidecars } from './gate-preflight.ts'
+import { runRepoContextTool } from '../tools/repo-context/runner.ts'
+import { REPO_CONTEXT_TOOL_NAMES } from '../agents/schema.ts'
+import type { RepoContextRequest } from '../tools/repo-context/types.ts'
+import type { ProviderToolCall } from '../providers/types.ts'
 
 // --- public API ----------------------------------------------------
 
@@ -152,6 +156,57 @@ async function recordIntervention(args: {
   })
 }
 
+// --- tool-call → repo-context request mapper ----------------------
+
+function parseRepoContextToolCall(call: ProviderToolCall): RepoContextRequest | null {
+  if (call.input === null || typeof call.input !== 'object') return null
+  const input = call.input as Record<string, unknown>
+  switch (call.name) {
+    case 'glob': {
+      if (typeof input.pattern !== 'string') return null
+      const roots =
+        Array.isArray(input.roots) && input.roots.every((r) => typeof r === 'string')
+          ? (input.roots as string[])
+          : undefined
+      return { tool: 'glob', args: { pattern: input.pattern, roots } }
+    }
+    case 'grep': {
+      if (typeof input.pattern !== 'string') return null
+      const roots =
+        Array.isArray(input.roots) && input.roots.every((r) => typeof r === 'string')
+          ? (input.roots as string[])
+          : undefined
+      return {
+        tool: 'grep',
+        args: {
+          pattern: input.pattern,
+          roots,
+          ...(typeof input.regex === 'boolean' ? { regex: input.regex } : {}),
+          ...(typeof input.ignoreCase === 'boolean' ? { ignoreCase: input.ignoreCase } : {}),
+        },
+      }
+    }
+    case 'read': {
+      if (typeof input.path !== 'string') return null
+      let lineRange: [number, number] | undefined
+      if (
+        Array.isArray(input.lineRange) &&
+        input.lineRange.length === 2 &&
+        Number.isInteger(input.lineRange[0]) &&
+        Number.isInteger(input.lineRange[1])
+      ) {
+        lineRange = [input.lineRange[0] as number, input.lineRange[1] as number]
+      }
+      return {
+        tool: 'read',
+        args: { path: input.path, ...(lineRange !== undefined ? { lineRange } : {}) },
+      }
+    }
+    default:
+      return null
+  }
+}
+
 // --- response splitter ---------------------------------------------
 
 export function splitPlanResponse(
@@ -180,10 +235,10 @@ export function splitPlanResponse(
 export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
   const now = opts.now ?? (() => new Date().toISOString())
 
-  // 1. Load SPEC.md
-  let specText: string
+  // 1. Load SPEC.md (verify exists before invoking provider)
+  const specAbs = specPath(opts.runPaths)
   try {
-    specText = await readFile(specPath(opts.runPaths), 'utf8')
+    await readFile(specAbs, 'utf8')
   } catch {
     await recordIntervention({
       paths: opts.runPaths,
@@ -203,47 +258,135 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
     }
   }
 
-  // 2. Compose prompt
+  // 2. Compose prompt — SPEC.md flows through ProviderRequest.files (not
+  //    inlined) so the wrapper's manifest is the audit-trail source of truth
+  //    for what bytes the provider received. Per CLAUDE.md rule 13 + Codex
+  //    M6 review block-push #1.
   const availableTools =
     opts.leadAgent.permissions.tool_use?.repo_context?.tools !== undefined
       ? [...opts.leadAgent.permissions.tool_use.repo_context.tools]
       : []
-  const userTurn = opts.initialUserInput ?? 'Read the SPEC.md and produce PLAN.md + SOURCE_CHECK.md per the locked schemas.'
-  const prompt = await composePlanPrompt({
-    agentBody: opts.leadAgent.body,
-    history: [
-      { role: 'user', text: `${userTurn}\n\nSPEC.md:\n\n${specText.trim()}` },
-    ],
-    readySignal: PLAN_READY_SIGNAL,
-    availableTools,
-  })
+  const userTurn = opts.initialUserInput ?? 'Read the attached SPEC.md and produce PLAN.md + SOURCE_CHECK.md per the locked schemas.'
+  const specRel = relative(opts.invokeCtx.projectRoot, specAbs)
 
-  // 3. Invoke Lead persona
+  // 3. Invoke Lead persona — SPEC.md attached via manifest. Tool-use
+  //    dispatch loop: per Codex M6 review block-push #2, when the persona
+  //    issues repo-context tool_calls the orchestrator runs them, appends
+  //    the results to a tool-history block in the next prompt, and re-
+  //    invokes. Bounded by MAX_TOOL_DISPATCH_TURNS so a misbehaving
+  //    persona cannot loop forever.
+  const MAX_TOOL_DISPATCH_TURNS = 5
   let responseText = ''
   let stopReason = 'end' as string
+  let toolHistoryBlock = ''
+  let toolDispatchTurn = 0
+  let providerErr: Error | null = null
   try {
-    for await (const event of invokeAgent(opts.invokeCtx, {
-      runId: opts.runId,
-      phase: 'plan',
-      agent: opts.leadAgent,
-      // SPEC.md content is inlined into the prompt; no files manifest entry
-      // is needed in M6. Future M7+ multi-turn variant may add tool-result
-      // files here as the persona promotes them.
-      files: [],
-      prompt,
-    })) {
-      if (event.type === 'content_chunk') responseText += event.text
-      else if (event.type === 'turn_completed') {
-        stopReason = event.response.stopReason
-        if (responseText.length === 0) responseText = event.response.content
+    while (toolDispatchTurn < MAX_TOOL_DISPATCH_TURNS) {
+      const turnHistory = [
+        {
+          role: 'user' as const,
+          text:
+            `${userTurn}\n\n` +
+            `The provider has been given SPEC.md as an attached file at \`${specRel}\` (see the manifest). ` +
+            `Refer to that attachment instead of expecting inline content.` +
+            (toolHistoryBlock.length > 0
+              ? `\n\n## Tool history\n${toolHistoryBlock}`
+              : ''),
+        },
+      ]
+      const turnPrompt = await composePlanPrompt({
+        agentBody: opts.leadAgent.body,
+        history: turnHistory,
+        readySignal: PLAN_READY_SIGNAL,
+        availableTools,
+      })
+
+      let turnText = ''
+      const toolCalls: ProviderToolCall[] = []
+      let turnStop = 'end' as string
+      for await (const event of invokeAgent(opts.invokeCtx, {
+        runId: opts.runId,
+        phase: 'plan',
+        agent: opts.leadAgent,
+        files: [{ path: specRel }],
+        prompt: turnPrompt,
+      })) {
+        if (event.type === 'content_chunk') turnText += event.text
+        else if (event.type === 'tool_call') toolCalls.push(event.call)
+        else if (event.type === 'turn_completed') {
+          turnStop = event.response.stopReason
+          if (turnText.length === 0) turnText = event.response.content
+        }
       }
+
+      if (toolCalls.length === 0) {
+        // Persona produced final output (or an empty response); break loop.
+        responseText = turnText
+        stopReason = turnStop
+        break
+      }
+
+      // Dispatch each repo-context tool call. Tools outside the registered
+      // set are ignored (the cap on tool_calls per turn is enforced by the
+      // wrapper layer).
+      for (const call of toolCalls) {
+        if (!(REPO_CONTEXT_TOOL_NAMES as readonly string[]).includes(call.name)) {
+          toolHistoryBlock += `\n- ${call.name}: tool not in repo_context scope; skipped.`
+          continue
+        }
+        const request = parseRepoContextToolCall(call)
+        if (request === null) {
+          toolHistoryBlock += `\n- ${call.name}: malformed input; skipped.`
+          continue
+        }
+        const outcome = await runRepoContextTool(
+          {
+            agentName: opts.leadAgent.name,
+            agentPermissions: opts.leadAgent.permissions,
+            phase: 'plan',
+            runId: opts.runId,
+            projectRoot: opts.invokeCtx.projectRoot,
+            eventPaths: eventPathsFor(opts.runPaths),
+            now,
+          },
+          request,
+        )
+        const summary =
+          outcome.status === 'ok'
+            ? JSON.stringify(outcome.result).slice(0, 1024)
+            : `error: ${outcome.error.message}`
+        toolHistoryBlock += `\n- ${call.name}(${JSON.stringify(call.input).slice(0, 256)}) -> ${summary}`
+      }
+      toolDispatchTurn++
     }
   } catch (err) {
-    // wrapper already wrote NEEDS_INTERVENTION on ProviderError
+    providerErr = err as Error
+  }
+  if (providerErr !== null) {
     return {
       status: 'intervention',
       code: 'plan_provider_error',
-      rule: `Lead persona invocation failed: ${(err as Error).message}`,
+      rule: `Lead persona invocation failed: ${providerErr.message}`,
+    }
+  }
+  if (toolDispatchTurn >= MAX_TOOL_DISPATCH_TURNS && responseText === '') {
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.leadAgent.name,
+      code: 'plan_tool_loop_exhausted',
+      rule: `Lead persona exceeded ${MAX_TOOL_DISPATCH_TURNS} tool-dispatch turns without producing a final response`,
+      actionableSuggestions: [
+        'narrow the SPEC scope or simplify the agent persona body',
+        `or raise MAX_TOOL_DISPATCH_TURNS in src/phases/plan.ts`,
+      ],
+      now,
+    })
+    return {
+      status: 'intervention',
+      code: 'plan_tool_loop_exhausted',
+      rule: `Lead persona exceeded ${MAX_TOOL_DISPATCH_TURNS} tool-dispatch turns`,
     }
   }
 

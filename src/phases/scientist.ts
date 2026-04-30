@@ -13,7 +13,7 @@
 // module only owns the persona invocation + sidecar I/O + event emission.
 
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { invokeAgent, type InvokeContext } from '../providers/invoke.ts'
 import { withLock } from '../state/lock.ts'
 import {
@@ -245,10 +245,9 @@ export async function runScientistPhaseTail(
 ): Promise<ScientistTailResult> {
   const now = opts.now ?? (() => new Date().toISOString())
 
-  // Load primary artifact (fail loud if missing — caller bug)
-  let primaryText: string
+  // Verify primary artifact exists (the wrapper will load it via manifest)
   try {
-    primaryText = await readFile(opts.primaryArtifactPath, 'utf8')
+    await readFile(opts.primaryArtifactPath, 'utf8')
   } catch (err) {
     return {
       status: 'intervention',
@@ -257,7 +256,9 @@ export async function runScientistPhaseTail(
     }
   }
 
-  // Load prior sidecars (best-effort)
+  // Load prior sidecars only to compute the diff after the persona returns
+  // (audit fidelity); the prompt does NOT inline them — they flow through
+  // ProviderRequest.files. Per Codex M6 review block-push #1.
   const hypPath = hypothesesPathFor(opts.runPaths)
   const oqPath = openQuestionsPathFor(opts.runPaths)
   const priorHypText = await readIfExists(hypPath)
@@ -280,26 +281,37 @@ export async function runScientistPhaseTail(
   }
 
   // Compose prompt — inject the universal rule sheet (CLAUDE.md rule 16)
-  // and Common Rationalizations into every Scientist invocation. Per Codex
-  // M6 review block-push #5: rule 16 says every persona's prompt imports
-  // universal-rules.md; the Scientist must too.
+  // and Common Rationalizations into every Scientist invocation. The
+  // primary artifact + prior sidecars flow via manifest (rule 13), so the
+  // prompt only describes the attachments instead of inlining their text.
   const [universalRules, commonRationalizations] = await Promise.all([
     loadUniversalRules(),
     loadCommonRationalizations(),
   ])
+  const projRoot = opts.invokeCtx.projectRoot
+  const primaryRel = relative(projRoot, opts.primaryArtifactPath)
+  const hypRel = priorHypText !== null ? relative(projRoot, hypPath) : null
+  const oqRel = priorOqText !== null ? relative(projRoot, oqPath) : null
+  const attachmentNote = `The provider has been given the primary artifact (\`${primaryRel}\`)${
+    hypRel !== null ? ` and the prior HYPOTHESES.md (\`${hypRel}\`)` : ''
+  }${oqRel !== null ? ` and the prior OPEN_QUESTIONS.md (\`${oqRel}\`)` : ''}` +
+    ` as attached files via the manifest. Read them from the attachments.`
   const prompt = composeScientistPromptPure({
     agentBody: opts.agent.body,
     phase: opts.phase,
     primaryArtifactName: opts.primaryArtifactPath.split('/').pop() ?? 'PRIMARY.md',
-    primaryArtifactText: primaryText,
-    priorHypothesesText: priorHypText,
-    priorOpenQuestionsText: priorOqText,
+    primaryArtifactText: attachmentNote,
+    priorHypothesesText: hypRel !== null ? `(attached at ${hypRel})` : null,
+    priorOpenQuestionsText: oqRel !== null ? `(attached at ${oqRel})` : null,
     readySignal: SCIENTIST_READY_SIGNAL,
     universalRules,
     commonRationalizations,
   })
 
-  // Invoke persona — single turn
+  // Invoke persona — single turn. Files attach via manifest (rule 13).
+  const manifestFiles: { path: string }[] = [{ path: primaryRel }]
+  if (hypRel !== null) manifestFiles.push({ path: hypRel })
+  if (oqRel !== null) manifestFiles.push({ path: oqRel })
   let responseText = ''
   let stopReason = 'end' as string
   try {
@@ -307,7 +319,7 @@ export async function runScientistPhaseTail(
       runId: opts.runId,
       phase: opts.phase,
       agent: opts.agent,
-      files: [],
+      files: manifestFiles,
       prompt,
     })) {
       if (event.type === 'content_chunk') responseText += event.text

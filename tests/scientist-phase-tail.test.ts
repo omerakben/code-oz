@@ -23,10 +23,10 @@ let fake: FakeProvider
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'code-oz-sci-'))
-  projectRoot = join(tmp, 'project')
-  const stateDir = join(tmp, 'state')
-  const artifactRoot = join(tmp, 'artifacts')
-  await mkdir(projectRoot, { recursive: true })
+  // M6 rule 13 fix: artifactRoot lives INSIDE projectRoot.
+  projectRoot = tmp
+  const stateDir = join(tmp, '.code-oz/state')
+  const artifactRoot = join(tmp, '.code-oz/artifacts')
   await mkdir(stateDir, { recursive: true })
   await mkdir(artifactRoot, { recursive: true })
   paths = runPathsFor(stateDir, artifactRoot, RUN)

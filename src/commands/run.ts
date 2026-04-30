@@ -68,7 +68,12 @@ export async function runCommand(args: string[]): Promise<void> {
 
   const active = await readActiveRun(ctx.paths.activeRun)
   if (active !== null) {
-    await handleActiveRun(ctx.paths.state, ctx.paths.artifacts, active)
+    await handleActiveRun(
+      ctx.paths.state,
+      ctx.paths.artifacts,
+      active,
+      parsed.providerOverride,
+    )
     return
   }
 
@@ -404,6 +409,7 @@ async function handleActiveRun(
   stateDir: string,
   artifactRoot: string,
   activeRunId: string,
+  providerOverride?: ProviderOverride,
 ): Promise<void> {
   const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
 
@@ -470,7 +476,7 @@ async function handleActiveRun(
 
   // Phase advanced past DEFINE: dispatch to the right runner.
   if (phase === 'plan') {
-    await dispatchPlan(stateDir, artifactRoot, activeRunId)
+    await dispatchPlan(stateDir, artifactRoot, activeRunId, providerOverride)
     return
   }
 
@@ -488,6 +494,7 @@ async function dispatchPlan(
   stateDir: string,
   artifactRoot: string,
   activeRunId: string,
+  providerOverride?: ProviderOverride,
 ): Promise<void> {
   const cwd = process.cwd()
   const ctx = await bootstrap({ cwd })
@@ -504,7 +511,9 @@ async function dispatchPlan(
     )
     process.exit(1)
   }
-  const { registry: providerRegistry } = buildProviderRegistry({})
+  // Carry --provider fake (or other override) through DEFINE -> approve -> PLAN.
+  // Per Codex M6 review block-next-milestone #7.
+  const { registry: providerRegistry } = buildProviderRegistry({ providerOverride })
   const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
