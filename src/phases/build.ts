@@ -24,6 +24,7 @@ import {
   serializeBuildReport,
   parseBuildReport,
   BuildReportLoadError,
+  type BuildReportCarryForward,
   type BuildReportData,
 } from '../artifacts/build-report.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
@@ -95,6 +96,19 @@ export interface RunBuildOptions {
    *  include these fields. */
   readonly validationDefaults?: ValidationDefaults
   readonly attempt?: number
+  /**
+   * Failure carry-forward block from the prior failed VERIFY attempt
+   * (M8 commit 7). When present, it is rendered into BUILD_REPORT.md's
+   * `## Failure carry-forward` section and prepended to the BUILD
+   * persona prompt as a directive line. The orchestrator constructs
+   * this via prepareCarryForward in src/phases/restart-policy.ts;
+   * BUILD validates that priorAttempt + 1 === task.attempt and rejects
+   * with `restart_state_drift` on mismatch.
+   *
+   * `undefined` means attempt 1 (no prior failure). `null` is rejected
+   * for attempt > 1.
+   */
+  readonly carryForward?: BuildReportCarryForward
   readonly fsyncDir?: boolean
   readonly now?: () => string
 }
@@ -253,6 +267,59 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
   const now = opts.now ?? (() => new Date().toISOString())
   const attempt = opts.attempt ?? 1
   const eventPaths = eventPathsFor(opts.runPaths)
+
+  // Restart-state drift guard (M8 commit 7): when the orchestrator passes
+  // a carry-forward block, the failed prior attempt must be exactly one
+  // less than the new attempt number. Drift means the orchestrator
+  // miscounted attempts (or routed a non-VERIFY-fail through the restart
+  // path) — produces intervention rather than silently running the wrong
+  // attempt. Symmetric: attempt > 1 with no carryForward is also drift.
+  if (attempt === 1 && opts.carryForward !== undefined) {
+    await recordBuildFailure({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.builderAgent.name,
+      attempt,
+      taskId: opts.taskId,
+      code: 'restart_state_drift',
+      reason: 'attempt 1 must not have carryForward',
+      now,
+    })
+    return interventionResult('restart_state_drift', 'attempt 1 must not have carryForward')
+  }
+  if (attempt > 1 && opts.carryForward === undefined) {
+    await recordBuildFailure({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.builderAgent.name,
+      attempt,
+      taskId: opts.taskId,
+      code: 'restart_state_drift',
+      reason: `attempt ${attempt} requires carryForward from the prior failed attempt`,
+      now,
+    })
+    return interventionResult(
+      'restart_state_drift',
+      `attempt ${attempt} requires carryForward from the prior failed attempt`,
+    )
+  }
+  if (
+    opts.carryForward !== undefined &&
+    opts.carryForward.priorAttempt + 1 !== attempt
+  ) {
+    const reason = `carryForward.priorAttempt=${opts.carryForward.priorAttempt} + 1 !== attempt=${attempt}`
+    await recordBuildFailure({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.builderAgent.name,
+      attempt,
+      taskId: opts.taskId,
+      code: 'restart_state_drift',
+      reason,
+      now,
+    })
+    return interventionResult('restart_state_drift', reason)
+  }
 
   // BUILD entry preflight: parse PLAN.md, look up task, compute planSha.
   // Caller may NOT supply task data (per Codex M7 review block-push #2 + #3).
@@ -481,7 +548,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     },
     changedFiles: manifest.entries,
     validationCommand: validationCommand,
-    failureCarryForward: null, // M7: always attempt 1 with no prior carry-forward
+    failureCarryForward: opts.carryForward ?? null,
     notes: ensureRiskNote(parsed.notes, task.risk),
   })
 

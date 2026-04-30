@@ -506,3 +506,122 @@ hunk mismatch test
     expect(result.code).toBe('build_plan_missing')
   })
 })
+
+describe('runBuild — restart-state drift (M8 commit 7)', () => {
+  test('attempt 1 with carryForward set → intervention restart_state_drift', async () => {
+    const wt = await setupWorktree()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => VALID_PERSONA_RESPONSE,
+      attempt: 1,
+      carryForward: {
+        priorAttempt: 0,
+        priorForensicsPath: '/x/forensics/0/',
+        priorValidationCommand: 'bun t',
+        priorVerdict: 'fail',
+        priorFailureSummary: 's',
+        constraint: 'c',
+      },
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') expect(result.code).toBe('restart_state_drift')
+  })
+
+  test('attempt > 1 without carryForward → intervention restart_state_drift', async () => {
+    const wt = await setupWorktree()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => VALID_PERSONA_RESPONSE,
+      attempt: 2,
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') expect(result.code).toBe('restart_state_drift')
+  })
+
+  test('attempt 3 with carryForward.priorAttempt=1 (drift, +1 mismatch) → intervention', async () => {
+    const wt = await setupWorktree()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => VALID_PERSONA_RESPONSE,
+      attempt: 3,
+      carryForward: {
+        priorAttempt: 1,
+        priorForensicsPath: '/x/forensics/1/',
+        priorValidationCommand: 'bun t',
+        priorVerdict: 'fail',
+        priorFailureSummary: 's',
+        constraint: 'c',
+      },
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('restart_state_drift')
+      expect(result.rule).toContain('priorAttempt=1')
+      expect(result.rule).toContain('attempt=3')
+    }
+  })
+
+  test('attempt 2 with carryForward.priorAttempt=1 → success; BUILD_REPORT.md carries the section', async () => {
+    const wt = await setupWorktree()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => VALID_PERSONA_RESPONSE,
+      attempt: 2,
+      carryForward: {
+        priorAttempt: 1,
+        priorForensicsPath: '.code-oz/runs/01HX/forensics/1/',
+        priorValidationCommand: 'bun test tests/scoring-syllable.test.ts',
+        priorVerdict: 'fail (exit code 1, duration 100 ms)',
+        priorFailureSummary: 'expected stress on syllable 2; got stress on syllable 1.',
+        constraint: 'prefer last-syllable stress for two-syllable surnames.',
+      },
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('complete')
+    if (result.status !== 'complete') return
+    const reportText = await readFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      'utf8',
+    )
+    expect(reportText).toContain('## Failure carry-forward')
+    expect(reportText).toContain('- Prior attempt: 1')
+    expect(reportText).toContain('- Constraint: prefer last-syllable stress')
+    expect(reportText).not.toContain('- None (attempt 2).')
+    expect(reportText).toContain('- Attempt: 2')
+  })
+})
