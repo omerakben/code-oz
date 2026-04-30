@@ -512,14 +512,15 @@ function validateRepoContext(value: unknown, file: string): AgentLoadIssue | nul
       rule: "'permissions.tool_use.repo_context.roots' must be an array of strings",
     }
   }
-  // numeric caps
-  const numericFields = [
+  // numeric caps. maxFilesForNextManifest may be 0 (a persona that does
+  // not promote paths into the next manifest, e.g., VERIFY per
+  // VERIFY.md § Permissions example). Other caps must be positive.
+  const positiveFields = [
     ['maxResults', REPO_CONTEXT_HARD_CAPS.maxResults],
     ['maxBytesPerResult', REPO_CONTEXT_HARD_CAPS.maxBytesPerResult],
-    ['maxFilesForNextManifest', REPO_CONTEXT_HARD_CAPS.maxFilesForNextManifest],
     ['timeoutMs', REPO_CONTEXT_HARD_CAPS.timeoutMs],
   ] as const
-  for (const [field, cap] of numericFields) {
+  for (const [field, cap] of positiveFields) {
     const v = rc[field]
     if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
       return {
@@ -535,6 +536,26 @@ function validateRepoContext(value: unknown, file: string): AgentLoadIssue | nul
         rule: `'permissions.tool_use.repo_context.${field}' must be ≤ ${cap} (M6 hard cap)`,
         detail: `got ${v}`,
       }
+    }
+  }
+  const maxFilesForNextManifest = rc.maxFilesForNextManifest
+  if (
+    typeof maxFilesForNextManifest !== 'number' ||
+    !Number.isInteger(maxFilesForNextManifest) ||
+    maxFilesForNextManifest < 0
+  ) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.repo_context.maxFilesForNextManifest' must be a non-negative integer",
+    }
+  }
+  if (maxFilesForNextManifest > REPO_CONTEXT_HARD_CAPS.maxFilesForNextManifest) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: `'permissions.tool_use.repo_context.maxFilesForNextManifest' must be ≤ ${REPO_CONTEXT_HARD_CAPS.maxFilesForNextManifest} (M6 hard cap)`,
+      detail: `got ${maxFilesForNextManifest}`,
     }
   }
   // network

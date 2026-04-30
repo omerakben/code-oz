@@ -12,6 +12,7 @@ import commonRationalizationsPath from './common-rationalizations.md' with { typ
 import universalRulesPath from './universal-rules.md' with { type: 'file' }
 import planSystemPath from './plan-system.md' with { type: 'file' }
 import buildSystemPath from './build-system.md' with { type: 'file' }
+import verifySystemPath from './verify-system.md' with { type: 'file' }
 
 const ASSET_CACHE = new Map<string, string>()
 
@@ -54,6 +55,10 @@ export async function loadPlanSystemTemplate(): Promise<string> {
 
 export async function loadBuildSystemTemplate(): Promise<string> {
   return loadAsset(buildSystemPath)
+}
+
+export async function loadVerifySystemTemplate(): Promise<string> {
+  return loadAsset(verifySystemPath)
 }
 
 // --- conversation rendering ----------------------------------------
@@ -318,6 +323,67 @@ export async function composeBuildPrompt(input: ComposeBuildPromptInput): Promis
     loadUniversalRules(),
   ])
   return composeBuildPromptPure({
+    templateBody,
+    commonRationalizations,
+    universalRules,
+    agentBody: input.agentBody,
+    readySignal: input.readySignal,
+    availableTools: input.availableTools,
+  })
+}
+
+// --- VERIFY composer (M8) -----------------------------------------
+//
+// Mirrors the BUILD composer pattern. Single-shot per attempt: one
+// initial draft + at most one repair round (Codex M8 decision 9
+// modification: two total VERIFY drafts, not two repairs).
+
+const VERIFY_REQUIRED_TOKENS = [
+  TOKEN_AGENT_BODY,
+  TOKEN_RATIONALIZATIONS,
+  TOKEN_UNIVERSAL_RULES,
+  TOKEN_AVAILABLE_TOOLS,
+  TOKEN_READY_SIGNAL,
+] as const
+
+export interface ComposeVerifyPromptPureInput {
+  readonly templateBody: string
+  readonly universalRules: string
+  readonly commonRationalizations: string
+  readonly agentBody: string
+  readonly readySignal: string
+  /** Names of tools the VERIFY persona has access to (e.g., glob/grep/read + test-runner). */
+  readonly availableTools: readonly string[]
+}
+
+export function composeVerifyPromptPure(args: ComposeVerifyPromptPureInput): string {
+  for (const tok of VERIFY_REQUIRED_TOKENS) {
+    if (!args.templateBody.includes(tok)) {
+      throw new Error(`verify-system.md is missing required token ${tok}`)
+    }
+  }
+  const availableTools = renderAvailableTools(args.availableTools)
+  return args.templateBody
+    .replaceAll(TOKEN_AGENT_BODY, args.agentBody.trim())
+    .replaceAll(TOKEN_RATIONALIZATIONS, args.commonRationalizations.trim())
+    .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
+    .replaceAll(TOKEN_AVAILABLE_TOOLS, availableTools)
+    .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+}
+
+export interface ComposeVerifyPromptInput {
+  readonly agentBody: string
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export async function composeVerifyPrompt(input: ComposeVerifyPromptInput): Promise<string> {
+  const [templateBody, commonRationalizations, universalRules] = await Promise.all([
+    loadVerifySystemTemplate(),
+    loadCommonRationalizations(),
+    loadUniversalRules(),
+  ])
+  return composeVerifyPromptPure({
     templateBody,
     commonRationalizations,
     universalRules,
