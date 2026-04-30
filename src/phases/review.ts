@@ -97,6 +97,11 @@ import {
 import { composeReviewPrompt } from '../prompts/index.ts'
 import { runScientistPhaseTail } from './scientist.ts'
 import { validateScientistSidecars } from './gate-preflight.ts'
+import {
+  decideReviewRemediation,
+  type ReviewRemediationDecision,
+} from './review-remediation.ts'
+import type { BuildReportCarryForward } from '../artifacts/build-report.ts'
 import { familyOf } from '../providers/families.ts'
 import type { ProviderId } from '../providers/types.ts'
 import {
@@ -158,6 +163,13 @@ export interface ReviewNeedsRevision {
   readonly score: number
   readonly findings: readonly ReviewFinding[]
   readonly round: number
+  /** Remediation decision from review-remediation.ts (M9 commit 10).
+   *  When `action === 'continue'`, the caller schedules BUILD attempt
+   *  N+1 with `carryForward` and then drives REVIEW round
+   *  `nextReviewRound`. */
+  readonly remediation: ReviewRemediationDecision
+  /** Convenience accessor: present iff `remediation.action === 'continue'`. */
+  readonly carryForward?: BuildReportCarryForward
 }
 
 export interface ReviewBlocked {
@@ -317,6 +329,17 @@ function actionableSuggestionsFor(code: string): readonly string[] {
       return Object.freeze([
         'Reviewer issued a block-severity finding (verdict=block); REVIEW loop terminated.',
         'Inspect REVIEW.md Findings + Recommendation; remediate manually or restart with a corrected PLAN.',
+      ])
+    case 'review_cap_exhausted_terminal':
+      return Object.freeze([
+        `REVIEW round cap reached (${REVIEW_ROUND_CAP}/${REVIEW_ROUND_CAP}) without a ready exit.`,
+        'Inspect REVIEW.md Round timeline + Findings; remediate manually or restart with a corrected PLAN.',
+      ])
+    case 'review_build_cap_overlap':
+      return Object.freeze([
+        'BUILD attempt cap reached during a REVIEW remediation chain; VERIFY-owned intervention.',
+        'Inspect attempt forensics under .code-oz/runs/<runId>/forensics/ and the latest BUILD_REPORT.md.',
+        'Reset by starting a new run with a corrected PLAN; do not re-run REVIEW on the same chain.',
       ])
     default:
       return Object.freeze(['Inspect REVIEW.md, events.jsonl, and the relevant draft directory.'])
@@ -775,10 +798,78 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     })
   }
 
-  // verdict === 'needs-revision'. Per kickoff Decision 1, this is NOT
-  // where we trigger BUILD attempt N+1 — that's the remediation
-  // coordinator (review-remediation.ts in commit 10). runReview just
-  // returns the result; the caller decides.
+  // verdict === 'needs-revision'. Per kickoff Decision 1, the BUILD
+  // attempt N+1 trigger is delegated to the review-remediation
+  // coordinator (M9 commit 10): runReview hands it the canonical
+  // findings + REVIEW.md ref + the prior validation command and
+  // receives a ReviewRemediationDecision. Two outcomes alter
+  // runReview's terminal status:
+  //   - 'review_cap_exhausted' (round 4 needs-revision): emit
+  //     review_blocked(reason='cap_exhausted') + NEEDS_INTERVENTION
+  //     review_cap_exhausted_terminal; return blocked.
+  //   - 'build_cap_blocked': BUILD attempts already at cap; the
+  //     coordinator's reason is the VERIFY-owned context.
+  //   - 'continue': return needs_revision with the carry-forward
+  //     attached so the caller can drive BUILD attempt N+1.
+  // Read the latest events to pick up THIS round's review_round_completed.
+  const eventsForRemediation = await readEvents(eventPathsFor(opts.runPaths))
+  const remediation = decideReviewRemediation({
+    events: eventsForRemediation,
+    runId: opts.runId,
+    taskId: opts.taskId,
+    priorRound: opts.round,
+    priorAttempt: attempt,
+    priorFindings: canonical.findings,
+    reviewReportPath,
+    reviewReportSha256,
+    priorValidationCommand: buildReport.validationCommand.command,
+    reopenedIds: canonical.reopenedIds,
+  })
+  if (remediation.action === 'review_cap_exhausted') {
+    await appendEvent(eventPathsFor(opts.runPaths), {
+      version: 1,
+      type: 'review_blocked',
+      ts: now(),
+      runId: opts.runId,
+      phase: 'review',
+      agent: opts.reviewerAgent.name,
+      attempt,
+      taskId: opts.taskId,
+      reason: 'cap_exhausted',
+      finalRound: opts.round,
+      reviewReportSha256,
+    })
+    await recordReviewIntervention(
+      ictx,
+      'review_cap_exhausted_terminal',
+      remediation.reason,
+    )
+    return Object.freeze({
+      status: 'blocked' as const,
+      reviewReportPath,
+      reviewReportSha256,
+      verdict: 'block' as const,
+      score: personaScore,
+      findings: canonical.findings,
+      round: opts.round,
+    })
+  }
+  if (remediation.action === 'build_cap_blocked') {
+    // The intervention is VERIFY-owned per Decision 4; runReview surfaces
+    // the message but does NOT emit review_blocked (no double-terminal
+    // state).
+    await recordReviewIntervention(
+      ictx,
+      'review_build_cap_overlap',
+      remediation.reason,
+    )
+    return Object.freeze({
+      status: 'intervention' as const,
+      code: 'review_build_cap_overlap',
+      rule: remediation.reason,
+    })
+  }
+  // remediation.action === 'continue'
   return Object.freeze({
     status: 'needs_revision' as const,
     reviewReportPath,
@@ -787,6 +878,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     score: personaScore,
     findings: canonical.findings,
     round: opts.round,
+    remediation,
+    carryForward: remediation.carryForward,
   })
 }
 
