@@ -26,6 +26,9 @@ bun.lockb
 # remember plugin (Claude Code) — per-project session-state cache
 .remember/
 
+# Serena MCP — per-project symbol index and cache (created by activate_project)
+.serena/
+
 # code-oz runtime artifacts (when run inside another project; not in our repo)
 .code-oz/runs/
 .code-oz/state/events.jsonl

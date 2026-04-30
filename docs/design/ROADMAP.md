@@ -185,29 +185,72 @@ NOT in M7 (deferred): VERIFY-lite (M8), iterative build-patch loop (M8 with VERI
 
 ### M8 — `feat(spine): VERIFY-lite + restart-on-fail policy + mutation-test gate`
 
-One new authority boundary per CLAUDE.md rule 20: **VERIFY evidence authority + restart-on-fail policy**. Restart-on-fail is the discipline that keeps the gate authoritative (Ozzy: "if VERIFY fails we should be starting over to process — why is VERIFY important then?").
+One new authority boundary per CLAUDE.md rule 20: **VERIFY evidence authority + restart-on-fail policy**. Restart-on-fail is the discipline that keeps the gate authoritative (Ozzy: "if VERIFY fails we should be starting over to process — why is VERIFY important then?"). Briefing + Codex debate trail: `docs/design/CODEX_BRIEFING_M8.md` + `docs/design/CODEX_RESPONSE_M8.md` (thread `019ddf5f`, 2026-04-30 — 4 rejects + 9 accept-with-modifications across 13 decisions). Synthesis: `docs/design/SESSION_M8_KICKOFF.md`.
 
-Files:
-- `src/phases/verify.ts`, `src/artifacts/verify-report.ts`
-- `src/phases/verify-mutation.ts` — revert-and-replay gate; new tests must fail on reverted code; flagged for tests with `asserts: new-behavior`
-- `src/agents/defaults/verifier.md`, `src/prompts/verify-system.md`
-- `src/tools/test-runner.ts` (language-agnostic test-runner abstraction)
-- VERIFY's Scientist phase-tail
-- `src/phases/restart-policy.ts` — failed VERIFY destroys worktree as active candidate, preserves forensics, attempt N+1 starts from same approved PLAN with compact failure constraint; 4-attempt cap on clean BUILD; attempt 5 → `NEEDS_INTERVENTION.json`
+Files (commit 1: PLAN change-kind grammar — depended on by BUILD preflight + mutation applicability):
+- `docs/contracts/PLAN.md` extends `Files:` bullet to accept inline change kind: `path (modified | added | deleted)`. Default `modified` for backward compatibility.
+- `src/artifacts/plan.ts` parser update + atomic write
+- `tests/plan-grammar-change-kind.test.ts`
+- Existing fixture PLAN.md files updated with explicit change kinds
+
+Files (commit 2: tool_use.execute schema + load validation + no-shell command grammar):
+- `src/agents/schema.ts` adds `tool_use.execute` per VERIFY.md
+- `src/agents/load.ts` validates: only one tool (`test-runner`), only one root (worktree path), bounded timeouts and stream caps, **argv-only command grammar** (rejects shell operators, redirects, env-prefix tricks, command substitution, absolute executable paths)
+- `tests/agent-load-tool-use-execute.test.ts`
+
+Files (commit 3: verify event types + validators):
+- `src/state/schemas.ts` adds 4 `verify_*` event types
+- `src/state/events.ts` validators
+- `tests/state-events-verify.test.ts`
+
+Files (commit 4: test-runner with no-shell argv-only spawn + scrubbed env):
+- `src/tools/test-runner.ts` — `Bun.spawn` with streaming stdout/stderr to forensics paths, AbortController timeout, scrubbed env (whitelist), no shell, argv-only command grammar. Returns `terminationReason: "exit" | "timeout" | "stdout-cap" | "stderr-cap" | "spawn-error"`.
+- `tests/test-runner-{spawn,timeout,truncation,exit-code,abnormal-termination,env-scrub,no-shell-grammar}.test.ts`
+
+Files (commit 5: verify-report parser/serializer with orchestrator-owned binary Verdict):
+- `src/artifacts/verify-report.ts` — orchestrator owns binary `Verdict.Verdict` (computed from Evidence + Mutation.Status), persona owns `Verdict.Rationale` + `Mutation.Notes` + `Failure summary` + `Constraint`
+- `tests/verify-report-{parse,serialize,grammar,build-ref,failure-constraint,verdict-authority}.test.ts`
+
+Files (commit 6: mutation gate — source-only revert + abnormal-termination semantics):
+- `src/phases/verify-mutation.ts` — applicability requires `Expected exit code: 0` AND added test path matches `phases.verify.testGlob`; revert non-test changed paths to base; replay validation command; **mutation pass requires `terminationReason: "exit"` AND non-expected exit code** (timeouts, caps, spawn errors are never mutation pass)
+- `tests/verify-mutation-{revert,replay,applicable,not-applicable,fail-tautology,abnormal-termination}.test.ts`
+
+Files (commit 7: restart-policy + BUILD failureCarryForward propagation — closes M7 debt):
+- `src/phases/restart-policy.ts` — typed `VerifiedFailedAttempt` input; counter from `events.jsonl` reduction over max `build_completed.attempt`; cross-check vs `BUILD_REPORT.md.Task.Attempt`; 4-cap; attempt 5 → `NEEDS_INTERVENTION.json`. **BUILD-protocol failures, runner spawn failures, and BUILD-ref mismatches bypass the cap** (go straight to intervention).
+- `src/phases/build.ts` — wire failureCarryForward propagation (closes M7 debt: `build.ts:462` currently serializes `null`)
 - `phases.build.maxAttempts` in `src/config/schema.ts` (default 4)
-- `tests/{verify-phase,verify-mutation,restart-policy,verify-scientist-tail}.test.ts`
-- `tests/e2e/verify-lite-greenfield.test.ts`
+- `tests/restart-policy-{cap-counter,carry-forward,intervention,events,verified-only}.test.ts`
+- `tests/build-failure-carry-forward-restart.test.ts`
+
+Files (commit 8: forensics extras + event ordering):
+- `src/worktree/forensics.ts` wires three M8 extras (frozen `VERIFY.md`, frozen `attempt-<N>.patch`, `build-prompt-snapshot.md`) via the extensible `extras` parameter shipped in M7 commit 8
+- `tests/forensics-extras-{verify,patch,prompt}.test.ts`
+- `tests/event-ordering-verify-fail.test.ts` — asserts strict order: logs → VERIFY.md → forensics → `worktree_forensics_preserved` → `verify_failed` → worktree remove → `worktree_destroyed` → `verify_restart_initiated` (or `NEEDS_INTERVENTION` for cap)
+
+Files (commit 9: VERIFY persona + composer):
+- `src/agents/defaults/verifier.md` (3.5-4.5k; replaces M2 stub; long grammar lives in parser tests and contract files, not in prose)
+- `src/prompts/verify-system.md` — universal-rules import, schema excerpts, one compact pass example + one compact fail example
+
+Files (commit 10: VERIFY orchestrator + cleanup-on-approval + e2e):
+- `src/phases/verify.ts` (orchestrator: BUILD ref bind → command execute → evidence record → mutation gate → persona invoke → repair → finalize → forensics-on-fail; **cleanup is gate-driven, not event-driven**)
+- `src/commands/approve.ts` extension: `approve verify` validates VERIFY.md + Scientist sidecars → removes worktree → emits `worktree_destroyed` → writes `GATE_VERIFY_PASSED.json`. **Removal failure blocks gate write and emits intervention.**
+- VERIFY's Scientist phase-tail (3/3 cap matching BUILD)
+- `tests/verify-phase-{pass,fail,mutation-fail,scientist-tail}.test.ts`
+- `tests/e2e/verify-lite-greenfield-pass.test.ts` (DEFINE → PLAN → BUILD → VERIFY for `T-001`, attempt-1 pass)
+- `tests/e2e/verify-lite-greenfield-restart.test.ts` (`T-002` with attempt-1 fail → forensics → worktree destroyed → attempt-2 fresh worktree → pass; FakeProvider keyed by `(phase, taskId, attempt)`, no hidden state)
 
 Acceptance:
-- VERIFY runs configured command or generated smoke test; emits `VERIFY.md` with command shape + evidence + verdict
-- Failed VERIFY does NOT enter a soft patch loop. Worktree destroyed as active candidate, forensics preserved, attempt N+1 starts clean from same approved PLAN with failure constraint surfaced into the BUILD prompt
-- Hard cap of 4 clean attempts; attempt 5 lands in `NEEDS_INTERVENTION.json` per CLAUDE.md rule 11
-- Mutation-test gate rejects tautological tests for new-behavior tests
-- VERIFY-lite e2e with FakeProvider: success path (DEFINE → PLAN → BUILD → VERIFY) and failure-then-retry path (tests the restart policy with attempt N + N+1)
-- All M7 tests still pass
+- VERIFY runs validation command via `Bun.spawn` (no shell, scrubbed env, cwd pinned to worktree, argv-only); emits `VERIFY.md` with the six required H2 sections per VERIFY.md schema
+- Failed VERIFY does NOT enter a soft patch loop. Worktree destroyed as active candidate after `worktree_destroyed` event; forensics preserved with all nine entries (M7's six + M8's three); attempt N+1 starts clean from same approved PLAN with failure constraint surfaced into the BUILD prompt
+- Hard cap of 4 clean BUILD attempts (counted by completed BUILD reports cross-checked against `BUILD_REPORT.md.Task.Attempt`); attempt 5 lands in `NEEDS_INTERVENTION.json` per CLAUDE.md rule 11. BUILD-protocol failures, runner spawn failures, and BUILD-ref mismatches bypass the cap
+- Mutation gate rejects tautological tests for new-behavior tasks; source-only revert (test files preserved at post-patch); applicability requires `Expected exit code: 0` AND added test in changed-file manifest matching `phases.verify.testGlob`; mutation pass requires `terminationReason: "exit"` AND non-expected exit code
+- Cleanup-on-VERIFY-pass fires inside `code-oz approve verify`, not on `verify_completed` event; failed removal blocks gate write
+- VERIFY-lite e2e with FakeProvider: success path (DEFINE → PLAN → BUILD → VERIFY) and failure-then-retry path (attempt N + N+1) both pass
+- All M7 tests still pass (1005 carried)
+- Codex implementation review (CLAUDE.md rule 8) returns `push` after any fix-first commits land
 - Tag: `v0.8.0-alpha.0`
 
-NOT in M8: REVIEW-lite (M9), Debate runtime (M10).
+NOT in M8: REVIEW-lite (M9), Debate runtime (M10), explicit `Asserts:` flag in PLAN (deferred per Codex Decision 3 verdict; conservative manifest-driven applicability is enough for M8), persona-authored binary `Verdict.Verdict` (Codex Decision 10 tightened to orchestrator-owned), retry framework for flaky tests (W3+), real OS-level sandboxing (W4 containerization).
 
 ### M9 — `feat(spine): REVIEW-lite with cross-family handoff`
 
