@@ -93,9 +93,42 @@ export interface WriteToolPermissions {
   readonly timeoutMs: number
 }
 
+// `tool_use.execute` is the M8 sub-scope for VERIFY's validation-command
+// execution (per docs/contracts/VERIFY.md § "Permissions required" + Codex
+// M8 response decision 1, accept-with-modifications, thread 019ddf5f).
+// v0.1 ships only the `test-runner` tool; the runtime spawns the bound
+// validation command via Bun.spawn in argv form (no shell). Load-time
+// validation mirrors M7's `tool_use.write` shape: single templated root
+// (`<runId>` placeholder), bounded numeric caps, network: 'none'. The
+// argv-only command grammar (src/tools/command-grammar.ts) is what makes
+// `bash: deny` meaningful here — the persona cannot smuggle shell
+// substitution through the Validation command bullet.
+export const EXECUTE_TOOL_NAMES = ['test-runner'] as const
+export type ExecuteToolName = (typeof EXECUTE_TOOL_NAMES)[number]
+
+export const EXECUTE_TOOL_HARD_CAPS = Object.freeze({
+  /** Hard cap on per-call wall-time (matches VERIFY.md example). */
+  timeoutMs: 60_000,
+  /** Hard cap on stdout bytes captured per call (1 MiB). */
+  maxStdoutBytes: 1_048_576,
+  /** Hard cap on stderr bytes captured per call (1 MiB). */
+  maxStderrBytes: 1_048_576,
+} as const)
+
+export interface ExecuteToolPermissions {
+  readonly tools: readonly ExecuteToolName[]
+  /** Roots in templated form (`<runId>` placeholder allowed); runtime resolves. */
+  readonly roots: readonly string[]
+  readonly timeoutMs: number
+  readonly maxStdoutBytes: number
+  readonly maxStderrBytes: number
+  readonly network: 'none'
+}
+
 export interface ToolUsePermissions {
   readonly repo_context?: RepoContextPermissions
   readonly write?: WriteToolPermissions
+  readonly execute?: ExecuteToolPermissions
 }
 
 export interface AgentPermissions {
@@ -204,7 +237,7 @@ function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
     }
   }
   const tu = value as Record<string, unknown>
-  const KNOWN_SUB_SCOPES = ['repo_context', 'write'] as const
+  const KNOWN_SUB_SCOPES = ['repo_context', 'write', 'execute'] as const
   for (const k of Object.keys(tu)) {
     if (!(KNOWN_SUB_SCOPES as readonly string[]).includes(k)) {
       return {
@@ -222,6 +255,117 @@ function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
   if ('write' in tu && tu.write !== undefined) {
     const issue = validateWriteToolUse(tu.write, file)
     if (issue) return issue
+  }
+  if ('execute' in tu && tu.execute !== undefined) {
+    const issue = validateExecuteToolUse(tu.execute, file)
+    if (issue) return issue
+  }
+  return null
+}
+
+function validateExecuteToolUse(value: unknown, file: string): AgentLoadIssue | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.execute' must be an object",
+    }
+  }
+  const e = value as Record<string, unknown>
+  // tools
+  if (!Array.isArray(e.tools)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.execute.tools' must be an array",
+    }
+  }
+  if (e.tools.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.execute.tools' must list at least one tool",
+    }
+  }
+  for (const t of e.tools as unknown[]) {
+    if (typeof t !== 'string' || !(EXECUTE_TOOL_NAMES as readonly string[]).includes(t)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.execute.tools' entries must be one of: ${EXECUTE_TOOL_NAMES.join(', ')}`,
+        detail: JSON.stringify(t),
+      }
+    }
+  }
+  // roots — same lock as tool_use.write per Codex M7 Decision 12 lean
+  // applied to M8 (CODEX_RESPONSE_M8.md decision 1 modification): single
+  // templated worktree root; host roots, sibling-under-runs roots, and
+  // wildcards are rejected at load time.
+  if (!isStringArray(e.roots)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.execute.roots' must be an array of strings",
+    }
+  }
+  if (e.roots.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.execute.roots' must list at least one root",
+    }
+  }
+  for (const r of e.roots as string[]) {
+    if (r.length === 0) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: "'permissions.tool_use.execute.roots' entries must be non-empty strings",
+      }
+    }
+    if (!/^\.code-oz\/runs\/<runId>\/worktree\/?$/.test(r)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule:
+          "'permissions.tool_use.execute.roots' entries must be the templated worktree root " +
+          '`.code-oz/runs/<runId>/worktree/` (M8 mirrors M7 decision 12 lock)',
+        detail: r,
+      }
+    }
+  }
+  // numeric caps
+  const numericFields = [
+    ['timeoutMs', EXECUTE_TOOL_HARD_CAPS.timeoutMs],
+    ['maxStdoutBytes', EXECUTE_TOOL_HARD_CAPS.maxStdoutBytes],
+    ['maxStderrBytes', EXECUTE_TOOL_HARD_CAPS.maxStderrBytes],
+  ] as const
+  for (const [field, cap] of numericFields) {
+    const v = e[field]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.execute.${field}' must be a positive integer`,
+      }
+    }
+    if (v > cap) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.execute.${field}' must be ≤ ${cap} (M8 hard cap)`,
+        detail: `got ${v}`,
+      }
+    }
+  }
+  // network — must be 'none' in v0.1 (containerization is W4 scope)
+  if (e.network !== 'none') {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.execute.network' must be 'none' in v0.1",
+      detail: JSON.stringify(e.network),
+    }
   }
   return null
 }
@@ -428,6 +572,7 @@ function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
   const out: {
     repo_context?: RepoContextPermissions
     write?: WriteToolPermissions
+    execute?: ExecuteToolPermissions
   } = {}
   if (tu.repo_context !== undefined) {
     const rc = tu.repo_context as Record<string, unknown>
@@ -448,6 +593,17 @@ function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
       roots: Object.freeze([...(w.roots as string[])]),
       maxBytesPerPatch: w.maxBytesPerPatch as number,
       timeoutMs: w.timeoutMs as number,
+    })
+  }
+  if (tu.execute !== undefined) {
+    const e = tu.execute as Record<string, unknown>
+    out.execute = Object.freeze({
+      tools: Object.freeze([...(e.tools as ExecuteToolName[])]),
+      roots: Object.freeze([...(e.roots as string[])]),
+      timeoutMs: e.timeoutMs as number,
+      maxStdoutBytes: e.maxStdoutBytes as number,
+      maxStderrBytes: e.maxStderrBytes as number,
+      network: 'none' as const,
     })
   }
   return Object.freeze(out)
