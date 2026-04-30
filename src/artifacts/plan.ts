@@ -16,11 +16,15 @@
 //
 //   ### T-NNN: <one-line title>
 //
-//   - Files: <comma-separated relative paths>
+//   - Files: <comma-separated entries; each `<path>` or `<path> (modified|added|deleted)`>
 //   - Validation: <one shell command>
 //   - Risk: <one-line risk note>
 //   - Hypotheses: <comma-separated H-NNN ids, or "none">
 //   - Sources: <comma-separated source ids from SOURCE_CHECK.md>
+//
+// Files entries: M8 added an optional `(modified|added|deleted)` change-kind
+// annotation per entry. Unannotated entries default to `modified` for backward
+// compatibility; serialization always emits explicit annotations.
 //
 // All other H2 sections are bullets-only (mirroring SPEC.md).
 
@@ -62,15 +66,26 @@ export const SOURCE_ID_PATTERN = /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE)-\d{3,}$/
 
 export const TASK_BULLET_KEYS = ['Files', 'Validation', 'Risk', 'Hypotheses', 'Sources'] as const
 
+export const FILE_CHANGE_KINDS = ['modified', 'added', 'deleted'] as const
+export type FileChangeKind = (typeof FILE_CHANGE_KINDS)[number]
+
+export const DEFAULT_FILE_CHANGE_KIND: FileChangeKind = 'modified'
+
+export interface PlanTaskFile {
+  readonly path: string
+  readonly change: FileChangeKind
+}
+
 export interface PlanTask {
-  readonly id: string                       // 'T-001'
-  readonly title: string                    // one-line title
-  readonly files: readonly string[]         // ≥ 1 path
-  readonly validation: string               // single shell command
-  readonly risk: string                     // one-line; literal 'none' allowed
-  readonly hypotheses: readonly string[]    // [] when persona wrote "none"
-  readonly sources: readonly string[]       // ≥ 1 source id
-  readonly startLine?: number               // 1-indexed, the line of `### T-NNN:`
+  readonly id: string                          // 'T-001'
+  readonly title: string                       // one-line title
+  readonly files: readonly string[]            // back-compat: paths only
+  readonly fileChanges: readonly PlanTaskFile[] // M8: authoritative path + change kind
+  readonly validation: string                  // single shell command
+  readonly risk: string                        // one-line; literal 'none' allowed
+  readonly hypotheses: readonly string[]       // [] when persona wrote "none"
+  readonly sources: readonly string[]          // ≥ 1 source id
+  readonly startLine?: number                  // 1-indexed, the line of `### T-NNN:`
 }
 
 export interface PlanArtifact {
@@ -471,6 +486,28 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
               line: bullet.line,
               taskId: block.id,
             })
+          } else if (bullet.key === 'Files') {
+            // M8: optional `(modified|added|deleted)` change-kind annotation per entry.
+            // Unannotated entries default to `modified` for backward compatibility.
+            // Reject parentheticals that name a kind outside the locked enum.
+            for (const entry of bullet.value
+              .split(',')
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0)) {
+              const parenMatch = entry.match(/^(.+?)\s*\(([^)]*)\)\s*$/)
+              if (parenMatch !== null) {
+                const kind = parenMatch[2]!.trim()
+                if (!(FILE_CHANGE_KINDS as readonly string[]).includes(kind)) {
+                  issues.push({
+                    file,
+                    code: 'plan_task_malformed',
+                    rule: `task ${block.id}: Files entry change kind must be one of: ${FILE_CHANGE_KINDS.join(', ')} (got ${JSON.stringify(kind)})`,
+                    line: bullet.line,
+                    taskId: block.id,
+                  })
+                }
+              }
+            }
           } else if (bullet.key === 'Hypotheses') {
             // Allow the literal "none" sentinel; otherwise every entry must
             // match H-NNN format. Per Codex M6 review block-push #4.
@@ -540,10 +577,12 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
   const tasks: PlanTask[] = tasksSection.blocks.map((block) => {
     const map = new Map<string, string>()
     for (const b of block.bulletLines) map.set(b.key, b.value)
+    const fileChanges = parseFileEntries(map.get('Files') ?? '')
     return Object.freeze({
       id: block.id,
       title: block.title,
-      files: Object.freeze(splitCsv(map.get('Files') ?? '')),
+      files: Object.freeze(fileChanges.map((f) => f.path)),
+      fileChanges: Object.freeze(fileChanges.map((f) => Object.freeze(f) as PlanTaskFile)),
       validation: map.get('Validation') ?? '',
       risk: map.get('Risk') ?? '',
       hypotheses: Object.freeze(parseIdList(map.get('Hypotheses') ?? '')),
@@ -597,7 +636,7 @@ export function serializePlan(plan: PlanArtifact): string {
         if (idx > 0) out.push('')
         out.push(`### ${task.id}: ${task.title}`)
         out.push('')
-        out.push(`- Files: ${task.files.join(', ')}`)
+        out.push(`- Files: ${task.fileChanges.map((f) => `${f.path} (${f.change})`).join(', ')}`)
         out.push(`- Validation: ${task.validation}`)
         out.push(`- Risk: ${task.risk}`)
         out.push(`- Hypotheses: ${task.hypotheses.length === 0 ? 'none' : task.hypotheses.join(', ')}`)
@@ -641,6 +680,31 @@ function parseIdList(value: string): string[] {
   const trimmed = value.trim()
   if (trimmed === '' || trimmed.toLowerCase() === 'none') return []
   return splitCsv(trimmed)
+}
+
+/**
+ * Parse a comma-separated list of Files entries. Each entry is either a bare
+ * path or `<path> (modified|added|deleted)`. Bare entries default to
+ * `change: 'modified'` for backward compatibility (M8 grammar extension).
+ *
+ * Pre-condition: the parser's bullet-validation pass has already rejected
+ * entries with an invalid parenthetical kind, so any `(...)` reaching this
+ * function matches the locked enum. Entries without a recognized parenthetical
+ * shape are treated as bare paths (which preserves paths that legitimately
+ * contain parentheses, even though that is unusual).
+ */
+function parseFileEntries(value: string): PlanTaskFile[] {
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((entry) => {
+      const m = entry.match(/^(.+?)\s*\(\s*(modified|added|deleted)\s*\)\s*$/)
+      if (m !== null) {
+        return { path: m[1]!.trim(), change: m[2] as FileChangeKind }
+      }
+      return { path: entry, change: DEFAULT_FILE_CHANGE_KIND }
+    })
 }
 
 /**

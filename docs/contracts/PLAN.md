@@ -74,7 +74,7 @@ Sections appear in canonical order. **`## Tasks` is the only section whose body 
 ```markdown
 ### T-NNN: <one-line title>
 
-- Files: <comma-separated relative paths inside the working tree>
+- Files: <comma-separated entries; each `<path>` or `<path> (modified|added|deleted)`>
 - Validation: <a single shell command, bun-test or equivalent>
 - Risk: <one-line risk note>
 - Hypotheses: <comma-separated H-NNN ids, or `- Hypotheses: none` if none claimed>
@@ -85,6 +85,31 @@ Sections appear in canonical order. **`## Tasks` is the only section whose body 
 - Each task block has all five required bullets in the order shown.
 - Bullets are one line each. Multi-line task descriptions are not allowed; split into two tasks instead.
 - The Risk bullet is required; if there is no significant risk, write `- Risk: none`.
+
+### Files entry grammar (M8 extension)
+
+Each entry in the `Files:` bullet is either a bare path or a path followed by an optional change-kind annotation in parentheses:
+
+```
+src/scoring/syllable.ts (added), tests/scoring-syllable.test.ts (added)
+src/candidates/select.ts (modified)
+src/legacy/old.ts (deleted)
+```
+
+The change kind enum is locked: `modified` | `added` | `deleted`.
+
+- **`added`** — the path does not exist in the run's base commit; the BUILD task creates it.
+- **`modified`** — the path exists in the base commit; the BUILD task changes it.
+- **`deleted`** — the path exists in the base commit; the BUILD task removes it.
+
+Bare paths (no parenthetical) default to `change: modified` for backward compatibility with PLAN.md files generated before M8. Persona-emitted PLAN.md SHOULD use explicit annotations in v0.1; M8's serializer always writes the annotated form on canonical output. A future minor (W2 scope) may tighten this to require explicit annotation.
+
+Parenthetical values outside the enum fail parsing with `plan_task_malformed` (rule: `Files entry change kind must be one of: modified, added, deleted`).
+
+This grammar is consumed by:
+
+- **BUILD entry preflight** (M8 commit 7) — verifies that `change: added` paths are absent in the bound base commit and that `change: modified | deleted` paths are present. Drift fails with `plan_change_kind_drift`.
+- **Mutation gate applicability** (M8 commit 6) — applicable iff the changed-file manifest contains at least one `change: added` test path matching `phases.verify.testGlob` AND `Validation command.Expected exit code` is `0`.
 
 ## Why H3 task blocks instead of bullets
 

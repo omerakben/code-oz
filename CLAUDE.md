@@ -6,7 +6,7 @@ This file orients Claude Code sessions working on `code-oz`.
 
 `code-oz` is a standalone Bun + TypeScript CLI that boots an adaptive multi-agent software-company simulation over a hybrid phase-graph + agentic sub-orchestration spine. Hard SDLC gates between phases (file-based, schema-validated). Cross-family adversarial review. Non-technical-user intent elicitation at the front. Multi-provider via `IAgentProvider` (Claude / Codex / Gemini SDKs reading CLI OAuth tokens).
 
-Status: **v0.7.0-alpha.0 — M7 closed (BUILD-lite: worktree subsystem + patch validate/apply + BUILD_REPORT.md + Scientist tail at BUILD gate)**. 1005 offline tests pass. M8-M10 remaining per the M7-M10 shape debate (2026-04-30, `docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`): M8 = VERIFY-lite + restart-on-fail, M9 = REVIEW-lite, M10 = Debate runtime. Read `docs/design/ROADMAP.md` first.
+Status: **v0.8.0-alpha.0 — M8 closed (VERIFY-lite: tool_use.execute + argv-only command grammar + test-runner + verify_* events + VERIFY.md parser/serializer + mutation gate + restart policy + forensics extras + canonical event order + verifier persona + runVerify orchestration + cleanup-on-approval hook + N+1 scheduler)**. 1325 offline tests pass. M9-M10 remaining per the M7-M10 shape debate (2026-04-30, `docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`): M9 = REVIEW-lite, M10 = Debate runtime. Read `docs/design/ROADMAP.md` first.
 
 ## Where decisions live
 

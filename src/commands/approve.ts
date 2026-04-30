@@ -39,9 +39,11 @@ import {
 } from '../state/schemas.ts'
 import { GateLoadError } from '../state/errors.ts'
 import { _validateArtifactSyncPath } from '../state/gates.ts'
-import { readEvents } from '../state/events.ts'
+import { appendEvent, readEvents } from '../state/events.ts'
 import { parseSpec } from '../artifacts/spec.ts'
+import { parseVerifyReport, VerifyReportLoadError } from '../artifacts/verify-report.ts'
 import { SpecLoadError } from '../artifacts/errors.ts'
+import { removeRunWorktree } from '../worktree/remove-run-worktree.ts'
 
 export interface RunApproveOptions {
   readonly cwd?: string
@@ -209,6 +211,21 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     }
   }
 
+  // VERIFY-specific approval (Codex M8 decision 7 + fix 4): validate
+  // VERIFY.md, confirm verdict=pass, remove the worktree, emit
+  // worktree_destroyed BEFORE approveGate writes GATE_VERIFY_PASSED.json.
+  // Worktree removal failure produces an error (and does NOT write the
+  // gate); the user can re-attempt approval after manual cleanup.
+  if (targetPhase === 'verify') {
+    await preApproveVerifyHook({
+      cwd: opts.cwd ?? process.cwd(),
+      runId,
+      runPaths,
+      verifyPath: join(ctx.paths.artifacts, artifactPath),
+      now: opts.now ?? (() => new Date().toISOString()),
+    })
+  }
+
   const now = opts.now ?? (() => new Date().toISOString())
   const gate: GateFile = {
     version: 1,
@@ -236,6 +253,99 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     nextPhase: result.nextPhase,
     gateExisted: result.gateExisted,
   })
+}
+
+/**
+ * VERIFY-specific pre-approval hook (M8 fix 4 + Codex decision 7):
+ *   1. Read VERIFY.md from disk
+ *   2. Parse it; reject malformed
+ *   3. Confirm verdict=pass; reject otherwise (a failed VERIFY does not
+ *      get approved — the orchestrator schedules attempt N+1)
+ *   4. Remove the run worktree via git worktree remove
+ *   5. Emit worktree_destroyed BEFORE approveGate writes the gate file
+ *
+ * Worktree removal failure throws; the gate file is NOT written. The
+ * user can fix the worktree and retry. Exported for direct testing.
+ */
+export interface PreApproveVerifyHookInput {
+  readonly cwd: string
+  readonly runId: string
+  readonly runPaths: { readonly eventsFile: string; readonly lockDir: string }
+  readonly verifyPath: string
+  readonly now: () => string
+}
+
+export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Promise<void> {
+  let verifyText: string
+  try {
+    verifyText = await readFile(input.verifyPath, 'utf8')
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `cannot approve verify: ${input.verifyPath} does not exist. Run VERIFY first.`,
+      )
+    }
+    throw err
+  }
+  let verifyData: ReturnType<typeof parseVerifyReport>
+  try {
+    verifyData = parseVerifyReport(verifyText, input.verifyPath)
+  } catch (err) {
+    if (err instanceof VerifyReportLoadError) {
+      const summary = err.issues
+        .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+        .join('\n')
+      throw new Error(
+        [
+          `cannot approve verify: ${input.verifyPath} is not a valid VERIFY.md.`,
+          summary,
+          'Re-run VERIFY or repair the artifact before approving.',
+        ].join('\n'),
+      )
+    }
+    throw err
+  }
+  if (verifyData.verdict.verdict !== 'pass') {
+    throw new Error(
+      [
+        `cannot approve verify: VERIFY.md verdict is '${verifyData.verdict.verdict}'.`,
+        'A failed VERIFY does not get approved; the orchestrator schedules attempt N+1 instead.',
+      ].join('\n'),
+    )
+  }
+  const removed = await removeRunWorktree({ cwd: input.cwd, runId: input.runId })
+  if (!removed.ok) {
+    // Idempotency: if the worktree is already gone (manual cleanup, or no
+    // worktree was ever created — e.g., FSM regression test), treat as
+    // success and skip the worktree_destroyed event (we have nothing to
+    // record). Other failure modes (dirty worktree, permission denied)
+    // throw and the gate is not written.
+    const reason = removed.reason
+    const alreadyGone =
+      reason.includes('is not a working tree') ||
+      reason.includes('not a git repository') ||
+      reason.includes('No such file or directory')
+    if (!alreadyGone) {
+      throw new Error(
+        `cannot approve verify: worktree removal failed (${removed.code}): ${reason}. Inspect manually and retry.`,
+      )
+    }
+    return
+  }
+  await appendEvent(
+    { file: input.runPaths.eventsFile, lockDir: input.runPaths.lockDir },
+    {
+      version: 1,
+      type: 'worktree_destroyed',
+      ts: input.now(),
+      runId: input.runId,
+      phase: 'verify',
+      // The attempt that just passed VERIFY. The hook receives it via the
+      // run state; for v0.1 we read it from VERIFY.md's BUILD ref.
+      attempt: verifyData.buildRef.attempt,
+      worktreePath: removed.worktreePath,
+    },
+  )
 }
 
 async function defaultConfirm(message: string): Promise<boolean> {

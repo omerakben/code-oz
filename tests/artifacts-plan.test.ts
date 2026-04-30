@@ -275,15 +275,15 @@ describe('allocateTaskId', () => {
 
   test('returns next free id, padding to three digits', () => {
     const tasks: PlanTask[] = [
-      { id: 'T-001', title: 't', files: ['x'], validation: 'v', risk: 'r', hypotheses: [], sources: ['s'] },
-      { id: 'T-002', title: 't', files: ['x'], validation: 'v', risk: 'r', hypotheses: [], sources: ['s'] },
+      { id: 'T-001', title: 't', files: ['x'], fileChanges: [{ path: 'x', change: 'modified' }], validation: 'v', risk: 'r', hypotheses: [], sources: ['s'] },
+      { id: 'T-002', title: 't', files: ['x'], fileChanges: [{ path: 'x', change: 'modified' }], validation: 'v', risk: 'r', hypotheses: [], sources: ['s'] },
     ]
     expect(allocateTaskId(tasks)).toBe('T-003')
   })
 
   test('handles wide id values', () => {
     const tasks: PlanTask[] = [
-      { id: 'T-099', title: 't', files: ['x'], validation: 'v', risk: 'r', hypotheses: [], sources: ['s'] },
+      { id: 'T-099', title: 't', files: ['x'], fileChanges: [{ path: 'x', change: 'modified' }], validation: 'v', risk: 'r', hypotheses: [], sources: ['s'] },
     ]
     expect(allocateTaskId(tasks)).toBe('T-100')
   })

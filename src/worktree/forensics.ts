@@ -29,6 +29,14 @@ export interface WriteForensicsBundleOptions {
   readonly promptConstraints: string
   /** Optional named extras (M8+ may add VERIFY.md, attempt-<N>.patch frozen, etc.). */
   readonly extras?: Readonly<Record<string, string>>
+  /**
+   * When true, preserve any existing stdout.log / stderr.log on disk
+   * instead of writing the strings provided in stdout / stderr.
+   * VERIFY's runner streams logs directly into forensics/<N>/ during
+   * execution; the bundle writer must not clobber them with whatever
+   * the caller passes (often empty). Codex review M8 finding bp#3.
+   */
+  readonly preserveExistingStdoutStderr?: boolean
 }
 
 export interface WriteForensicsBundleOk {
@@ -55,6 +63,111 @@ export const M7_REQUIRED_FORENSICS_ENTRIES = [
   'manifest.txt',
   'prompt-constraints.md',
 ] as const
+
+/**
+ * The three M8 forensics entries appended on a VERIFY-fail attempt
+ * (per docs/contracts/WORKTREE.md § "Forensics extensibility" + the
+ * M8 commit-0 synthesis pin). `attempt-N.patch` is templated by the
+ * `attemptPatchName(n)` helper because the suffix tracks the attempt
+ * number. The M7 layout is never relocated; M8 entries live alongside
+ * the six required names in the same forensics/<N>/ directory.
+ */
+export const M8_FORENSICS_EXTRA_NAMES = Object.freeze({
+  verifyReport: 'VERIFY.md',
+  buildPromptSnapshot: 'build-prompt-snapshot.md',
+  attemptPatchTemplate: 'attempt-<N>.patch',
+} as const)
+
+/** Resolves the templated attempt-patch filename for a given attempt N. */
+export function attemptPatchName(attempt: number): string {
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new Error(`attemptPatchName: attempt must be a positive integer; got ${attempt}`)
+  }
+  return `attempt-${attempt}.patch`
+}
+
+export interface WriteVerifyForensicsBundleOptions {
+  readonly cwd: string
+  readonly runId: string
+  readonly attempt: number
+  readonly baseCommitSha: string
+  readonly stdout: string
+  readonly stderr: string
+  readonly buildReportContent: string
+  readonly manifestText: string
+  readonly promptConstraints: string
+  /** Frozen VERIFY.md content (the persona-authored + orchestrator-validated artifact). */
+  readonly verifyReportContent: string
+  /** Frozen patch content for this attempt (the same patch that BUILD applied). */
+  readonly attemptPatchContent: string
+  /** Snapshot of the BUILD persona prompt that fed this attempt. */
+  readonly buildPromptSnapshot: string
+  /**
+   * When true, do NOT rewrite stdout.log / stderr.log entries — assume the
+   * runner streamed them to disk before this call and preserve those bytes.
+   * Closes Codex review M8 finding bp#3 (failure forensics overwrote
+   * streamed logs with empty files when stdout/stderr were passed as '').
+   */
+  readonly preserveExistingStdoutStderr?: boolean
+}
+
+/**
+ * M8-aware forensics writer: invokes writeForensicsBundle with the
+ * three M8 extras populated under their canonical names. Per Codex M8
+ * decision 8 modification, this writer fires within the
+ * orchestrator's locked sequence:
+ *
+ *   write logs → write canonical VERIFY.md → write forensics bundle
+ *   → emit worktree_forensics_preserved → emit verify_failed
+ *   → remove worktree → emit worktree_destroyed
+ *   → emit verify_restart_initiated (or intervention)
+ *
+ * This function only handles the "write forensics bundle" step. The
+ * caller (M8 commit 10) is responsible for event emission ordering
+ * and the worktree removal that follows.
+ */
+export async function writeVerifyForensicsBundle(
+  opts: WriteVerifyForensicsBundleOptions,
+): Promise<WriteForensicsBundleResult> {
+  if (!opts.verifyReportContent.trim()) {
+    return Object.freeze({
+      ok: false as const,
+      code: 'forensics_verify_report_empty',
+      reason: 'verifyReportContent must be non-empty',
+    })
+  }
+  if (!opts.attemptPatchContent.trim()) {
+    return Object.freeze({
+      ok: false as const,
+      code: 'forensics_attempt_patch_empty',
+      reason: 'attemptPatchContent must be non-empty',
+    })
+  }
+  if (!opts.buildPromptSnapshot.trim()) {
+    return Object.freeze({
+      ok: false as const,
+      code: 'forensics_prompt_snapshot_empty',
+      reason: 'buildPromptSnapshot must be non-empty',
+    })
+  }
+  return writeForensicsBundle({
+    cwd: opts.cwd,
+    runId: opts.runId,
+    attempt: opts.attempt,
+    baseCommitSha: opts.baseCommitSha,
+    stdout: opts.stdout,
+    stderr: opts.stderr,
+    buildReportContent: opts.buildReportContent,
+    manifestText: opts.manifestText,
+    promptConstraints: opts.promptConstraints,
+    preserveExistingStdoutStderr: opts.preserveExistingStdoutStderr,
+    extras: {
+      [M8_FORENSICS_EXTRA_NAMES.verifyReport]: opts.verifyReportContent,
+      [attemptPatchName(opts.attempt)]: opts.attemptPatchContent,
+      [M8_FORENSICS_EXTRA_NAMES.buildPromptSnapshot]: opts.buildPromptSnapshot,
+    },
+  })
+}
 
 /**
  * Writes the forensics bundle for a failed attempt N. The diff is captured
@@ -104,16 +217,29 @@ export async function writeForensicsBundle(
   const written: string[] = []
 
   // Write the six required entries first, then any extras.
-  const required: ReadonlyArray<readonly [string, string]> = [
-    ['diff.patch', diff.stdout],
-    ['stdout.log', opts.stdout],
-    ['stderr.log', opts.stderr],
-    ['BUILD_REPORT.md', opts.buildReportContent],
-    ['manifest.txt', opts.manifestText],
-    ['prompt-constraints.md', opts.promptConstraints],
+  const required: ReadonlyArray<readonly [string, string, boolean]> = [
+    ['diff.patch', diff.stdout, false],
+    ['stdout.log', opts.stdout, opts.preserveExistingStdoutStderr === true],
+    ['stderr.log', opts.stderr, opts.preserveExistingStdoutStderr === true],
+    ['BUILD_REPORT.md', opts.buildReportContent, false],
+    ['manifest.txt', opts.manifestText, false],
+    ['prompt-constraints.md', opts.promptConstraints, false],
   ]
 
-  for (const [name, content] of required) {
+  for (const [name, content, preserveIfExists] of required) {
+    if (preserveIfExists) {
+      // Caller streamed this file already (Codex review bp#3). Verify it
+      // exists; if it does, skip the rewrite and record the entry.
+      try {
+        await Bun.file(`${dir}/${name}`).text()
+        written.push(name)
+        continue
+      } catch {
+        // File doesn't exist; fall through to write whatever the caller
+        // supplied (probably empty, but at least we record the absence
+        // honestly rather than silently dropping the entry).
+      }
+    }
     const ok = await writeOne(dir, name, content)
     if (!ok.ok) return ok
     written.push(name)

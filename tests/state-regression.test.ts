@@ -78,11 +78,59 @@ const MINIMAL_VALID_SPEC = [
   '',
 ].join('\n')
 
+// Minimal-valid VERIFY.md fixture — needed since M8 fix 4: preApproveVerifyHook
+// validates VERIFY.md schema + verdict=pass before removing the worktree.
+// Other phases still use stub bodies because their approve flow doesn't yet
+// content-validate (will tighten in M9+ for REVIEW).
+const MINIMAL_VALID_VERIFY = `# VERIFY
+
+## BUILD ref
+
+- BUILD_REPORT.md: .code-oz/artifacts/BUILD_REPORT.md (sha256: ${'e'.repeat(64)})
+- Task: T-001
+- Attempt: 1
+- Base commit: ${'b'.repeat(40)}
+- Patch sha256: ${'c'.repeat(64)}
+
+## Validation command
+
+- Command: bun test foo.test.ts
+- Working directory: .code-oz/runs/<runId>/worktree/
+- Timeout (ms): 60000
+- Expected exit code: 0
+
+## Evidence
+
+- Exit code: 0
+- Duration (ms): 100
+- Stdout bytes: 0
+- Stderr bytes: 0
+- Stdout log: .code-oz/runs/<runId>/forensics/1/stdout.log
+- Stderr log: .code-oz/runs/<runId>/forensics/1/stderr.log
+
+## Verdict
+
+- Verdict: pass
+- Rationale: stub.
+
+## Mutation
+
+- Status: not-applicable
+- Notes: stub.
+
+## Failure constraint
+
+- None (verdict pass).
+`
+
 async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Promise<void> {
   const artifactRoot = join(cwd, '.code-oz', 'artifacts')
   await mkdir(artifactRoot, { recursive: true })
   for (const p of phases) {
-    const body = p === 'define' ? MINIMAL_VALID_SPEC : `${p} body`
+    let body: string
+    if (p === 'define') body = MINIMAL_VALID_SPEC
+    else if (p === 'verify') body = MINIMAL_VALID_VERIFY
+    else body = `${p} body`
     await writeFile(join(artifactRoot, CANONICAL_ARTIFACTS[p]), body, 'utf8')
   }
   void runDir // unused but kept for parity if signatures change
