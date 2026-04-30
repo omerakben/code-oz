@@ -172,7 +172,7 @@ describe('runVerify — entry validation', () => {
     }
   })
 
-  test('persona response missing ready signal → verify_persona_missing_ready_signal', async () => {
+  test('persona response missing ready signal twice → verify_validation_failed (after repair turn)', async () => {
     await writeFile(
       join(paths.artifactRoot, 'BUILD_REPORT.md'),
       makeMinimalBuildReport({ taskId: 'T-001', attempt: 1 }),
@@ -184,7 +184,8 @@ describe('runVerify — entry validation', () => {
     )
     expect(result.status).toBe('intervention')
     if (result.status === 'intervention') {
-      expect(result.code).toBe('verify_persona_missing_ready_signal')
+      // Initial draft missing → repair turn → still missing → terminal.
+      expect(result.code).toBe('verify_validation_failed')
     }
   })
 
@@ -208,6 +209,33 @@ describe('runVerify — entry validation', () => {
 describe('runVerify — exposed VERIFY_READY_SIGNAL constant', () => {
   test('matches the persona prompt template token', () => {
     expect(VERIFY_READY_SIGNAL).toBe('<verify-ready/>')
+  })
+})
+
+describe('runVerify — durable interventions (Codex bp#2)', () => {
+  test('intervention writes NEEDS_INTERVENTION.json + appends intervention event', async () => {
+    const { readFile, access } = await import('node:fs/promises')
+    const { readEvents } = await import('../src/state/events.ts')
+    const { join: pjoin } = await import('node:path')
+
+    // No BUILD_REPORT.md → verify_build_report_missing intervention.
+    const result = await runVerify(buildOpts())
+    expect(result.status).toBe('intervention')
+
+    // NEEDS_INTERVENTION.json must exist at the run dir.
+    const gatePath = pjoin(paths.runDir, 'NEEDS_INTERVENTION.json')
+    await access(gatePath) // throws if missing
+    const gateContent = JSON.parse(await readFile(gatePath, 'utf8')) as Record<string, unknown>
+    expect(gateContent.code).toBe('verify_build_report_missing')
+    expect(gateContent.phase).toBe('verify')
+    expect(Array.isArray(gateContent.actionableSuggestions)).toBe(true)
+    expect((gateContent.actionableSuggestions as string[]).length).toBeGreaterThan(0)
+
+    // events.jsonl must contain an intervention event.
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const ie = events.find((e) => e.type === 'intervention')
+    expect(ie).toBeDefined()
+    expect((ie as { code: string }).code).toBe('verify_build_report_missing')
   })
 })
 

@@ -139,6 +139,80 @@ describe('writeVerifyForensicsBundle — happy path', () => {
   })
 })
 
+describe('writeVerifyForensicsBundle — preserveExistingStdoutStderr (Codex bp#3)', () => {
+  test('preserves an existing stdout.log on disk instead of clobbering with empty', async () => {
+    await withCommittedRepo(async (cwd) => {
+      const created = await createRunWorktree({ cwd, runId: RUN_ID })
+      if (!created.ok) return
+
+      // Simulate the runner streaming logs into the forensics dir before
+      // writeVerifyForensicsBundle is called.
+      const { mkdir: mk } = await import('node:fs/promises')
+      const forensicsDir = join(cwd, '.code-oz/runs', RUN_ID, 'forensics', '1')
+      await mk(forensicsDir, { recursive: true })
+      const streamedStdout = 'TEST FAILED: expected 1, got 999\nthis is the streamed log content\n'
+      const streamedStderr = 'Error at src/a.ts:1\n'
+      await writeFile(join(forensicsDir, 'stdout.log'), streamedStdout)
+      await writeFile(join(forensicsDir, 'stderr.log'), streamedStderr)
+
+      // Mutate worktree so git diff produces output
+      await writeFile(join(created.worktreePath, 'src/a.ts'), 'export const a = 999\n')
+
+      const result = await writeVerifyForensicsBundle({
+        cwd,
+        runId: RUN_ID,
+        attempt: 1,
+        baseCommitSha: created.baseCommitSha,
+        // Caller passes empty markers — bundle writer must preserve the
+        // already-streamed log files rather than overwriting them with ''.
+        ...M7_INPUTS,
+        stdout: '',
+        stderr: '',
+        ...M8_INPUTS,
+        preserveExistingStdoutStderr: true,
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+
+      const stdoutAfter = await readFile(join(result.forensicsPath, 'stdout.log'), 'utf8')
+      const stderrAfter = await readFile(join(result.forensicsPath, 'stderr.log'), 'utf8')
+      expect(stdoutAfter).toBe(streamedStdout)
+      expect(stderrAfter).toBe(streamedStderr)
+    })
+  })
+
+  test('without the flag, empty stdout/stderr DO clobber existing files (legacy M7 behavior)', async () => {
+    await withCommittedRepo(async (cwd) => {
+      const created = await createRunWorktree({ cwd, runId: RUN_ID })
+      if (!created.ok) return
+
+      const { mkdir: mk } = await import('node:fs/promises')
+      const forensicsDir = join(cwd, '.code-oz/runs', RUN_ID, 'forensics', '1')
+      await mk(forensicsDir, { recursive: true })
+      await writeFile(join(forensicsDir, 'stdout.log'), 'streamed content')
+
+      const result = await writeVerifyForensicsBundle({
+        cwd,
+        runId: RUN_ID,
+        attempt: 1,
+        baseCommitSha: created.baseCommitSha,
+        ...M7_INPUTS,
+        stdout: '',
+        stderr: '',
+        ...M8_INPUTS,
+        // preserveExistingStdoutStderr: not set → defaults to false
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+
+      const stdoutAfter = await readFile(join(result.forensicsPath, 'stdout.log'), 'utf8')
+      // Without the flag the existing file IS clobbered with empty —
+      // documents the legacy behavior we're protecting against in VERIFY.
+      expect(stdoutAfter).toBe('')
+    })
+  })
+})
+
 describe('writeVerifyForensicsBundle — input validation', () => {
   test('empty verifyReportContent rejected', async () => {
     await withCommittedRepo(async (cwd) => {

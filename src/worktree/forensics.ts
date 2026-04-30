@@ -29,6 +29,14 @@ export interface WriteForensicsBundleOptions {
   readonly promptConstraints: string
   /** Optional named extras (M8+ may add VERIFY.md, attempt-<N>.patch frozen, etc.). */
   readonly extras?: Readonly<Record<string, string>>
+  /**
+   * When true, preserve any existing stdout.log / stderr.log on disk
+   * instead of writing the strings provided in stdout / stderr.
+   * VERIFY's runner streams logs directly into forensics/<N>/ during
+   * execution; the bundle writer must not clobber them with whatever
+   * the caller passes (often empty). Codex review M8 finding bp#3.
+   */
+  readonly preserveExistingStdoutStderr?: boolean
 }
 
 export interface WriteForensicsBundleOk {
@@ -94,6 +102,13 @@ export interface WriteVerifyForensicsBundleOptions {
   readonly attemptPatchContent: string
   /** Snapshot of the BUILD persona prompt that fed this attempt. */
   readonly buildPromptSnapshot: string
+  /**
+   * When true, do NOT rewrite stdout.log / stderr.log entries — assume the
+   * runner streamed them to disk before this call and preserve those bytes.
+   * Closes Codex review M8 finding bp#3 (failure forensics overwrote
+   * streamed logs with empty files when stdout/stderr were passed as '').
+   */
+  readonly preserveExistingStdoutStderr?: boolean
 }
 
 /**
@@ -145,6 +160,7 @@ export async function writeVerifyForensicsBundle(
     buildReportContent: opts.buildReportContent,
     manifestText: opts.manifestText,
     promptConstraints: opts.promptConstraints,
+    preserveExistingStdoutStderr: opts.preserveExistingStdoutStderr,
     extras: {
       [M8_FORENSICS_EXTRA_NAMES.verifyReport]: opts.verifyReportContent,
       [attemptPatchName(opts.attempt)]: opts.attemptPatchContent,
@@ -201,16 +217,29 @@ export async function writeForensicsBundle(
   const written: string[] = []
 
   // Write the six required entries first, then any extras.
-  const required: ReadonlyArray<readonly [string, string]> = [
-    ['diff.patch', diff.stdout],
-    ['stdout.log', opts.stdout],
-    ['stderr.log', opts.stderr],
-    ['BUILD_REPORT.md', opts.buildReportContent],
-    ['manifest.txt', opts.manifestText],
-    ['prompt-constraints.md', opts.promptConstraints],
+  const required: ReadonlyArray<readonly [string, string, boolean]> = [
+    ['diff.patch', diff.stdout, false],
+    ['stdout.log', opts.stdout, opts.preserveExistingStdoutStderr === true],
+    ['stderr.log', opts.stderr, opts.preserveExistingStdoutStderr === true],
+    ['BUILD_REPORT.md', opts.buildReportContent, false],
+    ['manifest.txt', opts.manifestText, false],
+    ['prompt-constraints.md', opts.promptConstraints, false],
   ]
 
-  for (const [name, content] of required) {
+  for (const [name, content, preserveIfExists] of required) {
+    if (preserveIfExists) {
+      // Caller streamed this file already (Codex review bp#3). Verify it
+      // exists; if it does, skip the rewrite and record the entry.
+      try {
+        await Bun.file(`${dir}/${name}`).text()
+        written.push(name)
+        continue
+      } catch {
+        // File doesn't exist; fall through to write whatever the caller
+        // supplied (probably empty, but at least we record the absence
+        // honestly rather than silently dropping the entry).
+      }
+    }
     const ok = await writeOne(dir, name, content)
     if (!ok.ok) return ok
     written.push(name)
