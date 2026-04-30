@@ -83,9 +83,24 @@ export async function runCommand(args: string[]): Promise<void> {
     process.exit(2)
   }
 
-  const { registry: providerRegistry } = buildProviderRegistry({
+  const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
     providerOverride: parsed.providerOverride,
   })
+  // When both --provider fake and --request-file are set, pre-script BA
+  // replies from the same fixture file so the runner replays deterministically.
+  if (
+    fakeProvider !== undefined &&
+    parsed.input.kind === 'file'
+  ) {
+    const raw = await readFile(parsed.input.path, 'utf8')
+    const baTurns = parseBaTurnsFromTranscript(raw)
+    for (const reply of baTurns) {
+      fakeProvider.expect({ phase: 'define', agent: 'ba' }).respondWith({
+        content: reply,
+      })
+    }
+  }
+
   const runId = generateUlid()
   const runPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, runId)
   await initRun({ paths: runPaths, profile: 'greenfield', runId })
@@ -344,6 +359,7 @@ async function promptTty(
 // --- transcript fixture parsing -----------------------------------
 
 const USER_TURN_RE = /<!--\s*turn:user\s*-->([\s\S]*?)<!--\s*\/turn\s*-->/g
+const BA_TURN_RE = /<!--\s*turn:ba\s*-->([\s\S]*?)<!--\s*\/turn\s*-->/g
 
 /**
  * Extract user turns from a comment-delimited transcript fixture. Returns
@@ -354,6 +370,20 @@ const USER_TURN_RE = /<!--\s*turn:user\s*-->([\s\S]*?)<!--\s*\/turn\s*-->/g
 export function parseUserTurnsFromTranscript(raw: string): readonly string[] {
   const turns: string[] = []
   for (const match of raw.matchAll(USER_TURN_RE)) {
+    const body = (match[1] ?? '').trim()
+    if (body.length > 0) turns.push(body)
+  }
+  return Object.freeze(turns)
+}
+
+/**
+ * Extract BA persona replies from a comment-delimited transcript fixture.
+ * Used by `--provider fake` + `--request-file` to pre-script FakeProvider
+ * expectations so the runner replays the conversation deterministically.
+ */
+export function parseBaTurnsFromTranscript(raw: string): readonly string[] {
+  const turns: string[] = []
+  for (const match of raw.matchAll(BA_TURN_RE)) {
     const body = (match[1] ?? '').trim()
     if (body.length > 0) turns.push(body)
   }
