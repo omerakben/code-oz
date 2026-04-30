@@ -67,8 +67,35 @@ export interface RepoContextPermissions {
   readonly network: 'none'
 }
 
+// `tool_use.write` is the M7 sub-scope for orchestrator-applied patches
+// (per docs/contracts/BUILD.md § "Permissions required" + Codex M7
+// implementation review accept-with-modifications on decision 12, thread
+// 019ddeea). v0.1 ships only the `apply-patch` tool; the runtime is
+// orchestrator-side (extracted from persona response, applied by the
+// orchestrator), so the schema is forward-looking. Load-time validation
+// pins the templated declaration; runtime resolves <runId> to a concrete
+// absolute root and re-checks size + path-safety per call.
+export const WRITE_TOOL_NAMES = ['apply-patch'] as const
+export type WriteToolName = (typeof WRITE_TOOL_NAMES)[number]
+
+export const WRITE_TOOL_HARD_CAPS = Object.freeze({
+  /** Hard cap on patch byte count per BUILD.md. */
+  maxBytesPerPatch: 65_536,
+  /** Hard cap on per-tool wall-time. */
+  timeoutMs: 5_000,
+} as const)
+
+export interface WriteToolPermissions {
+  readonly tools: readonly WriteToolName[]
+  /** Roots in templated form (`<runId>` placeholder allowed); runtime resolves. */
+  readonly roots: readonly string[]
+  readonly maxBytesPerPatch: number
+  readonly timeoutMs: number
+}
+
 export interface ToolUsePermissions {
   readonly repo_context?: RepoContextPermissions
+  readonly write?: WriteToolPermissions
 }
 
 export interface AgentPermissions {
@@ -177,18 +204,109 @@ function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
     }
   }
   const tu = value as Record<string, unknown>
+  const KNOWN_SUB_SCOPES = ['repo_context', 'write'] as const
   for (const k of Object.keys(tu)) {
-    if (k !== 'repo_context') {
+    if (!(KNOWN_SUB_SCOPES as readonly string[]).includes(k)) {
       return {
         file,
         code: 'schema_invalid_permissions',
-        rule: "'permissions.tool_use' may contain only the 'repo_context' sub-scope in v0.1",
+        rule: `'permissions.tool_use' may contain only ${KNOWN_SUB_SCOPES.join(' / ')} sub-scopes in v0.1`,
         detail: `unknown sub-scope: ${k}`,
       }
     }
   }
   if ('repo_context' in tu && tu.repo_context !== undefined) {
-    return validateRepoContext(tu.repo_context, file)
+    const issue = validateRepoContext(tu.repo_context, file)
+    if (issue) return issue
+  }
+  if ('write' in tu && tu.write !== undefined) {
+    const issue = validateWriteToolUse(tu.write, file)
+    if (issue) return issue
+  }
+  return null
+}
+
+function validateWriteToolUse(value: unknown, file: string): AgentLoadIssue | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.write' must be an object",
+    }
+  }
+  const w = value as Record<string, unknown>
+  // tools
+  if (!Array.isArray(w.tools)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.write.tools' must be an array",
+    }
+  }
+  if (w.tools.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.write.tools' must list at least one tool",
+    }
+  }
+  for (const t of w.tools as unknown[]) {
+    if (typeof t !== 'string' || !(WRITE_TOOL_NAMES as readonly string[]).includes(t)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.write.tools' entries must be one of: ${WRITE_TOOL_NAMES.join(', ')}`,
+        detail: JSON.stringify(t),
+      }
+    }
+  }
+  // roots — templated form is allowed in v0.1 (runtime resolves <runId>).
+  // We require at least one root and reject empty strings.
+  if (!isStringArray(w.roots)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.write.roots' must be an array of strings",
+    }
+  }
+  if (w.roots.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.write.roots' must list at least one root",
+    }
+  }
+  for (const r of w.roots as string[]) {
+    if (r.length === 0) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: "'permissions.tool_use.write.roots' entries must be non-empty strings",
+      }
+    }
+  }
+  // numeric caps
+  const numericFields = [
+    ['maxBytesPerPatch', WRITE_TOOL_HARD_CAPS.maxBytesPerPatch],
+    ['timeoutMs', WRITE_TOOL_HARD_CAPS.timeoutMs],
+  ] as const
+  for (const [field, cap] of numericFields) {
+    const v = w[field]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.write.${field}' must be a positive integer`,
+      }
+    }
+    if (v > cap) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.write.${field}' must be ≤ ${cap} (M7 hard cap)`,
+        detail: `got ${v}`,
+      }
+    }
   }
   return null
 }
@@ -292,7 +410,10 @@ function freezePermissions(perms: Record<string, unknown>): AgentPermissions {
 }
 
 function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
-  const out: { repo_context?: RepoContextPermissions } = {}
+  const out: {
+    repo_context?: RepoContextPermissions
+    write?: WriteToolPermissions
+  } = {}
   if (tu.repo_context !== undefined) {
     const rc = tu.repo_context as Record<string, unknown>
     out.repo_context = Object.freeze({
@@ -303,6 +424,15 @@ function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
       maxFilesForNextManifest: rc.maxFilesForNextManifest as number,
       timeoutMs: rc.timeoutMs as number,
       network: 'none' as const,
+    })
+  }
+  if (tu.write !== undefined) {
+    const w = tu.write as Record<string, unknown>
+    out.write = Object.freeze({
+      tools: Object.freeze([...(w.tools as WriteToolName[])]),
+      roots: Object.freeze([...(w.roots as string[])]),
+      maxBytesPerPatch: w.maxBytesPerPatch as number,
+      timeoutMs: w.timeoutMs as number,
     })
   }
   return Object.freeze(out)
