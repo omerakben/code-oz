@@ -119,7 +119,7 @@ Each H3 block is a finding with stable `F-NNN` id, run-scoped:
 
 - `Severity` is one of four locked values:
   - `block` — finding must clear before the loop can exit `ready`.
-  - `fix-first` — should be addressed; does not block exit but contributes to score downward.
+  - `fix-first` — must clear before the loop can exit `ready`. Locked stricter as of M9 commit 1: an unresolved `fix-first` at exit fails `Final verdict: ready` (Codex `CODEX_RESPONSE_M9.md` decision 3 catch — the original draft's severity table and findings exit rule disagreed on whether `fix-first` is a `ready` blocker; this edit picks the stricter exit rule and removes the contradiction).
   - `nit` — minor, optional.
   - `fyi` — informational only.
 - `Round resolved: unresolved` is allowed only for severities `nit` and `fyi` at exit. An exit with `Final verdict: ready` and any `block` or `fix-first` finding still `unresolved` fails with `review_unresolved_blocker`.
@@ -206,7 +206,7 @@ Exit conditions, in priority order:
 2. A round emits `score ≥ 6` AND `verdict: ready` AND no `block` / `fix-first` finding remains `unresolved` → write `REVIEW.md` with `Final verdict: ready`, emit `review_resolved`, advance.
 3. Round 4 ends without satisfying (1) or (2) → write `REVIEW.md` with the round-4 score/verdict and `Cap exhausted: true`, emit `review_blocked`, write `NEEDS_INTERVENTION.json`.
 
-The loop cap is the **REVIEW** authority's hard cap; it composes with VERIFY's 4-attempt restart cap (which is BUILD-side) — a single end-to-end run can spend up to 4 BUILD attempts × 4 REVIEW rounds before producing `NEEDS_INTERVENTION.json` from either gate. Run-level budget enforcement (rule 19, `budgets.global`) supersedes both caps when its own thresholds trip first.
+**Cap composition (locked, M9 commit 1).** The 4-round REVIEW cap and VERIFY's 4-attempt BUILD cap are **two monotonic global counters scoped to `(runId, taskId)`**, not a multiplicative budget (Codex `CODEX_RESPONSE_M9.md` decision 4 catch on the briefing's 4×4=16 lean). Whichever cap trips first owns the intervention. **VERIFY restarts between REVIEW rounds do not increment REVIEW round count.** When REVIEW round N's follow-up BUILD attempt exhausts VERIFY's 4-attempt cap, the intervention is VERIFY-owned with context "while addressing REVIEW round N"; `review_blocked` is **not** also emitted (avoiding double-terminal state that corrupts resume semantics). Run-level budget enforcement (rule 19, `budgets.global`) supersedes both caps when its own thresholds trip first.
 
 ## What SHIP reads from this
 

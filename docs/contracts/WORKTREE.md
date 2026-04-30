@@ -85,14 +85,16 @@ The orchestrator emits `worktree_created` only when all four steps succeed; part
 
 ## Removal
 
-Two removal paths, mutually exclusive per attempt. **Neither path fires on `build_completed` alone.** BUILD-pass is necessary but not sufficient for cleanup; the worktree must survive the BUILD gate so M8's VERIFY can read it (per Codex M7 implementation review C3, thread `019ddeea`).
+Two removal paths, mutually exclusive per attempt. **Neither path fires on `build_completed` alone.** BUILD-pass is necessary but not sufficient for cleanup; the worktree must survive the BUILD gate so VERIFY can read it (Codex M7 implementation review C3, thread `019ddeea`), and **must continue surviving past VERIFY-approve so REVIEW can read changed files** (Codex M9 substrate catch, `CODEX_RESPONSE_M9.md` decision 5 + risk #1, thread `019de05a`).
 
 | Path | Trigger | Behavior |
 |---|---|---|
-| Cleanup-on-success | the run's final VERIFY emits `verdict: pass` (M8+) and the VERIFY gate is approved | `git worktree remove --force <worktree>`; `forensics/` empty; `patches/` retained |
+| Cleanup-on-success | the run's REVIEW gate is approved (M9+) | `git worktree remove --force <worktree>`; `forensics/` empty; `patches/` retained |
 | Preserve-on-failure | VERIFY emits `verdict: fail` and the restart policy preserves attempt N (M8+) | populate `forensics/<N>/` first, then `git worktree remove --force <worktree>`; `patches/<T-NNN>-attempt-<N>.patch` retained |
 
 In both paths the worktree directory is removed; the run directory itself survives until `code-oz prune` (W2). The asymmetry is load-bearing: success is cheap to forget, failure must be replayable.
+
+**Cleanup-on-VERIFY-approve does not exist.** The M8 design originally cleaned up at VERIFY-approve, but that left REVIEW with no worktree to read changed files from. The cleanup-on-success path is owned by REVIEW-approve as of M9 commit 1; the VERIFY hook still validates `verdict: pass` before approveGate writes the gate, but it no longer touches the worktree.
 
 **BUILD failure (no valid BUILD_REPORT.md) is distinct from VERIFY failure** and never enters either path above. BUILD failure produces `NEEDS_INTERVENTION.json` directly per [`BUILD.md`](./BUILD.md) § "Event types emitted" (`build_failed` is structurally different from `verify_failed`). The worktree is preserved alongside `.code-oz/runs/<runId>/build-drafts/<T-NNN>-attempt-<N>/` for human inspection; cleanup happens via `code-oz prune` (W2).
 
@@ -101,8 +103,9 @@ In both paths the worktree directory is removed; the run directory itself surviv
 | Milestone | Run terminal gate | Worktree fate at run end |
 |---|---|---|
 | M7 (BUILD-lite) | BUILD gate (`v0.7.0-alpha.0`) | Worktree survives. No automatic removal. Manual cleanup via `code-oz prune` (W2). |
-| M8 (VERIFY-lite) | VERIFY gate (`v0.8.0-alpha.0`) | VERIFY-pass triggers cleanup-on-success; VERIFY-fail triggers preserve-on-failure (and attempt N+1 starts fresh from same base). |
-| M9+ (REVIEW-lite onward) | as M8, plus REVIEW gate | unchanged from M8 (REVIEW does not write to the worktree; it reads the manifest paths). |
+| M8 (VERIFY-lite) | VERIFY gate (`v0.8.0-alpha.0`) | VERIFY-fail triggers preserve-on-failure (and attempt N+1 starts fresh from same base). VERIFY-pass leaves the worktree alive for REVIEW (M9+). |
+| M9 (REVIEW-lite) | REVIEW gate (`v0.9.0-alpha.0`) | REVIEW-pass triggers cleanup-on-success at the REVIEW-approve hook (`preApproveReviewHook` in `src/commands/approve.ts`). Same `git worktree remove --force` semantics as before; `worktree_destroyed` event now records `phase: review`. |
+| W4 (SHIP) | SHIP gate | Worktree already gone after REVIEW-approve. SHIP cleanup beyond REVIEW is W4 territory. |
 
 In M7, every successful run leaves a worktree on disk. This is intentional: it lets a human inspect the BUILD output before M8 ships the validation runner, and it surfaces any "fake green gate" failure mode (Codex M7-M10 shape risk #2) where BUILD claimed success but the patch did not reflect the PLAN task.
 

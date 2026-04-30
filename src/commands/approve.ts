@@ -44,6 +44,8 @@ import { parseSpec } from '../artifacts/spec.ts'
 import { parseVerifyReport, VerifyReportLoadError } from '../artifacts/verify-report.ts'
 import { SpecLoadError } from '../artifacts/errors.ts'
 import { removeRunWorktree } from '../worktree/remove-run-worktree.ts'
+import { runPaths as worktreeRunPaths } from '../worktree/paths.ts'
+import { access } from 'node:fs/promises'
 
 export interface RunApproveOptions {
   readonly cwd?: string
@@ -211,17 +213,29 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     }
   }
 
-  // VERIFY-specific approval (Codex M8 decision 7 + fix 4): validate
-  // VERIFY.md, confirm verdict=pass, remove the worktree, emit
-  // worktree_destroyed BEFORE approveGate writes GATE_VERIFY_PASSED.json.
-  // Worktree removal failure produces an error (and does NOT write the
-  // gate); the user can re-attempt approval after manual cleanup.
+  // VERIFY-specific approval (M8 decision 7 + fix 4, narrowed by M9
+  // commit 1): validate VERIFY.md and confirm verdict=pass BEFORE
+  // approveGate writes GATE_VERIFY_PASSED.json. Worktree removal moved
+  // to REVIEW-approve (preApproveReviewHook) per CODEX_RESPONSE_M9.md
+  // decision 5 + risk #1: REVIEW needs the worktree alive to read
+  // changed files, so cleanup-on-VERIFY-approve would leave nothing
+  // for REVIEW to read.
   if (targetPhase === 'verify') {
     await preApproveVerifyHook({
+      verifyPath: join(ctx.paths.artifacts, artifactPath),
+    })
+  }
+
+  // REVIEW-specific approval (M9 commit 1 substrate): remove the
+  // worktree at the REVIEW gate. The hook fails the gate write on
+  // removal failure; the user can repair fs state and retry. Idempotent
+  // when the worktree was already destroyed (manual cleanup, or a
+  // resume scenario).
+  if (targetPhase === 'review') {
+    await preApproveReviewHook({
       cwd: opts.cwd ?? process.cwd(),
       runId,
       runPaths,
-      verifyPath: join(ctx.paths.artifacts, artifactPath),
       now: opts.now ?? (() => new Date().toISOString()),
     })
   }
@@ -256,23 +270,20 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
 }
 
 /**
- * VERIFY-specific pre-approval hook (M8 fix 4 + Codex decision 7):
+ * VERIFY-specific pre-approval hook (M8 + M9 commit 1 narrowing):
  *   1. Read VERIFY.md from disk
  *   2. Parse it; reject malformed
  *   3. Confirm verdict=pass; reject otherwise (a failed VERIFY does not
  *      get approved — the orchestrator schedules attempt N+1)
- *   4. Remove the run worktree via git worktree remove
- *   5. Emit worktree_destroyed BEFORE approveGate writes the gate file
  *
- * Worktree removal failure throws; the gate file is NOT written. The
- * user can fix the worktree and retry. Exported for direct testing.
+ * Worktree removal moved to preApproveReviewHook (M9 commit 1 substrate)
+ * — REVIEW needs the worktree alive to read changed files. SHIP cleanup
+ * beyond REVIEW is W4.
+ *
+ * Exported for direct testing.
  */
 export interface PreApproveVerifyHookInput {
-  readonly cwd: string
-  readonly runId: string
-  readonly runPaths: { readonly eventsFile: string; readonly lockDir: string }
   readonly verifyPath: string
-  readonly now: () => string
 }
 
 export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Promise<void> {
@@ -313,13 +324,80 @@ export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Pr
       ].join('\n'),
     )
   }
+}
+
+/**
+ * REVIEW-specific pre-approval hook (M9 commit 1 substrate):
+ *   1. Resolve the attempt that REVIEW just approved by reading the
+ *      latest `build_provider_recorded` event for the run. (M9 commit 7
+ *      will replace this with REVIEW.md's recorded BUILD ref once the
+ *      parser ships; the hook signature stays the same.)
+ *   2. Remove the run worktree via `git worktree remove --force`.
+ *   3. Emit `worktree_destroyed` (phase: review) before approveGate
+ *      writes GATE_REVIEW_PASSED.json.
+ *
+ * Idempotent when the worktree is already gone (manual cleanup or a
+ * resume scenario): no event is emitted, no error is thrown. Real
+ * removal failures (dirty fs, permission) throw and block gate write.
+ * Exported for direct testing.
+ */
+export interface PreApproveReviewHookInput {
+  readonly cwd: string
+  readonly runId: string
+  readonly runPaths: { readonly eventsFile: string; readonly lockDir: string }
+  readonly now: () => string
+}
+
+export async function preApproveReviewHook(input: PreApproveReviewHookInput): Promise<void> {
+  // Pre-check: if the worktree directory doesn't exist on disk, exit
+  // idempotently. This covers the FSM regression test path (a synthetic
+  // walk through phases without ever running BUILD) and the resume-
+  // after-manual-cleanup path. No event recorded because there's
+  // nothing to record.
+  const worktreeDir = worktreeRunPaths(input.cwd, input.runId).worktree
+  let worktreeExists = true
+  try {
+    await access(worktreeDir)
+  } catch {
+    worktreeExists = false
+  }
+  if (!worktreeExists) {
+    return
+  }
+
+  // Worktree exists. Resolve the attempt that REVIEW just approved
+  // BEFORE mutating fs state — if no build_provider_recorded event
+  // exists, the run is corrupted and we throw without removing the
+  // worktree (preserves forensics for inspection). M9 commit 7
+  // (REVIEW orchestrator) will replace this derivation with
+  // REVIEW.md's recorded BUILD ref once the parser ships; the hook
+  // signature stays the same.
+  const events = await readEvents({
+    file: input.runPaths.eventsFile,
+    lockDir: input.runPaths.lockDir,
+  })
+  let attempt: number | null = null
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (e.type === 'build_provider_recorded') {
+      const candidate = (e as { readonly attempt?: unknown }).attempt
+      if (typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 1) {
+        attempt = candidate
+        break
+      }
+    }
+  }
+  if (attempt === null) {
+    throw new Error(
+      [
+        'cannot approve review: events.jsonl has no build_provider_recorded event for this run.',
+        'BUILD must complete before REVIEW can be approved.',
+      ].join('\n'),
+    )
+  }
+
   const removed = await removeRunWorktree({ cwd: input.cwd, runId: input.runId })
   if (!removed.ok) {
-    // Idempotency: if the worktree is already gone (manual cleanup, or no
-    // worktree was ever created — e.g., FSM regression test), treat as
-    // success and skip the worktree_destroyed event (we have nothing to
-    // record). Other failure modes (dirty worktree, permission denied)
-    // throw and the gate is not written.
     const reason = removed.reason
     const alreadyGone =
       reason.includes('is not a working tree') ||
@@ -327,11 +405,14 @@ export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Pr
       reason.includes('No such file or directory')
     if (!alreadyGone) {
       throw new Error(
-        `cannot approve verify: worktree removal failed (${removed.code}): ${reason}. Inspect manually and retry.`,
+        `cannot approve review: worktree removal failed (${removed.code}): ${reason}. Inspect manually and retry.`,
       )
     }
+    // Race: directory existed at pre-check but was gone by removal call.
+    // Idempotent return.
     return
   }
+
   await appendEvent(
     { file: input.runPaths.eventsFile, lockDir: input.runPaths.lockDir },
     {
@@ -339,10 +420,8 @@ export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Pr
       type: 'worktree_destroyed',
       ts: input.now(),
       runId: input.runId,
-      phase: 'verify',
-      // The attempt that just passed VERIFY. The hook receives it via the
-      // run state; for v0.1 we read it from VERIFY.md's BUILD ref.
-      attempt: verifyData.buildRef.attempt,
+      phase: 'review',
+      attempt,
       worktreePath: removed.worktreePath,
     },
   )

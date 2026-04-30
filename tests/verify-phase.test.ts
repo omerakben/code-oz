@@ -574,28 +574,16 @@ describe('runVerify pass + code-oz approve verify (Codex M8-fix bp#1)', () => {
     const gr = events.find((e) => e.type === 'gate_required' && (e as { phase: string }).phase === 'verify')
     expect(gr).toBeDefined()
 
-    // runApprove({phase: 'verify'}) must succeed: validates VERIFY.md,
-    // removes worktree, emits worktree_destroyed, writes
-    // GATE_VERIFY_PASSED.json. The hook is idempotent on "worktree
-    // already gone"; createRunWorktree did create one, so this
-    // exercises the real removal path.
-    // We can't import runApprove with bootstrap easily here (needs
-    // active.json + project init). Instead we directly call the
-    // exported preApproveVerifyHook which is the load-bearing piece.
+    // runApprove({phase: 'verify'}) validates VERIFY.md and confirms
+    // verdict=pass; per M9 commit 1 substrate, worktree removal moved
+    // to preApproveReviewHook so REVIEW can read changed files. See
+    // tests/worktree-lifetime-through-review.test.ts for the cleanup
+    // path. Here we only verify the verify hook succeeds on a pass
+    // verdict.
     const { preApproveVerifyHook } = await import('../src/commands/approve.ts')
     await preApproveVerifyHook({
-      cwd: tmp,
-      runId: RUN,
-      runPaths: { eventsFile: paths.eventsFile, lockDir: paths.lockDir },
       verifyPath: join(paths.artifactRoot, 'VERIFY.md'),
-      now: () => '2026-04-30T19:30:00.000Z',
     })
-
-    // worktree_destroyed event emitted
-    const events2 = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
-    const wd = events2.find((e) => e.type === 'worktree_destroyed')
-    expect(wd).toBeDefined()
-    expect((wd as { attempt: number }).attempt).toBe(1)
   })
 })
 

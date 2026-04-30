@@ -250,50 +250,29 @@ describe('runApprove — error paths', () => {
   })
 })
 
-describe('preApproveVerifyHook (M8 fix 4: cleanup-on-approval)', () => {
-  async function makeFixture(opts: { verdict: 'pass' | 'fail' }): Promise<{
-    worktreePath: string
-    verifyPath: string
-    runPaths: ReturnType<typeof runPathsFor>
-  }> {
-    const { runGit, createRunWorktree } = await import('../src/worktree/create-run-worktree.ts')
-    const { runDoctorGit } = await import('../src/commands/doctor.ts')
-    const probe = await runDoctorGit()
-    if (!probe.available || !probe.meetsMinimum) {
-      throw new Error('verify approval test requires git >= 2.40')
-    }
-    await runGit(cwd, ['init', '-q', '-b', 'main'])
-    await runGit(cwd, ['config', 'user.email', 'test@example.com'])
-    await runGit(cwd, ['config', 'user.name', 'Test'])
-    await runGit(cwd, ['config', 'commit.gpgsign', 'false'])
-    await mkdir(join(cwd, 'src'), { recursive: true })
-    await writeFile(join(cwd, 'src/foo.ts'), 'export const a = 1\n')
-    await runGit(cwd, ['add', '.'])
-    await runGit(cwd, ['commit', '-q', '-m', 'init'])
-
-    const created = await createRunWorktree({ cwd, runId: RUN })
-    if (!created.ok) throw new Error('worktree create failed')
-
-    const stateDir = join(cwd, '.code-oz', 'state')
+describe('preApproveVerifyHook (M8 + M9 narrowed: verdict guard only)', () => {
+  // M9 commit 1 narrowed the verify hook: it now validates VERIFY.md and
+  // confirms verdict=pass, but no longer touches the worktree. Worktree
+  // removal moved to preApproveReviewHook so REVIEW can read changed
+  // files. See tests/worktree-lifetime-through-review.test.ts for the
+  // worktree-lifetime tests.
+  async function writeVerifyMd(opts: { verdict: 'pass' | 'fail' }): Promise<string> {
     const artifactRoot = join(cwd, '.code-oz', 'artifacts')
     await mkdir(artifactRoot, { recursive: true })
-    const paths = runPathsFor(stateDir, artifactRoot, RUN)
-    await mkdir(paths.runDir, { recursive: true })
-    await initRun({ paths, profile: 'greenfield', runId: RUN, now: () => FIXED_TS })
-
-    const baseSha = created.baseCommitSha
+    const baseSha = '0'.repeat(40)
     const patchSha = 'c'.repeat(64)
     const reportSha = 'e'.repeat(64)
-    const fc = opts.verdict === 'pass'
-      ? '- None (verdict pass).'
-      : [
-          '- Attempt: 1',
-          '- Forensics: .code-oz/runs/01HX/forensics/1/',
-          '- Validation command: bun test foo.test.ts',
-          '- Verdict: fail (exit code 1, duration 100 ms)',
-          '- Failure summary: bad.',
-          '- Constraint: fix it.',
-        ].join('\n')
+    const fc =
+      opts.verdict === 'pass'
+        ? '- None (verdict pass).'
+        : [
+            '- Attempt: 1',
+            '- Forensics: .code-oz/runs/01HX/forensics/1/',
+            '- Validation command: bun test foo.test.ts',
+            '- Verdict: fail (exit code 1, duration 100 ms)',
+            '- Failure summary: bad.',
+            '- Constraint: fix it.',
+          ].join('\n')
     const verifyText = `# VERIFY
 
 ## BUILD ref
@@ -336,81 +315,39 @@ ${fc}
 `
     const verifyPath = join(artifactRoot, 'VERIFY.md')
     await writeFile(verifyPath, verifyText)
-    return { worktreePath: created.worktreePath, verifyPath, runPaths: paths }
+    return verifyPath
   }
 
-  test('pass: removes worktree + emits worktree_destroyed', async () => {
-    const { worktreePath, verifyPath, runPaths } = await makeFixture({ verdict: 'pass' })
+  test('pass verdict: hook returns without throwing', async () => {
+    const verifyPath = await writeVerifyMd({ verdict: 'pass' })
     const { preApproveVerifyHook } = await import('../src/commands/approve.ts')
-
-    await preApproveVerifyHook({
-      cwd,
-      runId: RUN,
-      runPaths,
-      verifyPath,
-      now: () => FIXED_TS,
-    })
-
-    // Worktree gone
-    const { access: pAccess } = await import('node:fs/promises')
-    await expect(pAccess(worktreePath)).rejects.toThrow()
-
-    // worktree_destroyed event emitted
-    const eventsRaw = await readFile(runPaths.eventsFile, 'utf8')
-    expect(eventsRaw).toContain('"worktree_destroyed"')
+    await preApproveVerifyHook({ verifyPath })
   })
 
-  test('fail verdict → refuses (does not remove worktree)', async () => {
-    const { worktreePath, verifyPath, runPaths } = await makeFixture({ verdict: 'fail' })
+  test('fail verdict → refuses', async () => {
+    const verifyPath = await writeVerifyMd({ verdict: 'fail' })
     const { preApproveVerifyHook } = await import('../src/commands/approve.ts')
-    const { access: pAccess } = await import('node:fs/promises')
 
-    await expect(
-      preApproveVerifyHook({
-        cwd,
-        runId: RUN,
-        runPaths,
-        verifyPath,
-        now: () => FIXED_TS,
-      }),
-    ).rejects.toThrow(/verdict is 'fail'/)
-
-    // Worktree still exists
-    await pAccess(worktreePath)
+    await expect(preApproveVerifyHook({ verifyPath })).rejects.toThrow(/verdict is 'fail'/)
   })
 
   test('missing VERIFY.md → refuses', async () => {
-    const { runPaths } = await makeFixture({ verdict: 'pass' })
     const { preApproveVerifyHook } = await import('../src/commands/approve.ts')
     const missingPath = join(cwd, '.code-oz', 'artifacts', 'NONEXISTENT.md')
 
-    await expect(
-      preApproveVerifyHook({
-        cwd,
-        runId: RUN,
-        runPaths,
-        verifyPath: missingPath,
-        now: () => FIXED_TS,
-      }),
-    ).rejects.toThrow(/does not exist/)
+    await expect(preApproveVerifyHook({ verifyPath: missingPath })).rejects.toThrow(
+      /does not exist/,
+    )
   })
 
   test('malformed VERIFY.md → refuses with parse summary', async () => {
-    const { runPaths, verifyPath } = await makeFixture({ verdict: 'pass' })
+    const verifyPath = await writeVerifyMd({ verdict: 'pass' })
     const { preApproveVerifyHook } = await import('../src/commands/approve.ts')
 
     // Corrupt the VERIFY.md
     await writeFile(verifyPath, 'this is not a VERIFY.md\n')
 
-    await expect(
-      preApproveVerifyHook({
-        cwd,
-        runId: RUN,
-        runPaths,
-        verifyPath,
-        now: () => FIXED_TS,
-      }),
-    ).rejects.toThrow(/not a valid VERIFY\.md/)
+    await expect(preApproveVerifyHook({ verifyPath })).rejects.toThrow(/not a valid VERIFY\.md/)
   })
 })
 

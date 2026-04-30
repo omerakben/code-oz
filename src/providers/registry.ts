@@ -12,8 +12,8 @@
 // family (e.g., claude-cli + anthropic-api both family='claude') stay
 // correct without any code change in review-request.ts.
 
+import { DEFAULT_FAMILY_BY_ID } from './families.ts'
 import {
-  DEFAULT_FAMILY_BY_ID,
   type IAgentProvider,
   type ProviderFamily,
   type ProviderId,

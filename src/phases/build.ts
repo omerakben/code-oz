@@ -43,6 +43,8 @@ import { withLock } from '../state/lock.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import { computeManifest } from '../worktree/manifest.ts'
 import { runPaths as worktreeRunPaths, buildDraftsAttemptPath } from '../worktree/paths.ts'
+import { familyOf } from '../providers/families.ts'
+import type { ProviderId } from '../providers/types.ts'
 
 // --- public API ----------------------------------------------------
 
@@ -663,6 +665,24 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     taskId: task.id,
     changedFileCount: manifest.entries.length,
     buildReportSha256: buildReportSha,
+  })
+
+  // M9 substrate (CODEX_RESPONSE_M9.md decision 5): record the BUILD
+  // adapter's resolved provider id + family + model durably so REVIEW's
+  // invocation-time check can compare BUILD family to reviewer adapter
+  // family without re-deriving either. familyOf() shares its lookup with
+  // src/agents/loader.ts's load-time enforcement.
+  await appendEvent(eventPaths, {
+    version: 1,
+    type: 'build_provider_recorded',
+    ts: now(),
+    runId: opts.runId,
+    phase: 'build',
+    attempt,
+    taskId: task.id,
+    provider: opts.builderAgent.provider,
+    family: familyOf(opts.builderAgent.provider as ProviderId),
+    ...(opts.builderAgent.model !== undefined ? { model: opts.builderAgent.model } : {}),
   })
 
   await requireGate({

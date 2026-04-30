@@ -136,6 +136,13 @@ export const EVENT_TYPES = [
   'build_patch_applied',
   'build_completed',
   'build_failed',
+  // M9 substrate (per docs/contracts/REVIEW.md § "Cross-family enforcement"
+  // + CODEX_RESPONSE_M9.md decision 5). Records the BUILD adapter's resolved
+  // provider id + family + model durably so REVIEW's invocation-time check
+  // can compare BUILD family to reviewer adapter family without re-deriving
+  // either. Lighter than a BUILD_REPORT.md schema extension. Emitted
+  // immediately after build_completed; durable across resume.
+  'build_provider_recorded',
   // M8 — VERIFY phase (per docs/contracts/VERIFY.md). The four-event shape
   // is locked in VERIFY.md § "Event types emitted". Ordering against
   // worktree_destroyed is the orchestrator's responsibility (Codex M8
@@ -425,6 +432,26 @@ export type PhaseEvent =
       readonly taskId: string
       readonly code: string
       readonly reason: string
+    }
+  // M9 substrate: durable BUILD provider/family/model record. Emitted
+  // immediately after build_completed. REVIEW's invocation-time check
+  // (M9 commit 7) reads the latest build_provider_recorded for the
+  // (runId, taskId) pair and compares its `family` to the reviewer
+  // adapter's family. provider is the AgentProvider id from the BUILD
+  // agent's frontmatter; family is the resolved ProviderFamily via
+  // src/providers/families.ts familyOf(); model is the agent's optional
+  // `model` field, omitted when the agent did not pin a model.
+  | {
+      readonly version: 1
+      readonly type: 'build_provider_recorded'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly attempt: number
+      readonly taskId: string
+      readonly provider: string
+      readonly family: string
+      readonly model?: string
     }
   // M8 VERIFY phase events (per docs/contracts/VERIFY.md § "Event types
   // emitted"). All four bind to the BUILD attempt being verified via

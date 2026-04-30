@@ -618,6 +618,32 @@ export function validateEvent(
       break
     }
 
+    case 'build_provider_recorded': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'build_provider_recorded', e.phase, line)
+      const aIssue = positiveInteger(file, e.attempt, 'build_provider_recorded.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'build_provider_recorded.taskId', line)
+      if (tIssue) return tIssue
+      const provIssue = nonEmptyString(file, e.provider, 'build_provider_recorded.provider', line)
+      if (provIssue) return provIssue
+      const famIssue = nonEmptyString(file, e.family, 'build_provider_recorded.family', line)
+      if (famIssue) return famIssue
+      // model is optional (agents may not pin a model in frontmatter); when
+      // present it must be a non-empty string.
+      if (e.model !== undefined) {
+        if (typeof e.model !== 'string' || e.model.length === 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: 'build_provider_recorded.model must be a non-empty string when present',
+            detail: `got ${JSON.stringify(e.model)}`,
+            line,
+          }
+        }
+      }
+      break
+    }
+
     case 'verify_started': {
       if (!isPhase(e.phase)) return phaseInvalid(file, 'verify_started', e.phase, line)
       const agentIssue = nonEmptyString(file, e.agent, 'verify_started.agent', line)
