@@ -11,6 +11,7 @@ import defineSystemPath from './define-system.md' with { type: 'file' }
 import commonRationalizationsPath from './common-rationalizations.md' with { type: 'file' }
 import universalRulesPath from './universal-rules.md' with { type: 'file' }
 import planSystemPath from './plan-system.md' with { type: 'file' }
+import buildSystemPath from './build-system.md' with { type: 'file' }
 
 const ASSET_CACHE = new Map<string, string>()
 
@@ -49,6 +50,10 @@ export async function loadUniversalRules(): Promise<string> {
 
 export async function loadPlanSystemTemplate(): Promise<string> {
   return loadAsset(planSystemPath)
+}
+
+export async function loadBuildSystemTemplate(): Promise<string> {
+  return loadAsset(buildSystemPath)
 }
 
 // --- conversation rendering ----------------------------------------
@@ -256,6 +261,67 @@ export async function composePlanPrompt(input: ComposePlanPromptInput): Promise<
     universalRules,
     agentBody: input.agentBody,
     history: input.history,
+    readySignal: input.readySignal,
+    availableTools: input.availableTools,
+  })
+}
+
+// --- BUILD composer ------------------------------------------------
+//
+// Single-shot per task — BUILD does not carry a conversation across
+// turns; one initial draft + at most one repair round (per Codex M7
+// implementation review reject of decision 7, thread 019ddeea).
+
+const BUILD_REQUIRED_TOKENS = [
+  TOKEN_AGENT_BODY,
+  TOKEN_RATIONALIZATIONS,
+  TOKEN_UNIVERSAL_RULES,
+  TOKEN_AVAILABLE_TOOLS,
+  TOKEN_READY_SIGNAL,
+] as const
+
+export interface ComposeBuildPromptPureInput {
+  readonly templateBody: string
+  readonly universalRules: string
+  readonly commonRationalizations: string
+  readonly agentBody: string
+  readonly readySignal: string
+  /** Names of tools the BUILD persona has access to. */
+  readonly availableTools: readonly string[]
+}
+
+export function composeBuildPromptPure(args: ComposeBuildPromptPureInput): string {
+  for (const tok of BUILD_REQUIRED_TOKENS) {
+    if (!args.templateBody.includes(tok)) {
+      throw new Error(`build-system.md is missing required token ${tok}`)
+    }
+  }
+  const availableTools = renderAvailableTools(args.availableTools)
+  return args.templateBody
+    .replaceAll(TOKEN_AGENT_BODY, args.agentBody.trim())
+    .replaceAll(TOKEN_RATIONALIZATIONS, args.commonRationalizations.trim())
+    .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
+    .replaceAll(TOKEN_AVAILABLE_TOOLS, availableTools)
+    .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+}
+
+export interface ComposeBuildPromptInput {
+  readonly agentBody: string
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export async function composeBuildPrompt(input: ComposeBuildPromptInput): Promise<string> {
+  const [templateBody, commonRationalizations, universalRules] = await Promise.all([
+    loadBuildSystemTemplate(),
+    loadCommonRationalizations(),
+    loadUniversalRules(),
+  ])
+  return composeBuildPromptPure({
+    templateBody,
+    commonRationalizations,
+    universalRules,
+    agentBody: input.agentBody,
     readySignal: input.readySignal,
     availableTools: input.availableTools,
   })
