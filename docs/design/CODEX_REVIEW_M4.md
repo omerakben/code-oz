@@ -81,3 +81,44 @@ One fix commit per CLAUDE.md rule 8 + `feedback_no_tech_debt.md`:
 After the fix commit, re-invoke Codex review on the new commit only. If clean, present to Ozzy for tag/push approval.
 
 Approval pending from Ozzy after fix commit lands and re-review is clean.
+
+---
+
+## Codex re-review — fix verification
+
+- **Same thread:** `019ddbb7-f90a-7c20-a53a-5ef0f4cda7e6`
+- **Date:** 2026-04-29
+- **Commits reviewed:** `c4849ee` (review doc) + `6404c00` (fix bundle)
+- **Verdict:** **`push`**
+
+### Where I agree (fix verification — verbatim)
+
+- Claude subprocess privacy is closed. [src/providers/claude.ts](../../src/providers/claude.ts:63) now includes `--no-session-persistence`, uses a `tempCwd` factory backed by `mkdtemp`, runs the subprocess with that cwd, and removes it in `finally` at [src/providers/claude.ts](../../src/providers/claude.ts:72). The ENOENT path still passes through that `finally`. The new assertions in [tests/providers-claude.test.ts](../../tests/providers-claude.test.ts:240) cover cwd isolation, the flag, success cleanup, and failure cleanup.
+
+- Global budget caps are closed. [src/providers/cost.ts](../../src/providers/cost.ts:44) adds `globalTurns` and `globalProviderCalls`; [src/providers/cost.ts](../../src/providers/cost.ts:88) counts them across all phases; [src/providers/cost.ts](../../src/providers/cost.ts:177) and [src/providers/cost.ts](../../src/providers/cost.ts:193) enforce the global turn and provider-call caps with specific config suggestions. The new cost tests cover both counting and rejection paths.
+
+- Version metadata consistency is closed. [package.json](../../package.json:3) is `0.4.0-alpha.0`, [src/cli.ts](../../src/cli.ts:7) exports `PKG_VERSION`, and [src/cli.ts](../../src/cli.ts:67) guards `main()` with `import.meta.main`. [tests/version-consistency.test.ts](../../tests/version-consistency.test.ts:11) now catches drift between package metadata, CLI metadata, and default config.
+
+- Provider contract docs are closed. [docs/references/provider-contract.md](../references/provider-contract.md:14) now says adapters delegate auth to upstream CLIs and do not read or transmit OAuth tokens; [docs/references/provider-contract.md](../references/provider-contract.md:229) replaces the old auth-file framing with the subprocess delegation model. [docs/contracts/PROVIDERS.md](../contracts/PROVIDERS.md:50) now documents privacy guards for both Codex and Claude.
+
+- Both nits are closed. [src/providers/codex.ts](../../src/providers/codex.ts:66) passes `--color never`, and [src/commands/doctor.ts](../../src/commands/doctor.ts:171) has the clearer provider-doctor help text.
+
+### Where I disagree
+
+No remaining `block-push` or `block-next-milestone` disagreements found in the fix commit.
+
+### What's missing
+
+No new milestone-blocking issues introduced by the fix. Validated in the read-only sandbox:
+
+```text
+bun run typecheck
+bun test tests/providers-cost.test.ts tests/version-consistency.test.ts
+bun run dev --version
+```
+
+Those passed, and `bun run dev --version` reports `0.4.0-alpha.0`.
+
+### Final verdict
+
+**`push`** — M4 is ready to tag.
