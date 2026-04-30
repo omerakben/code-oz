@@ -134,6 +134,18 @@ export async function doctorCommand(args: string[]): Promise<void> {
     return
   }
 
+  if (subcommand === 'tools') {
+    const subArgs = args.slice(1)
+    const json = subArgs.includes('--json')
+    const report = await runDoctorTools()
+    if (json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+    } else {
+      process.stdout.write(formatToolsTable(report))
+    }
+    process.exit(report.exitCode)
+  }
+
   if (subcommand !== 'providers') {
     process.stderr.write(`code-oz doctor: unknown subcommand '${subcommand}'\n\n`)
     process.stderr.write(doctorHelp())
@@ -154,11 +166,95 @@ export async function doctorCommand(args: string[]): Promise<void> {
   process.exit(report.exitCode)
 }
 
+// --- doctor tools (M6) ----------------------------------------------
+
+export interface DoctorToolReport {
+  readonly tool: 'rg'
+  readonly available: boolean
+  readonly version?: string
+  readonly path?: string
+  readonly error?: string
+}
+
+export interface DoctorToolsReport {
+  readonly tools: readonly DoctorToolReport[]
+  readonly exitCode: 0 | 1
+}
+
+/**
+ * `code-oz doctor tools` — checks that the binaries the M6+ repo-context
+ * tools rely on are on PATH. Today: `rg` (ripgrep). Missing `rg` does not
+ * break code-oz on its own; it only blocks personas that declare
+ * permissions.tool_use.repo_context. Exits 0 on success, 1 on missing tool.
+ */
+export async function runDoctorTools(): Promise<DoctorToolsReport> {
+  const probe = await probeRg()
+  const exitCode: 0 | 1 = probe.available ? 0 : 1
+  return Object.freeze({ tools: Object.freeze([probe]), exitCode })
+}
+
+async function probeRg(): Promise<DoctorToolReport> {
+  const { spawn } = await import('node:child_process')
+  return await new Promise<DoctorToolReport>((resolveProbe) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn('rg', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      resolveProbe({ tool: 'rg', available: false, error: (err as Error).message })
+      return
+    }
+    let stdout = ''
+    let errored = false
+    child.stdout?.on('data', (b: Buffer) => {
+      stdout += b.toString('utf8')
+    })
+    child.on('error', (err) => {
+      errored = true
+      const code = (err as NodeJS.ErrnoException).code
+      resolveProbe({
+        tool: 'rg',
+        available: false,
+        error: code === 'ENOENT' ? 'rg not on PATH' : err.message,
+      })
+    })
+    child.on('close', (exitCode) => {
+      if (errored) return
+      if (exitCode !== 0) {
+        resolveProbe({ tool: 'rg', available: false, error: `rg exited ${exitCode}` })
+        return
+      }
+      const firstLine = stdout.split('\n')[0]?.trim() ?? ''
+      resolveProbe({ tool: 'rg', available: true, version: firstLine })
+    })
+  })
+}
+
+function formatToolsTable(report: DoctorToolsReport): string {
+  const lines: string[] = ['TOOL  AVAILABLE  VERSION']
+  for (const t of report.tools) {
+    lines.push(
+      `${t.tool.padEnd(5)} ${(t.available ? 'yes' : 'no').padEnd(10)} ${t.version ?? t.error ?? ''}`,
+    )
+  }
+  lines.push('')
+  if (report.exitCode === 0) {
+    lines.push('All required tools available.')
+  } else {
+    lines.push('Missing required tool(s). Personas that declare')
+    lines.push('permissions.tool_use.repo_context will fail with tool_unavailable.')
+    lines.push('Install: brew install ripgrep   (macOS)')
+    lines.push('         sudo apt install ripgrep   (Debian/Ubuntu)')
+    lines.push('         see https://github.com/BurntSushi/ripgrep#installation')
+  }
+  return lines.join('\n') + '\n'
+}
+
 export function doctorHelp(): string {
   return `Usage: code-oz doctor <subcommand> [options]
 
 Subcommands:
   providers        Probe each provider adapter (auth + CLI presence)
+  tools            Probe required external tools (rg / ripgrep)
   help             Show this help
 
 Options for 'providers':
