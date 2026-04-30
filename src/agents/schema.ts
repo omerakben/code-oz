@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
 import { AgentLoadError, type AgentLoadIssue } from './errors.ts'
 import type { ParsedFrontmatter } from './frontmatter.ts'
+import { PROVIDER_FAMILIES, type ProviderFamily } from '../providers/types.ts'
 
 export const AGENT_TYPES = ['agent', 'skill', 'phase', 'gate', 'hook'] as const
 export type AgentType = (typeof AGENT_TYPES)[number]
@@ -125,10 +126,49 @@ export interface ExecuteToolPermissions {
   readonly network: 'none'
 }
 
+// `tool_use.review_request` is the M9 sub-scope for the REVIEW persona's
+// reviewer-side declaration of the M4 `requestReview` primitive (per
+// docs/contracts/REVIEW.md § "Permissions required" + CLAUDE.md
+// non-negotiable rule 6 — max 4 rounds, exit on score≥6 + verdict=ready).
+// v0.1 ships only the `request-review` tool; the runtime is the wrapper
+// in src/tools/review-request.ts which already enforces cross-family at
+// invocation time (M9 commit 7 will tighten that with build_provider_recorded).
+//
+// Load-time validation pins the families list to PROVIDER_FAMILIES (so
+// typos like `providers: ['claud']` fail the run before BUILD), and caps
+// maxRounds at the CLAUDE.md rule-6 ceiling. timeoutMsPerRound has a
+// 10-minute hard cap; REVIEW.md's contract example uses 2 minutes.
+export const REVIEW_REQUEST_TOOL_NAMES = ['request-review'] as const
+export type ReviewRequestToolName = (typeof REVIEW_REQUEST_TOOL_NAMES)[number]
+
+export const REVIEW_REQUEST_HARD_CAPS = Object.freeze({
+  /** CLAUDE.md non-negotiable rule 6: max 4 REVIEW rounds. */
+  maxRounds: 4,
+  /** Hard cap on per-round wall-time (10 minutes). */
+  timeoutMsPerRound: 600_000,
+} as const)
+
+export interface ReviewRequestPermissions {
+  readonly tools: readonly ReviewRequestToolName[]
+  /** Provider families that may request review from this agent. Must be a
+   *  non-empty subset of PROVIDER_FAMILIES. The cross-family check at
+   *  invocation time (src/tools/review-request.ts) consumes the runtime
+   *  ProviderRegistry, not this list — this list is the load-time
+   *  declaration of which families the reviewer is willing to serve. */
+  readonly providers: readonly ProviderFamily[]
+  readonly maxRounds: number
+  readonly timeoutMsPerRound: number
+  /** v0.1 only allows `provider-only` (provider auth via ambient
+   *  credentials; no other network access). W4 containerization will
+   *  tighten further. */
+  readonly network: 'provider-only'
+}
+
 export interface ToolUsePermissions {
   readonly repo_context?: RepoContextPermissions
   readonly write?: WriteToolPermissions
   readonly execute?: ExecuteToolPermissions
+  readonly review_request?: ReviewRequestPermissions
 }
 
 export interface AgentPermissions {
@@ -237,7 +277,7 @@ function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
     }
   }
   const tu = value as Record<string, unknown>
-  const KNOWN_SUB_SCOPES = ['repo_context', 'write', 'execute'] as const
+  const KNOWN_SUB_SCOPES = ['repo_context', 'write', 'execute', 'review_request'] as const
   for (const k of Object.keys(tu)) {
     if (!(KNOWN_SUB_SCOPES as readonly string[]).includes(k)) {
       return {
@@ -259,6 +299,106 @@ function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
   if ('execute' in tu && tu.execute !== undefined) {
     const issue = validateExecuteToolUse(tu.execute, file)
     if (issue) return issue
+  }
+  if ('review_request' in tu && tu.review_request !== undefined) {
+    const issue = validateReviewRequest(tu.review_request, file)
+    if (issue) return issue
+  }
+  return null
+}
+
+function validateReviewRequest(value: unknown, file: string): AgentLoadIssue | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.review_request' must be an object",
+    }
+  }
+  const r = value as Record<string, unknown>
+  // tools — only `request-review` in v0.1
+  if (!Array.isArray(r.tools)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.review_request.tools' must be an array",
+    }
+  }
+  if (r.tools.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.review_request.tools' must list at least one tool",
+    }
+  }
+  for (const t of r.tools as unknown[]) {
+    if (typeof t !== 'string' || !(REVIEW_REQUEST_TOOL_NAMES as readonly string[]).includes(t)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.review_request.tools' entries must be one of: ${REVIEW_REQUEST_TOOL_NAMES.join(', ')}`,
+        detail: JSON.stringify(t),
+      }
+    }
+  }
+  // providers — non-empty subset of PROVIDER_FAMILIES. Catches typos like
+  // `providers: ['claud']` at load time before the run starts.
+  if (!isStringArray(r.providers)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.review_request.providers' must be an array of strings",
+    }
+  }
+  if (r.providers.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.review_request.providers' must list at least one provider family",
+    }
+  }
+  for (const p of r.providers) {
+    if (!(PROVIDER_FAMILIES as readonly string[]).includes(p)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.review_request.providers' entries must be one of: ${PROVIDER_FAMILIES.join(', ')}`,
+        detail: JSON.stringify(p),
+      }
+    }
+  }
+  // numeric caps — maxRounds is the CLAUDE.md rule-6 ceiling, timeoutMsPerRound
+  // bounded so a misconfigured persona cannot park the run forever.
+  const numericFields = [
+    ['maxRounds', REVIEW_REQUEST_HARD_CAPS.maxRounds],
+    ['timeoutMsPerRound', REVIEW_REQUEST_HARD_CAPS.timeoutMsPerRound],
+  ] as const
+  for (const [field, cap] of numericFields) {
+    const v = r[field]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.review_request.${field}' must be a positive integer`,
+      }
+    }
+    if (v > cap) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.review_request.${field}' must be ≤ ${cap} (M9 hard cap)`,
+        detail: `got ${v}`,
+      }
+    }
+  }
+  // network — must be 'provider-only' in v0.1.
+  if (r.network !== 'provider-only') {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.review_request.network' must be 'provider-only' in v0.1",
+      detail: JSON.stringify(r.network),
+    }
   }
   return null
 }
@@ -594,6 +734,7 @@ function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
     repo_context?: RepoContextPermissions
     write?: WriteToolPermissions
     execute?: ExecuteToolPermissions
+    review_request?: ReviewRequestPermissions
   } = {}
   if (tu.repo_context !== undefined) {
     const rc = tu.repo_context as Record<string, unknown>
@@ -625,6 +766,16 @@ function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
       maxStdoutBytes: e.maxStdoutBytes as number,
       maxStderrBytes: e.maxStderrBytes as number,
       network: 'none' as const,
+    })
+  }
+  if (tu.review_request !== undefined) {
+    const r = tu.review_request as Record<string, unknown>
+    out.review_request = Object.freeze({
+      tools: Object.freeze([...(r.tools as ReviewRequestToolName[])]),
+      providers: Object.freeze([...(r.providers as ProviderFamily[])]),
+      maxRounds: r.maxRounds as number,
+      timeoutMsPerRound: r.timeoutMsPerRound as number,
+      network: 'provider-only' as const,
     })
   }
   return Object.freeze(out)
