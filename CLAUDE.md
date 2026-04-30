@@ -31,6 +31,11 @@ Status: **v0.1.0-alpha.0 — M1 milestone (CLI bootstrap)**. M2–M7 build out t
 12. **Resume is a v0.1 feature.** `runId`, idempotent gate writes, `code-oz resume`. Terminal death after PLAN must not restart DEFINE.
 13. **Privacy by default.** `.code-ozignore`, secret redaction, file-size caps, "files sent to provider" preview per phase. Agents receive explicit file manifests, never silent recursive repo context.
 14. **Brownfield AUDIT has its own artifact.** Never treat existing code as a blank canvas.
+15. **Epistemic sidecars at phase gates.** Every phase contract that produces a primary artifact must include the Scientist tail defined in `docs/contracts/SCIENTIST.md`; gate preflight validates `HYPOTHESES.md` and `OPEN_QUESTIONS.md` and blocks overdue open questions before writing `GATE_<PHASE>_PASSED.json`. (synthesis round, 2026-04-30)
+16. **Universal anti-slop rules ship inside every persona prompt.** Every persona's system prompt imports the universal rule sheet from `src/prompts/universal-rules.md` (the 20-item list — 10 prohibitions + 10 affirmations — defined in `docs/research/02-llm-failure-research.md`). Personas may add their own rules below; they may not relax the universal ones.
+17. **The maestro discipline is named and authoritative.** The rule-checker role + 9-family bug map + adversarial-review skills + four-layer file-system memory are documented in `docs/research/01-maestro-rule-checker.md`. Personas reference it; the orchestrator implements its skills; the dossier is the spec. Updates land as commits on the dossier with a top-of-file "## Update <date>" annotation.
+18. **Codebase context retrieval has its own permission scope.** Agentic search is a `tool_use.repo_context` sub-scope on agent permissions, defined in `docs/contracts/REPO_CONTEXT.md`. Search results are audited via `repo_context_searched` events; selected paths enter the *next* invocation's `ProviderRequest.files`, never the search invocation's hidden context. The maestro's `repo-search-before-write` skill is the consumer; the search backend is the new piece. Network access is denied for repo_context tools.
+19. **Run-level budget enforcement is mandatory, not advisory.** Cumulative caps live under `budgets.global` (single namespace): `maxTurns`, `maxProviderCalls`, `maxTokensEstimate`, `maxWallTimeMinutes`, optional `priceTable` for dollar telemetry. The wrapper's `assertWithinBudget` reads cumulative spend from `events.jsonl` per-call (no parallel state). Soft warnings fire at `softWarnAtRatio` (default 0.75); hard kills at 1.0. `NEEDS_INTERVENTION` carries the actionable suggestion when budget triggers a kill.
 
 ## Architecture locks
 
@@ -54,6 +59,8 @@ The `templates/` collection in `~/Projects/agents/templates/` is the influence l
 | `maestro` | File-based gate signals + 3-source verification + Opus-default policy |
 | `Auto-claude-code-research-in-sleep` | Cross-family review + Reviewer Memory + 4-round-cap loop + plain-Markdown artifact contracts |
 | `claude-code` | Plugin format + hook event names + filesystem discovery |
+
+**Excluded from the influence library:** `~/Projects/agents/templates/claude-code-main/` is the publicly leaked Anthropic Claude Code source (March 31, 2026 npm `.map` file leak). Pattern borrowing from this template is excluded per the synthesis-round Codex review (`docs/research/CODEX_RESPONSE_SYNTHESIS.md`, thread `019ddc5f`, 2026-04-30). Codebase context retrieval and equivalent capabilities are built clean-room from public Anthropic docs + audited templates (`claude-code`, `opencode`, `agent-skills`). The 4–6 working day clean-room cost is the accepted trade for preserving project provenance.
 
 ## Working in this repo
 
