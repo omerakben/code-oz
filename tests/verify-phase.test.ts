@@ -5,8 +5,8 @@
 // exercise the orchestration's entry validation and a deliberately
 // minimal happy-path skeleton via dependency-injected seams.
 
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { describe, test, expect, beforeEach, afterEach, beforeAll } from 'bun:test'
+import { mkdtemp, mkdir, rm, writeFile, readFile, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -21,6 +21,9 @@ import { DEFAULT_CONFIG } from '../src/config/schema.ts'
 import type { AgentDefinition } from '../src/agents/schema.ts'
 import type { InvokeContext } from '../src/providers/invoke.ts'
 import type { RevertSeam, RunnerSeam } from '../src/phases/verify-mutation.ts'
+import { createRunWorktree, runGit } from '../src/worktree/create-run-worktree.ts'
+import { runDoctorGit } from '../src/commands/doctor.ts'
+import { readEvents } from '../src/state/events.ts'
 
 const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
 
@@ -209,6 +212,346 @@ describe('runVerify — entry validation', () => {
 describe('runVerify — exposed VERIFY_READY_SIGNAL constant', () => {
   test('matches the persona prompt template token', () => {
     expect(VERIFY_READY_SIGNAL).toBe('<verify-ready/>')
+  })
+})
+
+// --- e2e fixtures (Codex bp#7: phase-level pass/fail/restart coverage) ---
+
+const SCIENTIST_RESPONSE = `<scientist-ready/>
+# HYPOTHESES
+
+## H-001: VERIFY evidence captured correctly
+
+- Phase: verify
+- Status: open
+- Falsifier: Future runs reproduce by re-running validation command.
+- Evidence: VERIFY.md Evidence section.
+- Risk if false: VERIFY gate not durable.
+
+# OPEN QUESTIONS
+
+## Q-001: Should mutation be retried on flake?
+
+- Phase: verify
+- Status: open
+- Importance: low
+- DueBy: 2026-12-31
+- Context: Out of M8 scope.
+- Resolution attempts: none yet.
+`
+
+beforeAll(async () => {
+  const probe = await runDoctorGit()
+  if (!probe.available || !probe.meetsMinimum) {
+    throw new Error('e2e tests require git >= 2.40')
+  }
+})
+
+async function setupGitRepoAndWorktree(): Promise<{ baseCommitSha: string; worktreePath: string }> {
+  await runGit(tmp, ['init', '-q', '-b', 'main'])
+  await runGit(tmp, ['config', 'user.email', 'test@example.com'])
+  await runGit(tmp, ['config', 'user.name', 'Test'])
+  await runGit(tmp, ['config', 'commit.gpgsign', 'false'])
+  await mkdir(join(tmp, 'src'), { recursive: true })
+  await writeFile(join(tmp, 'src/foo.ts'), 'export const a = 1\n')
+  await runGit(tmp, ['add', '.'])
+  await runGit(tmp, ['commit', '-q', '-m', 'init'])
+  const created = await createRunWorktree({ cwd: tmp, runId: RUN })
+  if (!created.ok) throw new Error('worktree create failed in e2e setup')
+  return { baseCommitSha: created.baseCommitSha, worktreePath: created.worktreePath }
+}
+
+function makeBuildReport(opts: {
+  readonly taskId: string
+  readonly attempt: number
+  readonly baseCommitSha: string
+  readonly expectedExitCode?: number
+  readonly addedTestPath?: string
+}): string {
+  const planSha = 'a'.repeat(64)
+  const patchSha = 'c'.repeat(64)
+  const fileSha = 'd'.repeat(64)
+  const testFileSha = 'e'.repeat(64)
+  const cf = opts.attempt === 1
+    ? `- None (attempt 1).`
+    : [
+        `- Prior attempt: ${opts.attempt - 1}`,
+        '- Prior forensics: .code-oz/runs/01HX/forensics/1/',
+        '- Prior validation command: bun test foo.test.ts',
+        '- Prior verdict: fail (exit code 1, duration 100 ms)',
+        '- Prior failure summary: x',
+        '- Constraint: y',
+      ].join('\n')
+  const changedFiles = opts.addedTestPath
+    ? [
+        `- src/foo.ts | sha256: ${fileSha} | change: modified`,
+        `- ${opts.addedTestPath} | sha256: ${testFileSha} | change: added`,
+      ].join('\n')
+    : `- src/foo.ts | sha256: ${fileSha} | change: modified`
+  return `# BUILD_REPORT
+
+## Task
+
+- Task: ${opts.taskId}
+- Title: stub title
+- PLAN.md ref: .code-oz/artifacts/PLAN.md (sha256: ${planSha})
+- Attempt: ${opts.attempt}
+
+## Base
+
+- Worktree: .code-oz/runs/<runId>/worktree/
+- Base commit: ${opts.baseCommitSha}
+- Dirty tree at base: false
+
+## Patch
+
+- Patch path: .code-oz/runs/<runId>/patches/attempt-1.patch
+- Patch sha256: ${patchSha}
+- Patch byte count: 100
+
+## Changed files
+
+${changedFiles}
+
+## Validation command
+
+- Command: bun test tests/foo.test.ts
+- Working directory: .code-oz/runs/<runId>/worktree/
+- Timeout (ms): 60000
+- Expected exit code: ${opts.expectedExitCode ?? 0}
+
+## Failure carry-forward
+
+${cf}
+
+## Notes
+
+- stub note.
+`
+}
+
+describe('runVerify — e2e pass (Codex bp#7)', () => {
+  test('runner exit 0 + mutation not-applicable → completed, VERIFY.md written, verify_completed emitted', async () => {
+    const { baseCommitSha } = await setupGitRepoAndWorktree()
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({ taskId: 'T-001', attempt: 1, baseCommitSha }),
+    )
+    fake.expect({ phase: 'verify', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    const result = await runVerify(buildOpts({
+      invokePersona: async () => `${VERIFY_READY_SIGNAL}\n\n## Rationale\nvalidation exited 0; mutation not applicable (modifications only).\n`,
+    }))
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') return
+    expect(result.mutationStatus).toBe('not-applicable')
+
+    // VERIFY.md exists with verdict=pass
+    const verifyText = await readFile(result.verifyReportPath, 'utf8')
+    expect(verifyText).toContain('## Verdict')
+    expect(verifyText).toContain('- Verdict: pass')
+    expect(verifyText).toContain('- Status: not-applicable')
+    expect(verifyText).toContain('- None (verdict pass).')
+
+    // verify_started + verify_completed events emitted
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const started = events.find((e) => e.type === 'verify_started')
+    const completed = events.find((e) => e.type === 'verify_completed')
+    expect(started).toBeDefined()
+    expect(completed).toBeDefined()
+  })
+
+  test('persona Rationale fails parser, repair turn fixes it, completed result still emitted', async () => {
+    const { baseCommitSha } = await setupGitRepoAndWorktree()
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({ taskId: 'T-001', attempt: 1, baseCommitSha }),
+    )
+    fake.expect({ phase: 'verify', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    let callCount = 0
+    const result = await runVerify(buildOpts({
+      invokePersona: async () => {
+        callCount++
+        if (callCount === 1) {
+          // Initial draft missing Rationale
+          return `${VERIFY_READY_SIGNAL}\n`
+        }
+        return `${VERIFY_READY_SIGNAL}\n\n## Rationale\nvalidation passed.\n`
+      },
+    }))
+
+    expect(callCount).toBe(2)
+    expect(result.status).toBe('completed')
+  })
+})
+
+describe('runVerify — e2e fail (Codex bp#7)', () => {
+  test('runner exit 1 → failed, forensics bundle written, verify_failed emitted, restart decision', async () => {
+    const { baseCommitSha } = await setupGitRepoAndWorktree()
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({ taskId: 'T-001', attempt: 1, baseCommitSha }),
+    )
+    fake.expect({ phase: 'verify', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    const failingRunner: RunnerSeam = async () => ({
+      terminationReason: 'exit',
+      exitCode: 1,
+      durationMs: 100,
+      truncated: { stdout: false, stderr: false },
+      stdoutBytes: 50,
+      stderrBytes: 0,
+    })
+
+    const result = await runVerify(buildOpts({
+      runner: failingRunner,
+      invokePersona: async () =>
+        `${VERIFY_READY_SIGNAL}\n\n## Rationale\nexit 1 != expected 0.\n\n## Failure summary\nthe new test failed against patched source.\n\n## Constraint\nimplement the missing branch.\n`,
+    }))
+
+    expect(result.status).toBe('failed')
+    if (result.status !== 'failed') return
+    expect(result.nextAction).toBe('restart')
+    expect(result.nextAttempt).toBe(2)
+    expect(result.carryForward?.priorAttempt).toBe(1)
+    expect(result.carryForward?.constraint).toContain('implement the missing branch')
+
+    // Forensics bundle exists with the 3 M8 entries
+    const forensicsPath = result.forensicsPath
+    await access(join(forensicsPath, 'VERIFY.md'))
+    await access(join(forensicsPath, 'attempt-1.patch'))
+    await access(join(forensicsPath, 'build-prompt-snapshot.md'))
+
+    // Events: worktree_forensics_preserved + verify_failed
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const preserved = events.find((e) => e.type === 'worktree_forensics_preserved')
+    const failed = events.find((e) => e.type === 'verify_failed')
+    expect(preserved).toBeDefined()
+    expect(failed).toBeDefined()
+    expect((failed as { terminationReason: string }).terminationReason).toBe('exit')
+    expect((failed as { exitCode: number }).exitCode).toBe(1)
+  })
+
+  test('runner timeout → fail with terminationReason=timeout in verify_failed event', async () => {
+    const { baseCommitSha } = await setupGitRepoAndWorktree()
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({ taskId: 'T-001', attempt: 1, baseCommitSha }),
+    )
+    fake.expect({ phase: 'verify', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    const timingOutRunner: RunnerSeam = async () => ({
+      terminationReason: 'timeout',
+      exitCode: null,
+      durationMs: 60_000,
+      truncated: { stdout: false, stderr: false },
+    })
+
+    const result = await runVerify(buildOpts({
+      runner: timingOutRunner,
+      invokePersona: async () =>
+        `${VERIFY_READY_SIGNAL}\n\n## Rationale\nrunner timed out at 60s.\n\n## Failure summary\nvalidation command did not complete within timeout.\n\n## Constraint\nensure the test exits within the configured timeout.\n`,
+    }))
+
+    expect(result.status).toBe('failed')
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const failed = events.find((e) => e.type === 'verify_failed')
+    expect((failed as { terminationReason: string }).terminationReason).toBe('timeout')
+  })
+
+  test('attempt 4 fail → restart cap reached, intervention path emitted', async () => {
+    const { baseCommitSha } = await setupGitRepoAndWorktree()
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({ taskId: 'T-001', attempt: 4, baseCommitSha }),
+    )
+    fake.expect({ phase: 'verify', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    const failingRunner: RunnerSeam = async () => ({
+      terminationReason: 'exit',
+      exitCode: 1,
+      durationMs: 100,
+      truncated: { stdout: false, stderr: false },
+    })
+
+    const result = await runVerify(buildOpts({
+      attempt: 4,
+      runner: failingRunner,
+      invokePersona: async () =>
+        `${VERIFY_READY_SIGNAL}\n\n## Rationale\nexit 1 != expected 0 on attempt 4.\n\n## Failure summary\ncap-reaching attempt still failing.\n\n## Constraint\ndeeper structural fix required.\n`,
+    }))
+
+    expect(result.status).toBe('failed')
+    if (result.status !== 'failed') return
+    expect(result.nextAction).toBe('intervention')
+
+    // NEEDS_INTERVENTION.json must be written for cap exhaustion
+    const gatePath = join(paths.runDir, 'NEEDS_INTERVENTION.json')
+    await access(gatePath)
+    const gate = JSON.parse(await readFile(gatePath, 'utf8')) as Record<string, unknown>
+    expect(gate.code).toBe('verify_restart_cap_exceeded')
+  })
+})
+
+describe('runVerify — e2e mutation-applicable path with real RevertSeam (Codex bp#4 + bp#7)', () => {
+  test('added test file + behavior file modification → mutation gate exercised end-to-end', async () => {
+    const { baseCommitSha, worktreePath } = await setupGitRepoAndWorktree()
+    // Add a test file in the worktree (post-patch state)
+    const testFileRel = 'tests/foo.test.ts'
+    await mkdir(join(worktreePath, 'tests'), { recursive: true })
+    await writeFile(join(worktreePath, testFileRel), 'test passes\n')
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({
+        taskId: 'T-001',
+        attempt: 1,
+        baseCommitSha,
+        addedTestPath: testFileRel,
+      }),
+    )
+    fake.expect({ phase: 'verify', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    // Real GitRevertSeam — exercises actual git checkout behavior.
+    const { createGitRevertSeam } = await import('../src/worktree/revert-seam.ts')
+    const realSeam = createGitRevertSeam({ worktreePath })
+
+    // Runner returns exit 0 on primary, exit 1 on mutation replay (the
+    // typical mutation-pass shape).
+    let runnerCallCount = 0
+    const runner: RunnerSeam = async () => {
+      runnerCallCount++
+      // First call = primary validation; subsequent = mutation replay.
+      if (runnerCallCount === 1) {
+        return {
+          terminationReason: 'exit',
+          exitCode: 0,
+          durationMs: 50,
+          truncated: { stdout: false, stderr: false },
+          stdoutBytes: 10,
+          stderrBytes: 0,
+        }
+      }
+      return {
+        terminationReason: 'exit',
+        exitCode: 1, // !== expected 0 → mutation pass (reverted code fails new test)
+        durationMs: 50,
+        truncated: { stdout: false, stderr: false },
+      }
+    }
+
+    const result = await runVerify(buildOpts({
+      runner,
+      revertSeam: realSeam,
+      invokePersona: async () =>
+        `${VERIFY_READY_SIGNAL}\n\n## Rationale\nvalidation passed; mutation gate satisfied (reverted code failed new test).\n`,
+    }))
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') return
+    expect(result.mutationStatus).toBe('pass')
+    expect(runnerCallCount).toBe(2) // primary + mutation replay
   })
 })
 
