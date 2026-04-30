@@ -10,6 +10,7 @@
 import defineSystemPath from './define-system.md' with { type: 'file' }
 import commonRationalizationsPath from './common-rationalizations.md' with { type: 'file' }
 import universalRulesPath from './universal-rules.md' with { type: 'file' }
+import planSystemPath from './plan-system.md' with { type: 'file' }
 
 const ASSET_CACHE = new Map<string, string>()
 
@@ -44,6 +45,10 @@ export async function loadCommonRationalizations(): Promise<string> {
  */
 export async function loadUniversalRules(): Promise<string> {
   return loadAsset(universalRulesPath)
+}
+
+export async function loadPlanSystemTemplate(): Promise<string> {
+  return loadAsset(planSystemPath)
 }
 
 // --- conversation rendering ----------------------------------------
@@ -164,5 +169,94 @@ export async function composeDefinePrompt(input: ComposeDefinePromptInput): Prom
     history: input.history,
     readySignal: input.readySignal,
     universalRules,
+  })
+}
+
+// --- PLAN composer -------------------------------------------------
+
+const TOKEN_AVAILABLE_TOOLS = '{{AVAILABLE_TOOLS}}'
+
+const PLAN_REQUIRED_TOKENS = [
+  TOKEN_AGENT_BODY,
+  TOKEN_RATIONALIZATIONS,
+  TOKEN_UNIVERSAL_RULES,
+  TOKEN_AVAILABLE_TOOLS,
+  TOKEN_CONVERSATION,
+  TOKEN_READY_SIGNAL,
+] as const
+
+export interface ComposePlanPromptPureInput {
+  readonly templateBody: string
+  readonly universalRules: string
+  readonly commonRationalizations: string
+  readonly agentBody: string
+  readonly history: readonly AskMeTurn[]
+  readonly readySignal: string
+  /** Names of tools the agent has access to via tool_use.repo_context.tools.
+   *  When empty, the AVAILABLE_TOOLS slot says "(no tool_use scope declared)".
+   *  The renderer only names tools the agent has permission to call (per
+   *  Codex M6 "Where I agree" point 5). */
+  readonly availableTools: readonly string[]
+}
+
+const TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  glob: '**glob** — list files matching a pattern. Args: `{ pattern, roots? }`. Returns paths relative to project root.',
+  grep: '**grep** — search file contents. Args: `{ pattern, roots?, regex?, ignoreCase? }`. Returns `{ path, line, snippet }` per match (snippet capped at 200 chars).',
+  read: '**read** — read a file slice. Args: `{ path, lineRange? }`. Returns content capped at 16 KB.',
+  symbol: '**symbol** — LSP symbol search. Reserved for W3+; do not call in M6.',
+})
+
+export function composePlanPromptPure(args: ComposePlanPromptPureInput): string {
+  for (const tok of PLAN_REQUIRED_TOKENS) {
+    if (!args.templateBody.includes(tok)) {
+      throw new Error(`plan-system.md is missing required token ${tok}`)
+    }
+  }
+  const conversation = renderConversation(args.history)
+  const availableTools = renderAvailableTools(args.availableTools)
+  return args.templateBody
+    .replaceAll(TOKEN_AGENT_BODY, args.agentBody.trim())
+    .replaceAll(TOKEN_RATIONALIZATIONS, args.commonRationalizations.trim())
+    .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
+    .replaceAll(TOKEN_AVAILABLE_TOOLS, availableTools)
+    .replaceAll(TOKEN_CONVERSATION, conversation)
+    .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+}
+
+function renderAvailableTools(tools: readonly string[]): string {
+  if (tools.length === 0) return '(no tool_use scope declared on this persona)'
+  const lines: string[] = []
+  for (const t of tools) {
+    const desc = TOOL_DESCRIPTIONS[t]
+    if (desc !== undefined) {
+      lines.push(`- ${desc}`)
+    } else {
+      lines.push(`- **${t}** — (no description registered)`)
+    }
+  }
+  return lines.join('\n')
+}
+
+export interface ComposePlanPromptInput {
+  readonly agentBody: string
+  readonly history: readonly AskMeTurn[]
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export async function composePlanPrompt(input: ComposePlanPromptInput): Promise<string> {
+  const [templateBody, commonRationalizations, universalRules] = await Promise.all([
+    loadPlanSystemTemplate(),
+    loadCommonRationalizations(),
+    loadUniversalRules(),
+  ])
+  return composePlanPromptPure({
+    templateBody,
+    commonRationalizations,
+    universalRules,
+    agentBody: input.agentBody,
+    history: input.history,
+    readySignal: input.readySignal,
+    availableTools: input.availableTools,
   })
 }
