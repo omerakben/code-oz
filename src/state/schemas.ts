@@ -99,6 +99,10 @@ export const EVENT_TYPES = [
   'gate_required',
   'intervention',
   'run_ended',
+  // M5 — ask-me conversation content. Reducer treats both as no-ops; the
+  // events exist for the audit trail and W2+ replay tooling.
+  'ask_me_user_input',
+  'ask_me_persona_reply',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -145,6 +149,26 @@ export type PhaseEvent =
   | { readonly version: 1; readonly type: 'gate_required'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly blockedOn: string }
   | { readonly version: 1; readonly type: 'intervention'; readonly ts: string; readonly runId: string; readonly code: string; readonly phase?: Phase }
   | { readonly version: 1; readonly type: 'run_ended'; readonly ts: string; readonly runId: string; readonly outcome: RunOutcome }
+  | {
+      readonly version: 1
+      readonly type: 'ask_me_user_input'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly turn: number
+      readonly input: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'ask_me_persona_reply'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly turn: number
+      readonly agent: string
+      readonly response: string
+      readonly ready: boolean
+    }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)
 // accepts events whose `type` is a non-empty string it doesn't recognize, so

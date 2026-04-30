@@ -416,6 +416,117 @@ export async function approveGate(opts: ApproveGateOptions): Promise<ApproveGate
   })
 }
 
+// --- gate-required helper ------------------------------------------
+
+export interface RequireGateOptions {
+  readonly paths: RunPaths
+  readonly runId: string
+  readonly phase: Phase
+  /** Human-readable description of what unblocks the gate. */
+  readonly blockedOn: string
+  readonly now?: () => string
+}
+
+export interface RequireGateResult {
+  readonly state: RunState
+  /** True when this call appended a new gate_required event; false on idempotent no-op. */
+  readonly appended: boolean
+}
+
+/**
+ * Append a gate_required event for the given phase and rebuild current.json
+ * under one short per-run lock. Idempotent: if a gate_required event for the
+ * same phase already exists in the log, the call is a no-op (no append, but
+ * current.json is still rebuilt to recover from any prior interruption).
+ *
+ * Used by phase logic (M5: src/phases/define.ts) immediately after writing
+ * a phase artifact (e.g., SPEC.md) to signal the run is awaiting user
+ * approval via `code-oz approve <phase>`.
+ */
+export async function requireGate(opts: RequireGateOptions): Promise<RequireGateResult> {
+  if (!isPhase(opts.phase)) {
+    throw new EventLogError([
+      {
+        file: opts.paths.runDir,
+        code: 'event_invalid_phase',
+        rule: 'requireGate.phase must be canonical',
+        detail: String(opts.phase),
+      },
+    ])
+  }
+  if (!isUlid(opts.runId)) {
+    throw new EventLogError([
+      {
+        file: opts.paths.eventsFile,
+        code: 'event_invalid_runid',
+        rule: 'requireGate.runId must be a 26-char ULID',
+        detail: opts.runId,
+      },
+    ])
+  }
+  if (typeof opts.blockedOn !== 'string' || opts.blockedOn.length === 0) {
+    throw new EventLogError([
+      {
+        file: opts.paths.eventsFile,
+        code: 'event_invalid_value',
+        rule: 'requireGate.blockedOn must be a non-empty string',
+      },
+    ])
+  }
+
+  const eventPaths = eventPathsFor(opts.paths)
+  const now = opts.now ?? (() => new Date().toISOString())
+
+  return await withLock(opts.paths.lockDir, async () => {
+    const events = await readEvents(eventPaths)
+    const known = events.filter(isKnownPhaseEvent)
+    const existing = known.some(
+      (e) => e.type === 'gate_required' && e.phase === opts.phase,
+    )
+    let appended = false
+    if (!existing) {
+      await appendEvent(
+        eventPaths,
+        {
+          version: 1,
+          type: 'gate_required',
+          ts: now(),
+          runId: opts.runId,
+          phase: opts.phase,
+          blockedOn: opts.blockedOn,
+        },
+        { skipLock: true },
+      )
+      appended = true
+    }
+    const updated = appended ? await readEvents(eventPaths) : events
+    const state = reduceEvents(updated)
+    if (state === null) {
+      throw new EventLogError([
+        {
+          file: opts.paths.eventsFile,
+          code: 'event_invalid_value',
+          rule: 'requireGate produced no derivable state (no run_started?)',
+        },
+      ])
+    }
+    await writeCurrentUnlocked(opts.paths, state)
+    return Object.freeze({ state, appended })
+  }).catch((err: unknown) => {
+    if (err instanceof LockBusyError) {
+      throw new EventLogError([
+        {
+          file: opts.paths.eventsFile,
+          code: 'event_lock_busy',
+          rule: 'per-run lock is busy during requireGate',
+          detail: err.lockDir,
+        },
+      ])
+    }
+    throw err
+  })
+}
+
 // --- active-run pointer --------------------------------------------
 
 export async function readActiveRun(activeFile: string): Promise<string | null> {
