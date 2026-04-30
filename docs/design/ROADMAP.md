@@ -103,22 +103,102 @@ Acceptance: `FakeProvider` runs the whole lifecycle offline; real adapters fail 
 Files: `src/phases/define.ts`, `src/artifacts/spec.ts`, `src/prompts/{define-system,common-rationalizations}.md`, `docs/contracts/SPEC.md`, `tests/define-phase.test.ts`, `tests/fixtures/transcripts/nontechnical-baby-game.md`
 Acceptance: DEFINE writes `.code-oz/artifacts/SPEC.md`; SPEC includes goals/users/constraints/acceptance/open-questions/non-goals; gate waits for user approval before PLAN.
 
-### M6 — `feat(plan): implement 3-source verification and PLAN contract`
-Files: `src/phases/plan.ts`, `src/artifacts/{plan,source-check}.ts`, `src/sources/{spec,reference,docs}-source.ts`, `src/prompts/plan-system.md`, `docs/contracts/{PLAN,SOURCE_CHECK}.md`, `tests/{plan-phase,sources}.test.ts`
-Acceptance: PLAN cannot pass without `SOURCE_CHECK.md` naming spec, reference (or explicit none-found rationale), and docs (or explicit no-library rationale); PLAN emits atomic tasks with file targets, validation commands, risk notes; gate waits before BUILD-lite.
+### M6 — `feat(plan): implement PLAN, 3-source verification, repo-context MVP, scientist substrate, run-level budgets`
 
-### M7 — `feat(spine): add build-lite verify-lite review-lite demo path`
-Files: `src/phases/{build,verify,review}.ts`, `src/worktree/create-run-worktree.ts`, `src/patches/apply-agent-patch.ts`, `src/artifacts/{build,verify,review}-report.ts`, `fixtures/greenfield-web/`, `tests/e2e/spine-greenfield.test.ts`, `docs/demo/week-1-spine.md`
-Acceptance: one offline e2e test runs DEFINE → REVIEW-lite in a temp fixture; REVIEW receives changed file paths, not summaries; review loop is capped; `code-oz run --provider fake --fixture greenfield-web` produces complete local trace and stops at REVIEW gate.
+Scope expanded by the synthesis round (`docs/research/MERGE_PLAN.md`, 2026-04-30) from the original 10-commit budget to ~14 commits, ~6–8 working days.
+
+Files (PLAN core):
+- `src/phases/plan.ts`, `src/artifacts/{plan,source-check}.ts`, `src/sources/{spec,reference,docs}-source.ts`
+- `src/prompts/plan-system.md`, `docs/contracts/{PLAN,SOURCE_CHECK}.md`
+- `tests/{plan-phase,sources}.test.ts`
+
+Files (repo-context MVP, clean-room from public `claude-code`/`opencode`/`agent-skills` patterns; **`claude-code-main` leaked source is excluded** per CLAUDE.md influence library):
+- `src/tools/repo-context/{glob,grep,read,symbol}.ts`, `src/tools/repo-context/permissions.ts`
+- `docs/contracts/REPO_CONTEXT.md`
+- New event type `repo_context_searched` in `src/state/schemas.ts`
+- `AgentPermissions.tool_use.repo_context` extension in `src/agents/schema.ts`
+
+Files (Scientist substrate + PLAN tail):
+- `docs/contracts/{SCIENTIST,HYPOTHESES,OPEN_QUESTIONS}.md`
+- `src/artifacts/{hypotheses,open-questions}.ts` (parsers, serializers, atomic writers)
+- New event types `science_started`, `science_completed`, `hypothesis_added`, `hypothesis_falsified`, `question_opened`, `question_resolved` in `src/state/schemas.ts`
+- `src/phases/scientist.ts` (phase-tail runner)
+- Gate-preflight validation hook in `src/state/gates.ts` (or `src/state/run.ts`)
+- `src/agents/defaults/scientist.md` (v0.1 persona body)
+
+Files (`budgets.global` extension):
+- `src/config/schema.ts` adds `maxWallTimeMinutes`, `softWarnAtRatio`, optional `priceTable`
+- `src/providers/cost.ts` `assertWithinBudget` extended; `budget_warning` event added
+
+Acceptance:
+- PLAN cannot pass without `SOURCE_CHECK.md` naming spec, reference (or explicit none-found rationale), and docs (or explicit no-library rationale); PLAN emits atomic tasks with file targets, validation commands, risk notes; gate waits before BUILD-lite.
+- Repo-context tools (`glob`, `grep`, `read`; `symbol` optional) callable by PLAN persona under `tool_use.repo_context` scope; results cap at configurable defaults; selected paths flow into next-invocation `ProviderRequest.files`; `repo_context_searched` events log every call.
+- HYPOTHESES.md and OPEN_QUESTIONS.md atomic writes survive crashes; PLAN's gate preflight validates both sidecars before writing `GATE_PLAN_PASSED.json`; overdue open questions block the gate.
+- Cumulative `budgets.global` enforces wall-time + token + call caps with soft warnings at 75% and hard kills at 100%.
+- DEFINE retro-seed (HYPOTHESES.md / OPEN_QUESTIONS.md generated from SPEC.md) is opt-in via `phases.scientist.retroSeedDefine: true`; never reopens M5.
+
+Deferred to W2 per merge plan: CLI commands `code-oz hypotheses list` / `code-oz questions list` / `code-oz questions resolve <Q-NNN>`; cross-run `.codeoz/memory/scientist/`; primary-artifact H-NNN/Q-NNN citation requirement; designer/reflection loop.
+
+### M7 — `feat(spine): build-lite + verify-lite + review-lite demo path with iterative loop and universal rules`
+
+Scope expanded by the synthesis round to include iterative BUILD loop, mutation-test gate, phase-tail Scientist for BUILD/VERIFY/REVIEW, Prompter mini-experiment, and universal rule sheet shipping.
+
+Files (BUILD/VERIFY/REVIEW core):
+- `src/phases/{build,verify,review}.ts`, `src/worktree/create-run-worktree.ts`, `src/patches/apply-agent-patch.ts`
+- `src/artifacts/{build,verify,review}-report.ts`
+- `fixtures/greenfield-web/`, `tests/e2e/spine-greenfield.test.ts`, `docs/demo/week-1-spine.md`
+
+Files (iterative BUILD loop):
+- `src/phases/build-loop.ts` (Voyager pattern: write → run → see-error → patch → self-verify-before-commit)
+- `phases.build.maxBuildPatchRounds` in `src/config/schema.ts`
+- `src/tools/test-runner.ts` (test-runner abstraction)
+
+Files (mutation-test gate):
+- `src/phases/verify-mutation.ts` (revert-and-replay; new tests must fail on reverted code)
+- VERIFY-lite gate consults this for any test marked as `asserts: new-behavior`
+
+Files (phase-tail Scientist + universal rule sheet):
+- BUILD/VERIFY/REVIEW each gain a Scientist phase-tail (uses M6 substrate)
+- `src/prompts/universal-rules.md` (the 20-item ban/require list from `docs/research/02-llm-failure-research.md`)
+- `src/prompts/index.ts` updated to inject universal-rules into every persona prompt
+
+Files (Prompter mini-experiment, evidence-only — no Prompter implementation):
+- `docs/research/M7_PROMPTER_EXPERIMENT.md` documenting: replay M5 canned transcripts with hand-written INTENT.md as input; measure ask-me round-count delta + SPEC quality delta against gold standard. Result feeds W2 Prompter decision.
+
+Acceptance:
+- One offline e2e test runs DEFINE → REVIEW-lite in a temp fixture; REVIEW receives changed file paths, not summaries; review loop is capped; `code-oz run --provider fake --fixture greenfield-web` produces complete local trace and stops at REVIEW gate.
+- Iterative BUILD loop bounded by `maxBuildPatchRounds`; surfaces `NEEDS_INTERVENTION` on cap exhaust; self-verifies before BUILD_REPORT.md is committed.
+- Mutation-test gate rejects tautological tests in VERIFY-lite for new-behavior tests.
+- Universal rule sheet shipped; injected into every persona prompt; M5's BA persona inherits it without a SPEC contract change.
+- Prompter mini-experiment data captured in `docs/research/M7_PROMPTER_EXPERIMENT.md`; W2 Prompter scope decision pending its outcome.
 
 ---
 
 ## Beyond v0.1 (post-MVP queue, ordered)
 
-- **W2:** Real Claude integration polish, non-technical UX hardening (canned transcripts → expected SPEC snapshots), Common Rationalizations table integrated into all phase prompts
-- **W3:** Codex/Gemini provider integration, cross-family REVIEW with real providers, installer (`curl | sh`, npm, Homebrew tap)
-- **W4:** Brownfield AUDIT phase fully implemented (`AUDIT.md` contract), `.code-ozignore`, secret redaction, "files sent to provider" preview, `code-oz upgrade --check`
-- **W5+:** Full SHIP phase, more personas (PM/UX/FE/BE/QA splits), agent pack marketplace contract validation, Playwright MCP for VERIFY, `consult()` broad primitive (v0.3), telemetry bundles via `code-oz doctor --bundle`
+Reshaped 2026-04-30 by the synthesis round (`docs/research/MERGE_PLAN.md`).
+
+- **W2 — Non-expert workflow (coordinated milestone):**
+  - W2.1 — DEFINE-0 / Prompter front door (gated on M7 mini-experiment outcome). Tier-1 only (cheap meta-prompt). Default-off via `--prompter` opt-in for v0.1; default-on after exemplars mature. INTENT.md as separate artifact, sampled cross-family review at 20%.
+  - W2.2 — TUI inspector + failure-recovery UX. Ink/charmbracelet-based diff viewer, hunk-level accept/reject, `events.jsonl` reader, `code-oz resume-after-intervention` command.
+  - W2.3 — Onboarding + tour mode. Example project, `code-oz tour` walks through one DEFINE→SHIP cycle on a toy repo. 5–10 hand-written exemplars in the Prompter library for cold-start.
+  - W2.4 — `code-oz reflect` designer job + skill outcomes JSONL log substrate. On-demand reflection over the last N runs; promotes successful (raw-request, INTENT) pairs into the exemplar library.
+  - W2.5 — Scientist completion: CLI commands (`code-oz hypotheses list`, `code-oz questions list`, `code-oz questions resolve <Q-NNN>`), cross-run `.codeoz/memory/scientist/`, primary-artifact H-NNN/Q-NNN citation requirement.
+
+- **W3 — Production extension:**
+  - Codex/Gemini provider integration; cross-family REVIEW with real providers; installer (`curl | sh`, npm, Homebrew tap).
+  - Multi-language LanguagePack abstraction (TypeScript/Node, Python; C# scoped if OneStream-internal use is realistic v1).
+  - Real-world `IIntegration` interface (events-log-as-substrate): GitHub (read issues into INTENT.md, open PRs at SHIP), Slack (NEEDS_INTERVENTION notifications), Linear/Jira (ticket round-trip).
+  - Tier-2 DSPy MIPRO compile for Prompter (opt-in via `code-oz run --deep`).
+  - Concurrent runs + multi-active-run pointer (worktree-per-run isolation, Archon pattern).
+  - Optional `symbol` LSP integration for repo-context tools (deferred from M6).
+
+- **W4 — AUDIT depth + privacy hardening:**
+  - Brownfield AUDIT phase fully implemented (`AUDIT.md` contract with architecture map, convention sniffer, dependency graph, hot-files report, test coverage map, doc extraction).
+  - `.code-ozignore`, secret redaction, "files sent to provider" preview, `code-oz upgrade --check`.
+  - Containerized BUILD execution (devcontainer or firecracker microVM) — required if real-world integrations move agents toward writing code that touches user data.
+
+- **W5+:** Full SHIP phase, more personas (PM/UX/FE/BE/QA splits), agent pack marketplace contract validation, Playwright MCP for VERIFY, `consult()` broad primitive (v0.3), telemetry bundles via `code-oz doctor --bundle`.
 
 ---
 

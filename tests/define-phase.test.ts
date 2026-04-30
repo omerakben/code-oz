@@ -34,8 +34,9 @@ beforeEach(async () => {
   await mkdir(paths.runDir, { recursive: true })
   fake = new FakeProvider()
   registry = new ProviderRegistry({ providers: [fake] })
-  // initRun seeds run_started + phase_entered events.
-  await initRun({ paths, profile: 'greenfield', runId: RUN })
+  // initRun seeds run_started + phase_entered events. Mirror invokeCtx.now()
+  // so wall-time math (M6 budgets.global.maxWallTimeMinutes) is deterministic.
+  await initRun({ paths, profile: 'greenfield', runId: RUN, now: () => '2026-04-30T11:00:00.000Z' })
 })
 
 afterEach(async () => {

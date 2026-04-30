@@ -242,7 +242,83 @@ function mergeGlobalBudget(
           ),
         }
       : { toolCallBudgetMultiplier: def.toolCallBudgetMultiplier }),
+    maxWallTimeMinutes: nonNegIntOrDefault(
+      g.maxWallTimeMinutes,
+      def.maxWallTimeMinutes,
+      'budgets.global.maxWallTimeMinutes',
+      file,
+      issues,
+    ),
+    softWarnAtRatio: ratioOrDefault(
+      g.softWarnAtRatio,
+      def.softWarnAtRatio,
+      'budgets.global.softWarnAtRatio',
+      file,
+      issues,
+    ),
+    ...(g.priceTable !== undefined
+      ? { priceTable: parsePriceTable(g.priceTable, file, issues) ?? def.priceTable }
+      : def.priceTable !== undefined
+        ? { priceTable: def.priceTable }
+        : {}),
   }
+}
+
+function ratioOrDefault(
+  raw: unknown,
+  fallback: number,
+  field: string,
+  file: string,
+  issues: ConfigLoadIssue[],
+): number {
+  if (raw === undefined) return fallback
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0 || raw >= 1) {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: `${field} must be a number in (0, 1)`,
+      detail: `got ${JSON.stringify(raw)}`,
+    })
+    return fallback
+  }
+  return raw
+}
+
+function parsePriceTable(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): GlobalBudget['priceTable'] | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'budgets.global.priceTable must be a mapping',
+    })
+    return undefined
+  }
+  const out: Record<string, { inputPerMTok: number; outputPerMTok: number }> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (
+      v === null ||
+      typeof v !== 'object' ||
+      Array.isArray(v) ||
+      typeof (v as { inputPerMTok?: unknown }).inputPerMTok !== 'number' ||
+      typeof (v as { outputPerMTok?: unknown }).outputPerMTok !== 'number'
+    ) {
+      issues.push({
+        file,
+        code: 'config_invalid_shape',
+        rule: `budgets.global.priceTable.${k} must have numeric inputPerMTok and outputPerMTok`,
+      })
+      continue
+    }
+    out[k] = {
+      inputPerMTok: (v as { inputPerMTok: number }).inputPerMTok,
+      outputPerMTok: (v as { outputPerMTok: number }).outputPerMTok,
+    }
+  }
+  return Object.freeze(out)
 }
 
 function mergePerPhase(
@@ -352,6 +428,37 @@ function mergePhases(
   const p = raw as Record<string, unknown>
   return {
     define: mergeDefinePhase(p.define, file, issues),
+    scientist: mergeScientistPhase(p.scientist, file, issues),
+  }
+}
+
+function mergeScientistPhase(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): { retroSeedDefine: boolean } {
+  const def = DEFAULT_CONFIG.phases.scientist
+  if (raw === undefined || raw === null) return { ...def }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'phases.scientist must be a mapping',
+    })
+    return { ...def }
+  }
+  const s = raw as Record<string, unknown>
+  if (s.retroSeedDefine !== undefined && typeof s.retroSeedDefine !== 'boolean') {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: 'phases.scientist.retroSeedDefine must be a boolean',
+      detail: `got ${JSON.stringify(s.retroSeedDefine)}`,
+    })
+    return { ...def }
+  }
+  return {
+    retroSeedDefine: typeof s.retroSeedDefine === 'boolean' ? s.retroSeedDefine : def.retroSeedDefine,
   }
 }
 
@@ -597,6 +704,7 @@ function clonePerPhase(p: Record<Phase, PhaseBudget>): Record<Phase, PhaseBudget
 function clonePhases(p: PhasesConfig): PhasesConfig {
   return {
     define: cloneDefinePhase(p.define),
+    scientist: { ...p.scientist },
   }
 }
 

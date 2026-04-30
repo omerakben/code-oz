@@ -103,6 +103,22 @@ export const EVENT_TYPES = [
   // events exist for the audit trail and W2+ replay tooling.
   'ask_me_user_input',
   'ask_me_persona_reply',
+  // M6 — repo-context tool calls (per docs/contracts/REPO_CONTEXT.md).
+  // Counts against the existing tool-call cap when model-issued; never
+  // increments maxProviderCalls (Codex decision 2 in CODEX_RESPONSE_M6.md).
+  'repo_context_searched',
+  // M6 — Scientist phase-tail audit trail (per docs/contracts/SCIENTIST.md,
+  // HYPOTHESES.md, OPEN_QUESTIONS.md). All no-ops in the reducer.
+  'science_emitted',
+  'hypothesis_added',
+  'hypothesis_updated',
+  'question_added',
+  'question_resolved',
+  'question_deferred',
+  // M6 — soft budget warning at budgets.global.softWarnAtRatio. The hard
+  // kill at 100% still produces a NEEDS_INTERVENTION; the warning is a
+  // forward-looking signal so operators can plan ahead.
+  'budget_warning',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -168,6 +184,95 @@ export type PhaseEvent =
       readonly agent: string
       readonly response: string
       readonly ready: boolean
+    }
+  | {
+      readonly version: 1
+      readonly type: 'repo_context_searched'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly tool: 'glob' | 'grep' | 'read' | 'symbol'
+      readonly query: string
+      readonly roots: readonly string[]
+      readonly resultPaths: readonly string[]
+      readonly selectedPaths: readonly string[]
+      readonly resultBytes: number
+      readonly resultTokensEstimate: number
+    }
+  | {
+      readonly version: 1
+      readonly type: 'science_emitted'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly hypothesesCount: number
+      readonly openQuestionsCount: number
+    }
+  | {
+      readonly version: 1
+      readonly type: 'hypothesis_added'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly id: string
+      readonly status: 'open' | 'confirmed' | 'rejected' | 'obsolete'
+      readonly falsifier: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'hypothesis_updated'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly id: string
+      readonly prevStatus: 'open' | 'confirmed' | 'rejected' | 'obsolete'
+      readonly nextStatus: 'open' | 'confirmed' | 'rejected' | 'obsolete'
+      readonly changedFields: readonly string[]
+    }
+  | {
+      readonly version: 1
+      readonly type: 'question_added'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly id: string
+      readonly status: 'open' | 'resolved' | 'deferred'
+      readonly importance: 'low' | 'medium' | 'high' | 'blocking'
+      readonly dueBy: string | null
+    }
+  | {
+      readonly version: 1
+      readonly type: 'question_resolved'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly id: string
+      readonly resolvedAt: string
+      readonly resolution: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'question_deferred'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly id: string
+      readonly deferredAt: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'budget_warning'
+      readonly ts: string
+      readonly runId: string
+      readonly metric:
+        | 'maxTurns'
+        | 'maxProviderCalls'
+        | 'maxTokensEstimate'
+        | 'maxWallTimeMinutes'
+      readonly ratio: number
+      readonly current: number
+      readonly limit: number
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

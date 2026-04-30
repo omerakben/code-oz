@@ -18,23 +18,31 @@ async function loadDefaults(): Promise<readonly SourceFile[]> {
 }
 
 describe('bundled default personas', () => {
-  test('directory contains exactly the five v0.1 spine personas', async () => {
+  test('directory contains the v0.1 + v0.6 spine personas', async () => {
     const entries = await readdir(DEFAULTS_DIR)
     const mdFiles = entries.filter((f) => f.endsWith('.md')).sort()
-    expect(mdFiles).toEqual(['ba.md', 'builder.md', 'lead.md', 'reviewer.md', 'verifier.md'])
+    expect(mdFiles).toEqual([
+      'ba.md',
+      'builder.md',
+      'lead.md',
+      'reviewer.md',
+      'scientist.md',
+      'verifier.md',
+    ])
   })
 
-  test('all five default files pass schema validation', async () => {
+  test('all default files pass schema validation', async () => {
     const sources = await loadDefaults()
     const reg = buildRegistry({ defaults: sources, overrides: [] })
-    expect(reg.listAll()).toHaveLength(5)
+    expect(reg.listAll()).toHaveLength(6)
   })
 
-  test('each phase from DEFINE through REVIEW has exactly one default persona', async () => {
+  test('each phase from DEFINE through REVIEW has the expected default personas', async () => {
     const sources = await loadDefaults()
     const reg = buildRegistry({ defaults: sources, overrides: [] })
     expect(reg.getByPhase('define').map((d) => d.name)).toEqual(['ba'])
-    expect(reg.getByPhase('plan').map((d) => d.name)).toEqual(['lead'])
+    // M6 adds the Scientist phase-tail to PLAN, so plan has both lead + scientist.
+    expect(reg.getByPhase('plan').map((d) => d.name).sort()).toEqual(['lead', 'scientist'])
     expect(reg.getByPhase('build').map((d) => d.name)).toEqual(['builder'])
     expect(reg.getByPhase('verify').map((d) => d.name)).toEqual(['verifier'])
     expect(reg.getByPhase('review').map((d) => d.name)).toEqual(['reviewer'])
