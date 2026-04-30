@@ -231,26 +231,27 @@ Files (commit 9: VERIFY persona + composer):
 - `src/agents/defaults/verifier.md` (3.5-4.5k; replaces M2 stub; long grammar lives in parser tests and contract files, not in prose)
 - `src/prompts/verify-system.md` — universal-rules import, schema excerpts, one compact pass example + one compact fail example
 
-Files (commit 10: VERIFY orchestrator + cleanup-on-approval + e2e):
+Files (commit 10: VERIFY orchestrator + cleanup-on-approval; M8 fix 4 finalized):
 - `src/phases/verify.ts` (orchestrator: BUILD ref bind → command execute → evidence record → mutation gate → persona invoke → repair → finalize → forensics-on-fail; **cleanup is gate-driven, not event-driven**)
-- `src/commands/approve.ts` extension: `approve verify` validates VERIFY.md + Scientist sidecars → removes worktree → emits `worktree_destroyed` → writes `GATE_VERIFY_PASSED.json`. **Removal failure blocks gate write and emits intervention.**
-- VERIFY's Scientist phase-tail (3/3 cap matching BUILD)
-- `tests/verify-phase-{pass,fail,mutation-fail,scientist-tail}.test.ts`
-- `tests/e2e/verify-lite-greenfield-pass.test.ts` (DEFINE → PLAN → BUILD → VERIFY for `T-001`, attempt-1 pass)
-- `tests/e2e/verify-lite-greenfield-restart.test.ts` (`T-002` with attempt-1 fail → forensics → worktree destroyed → attempt-2 fresh worktree → pass; FakeProvider keyed by `(phase, taskId, attempt)`, no hidden state)
+- `src/commands/approve.ts` `preApproveVerifyHook` (extracted helper): validates VERIFY.md → confirms verdict=pass → removes worktree → emits `worktree_destroyed` BEFORE the gate file is written. **Removal failure throws and the gate is not written.**
+- `src/phases/schedule-attempt.ts` `scheduleAttemptNPlus1`: emits `worktree_destroyed` + `verify_restart_initiated` after a VERIFY-fail. The full run-loop wiring (creating attempt N+1's BUILD invocation) lands in M9.
+- `src/worktree/revert-seam.ts` `createGitRevertSeam`: production RevertSeam backed by `git checkout BASE -- path` for the mutation gate.
+- VERIFY's Scientist phase-tail runs on **both** pass and fail branches (rule 15).
+- Phase-level e2e tests: `tests/verify-phase.test.ts` (pass + repair-turn pass + fail + timeout-fail + cap-exhaustion + real-RevertSeam mutation), `tests/revert-seam.test.ts`, `tests/schedule-attempt.test.ts`, `tests/commands-approve.test.ts` (preApproveVerifyHook coverage).
 
 Acceptance:
 - VERIFY runs validation command via `Bun.spawn` (no shell, scrubbed env, cwd pinned to worktree, argv-only); emits `VERIFY.md` with the six required H2 sections per VERIFY.md schema
-- Failed VERIFY does NOT enter a soft patch loop. Worktree destroyed as active candidate after `worktree_destroyed` event; forensics preserved with all nine entries (M7's six + M8's three); attempt N+1 starts clean from same approved PLAN with failure constraint surfaced into the BUILD prompt
-- Hard cap of 4 clean BUILD attempts (counted by completed BUILD reports cross-checked against `BUILD_REPORT.md.Task.Attempt`); attempt 5 lands in `NEEDS_INTERVENTION.json` per CLAUDE.md rule 11. BUILD-protocol failures, runner spawn failures, and BUILD-ref mismatches bypass the cap
-- Mutation gate rejects tautological tests for new-behavior tasks; source-only revert (test files preserved at post-patch); applicability requires `Expected exit code: 0` AND added test in changed-file manifest matching `phases.verify.testGlob`; mutation pass requires `terminationReason: "exit"` AND non-expected exit code
-- Cleanup-on-VERIFY-pass fires inside `code-oz approve verify`, not on `verify_completed` event; failed removal blocks gate write
-- VERIFY-lite e2e with FakeProvider: success path (DEFINE → PLAN → BUILD → VERIFY) and failure-then-retry path (attempt N + N+1) both pass
-- All M7 tests still pass (1005 carried)
-- Codex implementation review (CLAUDE.md rule 8) returns `push` after any fix-first commits land
-- Tag: `v0.8.0-alpha.0`
+- Orchestration ordering: validate BUILD_REPORT → run validation → evaluate mutation → compute orchestrator-owned verdict → invoke persona for persona-owned fields ONLY → parse → repair-once on grammar fail → merge → write VERIFY.md → Scientist tail (both branches) → emit verdict event. Persona never authors the binary verdict, Mutation.Status, or full VERIFY.md text.
+- Failed VERIFY does NOT enter a soft patch loop. Forensics preserved with all nine entries (M7's six + M8's three); `verify_failed` event records terminationReason + exitCode + persona-authored failureSummary. The remaining canonical events on fail (`worktree_destroyed`, `verify_restart_initiated`) fire from `scheduleAttemptNPlus1` after runVerify returns; the full run-loop wiring (scheduling attempt N+1's BUILD invocation) lands in M9. attempt N+1 starts clean from same approved PLAN with failureConstraint surfaced into the BUILD prompt via the carry-forward block.
+- Hard cap of 4 clean BUILD attempts (counted by completed BUILD reports cross-checked against `BUILD_REPORT.md.Task.Attempt`); attempt 5 lands in `NEEDS_INTERVENTION.json` per CLAUDE.md rule 11. BUILD-protocol failures, runner spawn failures, and BUILD-ref mismatches bypass the cap.
+- Mutation gate rejects tautological tests for new-behavior tasks; source-only revert (test files preserved at post-patch); applicability requires `Expected exit code: 0` AND added test in changed-file manifest matching `phases.verify.testGlob`; mutation pass requires `terminationReason: "exit"` AND non-expected exit code. Production `createGitRevertSeam` exercises the gate against real worktree state.
+- Cleanup-on-VERIFY-pass fires inside `code-oz approve verify` via `preApproveVerifyHook`, not on `verify_completed` event; failed removal blocks gate write.
+- Every intervention path produces durable `NEEDS_INTERVENTION.json` + `intervention` event (CLAUDE.md rule 1, 11) — including cap exhaustion, runner throws, mutation throws, persona repair-turn failures, Scientist tail failures, and forensics write failures.
+- All M7 tests still pass (1005 carried). M8 final delta: 1005 → 1325+ (verified after fix-first cycle).
+- Codex implementation review (CLAUDE.md rule 8) returns `push` after fix-first commits land.
+- Tag: `v0.8.0-alpha.0`.
 
-NOT in M8: REVIEW-lite (M9), Debate runtime (M10), explicit `Asserts:` flag in PLAN (deferred per Codex Decision 3 verdict; conservative manifest-driven applicability is enough for M8), persona-authored binary `Verdict.Verdict` (Codex Decision 10 tightened to orchestrator-owned), retry framework for flaky tests (W3+), real OS-level sandboxing (W4 containerization).
+NOT in M8: REVIEW-lite (M9), Debate runtime (M10), explicit `Asserts:` flag in PLAN (deferred per Codex Decision 3 verdict; conservative manifest-driven applicability is enough for M8), persona-authored binary `Verdict.Verdict` (Codex Decision 10 tightened to orchestrator-owned), retry framework for flaky tests (W3+), real OS-level sandboxing (W4 containerization), the full run-loop integration that drives attempt N+1's BUILD invocation after `scheduleAttemptNPlus1` (M9 ships this as part of the REVIEW orchestration that consumes M8's VERIFY-pass gate).
 
 ### M9 — `feat(spine): REVIEW-lite with cross-family handoff`
 
