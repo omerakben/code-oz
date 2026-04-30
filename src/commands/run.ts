@@ -39,6 +39,7 @@ import {
 } from '../state/run.ts'
 import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
+import { runPlan, type PlanResult } from '../phases/plan.ts'
 import type { InvokeContext } from '../providers/invoke.ts'
 
 // --- public CLI entrypoint -----------------------------------------
@@ -466,6 +467,13 @@ async function handleActiveRun(
     )
     process.exit(1)
   }
+
+  // Phase advanced past DEFINE: dispatch to the right runner.
+  if (phase === 'plan') {
+    await dispatchPlan(stateDir, artifactRoot, activeRunId)
+    return
+  }
+
   process.stderr.write(
     [
       `code-oz run: an active run is in progress at phase ${phase} (${activeRunId}).`,
@@ -474,6 +482,65 @@ async function handleActiveRun(
     ].join('\n'),
   )
   process.exit(1)
+}
+
+async function dispatchPlan(
+  stateDir: string,
+  artifactRoot: string,
+  activeRunId: string,
+): Promise<void> {
+  const cwd = process.cwd()
+  const ctx = await bootstrap({ cwd })
+  const config = await loadConfig({ cwd })
+  const lead = ctx.registry.getByName('lead')
+  const scientist = ctx.registry.getByName('scientist')
+  if (lead === undefined || scientist === undefined) {
+    process.stderr.write(
+      [
+        'code-oz run: PLAN requires the bundled `lead` and `scientist` personas.',
+        '  Reinitialize the project (`code-oz init --force`) or restore .code-oz/agents/.',
+        '',
+      ].join('\n'),
+    )
+    process.exit(1)
+  }
+  const { registry: providerRegistry } = buildProviderRegistry({})
+  const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
+  const invokeCtx: InvokeContext = {
+    registry: providerRegistry,
+    runPaths,
+    projectRoot: cwd,
+    config,
+  }
+  const result: PlanResult = await runPlan({
+    invokeCtx,
+    runPaths,
+    runId: activeRunId,
+    leadAgent: lead,
+    scientistAgent: scientist,
+  })
+  if (result.status === 'intervention') {
+    process.stderr.write(
+      [
+        `code-oz run: PLAN paused (${result.code}).`,
+        `  ${result.rule}`,
+        '  Inspect .code-oz/state/runs/<runId>/ and the listed draft files, then resolve.',
+        '',
+      ].join('\n'),
+    )
+    process.exit(1)
+  }
+  process.stdout.write(
+    [
+      'PLAN phase complete. Review:',
+      `  ${result.planPath}`,
+      `  ${result.sourceCheckPath}`,
+      `  ${result.hypothesesPath}`,
+      `  ${result.openQuestionsPath}`,
+      'Then run: code-oz approve plan',
+      '',
+    ].join('\n'),
+  )
 }
 
 const RUN_HELP = `
