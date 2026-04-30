@@ -40,10 +40,42 @@ const NAME_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 // the runtime is allowed to send/accept on this agent's behalf — never a
 // signal to recursively scan the repo. See docs/references/agent-skill-format.md
 // "Permissions semantics" for the full contract that M3+ must honor.
+//
+// `tool_use.repo_context` is the M6 sub-scope for agentic codebase search.
+// Contract pinned in docs/contracts/REPO_CONTEXT.md. The schema is locked per
+// docs/research/CODEX_RESPONSE_SYNTHESIS.md "Where I disagree" 3.
+
+export const REPO_CONTEXT_TOOL_NAMES = ['glob', 'grep', 'read', 'symbol'] as const
+export type RepoContextToolName = (typeof REPO_CONTEXT_TOOL_NAMES)[number]
+
+// Hard caps from CODEX_RESPONSE_M6.md decision 1. Agents may declare lower
+// values; declaring higher than these is rejected at schema-validation time.
+export const REPO_CONTEXT_HARD_CAPS = Object.freeze({
+  maxResults: 50,
+  maxBytesPerResult: 16_384,        // 16 KB
+  maxFilesForNextManifest: 20,
+  timeoutMs: 5_000,
+} as const)
+
+export interface RepoContextPermissions {
+  readonly tools: readonly RepoContextToolName[]
+  readonly roots: readonly string[]
+  readonly maxResults: number
+  readonly maxBytesPerResult: number
+  readonly maxFilesForNextManifest: number
+  readonly timeoutMs: number
+  readonly network: 'none'
+}
+
+export interface ToolUsePermissions {
+  readonly repo_context?: RepoContextPermissions
+}
+
 export interface AgentPermissions {
   readonly read: '*' | readonly string[]
   readonly write: '*' | readonly string[]
   readonly bash: 'deny' | readonly string[]
+  readonly tool_use?: ToolUsePermissions
 }
 
 export interface AgentDefinition {
@@ -129,6 +161,114 @@ function validatePermissions(perms: unknown, file: string): AgentLoadIssue | nul
       rule: "'permissions.bash' must be 'deny' or an array of allowed commands",
     }
   }
+  if ('tool_use' in p && p.tool_use !== undefined) {
+    const issue = validateToolUse(p.tool_use, file)
+    if (issue !== null) return issue
+  }
+  return null
+}
+
+function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use' must be an object",
+    }
+  }
+  const tu = value as Record<string, unknown>
+  for (const k of Object.keys(tu)) {
+    if (k !== 'repo_context') {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: "'permissions.tool_use' may contain only the 'repo_context' sub-scope in v0.1",
+        detail: `unknown sub-scope: ${k}`,
+      }
+    }
+  }
+  if ('repo_context' in tu && tu.repo_context !== undefined) {
+    return validateRepoContext(tu.repo_context, file)
+  }
+  return null
+}
+
+function validateRepoContext(value: unknown, file: string): AgentLoadIssue | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.repo_context' must be an object",
+    }
+  }
+  const rc = value as Record<string, unknown>
+  // tools
+  if (!Array.isArray(rc.tools)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.repo_context.tools' must be an array",
+    }
+  }
+  if (rc.tools.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.repo_context.tools' must list at least one tool",
+    }
+  }
+  for (const t of rc.tools as unknown[]) {
+    if (typeof t !== 'string' || !(REPO_CONTEXT_TOOL_NAMES as readonly string[]).includes(t)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.repo_context.tools' entries must be one of: ${REPO_CONTEXT_TOOL_NAMES.join(', ')}`,
+        detail: JSON.stringify(t),
+      }
+    }
+  }
+  // roots
+  if (!isStringArray(rc.roots)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.repo_context.roots' must be an array of strings",
+    }
+  }
+  // numeric caps
+  const numericFields = [
+    ['maxResults', REPO_CONTEXT_HARD_CAPS.maxResults],
+    ['maxBytesPerResult', REPO_CONTEXT_HARD_CAPS.maxBytesPerResult],
+    ['maxFilesForNextManifest', REPO_CONTEXT_HARD_CAPS.maxFilesForNextManifest],
+    ['timeoutMs', REPO_CONTEXT_HARD_CAPS.timeoutMs],
+  ] as const
+  for (const [field, cap] of numericFields) {
+    const v = rc[field]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.repo_context.${field}' must be a positive integer`,
+      }
+    }
+    if (v > cap) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.repo_context.${field}' must be ≤ ${cap} (M6 hard cap)`,
+        detail: `got ${v}`,
+      }
+    }
+  }
+  // network
+  if (rc.network !== 'none') {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.repo_context.network' must be 'none' in v0.1",
+      detail: JSON.stringify(rc.network),
+    }
+  }
   return null
 }
 
@@ -137,11 +277,35 @@ function freezePermissions(perms: Record<string, unknown>): AgentPermissions {
     if (v === '*' || v === 'deny') return v
     return Object.freeze([...(v as string[])])
   }
-  return Object.freeze({
+  const base = {
     read: freezeField(perms.read) as '*' | readonly string[],
     write: freezeField(perms.write) as '*' | readonly string[],
     bash: freezeField(perms.bash) as 'deny' | readonly string[],
-  })
+  }
+  if (perms.tool_use !== undefined) {
+    return Object.freeze({
+      ...base,
+      tool_use: freezeToolUse(perms.tool_use as Record<string, unknown>),
+    })
+  }
+  return Object.freeze(base)
+}
+
+function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
+  const out: { repo_context?: RepoContextPermissions } = {}
+  if (tu.repo_context !== undefined) {
+    const rc = tu.repo_context as Record<string, unknown>
+    out.repo_context = Object.freeze({
+      tools: Object.freeze([...(rc.tools as RepoContextToolName[])]),
+      roots: Object.freeze([...(rc.roots as string[])]),
+      maxResults: rc.maxResults as number,
+      maxBytesPerResult: rc.maxBytesPerResult as number,
+      maxFilesForNextManifest: rc.maxFilesForNextManifest as number,
+      timeoutMs: rc.timeoutMs as number,
+      network: 'none' as const,
+    })
+  }
+  return Object.freeze(out)
 }
 
 function validateBody(body: string, file: string): AgentLoadIssue | null {
