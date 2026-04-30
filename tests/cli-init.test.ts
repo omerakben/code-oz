@@ -53,7 +53,7 @@ describe('code-oz init', () => {
     const raw = await readFile(paths.config, 'utf8')
     const config = parseYaml(raw)
 
-    expect(config.version).toBe('0.3.0-alpha.0')
+    expect(config.version).toBe('0.4.0-alpha.0')
     expect(config.defaultProvider).toBe('claude')
     expect(config.models.primary).toBe('claude-opus-4-7')
     expect(config.permissions.allowEscapeHatch).toBe(false)
@@ -67,6 +67,8 @@ describe('code-oz init', () => {
     expect(config.budgets.global.maxProviderCalls).toBeGreaterThan(0)
     expect(config.budgets.global.maxTokensEstimate).toBeGreaterThan(0)
     expect(config.budgets.global.maxReviewRounds).toBe(4)
+    expect(config.budgets.global.maxToolCallsPerTurn).toBeGreaterThan(0)
+    expect(config.budgets.global.toolCallBudgetMultiplier).toBeGreaterThan(0)
 
     for (const phase of ['define', 'plan', 'build', 'verify', 'review', 'ship', 'audit']) {
       expect(config.budgets.perPhase[phase]).toBeDefined()

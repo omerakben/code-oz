@@ -61,8 +61,8 @@ describe('validateEvent — happy paths for every event type', () => {
     ).toBeNull()
   })
 
-  test('agent_invoked with and without manifest', () => {
-    const baseline = {
+  test('agent_invoked requires manifest and four context metrics (M4 rule 13)', () => {
+    const valid = {
       version: 1,
       type: 'agent_invoked',
       ts: '2026-04-29T17:00:00Z',
@@ -70,22 +70,23 @@ describe('validateEvent — happy paths for every event type', () => {
       phase: 'define',
       agent: 'ba',
       provider: 'claude',
+      manifest: {
+        files: [
+          { path: 'docs/SPEC.md', sha256: 'a'.repeat(64), sizeBytes: 1234 },
+          { path: 'README.md', sha256: '0'.repeat(64), sizeBytes: 0 },
+        ],
+      },
+      filesSent: 2,
+      bytesSent: 1234,
+      tokensEstimate: 320,
+      fieldsRemovedByScope: 0,
     } as const
-    expect(validateEvent(baseline, 'events.jsonl')).toBeNull()
-    expect(
-      validateEvent(
-        {
-          ...baseline,
-          manifest: {
-            files: [
-              { path: 'docs/SPEC.md', sha256: 'a'.repeat(64), sizeBytes: 1234 },
-              { path: 'README.md', sha256: '0'.repeat(64), sizeBytes: 0 },
-            ],
-          },
-        },
-        'events.jsonl',
-      ),
-    ).toBeNull()
+    expect(validateEvent(valid, 'events.jsonl')).toBeNull()
+
+    // Empty manifest is legal; zero metrics are legal (single semantics:
+    // 'no narrowing happened or nothing was removed').
+    const empty = { ...valid, manifest: { files: [] }, filesSent: 0, bytesSent: 0 }
+    expect(validateEvent(empty, 'events.jsonl')).toBeNull()
   })
 
   test('agent_completed with and without tokensUsed', () => {
@@ -149,13 +150,45 @@ describe('validateEvent — rejection cases', () => {
     expect(validateEvent({ ...noVersion, version: '1' }, 'events.jsonl')?.code).toBe('event_invalid_version')
   })
 
-  test('unknown type is rejected', () => {
+  test('empty type is rejected (M4 rule 12 still requires a non-empty string)', () => {
     expect(
       validateEvent(
-        { version: 1, type: 'made_up_event', ts: '2026-04-29T17:00:00Z', runId: RUN },
+        { version: 1, type: '', ts: '2026-04-29T17:00:00Z', runId: RUN },
         'events.jsonl',
       )?.code,
     ).toBe('event_invalid_type')
+    expect(
+      validateEvent(
+        { version: 1, type: 42, ts: '2026-04-29T17:00:00Z', runId: RUN },
+        'events.jsonl',
+      )?.code,
+    ).toBe('event_invalid_type')
+  })
+
+  test('unknown type passes shape validation (M4 rule 12 — open type union)', () => {
+    // Forward-compat: future milestones (e.g., M7's failure_recorded) may
+    // extend the recognized event-type set without bumping `version: 1`.
+    // Canonical readers must accept events whose `type` is a non-empty string
+    // they don't recognize, so long as version + ts + runId are valid.
+    expect(
+      validateEvent(
+        { version: 1, type: 'failure_recorded', ts: '2026-04-29T17:00:00Z', runId: RUN, extra: 'data' },
+        'events.jsonl',
+      ),
+    ).toBeNull()
+    // ts and runId still validated even on unknown types.
+    expect(
+      validateEvent(
+        { version: 1, type: 'failure_recorded', ts: 'not-iso', runId: RUN },
+        'events.jsonl',
+      )?.code,
+    ).toBe('event_invalid_timestamp')
+    expect(
+      validateEvent(
+        { version: 1, type: 'failure_recorded', ts: '2026-04-29T17:00:00Z', runId: 'short' },
+        'events.jsonl',
+      )?.code,
+    ).toBe('event_invalid_runid')
   })
 
   test('non-ULID runId is rejected', () => {
@@ -186,6 +219,8 @@ describe('validateEvent — rejection cases', () => {
   })
 
   test('agent_invoked.manifest entries are deeply validated', () => {
+    // Base envelope with valid metrics so the manifest-shape failures fire
+    // before the metric-shape checks.
     const base = {
       version: 1,
       type: 'agent_invoked',
@@ -194,6 +229,10 @@ describe('validateEvent — rejection cases', () => {
       phase: 'define',
       agent: 'ba',
       provider: 'claude',
+      filesSent: 0,
+      bytesSent: 0,
+      tokensEstimate: 0,
+      fieldsRemovedByScope: 0,
     }
     expect(validateEvent({ ...base, manifest: 'wrong' }, 'events.jsonl')?.code).toBe('event_invalid_value')
     expect(
@@ -217,6 +256,35 @@ describe('validateEvent — rejection cases', () => {
         'events.jsonl',
       )?.code,
     ).toBe('event_invalid_value')
+  })
+
+  test('agent_invoked rejects when any metric field is missing or non-integer (M4 rule 13)', () => {
+    const valid = {
+      version: 1,
+      type: 'agent_invoked',
+      ts: '2026-04-29T17:00:00Z',
+      runId: RUN,
+      phase: 'define',
+      agent: 'ba',
+      provider: 'claude',
+      manifest: { files: [] },
+      filesSent: 0,
+      bytesSent: 0,
+      tokensEstimate: 0,
+      fieldsRemovedByScope: 0,
+    }
+    // Missing each metric in turn.
+    for (const field of ['filesSent', 'bytesSent', 'tokensEstimate', 'fieldsRemovedByScope'] as const) {
+      const invalid = { ...valid }
+      delete (invalid as Record<string, unknown>)[field]
+      expect(validateEvent(invalid, 'events.jsonl')?.code).toBe('event_invalid_value')
+    }
+    // Negative integer.
+    expect(validateEvent({ ...valid, bytesSent: -1 }, 'events.jsonl')?.code).toBe('event_invalid_value')
+    // Non-integer.
+    expect(validateEvent({ ...valid, tokensEstimate: 1.5 }, 'events.jsonl')?.code).toBe('event_invalid_value')
+    // Wrong type.
+    expect(validateEvent({ ...valid, filesSent: '0' }, 'events.jsonl')?.code).toBe('event_invalid_value')
   })
 
   test('gate_written.file with separators is rejected', () => {
@@ -303,14 +371,22 @@ describe('readEvents — hard-fail on malformed content', () => {
 
   test('invalid event payload reports the line number', async () => {
     const valid = JSON.stringify(event())
-    const invalid = JSON.stringify({ version: 1, type: 'totally_made_up', ts: '2026-04-29T17:00:00Z', runId: RUN })
+    // Use a phase_entered event with a bad phase value so we exercise a
+    // real schema rejection (unknown event types now pass per M4 rule 12).
+    const invalid = JSON.stringify({
+      version: 1,
+      type: 'phase_entered',
+      ts: '2026-04-29T17:00:00Z',
+      runId: RUN,
+      phase: 'not-a-phase',
+    })
     await writeFile(paths.file, valid + '\n' + invalid + '\n')
     try {
       await readEvents(paths)
       throw new Error('expected EventLogError')
     } catch (err) {
       const e = err as EventLogError
-      expect(e.issues[0]?.code).toBe('event_invalid_type')
+      expect(e.issues[0]?.code).toBe('event_invalid_phase')
       expect(e.issues[0]?.line).toBe(2)
     }
   })
