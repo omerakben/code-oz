@@ -276,12 +276,27 @@ function validateWriteToolUse(value: unknown, file: string): AgentLoadIssue | nu
       rule: "'permissions.tool_use.write.roots' must list at least one root",
     }
   }
+  // Per Codex M7 review fix-soon #6 + decision 12: the templated root must
+  // be exactly the run worktree (`.code-oz/runs/<runId>/worktree/` with the
+  // `<runId>` placeholder). Wider roots (host, project root, '*') are
+  // rejected at load time. Runtime resolves <runId> to a concrete absolute
+  // path and re-checks per call.
   for (const r of w.roots as string[]) {
     if (r.length === 0) {
       return {
         file,
         code: 'schema_invalid_permissions',
         rule: "'permissions.tool_use.write.roots' entries must be non-empty strings",
+      }
+    }
+    if (!/^\.code-oz\/runs\/<runId>\/worktree\/?$/.test(r)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule:
+          "'permissions.tool_use.write.roots' entries must be the templated worktree root " +
+          '`.code-oz/runs/<runId>/worktree/` (decision 12: load-time validates the templated declaration)',
+        detail: r,
       }
     }
   }

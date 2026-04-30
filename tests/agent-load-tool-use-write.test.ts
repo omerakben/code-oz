@@ -229,6 +229,62 @@ describe('tool_use.write — rejection paths', () => {
       'non-empty',
     )
   })
+
+  test('rejects host-root (no <runId> placeholder) per Codex finding #6', () => {
+    expectIssue(
+      {
+        read: '*',
+        write: ['*'],
+        bash: 'deny',
+        tool_use: { write: { ...VALID_WRITE, roots: ['/'] } },
+      },
+      'templated worktree root',
+    )
+  })
+
+  test('rejects wildcard root', () => {
+    expectIssue(
+      {
+        read: '*',
+        write: ['*'],
+        bash: 'deny',
+        tool_use: { write: { ...VALID_WRITE, roots: ['*'] } },
+      },
+      'templated worktree root',
+    )
+  })
+
+  test('rejects root pointing at a sibling under runs/<runId>/', () => {
+    expectIssue(
+      {
+        read: '*',
+        write: ['*'],
+        bash: 'deny',
+        tool_use: {
+          write: { ...VALID_WRITE, roots: ['.code-oz/runs/<runId>/patches/'] },
+        },
+      },
+      'templated worktree root',
+    )
+  })
+
+  test('accepts the templated worktree root with or without trailing slash', () => {
+    const reg = buildRegistry({
+      defaults: [
+        fmFile({
+          read: '*',
+          write: ['*'],
+          bash: 'deny',
+          tool_use: {
+            write: { ...VALID_WRITE, roots: ['.code-oz/runs/<runId>/worktree'] },
+          },
+        }),
+      ],
+      overrides: [],
+    })
+    const def = reg.listAll()[0]
+    expect(def?.permissions.tool_use?.write?.roots[0]).toBe('.code-oz/runs/<runId>/worktree')
+  })
 })
 
 describe('hard caps (constants)', () => {

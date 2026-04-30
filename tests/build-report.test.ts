@@ -201,6 +201,58 @@ describe('parseBuildReport — validation rejections', () => {
   })
 })
 
+describe('parseBuildReport — Validation command tightened (Codex #4)', () => {
+  test('rejects working directory outside the run worktree', () => {
+    const text = serializeBuildReport(VALID_DATA).replace(
+      'Working directory: .code-oz/runs/abc/worktree/',
+      'Working directory: /etc/',
+    )
+    let err: Error | null = null
+    try {
+      parseBuildReport(text)
+    } catch (e) {
+      err = e as Error
+    }
+    expect(err).toBeInstanceOf(BuildReportLoadError)
+    if (err instanceof BuildReportLoadError) {
+      expect(err.issues.some((i) => i.code === 'build_validation_workdir_invalid')).toBe(true)
+    }
+  })
+
+  test('accepts templated worktree workdir', () => {
+    const text = serializeBuildReport({
+      ...VALID_DATA,
+      validationCommand: { ...VALID_DATA.validationCommand, workingDirectory: '.code-oz/runs/<runId>/worktree/' },
+    })
+    expect(() => parseBuildReport(text)).not.toThrow()
+  })
+
+  test('rejects timeout above 10-minute hard cap', () => {
+    const text = serializeBuildReport({
+      ...VALID_DATA,
+      validationCommand: { ...VALID_DATA.validationCommand, timeoutMs: 600_001 },
+    })
+    let err: Error | null = null
+    try {
+      parseBuildReport(text)
+    } catch (e) {
+      err = e as Error
+    }
+    expect(err).toBeInstanceOf(BuildReportLoadError)
+    if (err instanceof BuildReportLoadError) {
+      expect(err.issues.some((i) => i.code === 'build_validation_timeout_exceeds_cap')).toBe(true)
+    }
+  })
+
+  test('accepts timeout at exactly the hard cap', () => {
+    const text = serializeBuildReport({
+      ...VALID_DATA,
+      validationCommand: { ...VALID_DATA.validationCommand, timeoutMs: 600_000 },
+    })
+    expect(() => parseBuildReport(text)).not.toThrow()
+  })
+})
+
 describe('parseBuildReport — Failure carry-forward populated', () => {
   test('parses populated carry-forward block', () => {
     const data: BuildReportData = {

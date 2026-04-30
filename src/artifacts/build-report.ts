@@ -515,6 +515,11 @@ function parseChangedFiles(
   return entries
 }
 
+/** Hard cap on validation-command timeout per Codex M7 review #4
+ *  (block-next-milestone). 10 minutes is the v0.1 ceiling; M8 may revise
+ *  if profiling data justifies. */
+export const VALIDATION_TIMEOUT_MAX_MS = 600_000
+
 function parseValidationCommand(
   s: SectionBuf,
   file: string,
@@ -533,12 +538,38 @@ function parseValidationCommand(
     })
     return null
   }
+  // Working directory must be under the run worktree. We accept either the
+  // templated `.code-oz/runs/<runId>/worktree/` form OR a concrete absolute
+  // path that ends in `/.code-oz/runs/<some-id>/worktree[/]`. Anything else
+  // (host root, sibling path, /etc/...) is rejected so VERIFY can't be
+  // tricked into running outside the worktree boundary.
+  if (
+    !/^\.code-oz\/runs\/<runId>\/worktree\/?$/.test(workingDirectory) &&
+    !/\.code-oz\/runs\/[^/]+\/worktree\/?$/.test(workingDirectory)
+  ) {
+    issues.push({
+      file,
+      code: 'build_validation_workdir_invalid',
+      rule: 'Validation command.Working directory must be the run worktree path',
+      detail: workingDirectory,
+    })
+    return null
+  }
   const timeoutMs = Number.parseInt(timeoutStr, 10)
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
     issues.push({
       file,
       code: 'build_validation_timeout_invalid',
       rule: 'Validation command.Timeout (ms) must be a positive integer',
+    })
+    return null
+  }
+  if (timeoutMs > VALIDATION_TIMEOUT_MAX_MS) {
+    issues.push({
+      file,
+      code: 'build_validation_timeout_exceeds_cap',
+      rule: `Validation command.Timeout (ms) must be <= ${VALIDATION_TIMEOUT_MAX_MS} (10 min v0.1 hard cap)`,
+      detail: String(timeoutMs),
     })
     return null
   }

@@ -92,13 +92,13 @@ If you find yourself wanting to explain WHAT the diff does, your patch is alread
 - Maximum patch size: 65536 bytes.
 - Single fenced block per response — multiple `diff` blocks are rejected.
 
-The orchestrator runs `git apply --check` then `git apply --index` against your patch. Failure of `--check` produces `build_patch_apply_check_failed` and you receive one repair round. Repair-round failure produces `NEEDS_INTERVENTION.json`; there is no patch loop.
+The orchestrator runs `git apply --check` then `git apply --index` against your patch. Failure of `--check` produces `build_patch_apply_check_failed` and the run halts with `NEEDS_INTERVENTION.json`; there is no patch loop, no repair turn. Get the patch right on the first emit.
 
-## Repair discipline
+## No-loop discipline
 
-Two attempts total per BUILD invocation: the initial draft, plus one repair round if the orchestrator finds a violation. After two attempts, the run halts with `NEEDS_INTERVENTION.json` and forensics are preserved under `.code-oz/runs/<runId>/build-drafts/<T-NNN>-attempt-<N>/`.
+One BUILD invocation = one persona response. The orchestrator does not feed you a "your patch failed, try again" turn. If validation or `git apply --check` rejects your output, the BUILD attempt fails and the response is preserved under `.code-oz/runs/<runId>/build-drafts/<T-NNN>-attempt-<N>/response.draft.md` for human inspection.
 
-If you receive a repair message, address the named issue and re-emit. Do NOT explain at length; emit a corrected fenced patch + `## Title` + `## Notes`.
+This is intentional: BUILD's job is the smallest correct patch. If your draft is wrong, the next attempt should start fresh from the same approved PLAN with VERIFY's failure-constraint surfaced (M8+ restart-on-fail), not iterate on a malformed diff.
 
 ## Scope discipline
 
