@@ -85,14 +85,26 @@ The orchestrator emits `worktree_created` only when all four steps succeed; part
 
 ## Removal
 
-Two removal paths, mutually exclusive per attempt:
+Two removal paths, mutually exclusive per attempt. **Neither path fires on `build_completed` alone.** BUILD-pass is necessary but not sufficient for cleanup; the worktree must survive the BUILD gate so M8's VERIFY can read it (per Codex M7 implementation review C3, thread `019ddeea`).
 
 | Path | Trigger | Behavior |
 |---|---|---|
-| Cleanup-on-success | final attempt's VERIFY emits `verdict: pass` and the BUILD gate is approved | `git worktree remove --force <worktree>`; `forensics/` empty; `patches/` retained |
-| Preserve-on-failure | BUILD or VERIFY fails and restart policy preserves attempt N | populate `forensics/<N>/` first, then `git worktree remove --force <worktree>`; `patches/<T-NNN>-attempt-<N>.patch` retained |
+| Cleanup-on-success | the run's final VERIFY emits `verdict: pass` (M8+) and the VERIFY gate is approved | `git worktree remove --force <worktree>`; `forensics/` empty; `patches/` retained |
+| Preserve-on-failure | VERIFY emits `verdict: fail` and the restart policy preserves attempt N (M8+) | populate `forensics/<N>/` first, then `git worktree remove --force <worktree>`; `patches/<T-NNN>-attempt-<N>.patch` retained |
 
 In both paths the worktree directory is removed; the run directory itself survives until `code-oz prune` (W2). The asymmetry is load-bearing: success is cheap to forget, failure must be replayable.
+
+**BUILD failure (no valid BUILD_REPORT.md) is distinct from VERIFY failure** and never enters either path above. BUILD failure produces `NEEDS_INTERVENTION.json` directly per [`BUILD.md`](./BUILD.md) § "Event types emitted" (`build_failed` is structurally different from `verify_failed`). The worktree is preserved alongside `.code-oz/runs/<runId>/build-drafts/<T-NNN>-attempt-<N>/` for human inspection; cleanup happens via `code-oz prune` (W2).
+
+### v0.1 lifecycle by milestone
+
+| Milestone | Run terminal gate | Worktree fate at run end |
+|---|---|---|
+| M7 (BUILD-lite) | BUILD gate (`v0.7.0-alpha.0`) | Worktree survives. No automatic removal. Manual cleanup via `code-oz prune` (W2). |
+| M8 (VERIFY-lite) | VERIFY gate (`v0.8.0-alpha.0`) | VERIFY-pass triggers cleanup-on-success; VERIFY-fail triggers preserve-on-failure (and attempt N+1 starts fresh from same base). |
+| M9+ (REVIEW-lite onward) | as M8, plus REVIEW gate | unchanged from M8 (REVIEW does not write to the worktree; it reads the manifest paths). |
+
+In M7, every successful run leaves a worktree on disk. This is intentional: it lets a human inspect the BUILD output before M8 ships the validation runner, and it surfaces any "fake green gate" failure mode (Codex M7-M10 shape risk #2) where BUILD claimed success but the patch did not reflect the PLAN task.
 
 ## Forensics layout
 
@@ -117,6 +129,17 @@ When attempt N fails, the orchestrator writes the forensic dir before the worktr
 | `prompt-constraints.md` | M8 emits this when VERIFY fails (per [`VERIFY.md`](./VERIFY.md) § "Failure constraint") | attempt N+1's BUILD persona prompt (verbatim, per [`BUILD.md`](./BUILD.md) § "Failure carry-forward grammar") |
 
 The forensic dir is read-only after the worktree is destroyed. Rerunning attempt N is not supported in v0.1; attempt N+1 starts from a fresh worktree off the same base, with the failure constraint surfaced into the BUILD prompt. This is the structural difference between restart-on-fail and a soft patch loop.
+
+### Forensics extensibility
+
+The six files above are the **M7-required minimum**. M8's VERIFY ([`VERIFY.md`](./VERIFY.md)) will append additional entries to the same `forensics/<N>/` path: a frozen copy of `VERIFY.md` itself, a copy of the failed attempt's patch, and the BUILD prompt-constraint snapshot. The forensics writer accepts named additional entries from VERIFY without breaking the M7 layout (per Codex M7 implementation review H2, thread `019ddeea`).
+
+| File | Required since | Owner |
+|---|---|---|
+| `diff.patch`, `stdout.log`, `stderr.log`, `BUILD_REPORT.md`, `manifest.txt`, `prompt-constraints.md` | M7 | orchestrator (worktree subsystem) |
+| `VERIFY.md` (frozen copy), `attempt-<N>.patch` (frozen copy), `build-prompt-snapshot.md` | M8 | orchestrator (VERIFY phase) |
+
+Keys are file basenames; M8 may not rewrite or relocate the M7 entries. The contract is open at the bottom (extensible) and locked at the top (M7 entries are stable).
 
 ## Patch application boundary
 
@@ -227,5 +250,5 @@ Until W4 ships container-grade isolation, the v0.1 safeguards are: BUILD's `bash
 
 - **Linked contracts:** [`BUILD.md`](./BUILD.md) (M7 BUILD-lite implementation; consumes `worktreePath` and `baseCommitSha`), [`VERIFY.md`](./VERIFY.md) (M8 reads validation command from `BUILD_REPORT.md`, owns restart-on-fail), [`REVIEW.md`](./REVIEW.md) (M9 reads changed-file manifest paths), [`REPO_CONTEXT.md`](./REPO_CONTEXT.md) (read-side `tool_use` sub-scope; this contract is the write-side counterpart), [`GATES.md`](./GATES.md)
 - **Non-negotiable rules:** `CLAUDE.md` rules 1 (file-based gates), 7 (Markdown contracts), 9 (permission manifest), 11 (`NEEDS_INTERVENTION.json` on provider/orchestrator failure), 13 (privacy by default), 19 (run-level budget enforcement), 20 (one new authority boundary per milestone)
-- **Design rationale:** [`docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`](../research/CODEX_RESPONSE_M7_M10_SHAPE.md) (thread `019ddea0`, 2026-04-30) — risk #1 ("worktree isolation is not a sandbox"), risk #2 ("fake green gate") is the load-bearing reason this contract pins the layout, base binding, and forensics shape before BUILD code lands; Decision 3 (restart-on-fail vs soft patch loop)
+- **Design rationale:** [`docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`](../research/CODEX_RESPONSE_M7_M10_SHAPE.md) (thread `019ddea0`, 2026-04-30) — risk #1 ("worktree isolation is not a sandbox"), risk #2 ("fake green gate") is the load-bearing reason this contract pins the layout, base binding, and forensics shape before BUILD code lands; Decision 3 (restart-on-fail vs soft patch loop). [`docs/design/CODEX_RESPONSE_M7.md`](../design/CODEX_RESPONSE_M7.md) (thread `019ddeea`, 2026-04-30) — implementation review; C3 (worktree survives BUILD gate; cleanup is at VERIFY-pass in M8+, not BUILD-pass in M7), H2 (forensics layout extensible — M8 appends VERIFY.md, frozen patch, BUILD prompt-snapshot)
 - **Roadmap:** [`docs/design/ROADMAP.md`](../design/ROADMAP.md) § Pre-M7, § M7 (BUILD-lite implementation; `src/worktree/{create,remove,inspect}-run-worktree.ts`, `src/worktree/manifest.ts`, `src/worktree/forensics.ts`, `src/patches/{apply,validate}-agent-patch.ts`, `src/commands/doctor.ts` adds `git --version` check)

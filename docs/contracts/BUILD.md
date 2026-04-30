@@ -10,7 +10,7 @@ BUILD applies one atomic PLAN task into an isolated worktree, writes `BUILD_REPO
 
 ## `BUILD_REPORT.md` schema
 
-`.code-oz/artifacts/BUILD_REPORT.md` is plain Markdown with locked H2 sections in canonical order. The orchestrator parses it; the persona authors the body sections under repair/finalize discipline (mirroring PLAN.md).
+`.code-oz/artifacts/BUILD_REPORT.md` is plain Markdown with locked H2 sections in canonical order. **The orchestrator authors and serializes most fields; the persona authors only free-form text fields under repair/finalize discipline.** See § "Authoring authority" below for the per-field split. Persona-supplied claims for orchestrator-owned fields are cross-checked, not authoritative (per Codex M7 implementation review C1, thread `019ddeea`).
 
 ```markdown
 # BUILD_REPORT
@@ -55,17 +55,58 @@ BUILD applies one atomic PLAN task into an isolated worktree, writes `BUILD_REPO
 - One-line risk note from PLAN.md task block, copied verbatim.
 ```
 
+### Authoring authority
+
+Every field in BUILD_REPORT.md is owned by exactly one party. Persona-supplied claims for orchestrator-owned fields are cross-checked at validation time and rejected on mismatch (per Codex M7 implementation review C1, thread `019ddeea`). The protocol is **patch-first**: the persona's response contains a single fenced `diff` block plus a small report-input block; the orchestrator extracts, applies, computes, and serializes everything else.
+
+| Field | Author | Source |
+|---|---|---|
+| `Task.Task` (T-NNN id) | orchestrator | selected PLAN task block (one task per BUILD attempt; selection rule pending; see § "BUILD entry preflight") |
+| `Task.Title` | persona | free-form text from persona response (≤ 120 chars, single line) |
+| `Task.PLAN.md ref` | orchestrator | sha256 of `.code-oz/artifacts/PLAN.md` at BUILD entry |
+| `Task.Attempt` | orchestrator | restart bookkeeping (M7: always 1; M8 increments on VERIFY-fail) |
+| `Base.Worktree` | orchestrator | resolved run-worktree path |
+| `Base.Base commit` | orchestrator | `<runId>/base.txt` (immutable per run) |
+| `Base.Dirty tree at base` | orchestrator | `dirtyTreePolicy` at run creation (`clean-base` ⇒ `false`; `stash-and-pin` ⇒ recorded boolean) |
+| `Patch.Patch path` | orchestrator | resolved at write time (`patches/<T-NNN>-attempt-<N>.patch`) |
+| `Patch.Patch sha256` | orchestrator | sha256 of patch bytes after orchestrator-side write |
+| `Patch.Patch byte count` | orchestrator | byte count of patch file after orchestrator-side write |
+| `Changed files` (full manifest) | orchestrator | computed by walking the post-apply worktree against the base commit; one bullet per affected path with sha256 and change kind |
+| `Validation command` (4 bullets) | orchestrator | copied verbatim from the selected PLAN task block (per Codex M7 implementation review M2 — substitution is rejected) |
+| `Failure carry-forward` | orchestrator | M8 emits `prompt-constraints.md` per [`VERIFY.md`](./VERIFY.md); M7 always writes `- None (attempt 1).` |
+| `Notes` | persona | free-form text from persona response (≤ 200 chars per bullet, ≥ 1 bullet) |
+
+Persona response shape (locked):
+
+```
+<build-ready/>
+
+```diff
+<unified diff body>
+```
+
+## Title
+<short title, ≤ 120 chars>
+
+## Notes
+- <one or more single-line notes>
+```
+
+The `<build-ready/>` marker signals the persona is done iterating; the orchestrator stops accepting repair turns and proceeds to extract+apply. The fenced ` ```diff ` block is the sole patch source. Title and Notes are persona-authored free text; everything else is computed.
+
+Persona may NOT emit `Patch sha256`, `Patch byte count`, `Changed files` lines, `Validation command`, or any base/path field. If the persona embeds those in its response, the orchestrator drops them silently (they are not authoritative).
+
 ### Required H2 sections
 
-| Section | What it answers | Min content |
-|---|---|---|
-| `## Task` | Which PLAN task this BUILD applied | 4 bullets (Task, Title, PLAN.md ref, Attempt) |
-| `## Base` | The worktree's starting point | 3 bullets (Worktree, Base commit, Dirty tree at base) |
-| `## Patch` | The patch artifact and its hash | 3 bullets (Patch path, Patch sha256, Patch byte count) |
-| `## Changed files` | The manifest VERIFY and REVIEW will read | ≥ 1 bullet, locked grammar (below) |
-| `## Validation command` | The command shape M8 will execute | 4 bullets (Command, Working directory, Timeout (ms), Expected exit code) |
+| Section                    | What it answers                             | Min content                                                                |
+| -------------------------- | ------------------------------------------- | -------------------------------------------------------------------------- |
+| `## Task`                  | Which PLAN task this BUILD applied          | 4 bullets (Task, Title, PLAN.md ref, Attempt)                              |
+| `## Base`                  | The worktree's starting point               | 3 bullets (Worktree, Base commit, Dirty tree at base)                      |
+| `## Patch`                 | The patch artifact and its hash             | 3 bullets (Patch path, Patch sha256, Patch byte count)                     |
+| `## Changed files`         | The manifest VERIFY and REVIEW will read    | ≥ 1 bullet, locked grammar (below)                                         |
+| `## Validation command`    | The command shape M8 will execute           | 4 bullets (Command, Working directory, Timeout (ms), Expected exit code)   |
 | `## Failure carry-forward` | Prior-attempt context (only on attempt > 1) | bullets per locked grammar (below); `- None (attempt 1).` when attempt = 1 |
-| `## Notes` | Free-form one-line notes from the persona | ≥ 1 bullet (use `- None.` if absent) |
+| `## Notes`                 | Free-form one-line notes from the persona   | ≥ 1 bullet (use `- None.` if absent)                                       |
 
 Sections appear in canonical order. Bullets are one line each. Multi-line entries split into multiple bullets.
 
@@ -135,16 +176,30 @@ permissions:
 
 Worktree isolation is **not** a security sandbox (Codex M7-M10 shape risk #1). Secrets, network, shell execution, and destructive command protection are W4 containerization. BUILD's `bash: deny` and the absence of execution sub-scopes in v0.1 are the load-bearing safeguards until then.
 
+## BUILD entry preflight
+
+Before BUILD persona invocation, the orchestrator runs a preflight pass that binds PLAN to a concrete worktree base. This catches the "PLAN/BUILD substrate drift" failure mode (per Codex M7 implementation review C2, thread `019ddeea`): PLAN's repo-context reads the host tree at PLAN time; the worktree is created lazily at BUILD time off `HEAD` (`clean-base` policy). If the host's `HEAD` moved or the host had unstaged files PLAN read but `clean-base` hides, BUILD would implement against a different substrate than PLAN reasoned over.
+
+Preflight checks (run in order; first failure aborts BUILD with `NEEDS_INTERVENTION.json`):
+
+1. **PLAN.md sha pin.** Compute sha256 of `.code-oz/artifacts/PLAN.md`. Record as `Task.PLAN.md ref`. Mismatch on later re-read fails `build_plan_sha_drift`.
+2. **Selected task exists in PLAN.md.** Resolve `T-NNN` from PLAN.md's task block; reject if absent (`build_task_id_unknown` per error table).
+3. **Selected task's `Files`/`Tasks references files` block paths exist in the bound base.** For every path the PLAN task names, verify it is reachable in the worktree at `<baseSha>` (or is marked `change: added` and does not exist yet). A task that names `src/foo.ts` but `<baseSha>` lacks `src/foo.ts` and the task does not declare it `added` fails `build_plan_base_drift`.
+4. **`tool_use.repo_context.roots` resolves against worktree, not host.** The orchestrator overrides any persona-declared root to the run's `<runId>/worktree/` absolute path before invocation, blocking the host-leak failure mode (per Codex M7 implementation review H1).
+5. **`Validation command` from PLAN task is well-formed.** PLAN.md task block must carry the four required bullets (Command, Working directory, Timeout, Expected exit code); the orchestrator copies them verbatim into `BUILD_REPORT.md § Validation command`. Substitution by the persona is rejected (per Codex M7 implementation review M2).
+
+Preflight emits no event on success (the subsequent `worktree_created` and `build_started` events cover it). On failure, `intervention` fires with one of the codes above, plus the offending PLAN task id and base sha for forensics.
+
 ## Event types emitted
 
 Names listed here; canonical schemas land in `src/state/schemas.ts` during M7 implementation.
 
-| Event | Emitted when |
-|---|---|
-| `build_started` | BUILD persona invoked, worktree resolved, base commit recorded |
-| `build_patch_applied` | Patch successfully applied to worktree; manifest computed |
-| `build_completed` | `BUILD_REPORT.md` atomically written, Scientist sidecars updated, gate-preflight passed |
-| `build_failed` | BUILD aborted before producing a valid `BUILD_REPORT.md` (patch invalid, manifest mismatch, persona repair exhausted, etc.) |
+| Event                 | Emitted when                                                                                                                |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `build_started`       | BUILD persona invoked, worktree resolved, base commit recorded                                                              |
+| `build_patch_applied` | Patch successfully applied to worktree; manifest computed                                                                   |
+| `build_completed`     | `BUILD_REPORT.md` atomically written, Scientist sidecars updated, gate-preflight passed                                     |
+| `build_failed`        | BUILD aborted before producing a valid `BUILD_REPORT.md` (patch invalid, manifest mismatch, persona repair exhausted, etc.) |
 
 `build_failed` is distinct from `verify_failed`: BUILD failure means no valid BUILD_REPORT.md exists. VERIFY failure means BUILD_REPORT.md is valid but the validation command fell over. Restart-on-fail (see § "Restart-policy interface") covers VERIFY failure only; BUILD failure produces `NEEDS_INTERVENTION.json` directly.
 
@@ -184,23 +239,31 @@ No orphan field: every field in this schema is read by VERIFY (M8) or REVIEW (M9
 
 ## Common errors
 
-| Error | Meaning | Action |
-|---|---|---|
-| `build_report_missing_section` | Required H2 absent from BUILD_REPORT.md | Edit or rerun BUILD persona |
-| `build_report_section_out_of_order` | Sections present but not canonical | Reorder |
-| `build_task_id_unknown` | `Task.Task` cites a `T-NNN` absent from PLAN.md | Fix or rerun PLAN |
-| `build_base_commit_unknown` | `Base.Base commit` does not exist in the worktree's git history | Worktree corruption; rerun BUILD |
-| `build_patch_sha256_mismatch` | Patch file sha256 does not match the recorded `Patch sha256` | Patch tampered; rerun BUILD |
-| `build_manifest_path_unsafe` | A `Changed files` path is absolute or `..`-traversing | Persona repair |
-| `build_manifest_patch_drift` | Manifest entry has no corresponding patch hunk | Persona repair |
-| `build_validation_command_invalid` | `Validation command` lacks one of the four bullets | Persona repair |
-| `build_carry_forward_grammar` | `## Failure carry-forward` shape violates locked grammar | Persona repair |
-| `build_carry_forward_attempt_mismatch` | `Attempt > 1` but `## Failure carry-forward` is `None` | Restart-policy bug; investigate |
-| `build_validation_failed` | Persona produced a draft that failed both repair and finalize | Inspect `BUILD_REPORT.draft.md` |
+| Error                                  | Meaning                                                         | Action                           |
+| -------------------------------------- | --------------------------------------------------------------- | -------------------------------- |
+| `build_report_missing_section`         | Required H2 absent from BUILD_REPORT.md (orchestrator emit bug; rare)               | Investigate orchestrator                              |
+| `build_report_section_out_of_order`    | Sections present but not canonical (orchestrator emit bug; rare)                    | Investigate orchestrator                              |
+| `build_task_id_unknown`                | Selected `T-NNN` absent from PLAN.md (preflight check 2)                            | Fix or rerun PLAN                                     |
+| `build_plan_sha_drift`                 | PLAN.md sha changed between preflight pin and final read (preflight check 1)        | Concurrent run; abort and rerun                       |
+| `build_plan_base_drift`                | PLAN task references files absent from bound base (preflight check 3)               | Rerun PLAN against current `HEAD` or pick new task    |
+| `build_base_commit_unknown`            | `Base.Base commit` does not exist in the worktree's git history                     | Worktree corruption; rerun BUILD                      |
+| `build_patch_apply_check_failed`       | `git apply --check` rejected the patch (malformed diff, hunk mismatch)              | Persona repair (one round; on failure → intervention) |
+| `build_patch_partial_apply`            | `git apply` succeeded `--check` but partially applied (git env bug)                 | Investigate git env; emit `intervention`              |
+| `build_patch_grammar_invalid`          | Pre-`git apply` scanner rejected diff headers (path-safety, symlink, binary)        | Persona repair (one round; on failure → intervention) |
+| `build_patch_binary_unsupported`       | Patch contains binary marker; binary patches deferred to W3                         | Author non-binary patch                               |
+| `build_manifest_path_unsafe`           | Computed manifest contains an absolute or `..`-traversing path (orchestrator catch) | Patch invalid; treat as `build_patch_grammar_invalid` |
+| `build_manifest_patch_drift`           | Computed manifest disagrees with the patch's affected paths                         | Orchestrator bug; investigate                         |
+| `build_validation_command_missing`     | Selected PLAN task block lacks the four `Validation command` bullets (preflight 5)  | Fix or rerun PLAN                                     |
+| `build_validation_command_substituted` | Persona response embedded a different command than PLAN's (substitution rejected)   | Persona repair (one round; on failure → intervention) |
+| `build_carry_forward_grammar`          | `## Failure carry-forward` shape violates locked grammar (orchestrator emit bug)    | Investigate orchestrator                              |
+| `build_carry_forward_attempt_mismatch` | `Attempt > 1` but `## Failure carry-forward` is `None`                              | Restart-policy bug; investigate                       |
+| `build_repo_context_root_unbound`      | `tool_use.repo_context.roots` not overridden to worktree path (preflight 4)         | Bug; abort and emit `intervention`                    |
+| `build_persona_protocol_violation`     | Response missing `<build-ready/>` marker, no fenced diff, or extra schema sections  | Persona repair (one round; on failure → intervention) |
+| `build_validation_failed`              | Persona produced a draft that failed both repair attempts                           | Inspect `<runId>/build-drafts/`; emit `intervention`  |
 
 ## Reference
 
 - **Linked contracts:** [`WORKTREE.md`](./WORKTREE.md) (M7 commit 1), [`VERIFY.md`](./VERIFY.md), [`REVIEW.md`](./REVIEW.md), [`PLAN.md`](./PLAN.md), [`SOURCE_CHECK.md`](./SOURCE_CHECK.md), [`SCIENTIST.md`](./SCIENTIST.md), [`REPO_CONTEXT.md`](./REPO_CONTEXT.md), [`GATES.md`](./GATES.md)
 - **Non-negotiable rules:** `CLAUDE.md` rules 1 (file-based gates), 7 (Markdown contracts), 9 (permission manifest for any execution), 13 (privacy by default), 15 (Scientist tail), 19 (run-level budget enforcement), 20 (one new authority boundary per milestone)
-- **Design rationale:** [`docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`](../research/CODEX_RESPONSE_M7_M10_SHAPE.md) (thread `019ddea0`, 2026-04-30) — split BUILD/VERIFY/REVIEW with shared contract surface; risk #2 ("fake green gate") is the load-bearing reason this contract pins changed-file manifest, base commit, patch hash, and validation command shape
+- **Design rationale:** [`docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`](../research/CODEX_RESPONSE_M7_M10_SHAPE.md) (thread `019ddea0`, 2026-04-30) — split BUILD/VERIFY/REVIEW with shared contract surface; risk #2 ("fake green gate") is the load-bearing reason this contract pins changed-file manifest, base commit, patch hash, and validation command shape. [`docs/design/CODEX_RESPONSE_M7.md`](../design/CODEX_RESPONSE_M7.md) (thread `019ddeea`, 2026-04-30) — implementation review; C1 (orchestrator owns computed fields), C2 (BUILD entry preflight drift check), C3 (worktree survives BUILD gate), H1 (repo-context roots resolve against worktree), H3 (real patch path-safety scanner), M2 (validation command copied from PLAN, not synthesized)
 - **Roadmap:** [`docs/design/ROADMAP.md`](../design/ROADMAP.md) § Pre-M7 (this contract), § M7 (BUILD-lite implementation)
