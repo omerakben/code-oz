@@ -37,7 +37,7 @@
 
 import { ProviderError, providerError } from './errors.ts'
 import { buildManifest } from './manifest.ts'
-import { assertWithinBudget } from './cost.ts'
+import { assertWithinBudget, detectBudgetSoftWarnings } from './cost.ts'
 import {
   appendEvent,
   readEvents,
@@ -94,7 +94,9 @@ export async function* invokeAgent(
   try {
     await withLock(ctx.runPaths.lockDir, async () => {
       const events = await readEvents(eventPaths)
-      assertWithinBudget(ctx.config, req, prepared, events)
+      const nowDate = new Date(now())
+      assertWithinBudget(ctx.config, req, prepared, events, nowDate)
+      const warnings = detectBudgetSoftWarnings(ctx.config, req, prepared, events, nowDate)
       await appendEvent(
         eventPaths,
         {
@@ -113,6 +115,22 @@ export async function* invokeAgent(
         },
         { skipLock: true },
       )
+      for (const w of warnings) {
+        await appendEvent(
+          eventPaths,
+          {
+            version: 1,
+            type: 'budget_warning',
+            ts: now(),
+            runId: req.runId,
+            metric: w.metric,
+            ratio: w.ratio,
+            current: w.metric === 'maxWallTimeMinutes' ? Math.floor(w.current) : w.current,
+            limit: w.limit,
+          },
+          { skipLock: true },
+        )
+      }
     })
   } catch (err) {
     if (err instanceof ProviderError) {

@@ -54,6 +54,27 @@ export interface BudgetCounts {
   readonly perPhaseProviderCalls: number
   /** Count of `agent_invoked` events across all phases. */
   readonly globalProviderCalls: number
+  /** Wall-time minutes since `run_started.ts` (null when no run_started yet). */
+  readonly wallTimeMinutes: number | null
+}
+
+/**
+ * M6 (rule 19): cumulative spend computed from events. The `now` parameter
+ * lets tests inject a deterministic clock; production callers pass `new Date()`.
+ */
+export function computeWallTimeMinutes(
+  events: readonly LoggedEvent[],
+  now: Date,
+): number | null {
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type === 'run_started') {
+      const start = Date.parse(e.ts)
+      if (!Number.isFinite(start)) return null
+      return Math.max(0, (now.getTime() - start) / 60_000)
+    }
+  }
+  return null
 }
 
 /**
@@ -72,6 +93,7 @@ export interface BudgetCounts {
 export function summarizeBudgetUse(
   events: readonly LoggedEvent[],
   phase: Phase,
+  now: Date = new Date(),
 ): BudgetCounts {
   let perPhaseTokens = 0
   let globalTokens = 0
@@ -126,6 +148,7 @@ export function summarizeBudgetUse(
     globalTurns,
     perPhaseProviderCalls,
     globalProviderCalls,
+    wallTimeMinutes: computeWallTimeMinutes(events, now),
   })
 }
 
@@ -144,8 +167,9 @@ export function assertWithinBudget(
   req: ProviderRequest,
   prepared: PreparedProviderRequest,
   events: readonly LoggedEvent[],
+  now: Date = new Date(),
 ): void {
-  const counts = summarizeBudgetUse(events, req.phase)
+  const counts = summarizeBudgetUse(events, req.phase, now)
   const perPhase = config.budgets.perPhase[req.phase]
   const global = config.budgets.global
   const next = prepared.metrics.tokensEstimate
@@ -198,4 +222,73 @@ export function assertWithinBudget(
       `running=${counts.globalProviderCalls}, next=1, cap=${global.maxProviderCalls}`,
     )
   }
+  if (
+    counts.wallTimeMinutes !== null &&
+    counts.wallTimeMinutes > global.maxWallTimeMinutes
+  ) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `global maxWallTimeMinutes has been exceeded`,
+      [`raise budgets.global.maxWallTimeMinutes in .code-oz/config.yaml`],
+      `running=${counts.wallTimeMinutes.toFixed(2)}, cap=${global.maxWallTimeMinutes}`,
+    )
+  }
+}
+
+// --- soft warnings -------------------------------------------------
+
+export type SoftBudgetMetric =
+  | 'maxTurns'
+  | 'maxProviderCalls'
+  | 'maxTokensEstimate'
+  | 'maxWallTimeMinutes'
+
+export interface SoftBudgetWarning {
+  readonly metric: SoftBudgetMetric
+  readonly ratio: number     // current / cap, in [softWarnAtRatio, 1.0)
+  readonly current: number   // current cumulative spend (post-this-call)
+  readonly limit: number     // global cap
+}
+
+/**
+ * M6 (rule 19): detect metrics that the next call would push into the soft
+ * warning band [softWarnAtRatio, 1.0). Returns at most one warning per metric
+ * per run — if a `budget_warning` for the same metric already exists in the
+ * event log, this skips it (no re-emit storm).
+ */
+export function detectBudgetSoftWarnings(
+  config: CodeOzConfig,
+  req: ProviderRequest,
+  prepared: PreparedProviderRequest,
+  events: readonly LoggedEvent[],
+  now: Date = new Date(),
+): readonly SoftBudgetWarning[] {
+  const counts = summarizeBudgetUse(events, req.phase, now)
+  const global = config.budgets.global
+  const ratio = global.softWarnAtRatio
+  const out: SoftBudgetWarning[] = []
+  const alreadyWarned = new Set<SoftBudgetMetric>()
+  for (const e of events) {
+    if (isKnownPhaseEvent(e) && e.type === 'budget_warning') {
+      alreadyWarned.add(e.metric as SoftBudgetMetric)
+    }
+  }
+  const consider = (
+    metric: SoftBudgetMetric,
+    nextValue: number,
+    cap: number,
+  ): void => {
+    if (cap <= 0 || alreadyWarned.has(metric)) return
+    const r = nextValue / cap
+    if (r >= ratio && r < 1) {
+      out.push(Object.freeze({ metric, ratio: r, current: nextValue, limit: cap }))
+    }
+  }
+  consider('maxTokensEstimate', counts.globalTokens + prepared.metrics.tokensEstimate, global.maxTokensEstimate)
+  consider('maxTurns', counts.globalTurns, global.maxTurns)
+  consider('maxProviderCalls', counts.globalProviderCalls + 1, global.maxProviderCalls)
+  if (counts.wallTimeMinutes !== null) {
+    consider('maxWallTimeMinutes', counts.wallTimeMinutes, global.maxWallTimeMinutes)
+  }
+  return Object.freeze(out)
 }

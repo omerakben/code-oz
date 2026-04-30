@@ -25,6 +25,26 @@ export interface GlobalBudget extends PhaseBudget {
    * with a hard ceiling (maxToolCallsPerTurn * 1.5) without two config keys.
    */
   toolCallBudgetMultiplier?: number
+  /**
+   * M6 (rule 19): hard cap on wall-time minutes from `run_started.ts` to the
+   * current provider call. Counts only run-active time; pauses (intervention,
+   * NEEDS_INTERVENTION) still accumulate wall-time because the bar is
+   * "operator wall-time," not "active CPU."
+   */
+  maxWallTimeMinutes: number
+  /**
+   * M6 (rule 19): ratio at which the wrapper emits a `budget_warning` event
+   * for a metric the next call would push into the warning band. 0.75 means
+   * "warn at 75% of cap." Hard kills still fire at 1.0.
+   */
+  softWarnAtRatio: number
+  /**
+   * M6 (rule 19, optional): per-model price table for dollar telemetry. Keys
+   * are `<provider>:<model>` (e.g. `claude:claude-opus-4-7`). Values are the
+   * per-MTok prices from platform.claude.com. Telemetry only — never used
+   * for budget enforcement.
+   */
+  priceTable?: Readonly<Record<string, { readonly inputPerMTok: number; readonly outputPerMTok: number }>>
 }
 
 export interface Budgets {
@@ -97,6 +117,8 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
       maxReviewRounds: 4,
       maxToolCallsPerTurn: 10,
       toolCallBudgetMultiplier: 1.5,
+      maxWallTimeMinutes: 240,
+      softWarnAtRatio: 0.75,
     },
     perPhase: {
       define: { maxTurns: 30, maxProviderCalls: 15, maxTokensEstimate: 300_000 },
