@@ -8,9 +8,12 @@ This file orients Claude Code sessions working on `code-oz`.
 
 Status: **v0.8.0-alpha.0 — M8 closed (VERIFY-lite: tool_use.execute + argv-only command grammar + test-runner + verify_* events + VERIFY.md parser/serializer + mutation gate + restart policy + forensics extras + canonical event order + verifier persona + runVerify orchestration + cleanup-on-approval hook + N+1 scheduler)**. 1325 offline tests pass. M9-M10 remaining per the M7-M10 shape debate (2026-04-30, `docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`): M9 = REVIEW-lite, M10 = Debate runtime. Read `docs/design/ROADMAP.md` first.
 
+Product north star: `code-oz` is a **repo-native agentic SDLC runtime** (market category) framed internally as an **AI software company** (product metaphor). The thesis lives in `docs/product/AI_SOFTWARE_COMPANY_THESIS.md`: provider and model bias are real, so `code-oz` coordinates role-specialized agents through artifacts, evidence gates, debate, verification, and cross-family review instead of trusting one model's confidence. Category and metaphor revised 2026-04-30 after Codex pressure-test (`docs/research/CODEX_RESPONSE_PRODUCT_THESIS.md`, thread `019de031`).
+
 ## Where decisions live
 
 - `docs/design/ROADMAP.md` — full milestone plan, decision matrix, day-by-day PR plan
+- `docs/product/AI_SOFTWARE_COMPANY_THESIS.md`: product north star, market positioning, role model, and post-M10 company-roster direction
 - `docs/adr/0001-mvp-option-e.md` — MVP scope decision (Option E, spine-first end-to-end)
 - `docs/design/SESSION_CYCLE.md` — the empirical session cycle (boot → plan → implement → review → tag → handoff). Every milestone session follows it.
 - `docs/design/CODEX_BRIEFING.md` and `docs/design/CODEX_RESPONSE.md` — debate transcripts that produced the roadmap
@@ -36,7 +39,8 @@ Status: **v0.8.0-alpha.0 — M8 closed (VERIFY-lite: tool_use.execute + argv-onl
 17. **The maestro discipline is named and authoritative.** The rule-checker role + 9-family bug map + adversarial-review skills + four-layer file-system memory are documented in `docs/research/01-maestro-rule-checker.md`. Personas reference it; the orchestrator implements its skills; the dossier is the spec. Updates land as commits on the dossier with a top-of-file "## Update <date>" annotation.
 18. **Codebase context retrieval has its own permission scope.** Agentic search is a `tool_use.repo_context` sub-scope on agent permissions, defined in `docs/contracts/REPO_CONTEXT.md`. Search results are audited via `repo_context_searched` events; selected paths enter the *next* invocation's `ProviderRequest.files`, never the search invocation's hidden context. The maestro's `repo-search-before-write` skill is the consumer; the search backend is the new piece. Network access is denied for repo_context tools.
 19. **Run-level budget enforcement is mandatory, not advisory.** Cumulative caps live under `budgets.global` (single namespace): `maxTurns`, `maxProviderCalls`, `maxTokensEstimate`, `maxWallTimeMinutes`, optional `priceTable` for dollar telemetry. The wrapper's `assertWithinBudget` reads cumulative spend from `events.jsonl` per-call (no parallel state). Soft warnings fire at `softWarnAtRatio` (default 0.75); hard kills at 1.0. `NEEDS_INTERVENTION` carries the actionable suggestion when budget triggers a kill.
-20. **One new authority boundary per milestone.** Each milestone may introduce exactly one new gate or capability domain. M7 = worktree-isolation + BUILD artifact authority. M8 = VERIFY evidence authority + restart-on-fail policy. M9 = cross-family REVIEW authority. M10 = Debate runtime authority (`requestDebate()` primitive). The rule generalizes the empirical M2-M6 cadence and prevents authority-creep that masks bugs. Empirically validated 2026-04-30 when the pre-debate M7 row bundled five authorities into one milestone (mutation testing + iterative build loop + three new phases + Scientist tails + Prompter experiment) — exactly the failure mode the cross-model peer review process is designed to prevent. (M7-M10 shape debate, thread `019ddea0`, `docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`)
+20. **One new authority boundary per milestone.** Each milestone may introduce exactly one new gate or capability domain. M7 = worktree-isolation + BUILD artifact authority. M8 = VERIFY evidence authority + restart-on-fail policy. M9 = cross-family REVIEW authority. M10 = Debate runtime authority (`requestDebate()` primitive). Post-M10 sequence (locked 2026-04-30 after thesis pressure-test, `docs/research/CODEX_RESPONSE_PRODUCT_THESIS.md`, thread `019de031`): M11 = Provider capability contract; M12 = Company roster (shipped roles only); M13 = Role-cost policy under `budgets.global`; M14 = Reviewer panel v1 (first simultaneous-provider surface); M15 = Debate-policy scheduler v1 (single-opponent only). M16+ deferred (Researcher phase-tail, parallel builder candidates, multi-opponent debate) until measurable need. The rule generalizes the empirical M2-M6 cadence and prevents authority-creep that masks bugs. Empirically validated 2026-04-30 when the pre-debate M7 row bundled five authorities into one milestone (mutation testing + iterative build loop + three new phases + Scientist tails + Prompter experiment) — exactly the failure mode the cross-model peer review process is designed to prevent. (M7-M10 shape debate, thread `019ddea0`, `docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`)
+21. **No new parallel-provider surface lands without a measurable risk-reduction effect.** Multi-agent / multi-provider features (Reviewer panels, parallel builder candidates, multi-opponent debate, Researcher fan-out) are added only when their risk-reduction effect is measurable in `events.jsonl` against the single-provider baseline. The Agentless caution (https://arxiv.org/abs/2407.01489) is product policy, not just research context: simpler workflows beat complex agent systems unless complexity earns its keep. Pinned 2026-04-30 from product thesis pressure-test (`docs/research/CODEX_RESPONSE_PRODUCT_THESIS.md`, thread `019de031`).
 
 ## Architecture locks
 
@@ -51,15 +55,15 @@ Status: **v0.8.0-alpha.0 — M8 closed (VERIFY-lite: tool_use.execute + argv-onl
 
 The `templates/` collection in `~/Projects/agents/templates/` is the influence library. Patterns are borrowed; **no code dependencies, no submodules, no copy-paste**. Audited templates and what they contributed:
 
-| Template | Pattern |
-|---|---|
-| `agent-skills` | Skill frontmatter format + DEFINE→SHIP phase taxonomy + Common Rationalizations table |
-| `opencode` | `bun build --compile` distribution + MCP host/client + permission system |
-| `Archon` | `IAgentProvider` interface + worktree-per-run isolation |
-| `pi-mono` | Streaming event model + multi-provider abstraction |
-| `maestro` | File-based gate signals + 3-source verification + Opus-default policy |
+| Template                             | Pattern                                                                                      |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `agent-skills`                       | Skill frontmatter format + DEFINE→SHIP phase taxonomy + Common Rationalizations table        |
+| `opencode`                           | `bun build --compile` distribution + MCP host/client + permission system                     |
+| `Archon`                             | `IAgentProvider` interface + worktree-per-run isolation                                      |
+| `pi-mono`                            | Streaming event model + multi-provider abstraction                                           |
+| `maestro`                            | File-based gate signals + 3-source verification + Opus-default policy                        |
 | `Auto-claude-code-research-in-sleep` | Cross-family review + Reviewer Memory + 4-round-cap loop + plain-Markdown artifact contracts |
-| `claude-code` | Plugin format + hook event names + filesystem discovery |
+| `claude-code`                        | Plugin format + hook event names + filesystem discovery                                      |
 
 **Excluded from the influence library:** `~/Projects/agents/templates/claude-code-main/` is the publicly leaked Anthropic Claude Code source (March 31, 2026 npm `.map` file leak). Pattern borrowing from this template is excluded per the synthesis-round Codex review (`docs/research/CODEX_RESPONSE_SYNTHESIS.md`, thread `019ddc5f`, 2026-04-30). Codebase context retrieval and equivalent capabilities are built clean-room from public Anthropic docs + audited templates (`claude-code`, `opencode`, `agent-skills`). The 4–6 working day clean-room cost is the accepted trade for preserving project provenance.
 
@@ -76,13 +80,13 @@ The `templates/` collection in `~/Projects/agents/templates/` is the influence l
 
 This project is high-stakes. Single-model output has blind spots; cross-family review structurally mitigates them. The rule fires on every milestone:
 
-7. **Codex debate at planning convergence.** Before starting implementation of any milestone (M2, M3, ...), run a Codex debate round on the milestone scope: write a structured `CODEX_BRIEFING.md` (goal, constraints, acceptance, the recommended plan, debate prompts), invoke `mcp__plugin_agent-codex_codex-native__codex` with `gpt-5.5` xhigh and `sandbox: read-only`, capture `CODEX_RESPONSE.md`, and synthesize before any code lands. The user's preference: never present "ready to proceed" without the debate.
+1. **Codex debate at planning convergence.** Before starting implementation of any milestone (M2, M3, ...), run a Codex debate round on the milestone scope: write a structured `CODEX_BRIEFING.md` (goal, constraints, acceptance, the recommended plan, debate prompts), invoke `mcp__plugin_agent-codex_codex-native__codex` with `gpt-5.5` xhigh and `sandbox: read-only`, capture `CODEX_RESPONSE.md`, and synthesize before any code lands. The user's preference: never present "ready to proceed" without the debate.
 
-8. **Codex review at implementation completion.** Before tagging or pushing any milestone, run a Codex review on the latest commit. Codex returns one of `push` / `fix-first` / `debate-required`. Block-push and block-next-milestone severity findings get addressed in a follow-up commit (never amend) before the milestone is closed.
+2. **Codex review at implementation completion.** Before tagging or pushing any milestone, run a Codex review on the latest commit. Codex returns one of `push` / `fix-first` / `debate-required`. Block-push and block-next-milestone severity findings get addressed in a follow-up commit (never amend) before the milestone is closed.
 
-9. **Codex's verdict is data, not authority.** Weigh disagreement, sanity-check agreement, push back when warranted. The point is structural review, not deference.
+3. **Codex's verdict is data, not authority.** Weigh disagreement, sanity-check agreement, push back when warranted. The point is structural review, not deference.
 
-10. **Codex model fallback.** Globally configured `gpt-5.5` at xhigh effort. The `gpt-5.5-codex` and `gpt-5.1-codex-max` variants do NOT work on Ozzy's ChatGPT-account auth — fall back to `gpt-5.5` if they fail. Reasoning effort `xhigh` is set in `~/.codex/config.toml` defaults; pass `{model_reasoning_effort: "xhigh"}` in the config override only when overriding.
+4. **Codex model fallback.** Globally configured `gpt-5.5` at xhigh effort. The `gpt-5.5-codex` and `gpt-5.1-codex-max` variants do NOT work on Ozzy's ChatGPT-account auth — fall back to `gpt-5.5` if they fail. Reasoning effort `xhigh` is set in `~/.codex/config.toml` defaults; pass `{model_reasoning_effort: "xhigh"}` in the config override only when overriding.
 
 This rule was empirically validated 2026-04-29: Codex's planning-convergence debate flipped the MVP from Option C to Option E (spine-first end-to-end), and Codex's M1 implementation review caught five real issues including a doc/code lie in the scaffold (`.code-oz/.gitignore` promised but not written), `--force` semantics that were the "dangerous middle," and brownfield detection that ignored `.git` despite the locked rule. See `docs/design/CODEX_RESPONSE.md` for the original debate.
 

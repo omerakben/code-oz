@@ -312,6 +312,17 @@ NOT in M10: broad `consult()` primitive (still v0.3, distinct from `requestDebat
 
 Reshaped 2026-04-30 by the synthesis round (`docs/research/MERGE_PLAN.md`).
 
+- **Product north star:** `docs/product/AI_SOFTWARE_COMPANY_THESIS.md` names the durable product direction. Market category: repo-native agentic SDLC runtime. Product metaphor: AI software company. Competitors give you agents; `code-oz` gives you the company structure that makes agents define, debate, delegate, build, verify, review, and ship together. Category and metaphor split confirmed 2026-04-30 by Codex thesis pressure-test (`docs/research/CODEX_RESPONSE_PRODUCT_THESIS.md`, thread `019de031`). Positioning and post-M10 roadmap input only — not a reason to expand M9 or M10.
+
+- **Post-M10 productization (locked sequence, one authority boundary per milestone, per CLAUDE.md rule 20):**
+  - **M11 — Provider capability contract.** Authority boundary: provider eligibility. Add capability/auth/cost traits per provider (edit semantics, shell semantics, OAuth source, MCP support, sandbox profile, rate limits, cost-per-1M-tokens, role eligibility). Load-time rejection of impossible role assignments. No new roles. Lands as `docs/contracts/PROVIDERS.md` extension.
+  - **M12 — Company roster for shipped roles only.** Authority boundary: role-to-provider routing. `docs/contracts/COMPANY.md` + `.code-oz/config.yaml` `company:` block mapping BA + Lead + Builder + Verifier + Reviewer + Scientist + Debate opponent + Orchestrator to providers, models, budgets, and permissions. No Researcher, no panels, no parallel builders.
+  - **M13 — Role-cost policy under `budgets.global`.** Authority boundary: per-role budget gating + preflight estimates. Must precede any simultaneous-provider surface so the cost story is solid before parallelism lands.
+  - **M14 — Reviewer panel v1.** Authority boundary: panel quorum + cross-family enforcement + synthesis. First simultaneous-provider surface. Same-family panelists are advisory only; cross-family quorum is required for `verdict: ready`. REVIEW.md schema extension may be needed; subject to its own pre-implementation Codex debate.
+  - **M15 — Debate-policy scheduler v1.** Authority boundary: automatic-trigger policy for the existing single-opponent `requestDebate()`. NOT multi-opponent debate.
+  - **M16+ (deferred until measurable need):** Researcher phase-tail (when Lead-persona source verification overflows), parallel builder candidates (security-wedge trigger), multi-opponent debate (when single-opponent proves insufficient on real disagreement cases), Skills layer architecture (when M9/M10 produce duplication pain).
+  - Discipline: many agents may reason in parallel; only isolated builders mutate worktrees; only the orchestrator writes canonical artifacts and gates. CLAUDE.md rule 21 (Agentless-promoted-to-rule): no parallel-provider surface lands without measurable risk reduction in `events.jsonl` against the simpler baseline.
+
 - **W2 — Non-expert workflow (coordinated milestone):**
   - W2.1 — DEFINE-0 / Prompter front door (gated on M7 mini-experiment outcome). Tier-1 only (cheap meta-prompt). Default-off via `--prompter` opt-in for v0.1; default-on after exemplars mature. INTENT.md as separate artifact, sampled cross-family review at 20%.
   - W2.2 — TUI inspector + failure-recovery UX. Ink/charmbracelet-based diff viewer, hunk-level accept/reject, `events.jsonl` reader, `code-oz resume-after-intervention` command.
