@@ -36,6 +36,7 @@ import {
   type OpenQuestion,
 } from '../artifacts/open-questions.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
+import { loadUniversalRules, loadCommonRationalizations } from '../prompts/index.ts'
 
 // --- public API ----------------------------------------------------
 
@@ -278,7 +279,14 @@ export async function runScientistPhaseTail(
     }
   }
 
-  // Compose prompt
+  // Compose prompt — inject the universal rule sheet (CLAUDE.md rule 16)
+  // and Common Rationalizations into every Scientist invocation. Per Codex
+  // M6 review block-push #5: rule 16 says every persona's prompt imports
+  // universal-rules.md; the Scientist must too.
+  const [universalRules, commonRationalizations] = await Promise.all([
+    loadUniversalRules(),
+    loadCommonRationalizations(),
+  ])
   const prompt = composeScientistPromptPure({
     agentBody: opts.agent.body,
     phase: opts.phase,
@@ -287,6 +295,8 @@ export async function runScientistPhaseTail(
     priorHypothesesText: priorHypText,
     priorOpenQuestionsText: priorOqText,
     readySignal: SCIENTIST_READY_SIGNAL,
+    universalRules,
+    commonRationalizations,
   })
 
   // Invoke persona — single turn

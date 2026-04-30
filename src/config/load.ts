@@ -428,6 +428,37 @@ function mergePhases(
   const p = raw as Record<string, unknown>
   return {
     define: mergeDefinePhase(p.define, file, issues),
+    scientist: mergeScientistPhase(p.scientist, file, issues),
+  }
+}
+
+function mergeScientistPhase(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): { retroSeedDefine: boolean } {
+  const def = DEFAULT_CONFIG.phases.scientist
+  if (raw === undefined || raw === null) return { ...def }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'phases.scientist must be a mapping',
+    })
+    return { ...def }
+  }
+  const s = raw as Record<string, unknown>
+  if (s.retroSeedDefine !== undefined && typeof s.retroSeedDefine !== 'boolean') {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: 'phases.scientist.retroSeedDefine must be a boolean',
+      detail: `got ${JSON.stringify(s.retroSeedDefine)}`,
+    })
+    return { ...def }
+  }
+  return {
+    retroSeedDefine: typeof s.retroSeedDefine === 'boolean' ? s.retroSeedDefine : def.retroSeedDefine,
   }
 }
 
@@ -673,6 +704,7 @@ function clonePerPhase(p: Record<Phase, PhaseBudget>): Record<Phase, PhaseBudget
 function clonePhases(p: PhasesConfig): PhasesConfig {
   return {
     define: cloneDefinePhase(p.define),
+    scientist: { ...p.scientist },
   }
 }
 

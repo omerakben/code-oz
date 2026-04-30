@@ -81,8 +81,20 @@ export interface DefinePhaseConfig {
   askMe: AskMeConfig
 }
 
+/**
+ * M6 (rule 15): Scientist phase-tail configuration. retroSeedDefine is
+ * opt-in; when true, DEFINE runs the Scientist tail to seed initial
+ * HYPOTHESES.md / OPEN_QUESTIONS.md from SPEC.md. Default false because M5
+ * shipped a valid DEFINE flow whose canonical artifact is SPEC.md, not
+ * sidecars; flipping the default would re-open M5.
+ */
+export interface ScientistPhaseConfig {
+  retroSeedDefine: boolean
+}
+
 export interface PhasesConfig {
   define: DefinePhaseConfig
+  scientist: ScientistPhaseConfig
 }
 
 export interface CodeOzConfig {
@@ -143,6 +155,9 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
         maxFinalizeTurns: 1,
         maxRepairTurns: 1,
       },
+    },
+    scientist: {
+      retroSeedDefine: false,
     },
   },
 }

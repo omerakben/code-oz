@@ -55,9 +55,19 @@ export function intersectPermissions(opts: {
   }
 
   const projAbs = resolve(projectRoot)
-  const candidateRoots = readRequestedRoots(request, tu)
+  const candidateRoots = readRequestedRoots(request, tu, projAbs)
   const effectiveRoots: string[] = []
   for (const r of candidateRoots) {
+    if (r.startsWith('__OUTSIDE_DECLARED__:')) {
+      const original = r.slice('__OUTSIDE_DECLARED__:'.length)
+      throw new RepoContextError([
+        {
+          code: 'tool_root_outside_permissions',
+          rule: `requested root '${original}' is outside the agent's declared roots [${tu.roots.join(', ')}]`,
+          tool: request.tool,
+        },
+      ])
+    }
     const abs = isAbsolute(r) ? normalize(r) : resolve(projAbs, r)
     if (!isInside(projAbs, abs)) {
       throw new RepoContextError([
@@ -112,17 +122,34 @@ export function intersectPermissions(opts: {
 function readRequestedRoots(
   request: RepoContextRequest,
   perms: RepoContextPermissions,
+  projectRoot: string,
 ): readonly string[] {
+  const declaredAbs = (perms.roots.length > 0 ? perms.roots : ['.']).map((r) =>
+    isAbsolute(r) ? normalize(r) : resolve(projectRoot, r),
+  )
   if (request.tool === 'glob' || request.tool === 'grep') {
     const requested = request.args.roots
     if (requested === undefined || requested.length === 0) {
-      return perms.roots.length > 0 ? perms.roots : ['.']
+      return declaredAbs
     }
-    return requested
+    // Intersect: every requested root must be inside at least one declared
+    // root. Anything outside fails permission intersection (caller throws).
+    const intersected: string[] = []
+    for (const r of requested) {
+      const reqAbs = isAbsolute(r) ? normalize(r) : resolve(projectRoot, r)
+      if (declaredAbs.some((d) => isInside(d, reqAbs))) {
+        intersected.push(r)
+      } else {
+        // Bubble the violation up via a sentinel root the caller will reject.
+        // We keep the original (relative) form so the error message is clear.
+        intersected.push(`__OUTSIDE_DECLARED__:${r}`)
+      }
+    }
+    return intersected
   }
   // read: roots come from the agent's permissions. The path is checked
   // against the resulting effective set.
-  return perms.roots.length > 0 ? perms.roots : ['.']
+  return declaredAbs
 }
 
 function isInside(parent: string, child: string): boolean {

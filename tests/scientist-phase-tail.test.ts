@@ -284,3 +284,57 @@ describe('parseScientistResponse', () => {
     expect(valid!.openQuestionsText).toContain('# OPEN QUESTIONS')
   })
 })
+
+describe('runScientistPhaseTail — universal-rules injection (Codex M6 review block-push #5)', () => {
+  test('the Scientist persona prompt contains the universal rule sheet', async () => {
+    const planPath = join(paths.artifactRoot, 'PLAN.md')
+    await import('node:fs/promises').then(({ writeFile }) => writeFile(planPath, PRIMARY_PLAN))
+    fake.expect({ phase: 'plan', agent: 'scientist' }).respondWith({ content: READY_RESPONSE })
+
+    let observedPrompt = ''
+    const observerFake = {
+      id: 'fake' as const,
+      family: 'fake' as const,
+      async *invoke(req: { prompt: string }) {
+        observedPrompt = req.prompt
+        yield { type: 'turn_started' as const, model: 'fake-default' }
+        const r = READY_RESPONSE
+        yield { type: 'content_chunk' as const, text: r }
+        yield {
+          type: 'turn_completed' as const,
+          response: { content: r, model: 'fake-default', stopReason: 'end_turn' as const },
+        }
+      },
+      async health() {
+        return {
+          provider: 'fake' as const,
+          authStatus: 'ok' as const,
+          modelDefaultAvailable: true,
+          latencyMs: 0,
+        }
+      },
+    }
+    const observerRegistry = new ProviderRegistry({ providers: [observerFake] })
+    const observerCtx: InvokeContext = {
+      registry: observerRegistry,
+      runPaths: paths,
+      projectRoot,
+      config: DEFAULT_CONFIG,
+      now: () => '2026-04-30T12:00:00.000Z',
+    }
+
+    await runScientistPhaseTail({
+      invokeCtx: observerCtx,
+      runPaths: paths,
+      runId: RUN,
+      agent: scientistAgent(),
+      phase: 'plan',
+      primaryArtifactPath: planPath,
+      fsyncDir: false,
+    })
+
+    expect(observedPrompt).toContain('code-oz universal rules')
+    expect(observedPrompt).toContain('You will not')
+    expect(observedPrompt).toContain('You will:')
+  })
+})

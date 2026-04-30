@@ -716,6 +716,61 @@ export function serializeSourceCheck(art: SourceCheckArtifact): string {
 // --- helpers -------------------------------------------------------
 
 /**
+ * Cross-check that every `T-NNN` task in PLAN.md is covered in
+ * SOURCE_CHECK.md with ≥ 1 SPEC source AND ≥ 1 REF or REF-NONE source AND
+ * ≥ 1 DOC or DOC-NONE source. Per CLAUDE.md rule 3 + Codex M6 review
+ * block-push #4.
+ *
+ * Returns an empty array on success; otherwise an array of human-readable
+ * issue strings (caller decides how to surface).
+ */
+export function validatePlanSourceCoverage(opts: {
+  readonly taskIds: readonly string[]
+  readonly sourceCheck: SourceCheckArtifact
+}): readonly string[] {
+  const issues: string[] = []
+  // Build a map: declared source id -> kind.
+  const idToKind = new Map<string, SourceKind>()
+  for (const s of opts.sourceCheck.specSources) idToKind.set(s.id, s.kind)
+  for (const s of opts.sourceCheck.referenceSources) idToKind.set(s.id, s.kind)
+  for (const s of opts.sourceCheck.docsSources) idToKind.set(s.id, s.kind)
+  // Build a map: T-NNN -> list of source ids from Coverage.
+  const taskCoverage = new Map<string, string[]>()
+  for (const c of opts.sourceCheck.coverage) {
+    if (!taskCoverage.has(c.taskId)) taskCoverage.set(c.taskId, [])
+    taskCoverage.get(c.taskId)!.push(...c.sourceIds)
+  }
+  for (const taskId of opts.taskIds) {
+    const cited = taskCoverage.get(taskId)
+    if (cited === undefined || cited.length === 0) {
+      issues.push(`task ${taskId} has no Coverage row in SOURCE_CHECK.md`)
+      continue
+    }
+    let hasSpec = false
+    let hasRef = false
+    let hasDoc = false
+    for (const sid of cited) {
+      const kind = idToKind.get(sid)
+      if (kind === undefined) continue
+      if (kind === 'SPEC') hasSpec = true
+      else if (kind === 'REF' || kind === 'REF-NONE') hasRef = true
+      else if (kind === 'DOC' || kind === 'DOC-NONE') hasDoc = true
+    }
+    if (!hasSpec) issues.push(`task ${taskId} Coverage missing a SPEC source`)
+    if (!hasRef) issues.push(`task ${taskId} Coverage missing a REF or REF-NONE source`)
+    if (!hasDoc) issues.push(`task ${taskId} Coverage missing a DOC or DOC-NONE source`)
+  }
+  // Reverse-check: every Coverage taskId must exist in opts.taskIds.
+  const taskIdSet = new Set(opts.taskIds)
+  for (const c of opts.sourceCheck.coverage) {
+    if (!taskIdSet.has(c.taskId)) {
+      issues.push(`SOURCE_CHECK.md Coverage cites unknown task ${c.taskId} (not in PLAN.md)`)
+    }
+  }
+  return Object.freeze(issues)
+}
+
+/**
  * Allocate the next free source id for a given kind, given the existing
  * declared ids (across all kinds is fine — only same-kind ids matter for
  * collision but uniqueness within the artifact is required overall, so we

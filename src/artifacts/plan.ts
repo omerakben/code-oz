@@ -411,7 +411,8 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
         })
         continue
       }
-      // Per-task validation: required bullets in canonical order
+      // Per-task validation: required bullets in canonical order +
+      // id-format checks on the entries inside Hypotheses / Sources.
       const seenIds = new Set<string>()
       for (const block of ts.blocks) {
         if (seenIds.has(block.id)) {
@@ -470,6 +471,41 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
               line: bullet.line,
               taskId: block.id,
             })
+          } else if (bullet.key === 'Hypotheses') {
+            // Allow the literal "none" sentinel; otherwise every entry must
+            // match H-NNN format. Per Codex M6 review block-push #4.
+            const trimmed = bullet.value.trim()
+            if (trimmed.toLowerCase() !== 'none') {
+              for (const entry of trimmed
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0)) {
+                if (!HYPOTHESIS_ID_PATTERN.test(entry)) {
+                  issues.push({
+                    file,
+                    code: 'plan_task_malformed',
+                    rule: `task ${block.id}: Hypotheses entry must match /^H-\\d{3,}$/ (got ${JSON.stringify(entry)})`,
+                    line: bullet.line,
+                    taskId: block.id,
+                  })
+                }
+              }
+            }
+          } else if (bullet.key === 'Sources') {
+            for (const entry of bullet.value
+              .split(',')
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0)) {
+              if (!SOURCE_ID_PATTERN.test(entry)) {
+                issues.push({
+                  file,
+                  code: 'plan_task_malformed',
+                  rule: `task ${block.id}: Sources entry must match /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE)-\\d{3,}$/ (got ${JSON.stringify(entry)})`,
+                  line: bullet.line,
+                  taskId: block.id,
+                })
+              }
+            }
           }
         }
         for (const required of TASK_BULLET_KEYS) {

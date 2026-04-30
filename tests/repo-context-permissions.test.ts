@@ -66,6 +66,28 @@ describe('intersectPermissions — happy path', () => {
 })
 
 describe('intersectPermissions — rejections', () => {
+  test('rejects requested root outside declared agent roots (Codex M6 review block-push #3)', () => {
+    const req: RepoContextRequest = { tool: 'glob', args: { pattern: '*', roots: ['tests'] } }
+    expect(() =>
+      intersectPermissions({
+        agentPermissions: perms({ roots: ['src'] }),
+        request: req,
+        projectRoot: PROJECT,
+      }),
+    ).toThrow(RepoContextError)
+  })
+
+  test('accepts requested root that narrows declared agent roots', () => {
+    const req: RepoContextRequest = { tool: 'glob', args: { pattern: '*', roots: ['src/sub'] } }
+    const out = intersectPermissions({
+      agentPermissions: perms({ roots: ['src'] }),
+      request: req,
+      projectRoot: PROJECT,
+    })
+    expect(out.effectiveRoots.length).toBe(1)
+    expect(out.effectiveRoots[0]).toBe(`${PROJECT}/src/sub`)
+  })
+
   test('rejects when agent lacks tool_use.repo_context', () => {
     const noTu: AgentPermissions = Object.freeze({ read: '*', write: '*', bash: 'deny' })
     const req: RepoContextRequest = { tool: 'glob', args: { pattern: '*' } }

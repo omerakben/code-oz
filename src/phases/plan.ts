@@ -35,6 +35,7 @@ import {
 import {
   parseSourceCheck,
   serializeSourceCheck,
+  validatePlanSourceCoverage,
 } from '../artifacts/source-check.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import { composePlanPrompt } from '../prompts/index.ts'
@@ -336,7 +337,40 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
     }
   }
 
-  // 5. Atomic write canonical artifacts
+  // 5. Cross-check PLAN tasks vs SOURCE_CHECK coverage (rule 3, Codex M6
+  //    review block-push #4). Every T-NNN must have a Coverage row with
+  //    ≥ 1 SPEC + ≥ 1 REF/REF-NONE + ≥ 1 DOC/DOC-NONE source.
+  const coverageIssues = validatePlanSourceCoverage({
+    taskIds: planArt.tasks.map((t) => t.id),
+    sourceCheck: sourceCheckArt,
+  })
+  if (coverageIssues.length > 0) {
+    await atomicWriteFile(planDraftPath(opts.runPaths), split.planText, { fsyncDir: opts.fsyncDir })
+    await atomicWriteFile(sourceCheckDraftPath(opts.runPaths), split.sourceCheckText, {
+      fsyncDir: opts.fsyncDir,
+    })
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.leadAgent.name,
+      code: 'plan_source_coverage_failed',
+      rule: '3-source verification incomplete (rule 3)',
+      detail: coverageIssues.join('; '),
+      actionableSuggestions: [
+        'every PLAN task must cite at least one SC-SPEC + one SC-REF/-NONE + one SC-DOC/-NONE source',
+        'inspect PLAN.draft.md and SOURCE_CHECK.draft.md and rerun PLAN',
+      ],
+      now,
+    })
+    return {
+      status: 'intervention',
+      code: 'plan_source_coverage_failed',
+      rule: '3-source verification incomplete (rule 3)',
+      draftPaths: [planDraftPath(opts.runPaths), sourceCheckDraftPath(opts.runPaths)],
+    }
+  }
+
+  // 6. Atomic write canonical artifacts
   await atomicWriteFile(planPath(opts.runPaths), serializePlan(planArt), { fsyncDir: opts.fsyncDir })
   await atomicWriteFile(sourceCheckPath(opts.runPaths), serializeSourceCheck(sourceCheckArt), {
     fsyncDir: opts.fsyncDir,

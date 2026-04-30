@@ -204,6 +204,27 @@ describe('parsePlan', () => {
     const err = expectPlanLoadError(() => parsePlan(bad, FILE))
     expect(err.issues.some((i) => i.code === 'plan_unexpected_content')).toBe(true)
   })
+
+  test('rejects malformed Hypotheses entry (Codex M6 review block-push #4)', () => {
+    const bad = VALID.replace('- Hypotheses: H-001, H-002', '- Hypotheses: H-NOPE')
+    const err = expectPlanLoadError(() => parsePlan(bad, FILE))
+    expect(err.issues.some((i) => i.rule.includes('Hypotheses entry must match'))).toBe(true)
+  })
+
+  test('accepts Hypotheses: none as a valid sentinel', () => {
+    const ok = VALID.replace('- Hypotheses: H-001, H-002', '- Hypotheses: none')
+    const plan = parsePlan(ok, FILE)
+    expect(plan.tasks[0]!.hypotheses).toEqual([])
+  })
+
+  test('rejects malformed Sources entry (Codex M6 review block-push #4)', () => {
+    const bad = VALID.replace(
+      '- Sources: SC-SPEC-001, SC-REF-001, SC-DOC-001',
+      '- Sources: NOT-A-SOURCE',
+    )
+    const err = expectPlanLoadError(() => parsePlan(bad, FILE))
+    expect(err.issues.some((i) => i.rule.includes('Sources entry must match'))).toBe(true)
+  })
 })
 
 describe('serializePlan', () => {
