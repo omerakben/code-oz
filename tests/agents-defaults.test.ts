@@ -75,6 +75,26 @@ describe('bundled default personas', () => {
     const sources = await loadDefaults()
     const reg = buildRegistry({ defaults: sources, overrides: [] })
     const reviewer = reg.getByName('reviewer')!
-    expect(reviewer.permissions.write).toEqual(['REVIEW.md'])
+    // M9 commit 6 standardizes the path to match verifier.md's canonical
+    // .code-oz/artifacts/VERIFY.md convention; the M2 stub used a bare
+    // filename. The intent (reviewer can ONLY write REVIEW.md) is unchanged.
+    expect(reviewer.permissions.write).toEqual(['.code-oz/artifacts/REVIEW.md'])
+  })
+
+  test('reviewer declares cross-family permissions (provider: codex, tool_use.review_request)', async () => {
+    const sources = await loadDefaults()
+    const reg = buildRegistry({ defaults: sources, overrides: [] })
+    const reviewer = reg.getByName('reviewer')!
+    expect(reviewer.provider).toBe('codex') // cross-family with default builder (claude)
+    expect(reviewer.permissions.tool_use?.review_request).toBeDefined()
+    expect(reviewer.permissions.tool_use?.review_request?.tools).toEqual(['request-review'])
+    expect(reviewer.permissions.tool_use?.review_request?.maxRounds).toBeLessThanOrEqual(4)
+    expect(reviewer.permissions.tool_use?.review_request?.network).toBe('provider-only')
+    // tool_use.repo_context for reading changed files from the worktree.
+    expect(reviewer.permissions.tool_use?.repo_context?.tools).toEqual([
+      'glob',
+      'grep',
+      'read',
+    ])
   })
 })
