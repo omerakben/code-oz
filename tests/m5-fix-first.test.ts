@@ -26,20 +26,20 @@ const CLI_ENTRY = join(REPO_ROOT, 'src/cli.ts')
 
 // --- finding #1 — version bump ------------------------------------
 
-describe('finding #1: versions report 0.7.0-alpha.0 across all surfaces', () => {
+describe('finding #1: versions report 0.8.0-alpha.0 across all surfaces', () => {
   test('PKG_VERSION', () => {
-    expect(PKG_VERSION).toBe('0.7.0-alpha.0')
+    expect(PKG_VERSION).toBe('0.8.0-alpha.0')
   })
 
   test('DEFAULT_CONFIG.version', () => {
-    expect(DEFAULT_CONFIG.version).toBe('0.7.0-alpha.0')
+    expect(DEFAULT_CONFIG.version).toBe('0.8.0-alpha.0')
   })
 
   test('package.json.version', async () => {
     const pkg = JSON.parse(
       await readFile(join(REPO_ROOT, 'package.json'), 'utf8'),
     )
-    expect(pkg.version).toBe('0.7.0-alpha.0')
+    expect(pkg.version).toBe('0.8.0-alpha.0')
   })
 })
 
