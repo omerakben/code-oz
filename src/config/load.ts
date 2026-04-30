@@ -14,6 +14,10 @@ import {
   type PhaseBudget,
   type GlobalBudget,
   type Budgets,
+  type PhasesConfig,
+  type DefinePhaseConfig,
+  type AskMeConfig,
+  type OnMaxRoundsBehavior,
 } from './schema.ts'
 import type { Phase, Profile } from '../state/schemas.ts'
 
@@ -44,6 +48,7 @@ export class ConfigLoadError extends Error {
 const PHASES: readonly Phase[] = ['define', 'plan', 'build', 'verify', 'review', 'ship', 'audit']
 const PROFILES: readonly Profile[] = ['greenfield', 'brownfield']
 const PROVIDERS = ['claude', 'codex', 'gemini', 'fake'] as const
+const ON_MAX_ROUNDS: readonly OnMaxRoundsBehavior[] = ['finalize', 'fail']
 
 /**
  * Load the project config. Missing file returns DEFAULT_CONFIG (no error).
@@ -130,6 +135,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   const models = mergeModels(raw.models, file, issues)
   const budgets = mergeBudgets(raw.budgets, file, issues)
   const permissions = mergePermissions(raw.permissions, file, issues)
+  const phases = mergePhases(raw.phases, file, issues)
 
   if (issues.length > 0) {
     throw new ConfigLoadError(issues)
@@ -142,6 +148,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
     models,
     budgets,
     permissions,
+    phases,
   })
 }
 
@@ -331,6 +338,100 @@ function mergePermissions(
   }
 }
 
+function mergePhases(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): PhasesConfig {
+  const def = DEFAULT_CONFIG.phases
+  if (raw === undefined || raw === null) return clonePhases(def)
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({ file, code: 'config_invalid_shape', rule: 'phases must be a mapping' })
+    return clonePhases(def)
+  }
+  const p = raw as Record<string, unknown>
+  return {
+    define: mergeDefinePhase(p.define, file, issues),
+  }
+}
+
+function mergeDefinePhase(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): DefinePhaseConfig {
+  const def = DEFAULT_CONFIG.phases.define
+  if (raw === undefined || raw === null) return cloneDefinePhase(def)
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'phases.define must be a mapping',
+    })
+    return cloneDefinePhase(def)
+  }
+  const d = raw as Record<string, unknown>
+  return {
+    askMe: mergeAskMe(d.askMe, file, issues),
+  }
+}
+
+function mergeAskMe(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): AskMeConfig {
+  const def = DEFAULT_CONFIG.phases.define.askMe
+  if (raw === undefined || raw === null) return { ...def }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'phases.define.askMe must be a mapping',
+    })
+    return { ...def }
+  }
+  const a = raw as Record<string, unknown>
+  return {
+    maxRounds: positiveIntOrDefault(
+      a.maxRounds,
+      def.maxRounds,
+      'phases.define.askMe.maxRounds',
+      file,
+      issues,
+    ),
+    readySignal: nonEmptyStringOrDefault(
+      a.readySignal,
+      def.readySignal,
+      'phases.define.askMe.readySignal',
+      file,
+      issues,
+    ),
+    onMaxRounds: enumOrDefault(
+      a.onMaxRounds,
+      def.onMaxRounds,
+      ON_MAX_ROUNDS,
+      'phases.define.askMe.onMaxRounds',
+      file,
+      issues,
+    ),
+    maxFinalizeTurns: nonNegIntOrDefault(
+      a.maxFinalizeTurns,
+      def.maxFinalizeTurns,
+      'phases.define.askMe.maxFinalizeTurns',
+      file,
+      issues,
+    ),
+    maxRepairTurns: nonNegIntOrDefault(
+      a.maxRepairTurns,
+      def.maxRepairTurns,
+      'phases.define.askMe.maxRepairTurns',
+      file,
+      issues,
+    ),
+  }
+}
+
 // --- helpers -------------------------------------------------------
 
 function stringOrDefault(
@@ -394,6 +495,46 @@ function nonNegIntOrDefault(
   return v
 }
 
+function positiveIntOrDefault(
+  v: unknown,
+  fallback: number,
+  field: string,
+  file: string,
+  issues: ConfigLoadIssue[],
+): number {
+  if (v === undefined) return fallback
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: `${field} must be a positive integer (>= 1)`,
+      detail: `got ${JSON.stringify(v)}`,
+    })
+    return fallback
+  }
+  return v
+}
+
+function nonEmptyStringOrDefault(
+  v: unknown,
+  fallback: string,
+  field: string,
+  file: string,
+  issues: ConfigLoadIssue[],
+): string {
+  if (v === undefined) return fallback
+  if (typeof v !== 'string' || v.length === 0) {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: `${field} must be a non-empty string`,
+      detail: `got ${JSON.stringify(v)}`,
+    })
+    return fallback
+  }
+  return v
+}
+
 function positiveFiniteNumberOrDefault(
   v: unknown,
   fallback: number,
@@ -450,5 +591,17 @@ function clonePerPhase(p: Record<Phase, PhaseBudget>): Record<Phase, PhaseBudget
     review: { ...p.review },
     ship: { ...p.ship },
     audit: { ...p.audit },
+  }
+}
+
+function clonePhases(p: PhasesConfig): PhasesConfig {
+  return {
+    define: cloneDefinePhase(p.define),
+  }
+}
+
+function cloneDefinePhase(d: DefinePhaseConfig): DefinePhaseConfig {
+  return {
+    askMe: { ...d.askMe },
   }
 }

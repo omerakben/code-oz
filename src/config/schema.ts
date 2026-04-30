@@ -32,6 +32,39 @@ export interface Budgets {
   perPhase: Record<Phase, PhaseBudget>
 }
 
+export type OnMaxRoundsBehavior = 'finalize' | 'fail'
+
+export interface AskMeConfig {
+  /** Cap on user→ba exchanges. Round (maxRounds) triggers onMaxRounds. */
+  maxRounds: number
+  /**
+   * Literal token the BA persona emits to signal readiness. The orchestrator
+   * matches `^\s*<readySignal>\s*$` against the most recent persona response,
+   * regex-escaping the value before insertion.
+   */
+  readySignal: string
+  /**
+   * Behavior when the loop hits maxRounds without a ready signal.
+   *  - 'finalize': run up to maxFinalizeTurns extra turns asking the persona
+   *    to produce the best SPEC.md it can with current information.
+   *  - 'fail': write NEEDS_INTERVENTION (code: ask_me_max_rounds_exceeded)
+   *    and exit. No SPEC.md, no draft.
+   */
+  onMaxRounds: OnMaxRoundsBehavior
+  /** Bounded extra turns for the finalize ritual. 0 disables. */
+  maxFinalizeTurns: number
+  /** Bounded extra turns when SPEC validation fails after a ready signal. */
+  maxRepairTurns: number
+}
+
+export interface DefinePhaseConfig {
+  askMe: AskMeConfig
+}
+
+export interface PhasesConfig {
+  define: DefinePhaseConfig
+}
+
 export interface CodeOzConfig {
   version: string
   profile: Profile
@@ -45,6 +78,7 @@ export interface CodeOzConfig {
     allowEscapeHatch: boolean
     requireApprovalForBuild: boolean
   }
+  phases: PhasesConfig
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {
@@ -77,5 +111,16 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
   permissions: {
     allowEscapeHatch: false,
     requireApprovalForBuild: true,
+  },
+  phases: {
+    define: {
+      askMe: {
+        maxRounds: 8,
+        readySignal: '<spec-ready/>',
+        onMaxRounds: 'finalize',
+        maxFinalizeTurns: 1,
+        maxRepairTurns: 1,
+      },
+    },
   },
 }
