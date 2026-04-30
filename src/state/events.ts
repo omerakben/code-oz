@@ -320,8 +320,207 @@ export function validateEvent(
         }
       }
       break
+
+    case 'repo_context_searched': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'repo_context_searched', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'repo_context_searched.agent', line)
+      if (agentIssue) return agentIssue
+      const allowedTools = ['glob', 'grep', 'read', 'symbol']
+      if (typeof e.tool !== 'string' || !allowedTools.includes(e.tool)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `repo_context_searched.tool must be one of: ${allowedTools.join(' | ')}`,
+          detail: `got ${JSON.stringify(e.tool)}`,
+          line,
+        }
+      }
+      const queryIssue = nonEmptyString(file, e.query, 'repo_context_searched.query', line)
+      if (queryIssue) return queryIssue
+      if (!Array.isArray(e.roots) || !e.roots.every((r) => typeof r === 'string')) {
+        return strArrInvalid(file, 'repo_context_searched.roots', line)
+      }
+      if (!Array.isArray(e.resultPaths) || !e.resultPaths.every((r) => typeof r === 'string')) {
+        return strArrInvalid(file, 'repo_context_searched.resultPaths', line)
+      }
+      if (!Array.isArray(e.selectedPaths) || !e.selectedPaths.every((r) => typeof r === 'string')) {
+        return strArrInvalid(file, 'repo_context_searched.selectedPaths', line)
+      }
+      const bytesIssue = nonNegativeInteger(file, e.resultBytes, 'repo_context_searched.resultBytes', line)
+      if (bytesIssue) return bytesIssue
+      const tokenIssue = nonNegativeInteger(
+        file,
+        e.resultTokensEstimate,
+        'repo_context_searched.resultTokensEstimate',
+        line,
+      )
+      if (tokenIssue) return tokenIssue
+      break
+    }
+
+    case 'science_emitted': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'science_emitted', e.phase, line)
+      const hyp = nonNegativeInteger(file, e.hypothesesCount, 'science_emitted.hypothesesCount', line)
+      if (hyp) return hyp
+      const q = nonNegativeInteger(file, e.openQuestionsCount, 'science_emitted.openQuestionsCount', line)
+      if (q) return q
+      break
+    }
+
+    case 'hypothesis_added': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'hypothesis_added', e.phase, line)
+      const idIssue = idMatches(file, e.id, /^H-\d{3,}$/, 'hypothesis_added.id', line)
+      if (idIssue) return idIssue
+      const HSTAT = ['open', 'confirmed', 'rejected', 'obsolete']
+      if (typeof e.status !== 'string' || !HSTAT.includes(e.status)) {
+        return enumInvalid(file, 'hypothesis_added.status', HSTAT, e.status, line)
+      }
+      const fIssue = nonEmptyString(file, e.falsifier, 'hypothesis_added.falsifier', line)
+      if (fIssue) return fIssue
+      break
+    }
+
+    case 'hypothesis_updated': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'hypothesis_updated', e.phase, line)
+      const idIssue = idMatches(file, e.id, /^H-\d{3,}$/, 'hypothesis_updated.id', line)
+      if (idIssue) return idIssue
+      const HSTAT = ['open', 'confirmed', 'rejected', 'obsolete']
+      if (typeof e.prevStatus !== 'string' || !HSTAT.includes(e.prevStatus)) {
+        return enumInvalid(file, 'hypothesis_updated.prevStatus', HSTAT, e.prevStatus, line)
+      }
+      if (typeof e.nextStatus !== 'string' || !HSTAT.includes(e.nextStatus)) {
+        return enumInvalid(file, 'hypothesis_updated.nextStatus', HSTAT, e.nextStatus, line)
+      }
+      if (!Array.isArray(e.changedFields) || !e.changedFields.every((s) => typeof s === 'string')) {
+        return strArrInvalid(file, 'hypothesis_updated.changedFields', line)
+      }
+      break
+    }
+
+    case 'question_added': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'question_added', e.phase, line)
+      const idIssue = idMatches(file, e.id, /^Q-\d{3,}$/, 'question_added.id', line)
+      if (idIssue) return idIssue
+      const QSTAT = ['open', 'resolved', 'deferred']
+      if (typeof e.status !== 'string' || !QSTAT.includes(e.status)) {
+        return enumInvalid(file, 'question_added.status', QSTAT, e.status, line)
+      }
+      const QIMP = ['low', 'medium', 'high', 'blocking']
+      if (typeof e.importance !== 'string' || !QIMP.includes(e.importance)) {
+        return enumInvalid(file, 'question_added.importance', QIMP, e.importance, line)
+      }
+      if (e.dueBy !== null && (typeof e.dueBy !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.dueBy))) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'question_added.dueBy must be ISO YYYY-MM-DD or null',
+          detail: `got ${JSON.stringify(e.dueBy)}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'question_resolved': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'question_resolved', e.phase, line)
+      const idIssue = idMatches(file, e.id, /^Q-\d{3,}$/, 'question_resolved.id', line)
+      if (idIssue) return idIssue
+      if (typeof e.resolvedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.resolvedAt)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'question_resolved.resolvedAt must be ISO YYYY-MM-DD',
+          detail: `got ${JSON.stringify(e.resolvedAt)}`,
+          line,
+        }
+      }
+      const rIssue = nonEmptyString(file, e.resolution, 'question_resolved.resolution', line)
+      if (rIssue) return rIssue
+      break
+    }
+
+    case 'question_deferred': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'question_deferred', e.phase, line)
+      const idIssue = idMatches(file, e.id, /^Q-\d{3,}$/, 'question_deferred.id', line)
+      if (idIssue) return idIssue
+      if (typeof e.deferredAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.deferredAt)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'question_deferred.deferredAt must be ISO YYYY-MM-DD',
+          detail: `got ${JSON.stringify(e.deferredAt)}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'budget_warning': {
+      const BMETRICS = ['maxTurns', 'maxProviderCalls', 'maxTokensEstimate', 'maxWallTimeMinutes']
+      if (typeof e.metric !== 'string' || !BMETRICS.includes(e.metric)) {
+        return enumInvalid(file, 'budget_warning.metric', BMETRICS, e.metric, line)
+      }
+      if (typeof e.ratio !== 'number' || !Number.isFinite(e.ratio) || e.ratio < 0 || e.ratio > 1) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'budget_warning.ratio must be a number in [0, 1]',
+          detail: `got ${JSON.stringify(e.ratio)}`,
+          line,
+        }
+      }
+      const cIssue = nonNegativeInteger(file, e.current, 'budget_warning.current', line)
+      if (cIssue) return cIssue
+      const lIssue = nonNegativeInteger(file, e.limit, 'budget_warning.limit', line)
+      if (lIssue) return lIssue
+      break
+    }
   }
 
+  return null
+}
+
+function strArrInvalid(file: string, field: string, line?: number): EventLogIssue {
+  return {
+    file,
+    code: 'event_invalid_value',
+    rule: `${field} must be an array of strings`,
+    line,
+  }
+}
+
+function enumInvalid(
+  file: string,
+  field: string,
+  allowed: readonly string[],
+  got: unknown,
+  line?: number,
+): EventLogIssue {
+  return {
+    file,
+    code: 'event_invalid_value',
+    rule: `${field} must be one of: ${allowed.join(' | ')}`,
+    detail: `got ${JSON.stringify(got)}`,
+    line,
+  }
+}
+
+function idMatches(
+  file: string,
+  value: unknown,
+  pattern: RegExp,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (typeof value !== 'string' || !pattern.test(value)) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must match /${pattern.source}/`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
   return null
 }
 
