@@ -68,3 +68,26 @@ Closed in `c31fe0e`:
 - C: carve-out for stopReason 'tool_use' OR non-empty toolCalls
 
 542 / 542 tests passing after the round-2 fix.
+
+---
+
+## Round 3 (re-re-review of `c31fe0e`)
+
+- **Thread ID:** `019ddc37-0297-74d3-933b-30e2e4307ba4`
+- **Date:** 2026-04-30
+- **HEAD reviewed:** `c31fe0e`
+
+`block-push`: none.
+`block-next-milestone`: none.
+
+Finding A confirmed closed: `_validateArtifactSyncPath` runs before `readFile`; `approveGate -> writeGate` still re-validates via `validateGate` and `resolveArtifactPath` (defense in depth).
+
+Finding B confirmed closed: `gate_required` scan narrows correctly through `isKnownPhaseEvent`. `loadRun` recovery does not synthesize `gate_required`, so a run that crashes before `requireGate` correctly refuses approval.
+
+Finding C confirmed closed: empty content allowed when `stopReason === 'tool_use'` or `toolCalls.length > 0`; rejected otherwise.
+
+Fixture changes match the M3/M5 contract. `gate_required` is a `runApprove` precondition; reducer-inert; does not replace M3's success-gate-driven advancement model. Orphan recovery is not weakened.
+
+`bun run typecheck` passed.
+
+Verdict: `push`. M5 is tag-ready.
