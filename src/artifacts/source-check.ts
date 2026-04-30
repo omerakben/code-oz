@@ -724,8 +724,19 @@ export function serializeSourceCheck(art: SourceCheckArtifact): string {
  * Returns an empty array on success; otherwise an array of human-readable
  * issue strings (caller decides how to surface).
  */
+/**
+ * Per-task input to `validatePlanSourceCoverage`. The full PlanTask carries
+ * the `sources` list (each task's `- Sources:` bullet), so we can also
+ * cross-check that PLAN's per-task citations match SOURCE_CHECK declarations
+ * AND the task's Coverage row.
+ */
+export interface PlanTaskCoverageInput {
+  readonly id: string
+  readonly sources: readonly string[]
+}
+
 export function validatePlanSourceCoverage(opts: {
-  readonly taskIds: readonly string[]
+  readonly tasks: readonly PlanTaskCoverageInput[]
   readonly sourceCheck: SourceCheckArtifact
 }): readonly string[] {
   const issues: string[] = []
@@ -734,18 +745,45 @@ export function validatePlanSourceCoverage(opts: {
   for (const s of opts.sourceCheck.specSources) idToKind.set(s.id, s.kind)
   for (const s of opts.sourceCheck.referenceSources) idToKind.set(s.id, s.kind)
   for (const s of opts.sourceCheck.docsSources) idToKind.set(s.id, s.kind)
-  // Build a map: T-NNN -> list of source ids from Coverage.
-  const taskCoverage = new Map<string, string[]>()
+  // Build a map: T-NNN -> set of source ids from Coverage.
+  const taskCoverage = new Map<string, Set<string>>()
   for (const c of opts.sourceCheck.coverage) {
-    if (!taskCoverage.has(c.taskId)) taskCoverage.set(c.taskId, [])
-    taskCoverage.get(c.taskId)!.push(...c.sourceIds)
+    if (!taskCoverage.has(c.taskId)) taskCoverage.set(c.taskId, new Set<string>())
+    for (const sid of c.sourceIds) taskCoverage.get(c.taskId)!.add(sid)
   }
-  for (const taskId of opts.taskIds) {
-    const cited = taskCoverage.get(taskId)
-    if (cited === undefined || cited.length === 0) {
-      issues.push(`task ${taskId} has no Coverage row in SOURCE_CHECK.md`)
+  const taskIdSet = new Set(opts.tasks.map((t) => t.id))
+  for (const task of opts.tasks) {
+    const cited = taskCoverage.get(task.id)
+    if (cited === undefined || cited.size === 0) {
+      issues.push(`task ${task.id} has no Coverage row in SOURCE_CHECK.md`)
       continue
     }
+    // Per Codex M6 re-review: verify the PLAN task's `Sources:` set against
+    // declared SOURCE_CHECK source ids AND against the task's Coverage row.
+    const planSources = new Set(task.sources)
+    for (const sid of planSources) {
+      if (!idToKind.has(sid)) {
+        issues.push(
+          `task ${task.id}: PLAN.md cites Sources: ${sid} but no \`### ${sid}: ...\` block exists in SOURCE_CHECK.md`,
+        )
+      }
+    }
+    // Set equality between PLAN task's Sources and the Coverage row.
+    for (const sid of planSources) {
+      if (!cited.has(sid)) {
+        issues.push(
+          `task ${task.id}: PLAN.md cites Sources: ${sid} but the SOURCE_CHECK.md Coverage row for ${task.id} does not include it`,
+        )
+      }
+    }
+    for (const sid of cited) {
+      if (!planSources.has(sid)) {
+        issues.push(
+          `task ${task.id}: SOURCE_CHECK.md Coverage cites ${sid} but PLAN.md task ${task.id}'s Sources: bullet does not`,
+        )
+      }
+    }
+    // The kind-coverage rule applies to the Coverage row.
     let hasSpec = false
     let hasRef = false
     let hasDoc = false
@@ -756,12 +794,11 @@ export function validatePlanSourceCoverage(opts: {
       else if (kind === 'REF' || kind === 'REF-NONE') hasRef = true
       else if (kind === 'DOC' || kind === 'DOC-NONE') hasDoc = true
     }
-    if (!hasSpec) issues.push(`task ${taskId} Coverage missing a SPEC source`)
-    if (!hasRef) issues.push(`task ${taskId} Coverage missing a REF or REF-NONE source`)
-    if (!hasDoc) issues.push(`task ${taskId} Coverage missing a DOC or DOC-NONE source`)
+    if (!hasSpec) issues.push(`task ${task.id} Coverage missing a SPEC source`)
+    if (!hasRef) issues.push(`task ${task.id} Coverage missing a REF or REF-NONE source`)
+    if (!hasDoc) issues.push(`task ${task.id} Coverage missing a DOC or DOC-NONE source`)
   }
-  // Reverse-check: every Coverage taskId must exist in opts.taskIds.
-  const taskIdSet = new Set(opts.taskIds)
+  // Reverse-check: every Coverage taskId must exist in PLAN tasks.
   for (const c of opts.sourceCheck.coverage) {
     if (!taskIdSet.has(c.taskId)) {
       issues.push(`SOURCE_CHECK.md Coverage cites unknown task ${c.taskId} (not in PLAN.md)`)

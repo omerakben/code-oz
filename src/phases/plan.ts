@@ -484,7 +484,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
   //    review block-push #4). Every T-NNN must have a Coverage row with
   //    ≥ 1 SPEC + ≥ 1 REF/REF-NONE + ≥ 1 DOC/DOC-NONE source.
   const coverageIssues = validatePlanSourceCoverage({
-    taskIds: planArt.tasks.map((t) => t.id),
+    tasks: planArt.tasks.map((t) => ({ id: t.id, sources: t.sources })),
     sourceCheck: sourceCheckArt,
   })
   if (coverageIssues.length > 0) {
