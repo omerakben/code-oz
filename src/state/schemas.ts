@@ -136,6 +136,16 @@ export const EVENT_TYPES = [
   'build_patch_applied',
   'build_completed',
   'build_failed',
+  // M8 — VERIFY phase (per docs/contracts/VERIFY.md). The four-event shape
+  // is locked in VERIFY.md § "Event types emitted". Ordering against
+  // worktree_destroyed is the orchestrator's responsibility (Codex M8
+  // decision 8 modification: verify_restart_initiated only after
+  // worktree_destroyed); the schema does not enforce ordering, only event
+  // shape.
+  'verify_started',
+  'verify_completed',
+  'verify_failed',
+  'verify_restart_initiated',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -407,6 +417,83 @@ export type PhaseEvent =
       readonly taskId: string
       readonly code: string
       readonly reason: string
+    }
+  // M8 VERIFY phase events (per docs/contracts/VERIFY.md § "Event types
+  // emitted"). All four bind to the BUILD attempt being verified via
+  // taskId + attempt; verify_started additionally carries the BUILD ref
+  // immutable-binding triple (baseCommitSha, patchSha256, buildReportSha256)
+  // so the events.jsonl reader can reconstruct what was verified without
+  // re-reading BUILD_REPORT.md.
+  | {
+      readonly version: 1
+      readonly type: 'verify_started'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** 40-char lower-case hex; copied from BUILD_REPORT.md Base.Base commit. */
+      readonly baseCommitSha: string
+      /** 64-char lower-case hex; copied from BUILD_REPORT.md Patch.Patch sha256. */
+      readonly patchSha256: string
+      /** 64-char lower-case hex of the canonical BUILD_REPORT.md content at VERIFY-read time. */
+      readonly buildReportSha256: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'verify_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** 64-char lower-case hex of the canonical VERIFY.md content. */
+      readonly verifyReportSha256: string
+      /**
+       * Verdict: pass requires Mutation.Status ∈ {pass, not-applicable}, so
+       * the completed event constrains to those two values. A 'fail'
+       * mutation status means VERIFY.md verdict was 'fail', emitting
+       * verify_failed instead.
+       */
+      readonly mutationStatus: 'pass' | 'not-applicable'
+    }
+  | {
+      readonly version: 1
+      readonly type: 'verify_failed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly verifyReportSha256: string
+      /** Forwarded from the test runner's terminationReason field. */
+      readonly terminationReason: 'exit' | 'timeout' | 'stdout-cap' | 'stderr-cap' | 'spawn-error'
+      /** Process exit code, or null on spawn-error / never-exited. */
+      readonly exitCode: number | null
+      /** Persona-authored Failure summary line; ≤ 200 chars per VERIFY.md grammar. */
+      readonly failureSummary: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'verify_restart_initiated'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly taskId: string
+      /** The just-failed attempt number N (1..4). */
+      readonly attempt: number
+      /**
+       * 'restart' for attempts 1-3 → next BUILD attempt scheduled at attempt+1.
+       * 'intervention' for attempt 4 → cap reached, NEEDS_INTERVENTION.json written.
+       */
+      readonly nextAction: 'restart' | 'intervention'
+      /** Present iff nextAction === 'restart'; equals attempt + 1. */
+      readonly nextAttempt?: number
+      /** Absolute path to the preserved forensics/<N>/ directory for the failed attempt. */
+      readonly forensicsPath: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

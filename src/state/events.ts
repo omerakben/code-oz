@@ -615,6 +615,127 @@ export function validateEvent(
       if (reasonIssue) return reasonIssue
       break
     }
+
+    case 'verify_started': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'verify_started', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'verify_started.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'verify_started.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'verify_started.taskId', line)
+      if (tIssue) return tIssue
+      const baseIssue = idMatches(
+        file, e.baseCommitSha, /^[0-9a-f]{40}$/, 'verify_started.baseCommitSha', line,
+      )
+      if (baseIssue) return baseIssue
+      const patchIssue = idMatches(
+        file, e.patchSha256, SHA256_REGEX, 'verify_started.patchSha256', line,
+      )
+      if (patchIssue) return patchIssue
+      const reportIssue = idMatches(
+        file, e.buildReportSha256, SHA256_REGEX, 'verify_started.buildReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      break
+    }
+
+    case 'verify_completed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'verify_completed', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'verify_completed.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'verify_completed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'verify_completed.taskId', line)
+      if (tIssue) return tIssue
+      const reportIssue = idMatches(
+        file, e.verifyReportSha256, SHA256_REGEX, 'verify_completed.verifyReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      // Mutation gate semantics: verdict=pass requires status ∈ {pass, not-applicable}
+      // (VERIFY.md § Verdict). Status='fail' would mean verdict=fail → verify_failed event.
+      const allowedMutation = ['pass', 'not-applicable'] as const
+      if (typeof e.mutationStatus !== 'string' || !(allowedMutation as readonly string[]).includes(e.mutationStatus)) {
+        return enumInvalid(file, 'verify_completed.mutationStatus', allowedMutation, e.mutationStatus, line)
+      }
+      break
+    }
+
+    case 'verify_failed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'verify_failed', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'verify_failed.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'verify_failed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'verify_failed.taskId', line)
+      if (tIssue) return tIssue
+      const reportIssue = idMatches(
+        file, e.verifyReportSha256, SHA256_REGEX, 'verify_failed.verifyReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      const allowedReasons = ['exit', 'timeout', 'stdout-cap', 'stderr-cap', 'spawn-error'] as const
+      if (typeof e.terminationReason !== 'string' || !(allowedReasons as readonly string[]).includes(e.terminationReason)) {
+        return enumInvalid(file, 'verify_failed.terminationReason', allowedReasons, e.terminationReason, line)
+      }
+      // exitCode: number | null (null on spawn-error / never-exited)
+      if (e.exitCode !== null && (typeof e.exitCode !== 'number' || !Number.isInteger(e.exitCode))) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'verify_failed.exitCode must be an integer or null',
+          detail: `got ${JSON.stringify(e.exitCode)}`,
+          line,
+        }
+      }
+      const summaryIssue = nonEmptyString(file, e.failureSummary, 'verify_failed.failureSummary', line)
+      if (summaryIssue) return summaryIssue
+      // 200-char cap matches VERIFY.md § "Failure constraint" grammar.
+      if (typeof e.failureSummary === 'string' && e.failureSummary.length > 200) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'verify_failed.failureSummary must be ≤ 200 characters (VERIFY.md grammar)',
+          detail: `got ${e.failureSummary.length}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'verify_restart_initiated': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'verify_restart_initiated', e.phase, line)
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'verify_restart_initiated.taskId', line)
+      if (tIssue) return tIssue
+      const aIssue = positiveInteger(file, e.attempt, 'verify_restart_initiated.attempt', line)
+      if (aIssue) return aIssue
+      const allowedActions = ['restart', 'intervention'] as const
+      if (typeof e.nextAction !== 'string' || !(allowedActions as readonly string[]).includes(e.nextAction)) {
+        return enumInvalid(file, 'verify_restart_initiated.nextAction', allowedActions, e.nextAction, line)
+      }
+      // nextAttempt is required iff nextAction === 'restart' and must equal attempt + 1.
+      if (e.nextAction === 'restart') {
+        const naIssue = positiveInteger(file, e.nextAttempt, 'verify_restart_initiated.nextAttempt', line)
+        if (naIssue) return naIssue
+        if (typeof e.attempt === 'number' && typeof e.nextAttempt === 'number' && e.nextAttempt !== e.attempt + 1) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: 'verify_restart_initiated.nextAttempt must equal attempt + 1 when nextAction=restart',
+            detail: `attempt=${e.attempt}, nextAttempt=${e.nextAttempt}`,
+            line,
+          }
+        }
+      } else if (e.nextAttempt !== undefined) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'verify_restart_initiated.nextAttempt must be omitted when nextAction=intervention',
+          line,
+        }
+      }
+      const fpIssue = nonEmptyString(file, e.forensicsPath, 'verify_restart_initiated.forensicsPath', line)
+      if (fpIssue) return fpIssue
+      break
+    }
   }
 
   return null
