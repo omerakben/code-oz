@@ -131,3 +131,87 @@ export class SourceCheckLoadError extends Error {
     this.issues = Object.freeze(issues.map((i) => Object.freeze({ ...i })))
   }
 }
+
+// --- HYPOTHESES.md errors ------------------------------------------
+
+export type HypothesesLoadErrorCode =
+  | 'hypotheses_empty'
+  | 'hypotheses_missing_title'
+  | 'hypothesis_missing_section'
+  | 'hypothesis_no_falsifier'
+  | 'hypothesis_id_collision'
+  | 'hypothesis_id_format'
+  | 'hypothesis_invalid_status'
+  | 'hypothesis_invalid_phase'
+  | 'hypothesis_unexpected_content'
+  | 'hypotheses_io_error'
+
+export interface HypothesesLoadIssue {
+  readonly file: string
+  readonly code: HypothesesLoadErrorCode
+  readonly rule: string
+  readonly detail?: string
+  readonly line?: number
+  readonly hypothesisId?: string
+}
+
+export class HypothesesLoadError extends Error {
+  readonly issues: readonly HypothesesLoadIssue[]
+
+  constructor(issues: readonly HypothesesLoadIssue[]) {
+    if (issues.length === 0) {
+      throw new Error('HypothesesLoadError requires at least one issue')
+    }
+    const first = issues[0]!
+    const summary =
+      issues.length === 1
+        ? `${first.file}: ${first.rule}`
+        : `${issues.length} HYPOTHESES issues across ${new Set(issues.map((i) => i.file)).size} file(s)`
+    super(summary)
+    this.name = 'HypothesesLoadError'
+    this.issues = Object.freeze(issues.map((i) => Object.freeze({ ...i })))
+  }
+}
+
+// --- OPEN_QUESTIONS.md errors --------------------------------------
+
+export type OpenQuestionsLoadErrorCode =
+  | 'open_questions_empty'
+  | 'open_questions_missing_title'
+  | 'question_missing_section'
+  | 'question_id_collision'
+  | 'question_id_format'
+  | 'question_invalid_status'
+  | 'question_invalid_importance'
+  | 'question_invalid_phase'
+  | 'question_invalid_dueby'
+  | 'question_resolved_missing_resolution'
+  | 'question_unexpected_content'
+  | 'open_questions_io_error'
+
+export interface OpenQuestionsLoadIssue {
+  readonly file: string
+  readonly code: OpenQuestionsLoadErrorCode
+  readonly rule: string
+  readonly detail?: string
+  readonly line?: number
+  readonly questionId?: string
+}
+
+export class OpenQuestionsLoadError extends Error {
+  readonly issues: readonly OpenQuestionsLoadIssue[]
+
+  constructor(issues: readonly OpenQuestionsLoadIssue[]) {
+    if (issues.length === 0) {
+      throw new Error('OpenQuestionsLoadError requires at least one issue')
+    }
+    const first = issues[0]!
+    const summary =
+      issues.length === 1
+        ? `${first.file}: ${first.rule}`
+        : `${issues.length} OPEN_QUESTIONS issues across ${new Set(issues.map((i) => i.file)).size} file(s)`
+    super(summary)
+    this.name = 'OpenQuestionsLoadError'
+    this.issues = Object.freeze(issues.map((i) => Object.freeze({ ...i })))
+  }
+}
