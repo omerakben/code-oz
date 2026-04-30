@@ -18,6 +18,7 @@ import { initProject } from '../src/commands/init.ts'
 import {
   initRun,
   loadRun,
+  requireGate,
   runPathsFor,
   type RunPaths,
 } from '../src/state/run.ts'
@@ -46,13 +47,60 @@ async function setupProject(): Promise<{ runId: string; paths: RunPaths }> {
   return { runId, paths }
 }
 
+// Minimal valid SPEC.md content for tests that exercise `runApprove` on the
+// define phase (M5+ validates against parseSpec before binding the gate).
+const MINIMAL_VALID_SPEC = [
+  '# SPEC',
+  '',
+  '## Goals',
+  '',
+  '- A goal.',
+  '',
+  '## Users',
+  '',
+  '- A user.',
+  '',
+  '## Constraints',
+  '',
+  '- A constraint.',
+  '',
+  '## Acceptance criteria',
+  '',
+  '- A criterion.',
+  '',
+  '## Open questions',
+  '',
+  '- None known at define time.',
+  '',
+  '## Explicit non-goals',
+  '',
+  '- A non-goal.',
+  '',
+].join('\n')
+
 async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Promise<void> {
   const artifactRoot = join(cwd, '.code-oz', 'artifacts')
   await mkdir(artifactRoot, { recursive: true })
   for (const p of phases) {
-    await writeFile(join(artifactRoot, CANONICAL_ARTIFACTS[p]), `${p} body`, 'utf8')
+    const body = p === 'define' ? MINIMAL_VALID_SPEC : `${p} body`
+    await writeFile(join(artifactRoot, CANONICAL_ARTIFACTS[p]), body, 'utf8')
   }
   void runDir // unused but kept for parity if signatures change
+}
+
+// M5+: runApprove requires a gate_required event for the target phase
+// (closes CODEX_REVIEW_M5 round 2 finding B). Test fixtures emit one for
+// each phase being approved to mirror what a real run would produce.
+async function emitGateRequired(phase: Phase, runId: string): Promise<void> {
+  const stateDir = join(cwd, '.code-oz', 'state')
+  const artifactRoot = join(cwd, '.code-oz', 'artifacts')
+  const paths = runPathsFor(stateDir, artifactRoot, runId)
+  await requireGate({
+    paths,
+    runId,
+    phase,
+    blockedOn: 'test fixture',
+  })
 }
 
 async function eventTypes(eventsFile: string): Promise<string[]> {
@@ -75,6 +123,7 @@ describe('end-to-end greenfield walk (M2-persona-supported phases)', () => {
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
 
     for (const phase of GREENFIELD_APPROVABLE) {
+      await emitGateRequired(phase, runId)
       const result = await runApprove({ cwd, phase, now: () => FIXED_TS })
       expect(result.approved).toBe(true)
       expect(result.phase).toBe(phase)
@@ -107,8 +156,10 @@ describe('end-to-end greenfield walk (M2-persona-supported phases)', () => {
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
 
     for (const phase of GREENFIELD_APPROVABLE) {
+      await emitGateRequired(phase, runId)
       await runApprove({ cwd, phase, now: () => FIXED_TS })
     }
+    await emitGateRequired('ship', runId)
 
     // currentPhase is now 'ship' but no bundled persona exists for it yet.
     await expect(runApprove({ cwd, phase: 'ship', now: () => FIXED_TS })).rejects.toThrow(
@@ -128,6 +179,7 @@ describe('end-to-end brownfield init', () => {
     // No bundled audit persona in M2; approving audit must surface that gap.
     const artifactRoot = join(cwd, '.code-oz', 'artifacts')
     await writeFile(join(artifactRoot, 'AUDIT.md'), 'audit body', 'utf8')
+    await emitGateRequired('audit', runId)
     await expect(runApprove({ cwd, phase: 'audit', now: () => FIXED_TS })).rejects.toThrow(
       /no agent registered for phase 'audit'/,
     )
@@ -140,6 +192,7 @@ describe('resume after terminal death (rule 12)', () => {
     await writeArtifactsFor(['define', 'plan'], paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
 
+    await emitGateRequired('define', runId)
     await runApprove({ cwd, phase: 'define', now: () => FIXED_TS })
 
     // Simulate terminal death by reloading the run from disk.
@@ -149,20 +202,24 @@ describe('resume after terminal death (rule 12)', () => {
     expect(reloaded?.recovered).toBe(false)
 
     // Approving PLAN must succeed without restarting DEFINE.
+    await emitGateRequired('plan', runId)
     const planResult = await runApprove({ cwd, phase: 'plan', now: () => FIXED_TS })
     expect(planResult.approved).toBe(true)
     expect(planResult.phase).toBe('plan')
 
     const types = await eventTypes(paths.eventsFile)
-    // Sequence: run_started, phase_entered(define), gate_written(define),
-    // phase_exited(define), phase_entered(plan), gate_written(plan),
-    // phase_exited(plan), phase_entered(build).
+    // Sequence: run_started, phase_entered(define), gate_required(define),
+    // gate_written(define), phase_exited(define), phase_entered(plan),
+    // gate_required(plan), gate_written(plan), phase_exited(plan),
+    // phase_entered(build).
     expect(types).toEqual([
       'run_started',
       'phase_entered',
+      'gate_required',
       'gate_written',
       'phase_exited',
       'phase_entered',
+      'gate_required',
       'gate_written',
       'phase_exited',
       'phase_entered',
@@ -231,6 +288,7 @@ describe('M1 + M2 regression invariants', () => {
     const { runId, paths } = await setupProject()
     await writeArtifactsFor(['define'], paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+    await emitGateRequired('define', runId)
     const result = await runApprove({ cwd, phase: 'define', now: () => FIXED_TS })
     expect(result.approved).toBe(true)
 
@@ -290,6 +348,7 @@ describe('orphan recovery completes the transition deterministically', () => {
 
     // Subsequent approval of the new currentPhase succeeds without
     // duplicating events.
+    await emitGateRequired('plan', runId)
     const next = await runApprove({ cwd, phase: 'plan', now: () => FIXED_TS })
     expect(next.approved).toBe(true)
     expect(next.phase).toBe('plan')
@@ -304,6 +363,7 @@ describe('orphan recovery completes the transition deterministically', () => {
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
 
     // First approval at one timestamp.
+    await emitGateRequired('define', runId)
     const first = await runApprove({
       cwd,
       phase: 'define',
@@ -396,6 +456,7 @@ describe('artifact mutation after gate write fails resume (rule 9 sha256 binding
     await writeArtifactsFor(['define'], paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
 
+    await emitGateRequired('define', runId)
     await runApprove({ cwd, phase: 'define', now: () => FIXED_TS })
 
     // Mutate SPEC.md after the gate was written.

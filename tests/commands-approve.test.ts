@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runApprove } from '../src/commands/approve.ts'
 import { initProject } from '../src/commands/init.ts'
-import { initRun, runPathsFor } from '../src/state/run.ts'
+import { initRun, requireGate, runPathsFor } from '../src/state/run.ts'
 import { generateUlid } from '../src/state/schemas.ts'
 
 let cwd: string
@@ -25,14 +25,58 @@ async function setupGreenfieldRun(): Promise<void> {
   const artifactRoot = join(cwd, '.code-oz', 'artifacts')
   const paths = runPathsFor(stateDir, artifactRoot, RUN)
   await mkdir(artifactRoot, { recursive: true })
-  await writeFile(join(artifactRoot, 'SPEC.md'), 'spec body', 'utf8')
+  // M5+ requires SPEC.md to satisfy parseSpec before `code-oz approve define`
+  // will bind it. Use a minimal valid SPEC.
+  await writeFile(
+    join(artifactRoot, 'SPEC.md'),
+    [
+      '# SPEC',
+      '',
+      '## Goals',
+      '',
+      '- Goal one.',
+      '',
+      '## Users',
+      '',
+      '- Test user.',
+      '',
+      '## Constraints',
+      '',
+      '- A constraint.',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- A criterion.',
+      '',
+      '## Open questions',
+      '',
+      '- None known at define time.',
+      '',
+      '## Explicit non-goals',
+      '',
+      '- A non-goal.',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
   await initRun({
     paths,
     profile: 'greenfield',
     runId: RUN,
     now: () => FIXED_TS,
   })
+  // M5+: approve also requires a gate_required event for the target phase
+  // (closes CODEX_REVIEW_M5 round 2 finding B — stale cross-run SPEC.md
+  // can no longer be approved against a fresh run with no signal).
+  await requireGate({
+    paths,
+    runId: RUN,
+    phase: 'define',
+    blockedOn: 'test fixture',
+    now: () => FIXED_TS,
+  })
 }
+
 
 describe('runApprove — happy path', () => {
   test('approves current phase with explicit PHASE argument', async () => {
@@ -71,8 +115,37 @@ describe('runApprove — happy path', () => {
 
   test('respects --artifact override', async () => {
     await setupGreenfieldRun()
-    // Write an alternate artifact path
-    await writeFile(join(cwd, '.code-oz', 'artifacts', 'MY_SPEC.md'), 'override body', 'utf8')
+    // Write an alternate artifact path. M5+ requires the file to satisfy
+    // parseSpec when the phase is define, so use a minimal valid SPEC body.
+    const validSpec = [
+      '# SPEC',
+      '',
+      '## Goals',
+      '',
+      '- A goal.',
+      '',
+      '## Users',
+      '',
+      '- A user.',
+      '',
+      '## Constraints',
+      '',
+      '- A constraint.',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- A criterion.',
+      '',
+      '## Open questions',
+      '',
+      '- None known at define time.',
+      '',
+      '## Explicit non-goals',
+      '',
+      '- A non-goal.',
+      '',
+    ].join('\n')
+    await writeFile(join(cwd, '.code-oz', 'artifacts', 'MY_SPEC.md'), validSpec, 'utf8')
 
     const result = await runApprove({
       cwd,
@@ -191,9 +264,11 @@ describe('runApprove — idempotency', () => {
     // against a still-on-define state. To do that, we need a second run.
     //
     // Simpler proof of idempotency: the first call recorded the right state
-    // (plan as currentPhase) and emitted exactly 5 events.
+    // (plan as currentPhase) and emitted exactly 6 events: run_started,
+    // phase_entered(define), gate_required(define) [from setup fixture],
+    // gate_written(define), phase_exited(define), phase_entered(plan).
     const eventsPath = join(cwd, '.code-oz', 'state', 'runs', RUN, 'events.jsonl')
     const lines = (await readFile(eventsPath, 'utf8')).trim().split('\n')
-    expect(lines.length).toBe(5)
+    expect(lines.length).toBe(6)
   })
 })

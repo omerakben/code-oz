@@ -264,6 +264,51 @@ export function validateEvent(
       break
     }
 
+    case 'ask_me_user_input': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'ask_me_user_input', e.phase, line)
+      const turnIssue = nonNegativeInteger(file, e.turn, 'ask_me_user_input.turn', line)
+      if (turnIssue) return turnIssue
+      // Empty input is meaningless and likely a bug — reject.
+      if (typeof e.input !== 'string' || e.input.length === 0) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'ask_me_user_input.input must be a non-empty string',
+          detail: `got ${JSON.stringify(e.input)}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'ask_me_persona_reply': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'ask_me_persona_reply', e.phase, line)
+      const turnIssue = nonNegativeInteger(file, e.turn, 'ask_me_persona_reply.turn', line)
+      if (turnIssue) return turnIssue
+      const agentIssue = nonEmptyString(file, e.agent, 'ask_me_persona_reply.agent', line)
+      if (agentIssue) return agentIssue
+      // Empty response is meaningless — reject.
+      if (typeof e.response !== 'string' || e.response.length === 0) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'ask_me_persona_reply.response must be a non-empty string',
+          detail: `got ${JSON.stringify(e.response)}`,
+          line,
+        }
+      }
+      if (typeof e.ready !== 'boolean') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'ask_me_persona_reply.ready must be a boolean',
+          detail: `got ${JSON.stringify(e.ready)}`,
+          line,
+        }
+      }
+      break
+    }
+
     case 'run_ended':
       if (typeof e.outcome !== 'string' || !(RUN_OUTCOMES as readonly string[]).includes(e.outcome)) {
         return {

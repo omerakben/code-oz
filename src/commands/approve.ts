@@ -20,6 +20,8 @@
 import { parseArgs } from 'node:util'
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
+import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { bootstrap } from '../cli/bootstrap.ts'
 import {
   approveGate,
@@ -29,12 +31,17 @@ import {
 } from '../state/run.ts'
 import {
   CANONICAL_ARTIFACTS,
+  isKnownPhaseEvent,
   isPhase,
   PHASES,
   type GateFile,
   type Phase,
 } from '../state/schemas.ts'
 import { GateLoadError } from '../state/errors.ts'
+import { _validateArtifactSyncPath } from '../state/gates.ts'
+import { readEvents } from '../state/events.ts'
+import { parseSpec } from '../artifacts/spec.ts'
+import { SpecLoadError } from '../artifacts/errors.ts'
 
 export interface RunApproveOptions {
   readonly cwd?: string
@@ -124,6 +131,84 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   const agent = agentsForPhase[0]!
 
   const artifactPath = opts.artifact ?? CANONICAL_ARTIFACTS[targetPhase]
+
+  // Per CODEX_REVIEW_M5 round 2 finding A: run the same sync path-safety
+  // checks gates.ts uses BEFORE we touch the filesystem. Without this, a
+  // malicious --artifact value (e.g., `../../etc/passwd`) would be read by
+  // parseSpec before approveGate's later realpath/symlink check rejected
+  // it. Sync check + later realpath check is the same defense-in-depth
+  // pattern the wrapper already uses for manifest paths.
+  const syncPathIssue = _validateArtifactSyncPath(artifactPath, runPaths.runDir)
+  if (syncPathIssue !== null) {
+    throw new GateLoadError([syncPathIssue])
+  }
+
+  // Per CODEX_REVIEW_M5 round 2 finding B: refuse to approve a stale
+  // canonical artifact left over from a previous successful DEFINE run.
+  // The current run must have written a `gate_required` event for the
+  // target phase before approval is meaningful — otherwise we'd be binding
+  // arbitrary artifact bytes (the prior run's SPEC.md) into the new run's
+  // gate. requireGate() in src/state/run.ts is the only emitter; M5
+  // DEFINE calls it after writing SPEC.md atomically, so its presence is
+  // a load-bearing signal that "the artifact on disk belongs to this run."
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  const hasGateRequired = events.some((e) => {
+    if (!isKnownPhaseEvent(e)) return false
+    if (e.type !== 'gate_required') return false
+    return e.phase === targetPhase
+  })
+  if (!hasGateRequired) {
+    throw new Error(
+      [
+        `cannot approve ${targetPhase}: this run has no \`gate_required\` event for ${targetPhase}.`,
+        'A successful phase must signal it is awaiting approval (via runDefine -> requireGate)',
+        'before `code-oz approve` will bind an artifact into a gate. Re-run the phase or',
+        'inspect .code-oz/state/runs/<runId>/events.jsonl for context.',
+      ].join('\n'),
+    )
+  }
+
+  // Per CODEX_REVIEW_M5 round 1 finding #2: validate the canonical
+  // artifact's structure BEFORE binding it into the gate. SPEC.md is
+  // intentionally user-editable between DEFINE write and approval; if the
+  // user breaks the structure during review, refuse to approve rather
+  // than sha256-bind an invalid artifact. The gate writer would otherwise
+  // hash the broken file and PLAN would consume it.
+  if (targetPhase === 'define') {
+    const fullArtifactPath = join(ctx.paths.artifacts, artifactPath)
+    let raw: string
+    try {
+      raw = await readFile(fullArtifactPath, 'utf8')
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(
+          `cannot approve define: ${fullArtifactPath} does not exist. Run \`code-oz run\` first.`,
+        )
+      }
+      throw err
+    }
+    try {
+      parseSpec(raw, fullArtifactPath)
+    } catch (err: unknown) {
+      if (err instanceof SpecLoadError) {
+        const summary = err.issues
+          .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+          .join('\n')
+        throw new Error(
+          [
+            `cannot approve define: ${fullArtifactPath} is not a valid SPEC.md.`,
+            summary,
+            'Edit the file to satisfy the SPEC contract before approving.',
+          ].join('\n'),
+        )
+      }
+      throw err
+    }
+  }
+
   const now = opts.now ?? (() => new Date().toISOString())
   const gate: GateFile = {
     version: 1,

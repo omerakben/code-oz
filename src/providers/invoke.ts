@@ -149,6 +149,33 @@ export async function* invokeAgent(
         }
       }
       if (ev.type === 'turn_completed') {
+        // Empty content from a "successful" turn_completed is malformed —
+        // adapters that have nothing to say must surface that as a typed
+        // ProviderError, not as a zero-byte success that bubbles into phase
+        // logic and then gets rejected by downstream event validators (which
+        // would crash the run instead of writing NEEDS_INTERVENTION).
+        //
+        // Tool-only turns are legitimate: stopReason 'tool_use' (and
+        // stopReason 'end_turn' alongside non-empty toolCalls) are the
+        // contract for "the model finished by handing off to a tool, not
+        // by writing prose." M7 BUILD/REVIEW orchestration will use this
+        // shape; M5 DEFINE never does (text-only). Allow empty content
+        // when either signal is present.
+        const isToolUse = ev.response.stopReason === 'tool_use'
+        const hasToolCalls =
+          ev.response.toolCalls !== undefined && ev.response.toolCalls.length > 0
+        if (ev.response.content.length === 0 && !isToolUse && !hasToolCalls) {
+          throw providerError(
+            'provider_malformed_response',
+            'provider returned an empty turn_completed.response.content with no tool_use signal',
+            [
+              'check the upstream CLI output (claude / codex) for hidden errors',
+              'rerun with --provider fake to bisect adapter vs. orchestrator behavior',
+              'inspect events.jsonl for the preceding agent_invoked event',
+            ],
+            `agent=${req.agent.name}, phase=${req.phase}, model=${ev.response.model}, stopReason=${ev.response.stopReason}`,
+          )
+        }
         // Adapter-reported only — never post-count streamed text.
         tokensUsed = ev.response.tokensUsed
       }

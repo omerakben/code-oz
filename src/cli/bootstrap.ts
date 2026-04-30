@@ -22,6 +22,12 @@ import { ClaudeProvider } from '../providers/claude.ts'
 import { CodexProvider } from '../providers/codex.ts'
 import { GeminiProvider } from '../providers/gemini.ts'
 import type { Runner } from '../providers/runner.ts'
+import {
+  PROVIDER_IDS,
+  type IAgentProvider,
+  type ProviderFamily,
+  type ProviderId,
+} from '../providers/types.ts'
 
 export interface CliContext {
   readonly cwd: string
@@ -83,4 +89,75 @@ export function getProviderRegistry(opts: ProviderRegistryOptions = {}): Provide
       new GeminiProvider(),
     ],
   })
+}
+
+// --- runtime provider override (commit 9) -------------------------
+
+export type ProviderOverride = 'fake'
+
+export interface BuildProviderRegistryOptions extends ProviderRegistryOptions {
+  /**
+   * Runtime override for the provider routing surface. v0.1 accepts only
+   * `'fake'`: every ProviderId resolves to a single shared FakeProvider
+   * instance, with the per-id `family` set to match the id (so the
+   * registry's familyOf() authority still answers correctly per id).
+   *
+   * The shared FakeProvider lets test fixtures pre-script expectations on
+   * one instance and have them consumed regardless of the agent's declared
+   * provider — which is the whole point of this override (CODEX_RESPONSE_M5
+   * locked it in commit 9 as a separate, explicit CLI surface).
+   *
+   * Returns the shared FakeProvider via `fakeProvider` so callers (commit
+   * 10's e2e) can call `.expect(...)` to script responses before invoking.
+   */
+  readonly providerOverride?: ProviderOverride
+}
+
+export interface BuildProviderRegistryResult {
+  readonly registry: ProviderRegistry
+  /**
+   * The shared FakeProvider instance when providerOverride === 'fake';
+   * undefined otherwise. Tests use this to script expectations.
+   */
+  readonly fakeProvider?: FakeProvider
+}
+
+/**
+ * Build a ProviderRegistry, optionally overriding all routing to a single
+ * shared FakeProvider. When no override is set, behaves identically to
+ * getProviderRegistry().
+ */
+export function buildProviderRegistry(
+  opts: BuildProviderRegistryOptions = {},
+): BuildProviderRegistryResult {
+  if (opts.providerOverride === 'fake') {
+    const fake = new FakeProvider()
+    const aliased: IAgentProvider[] = (PROVIDER_IDS as readonly ProviderId[]).map(
+      (id) => aliasFakeProvider(id, fake),
+    )
+    return Object.freeze({
+      registry: new ProviderRegistry({ providers: aliased }),
+      fakeProvider: fake,
+    })
+  }
+  const reg = getProviderRegistry(opts)
+  return Object.freeze({ registry: reg })
+}
+
+function aliasFakeProvider(targetId: ProviderId, target: FakeProvider): IAgentProvider {
+  // Per-id family equals the id (claude → claude, codex → codex, ...). This
+  // preserves the cross-family REVIEW invariant: a build call routed to the
+  // shared FakeProvider under id 'claude' has family 'claude', and a review
+  // call under id 'codex' has family 'codex' — `familyOf(...)` answers per
+  // id, never delegating to the underlying FakeProvider's intrinsic family.
+  const family: ProviderFamily = targetId as ProviderFamily
+  return {
+    id: targetId,
+    family,
+    invoke: (req) => target.invoke(req),
+    health: async () => {
+      const h = await target.health()
+      return { ...h, provider: targetId }
+    },
+  }
 }

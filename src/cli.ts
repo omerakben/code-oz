@@ -4,7 +4,7 @@ import { runCommand } from './commands/run.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { approveCommand } from './commands/approve.ts'
 
-export const PKG_VERSION = '0.4.0-alpha.0'
+export const PKG_VERSION = '0.5.0-alpha.0'
 
 function printHelp(): void {
   process.stdout.write(`code-oz v${PKG_VERSION}
@@ -13,7 +13,7 @@ Usage: code-oz <command> [options]
 
 Commands:
   init             Scaffold a code-oz project in the current directory
-  run              Execute the phase pipeline (M5+, stub in v0.1-alpha.0)
+  run              Run the DEFINE phase to produce a SPEC.md (M5)
   approve          Approve the current phase of the active run
   doctor           Probe provider health (subcommand: 'doctor providers')
   help             Show this help
