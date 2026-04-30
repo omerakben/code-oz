@@ -13,7 +13,7 @@ Usage: code-oz <command> [options]
 
 Commands:
   init             Scaffold a code-oz project in the current directory
-  run              Execute the phase pipeline (M5+, stub in v0.1-alpha.0)
+  run              Run the DEFINE phase to produce a SPEC.md (M5)
   approve          Approve the current phase of the active run
   doctor           Probe provider health (subcommand: 'doctor providers')
   help             Show this help
