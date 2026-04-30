@@ -4,7 +4,7 @@ import { runCommand } from './commands/run.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { approveCommand } from './commands/approve.ts'
 
-const PKG_VERSION = '0.4.0-alpha.0'
+export const PKG_VERSION = '0.4.0-alpha.0'
 
 function printHelp(): void {
   process.stdout.write(`code-oz v${PKG_VERSION}
@@ -64,8 +64,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  const msg = err instanceof Error ? err.message : String(err)
-  process.stderr.write(`code-oz: ${msg}\n`)
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`code-oz: ${msg}\n`)
+    process.exit(1)
+  })
+}

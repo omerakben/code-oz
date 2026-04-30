@@ -48,8 +48,12 @@ export interface BudgetCounts {
   readonly globalTokens: number
   /** Count of `phase_entered` events for `phase`. */
   readonly perPhaseTurns: number
+  /** Count of `phase_entered` events across all phases. */
+  readonly globalTurns: number
   /** Count of `agent_invoked` events for `phase`. */
   readonly perPhaseProviderCalls: number
+  /** Count of `agent_invoked` events across all phases. */
+  readonly globalProviderCalls: number
 }
 
 /**
@@ -59,6 +63,11 @@ export interface BudgetCounts {
  * a phase) replaces the estimate when present. Unmatched (in-flight)
  * agent_invoked entries keep their estimate as a conservative bound — a
  * crashed turn still counts.
+ *
+ * Tracks both per-phase and global counters for turns + provider calls so
+ * `assertWithinBudget` can enforce both `config.budgets.perPhase[...]` AND
+ * `config.budgets.global` limits. A phase that's well within its own
+ * sub-budget can still trip the global cap when many phases run.
  */
 export function summarizeBudgetUse(
   events: readonly LoggedEvent[],
@@ -67,7 +76,9 @@ export function summarizeBudgetUse(
   let perPhaseTokens = 0
   let globalTokens = 0
   let perPhaseTurns = 0
+  let globalTurns = 0
   let perPhaseProviderCalls = 0
+  let globalProviderCalls = 0
 
   // FIFO per-phase queue of pending tokensEstimate values. agent_completed
   // for the same phase shifts the head and replaces the estimate with
@@ -76,14 +87,16 @@ export function summarizeBudgetUse(
 
   for (const e of events) {
     if (!isKnownPhaseEvent(e)) continue
-    if (e.type === 'phase_entered' && e.phase === phase) {
-      perPhaseTurns++
+    if (e.type === 'phase_entered') {
+      globalTurns++
+      if (e.phase === phase) perPhaseTurns++
       continue
     }
     if (e.type === 'agent_invoked') {
       const queue = pendingByPhase.get(e.phase) ?? []
       queue.push(e.tokensEstimate)
       pendingByPhase.set(e.phase, queue)
+      globalProviderCalls++
       if (e.phase === phase) perPhaseProviderCalls++
       continue
     }
@@ -110,7 +123,9 @@ export function summarizeBudgetUse(
     perPhaseTokens,
     globalTokens,
     perPhaseTurns,
+    globalTurns,
     perPhaseProviderCalls,
+    globalProviderCalls,
   })
 }
 
@@ -159,12 +174,28 @@ export function assertWithinBudget(
       `running=${counts.perPhaseTurns}, cap=${perPhase.maxTurns}`,
     )
   }
+  if (counts.globalTurns > global.maxTurns) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `global maxTurns has been exceeded`,
+      [`raise budgets.global.maxTurns in .code-oz/config.yaml`],
+      `running=${counts.globalTurns}, cap=${global.maxTurns}`,
+    )
+  }
   if (counts.perPhaseProviderCalls + 1 > perPhase.maxProviderCalls) {
     throw providerError(
       'provider_budget_exceeded',
       `phase ${req.phase} would exceed maxProviderCalls`,
       [`raise budgets.perPhase.${req.phase}.maxProviderCalls in .code-oz/config.yaml`],
       `running=${counts.perPhaseProviderCalls}, next=1, cap=${perPhase.maxProviderCalls}`,
+    )
+  }
+  if (counts.globalProviderCalls + 1 > global.maxProviderCalls) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `global maxProviderCalls would be exceeded`,
+      [`raise budgets.global.maxProviderCalls in .code-oz/config.yaml`],
+      `running=${counts.globalProviderCalls}, next=1, cap=${global.maxProviderCalls}`,
     )
   }
 }

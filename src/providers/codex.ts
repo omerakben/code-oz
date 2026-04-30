@@ -69,6 +69,8 @@ export class CodexProvider implements IAgentProvider {
       '--sandbox',
       'read-only',
       '--ephemeral',
+      '--color',
+      'never',
       '-', // read prompt from stdin
     ]
     if (req.model !== undefined) {

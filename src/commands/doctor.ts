@@ -169,10 +169,9 @@ Exit codes:
   1                At least one required provider is unhealthy
 
 A provider is "required" when at least one loaded agent declares it in
-frontmatter. Run 'code-oz doctor providers' from a project root that
-has a .code-oz/ directory to enable required-provider gating; without
-one, the command runs as an unfiltered health probe and always exits 0
-unless a probe itself crashes.
+frontmatter. Bundled default agents (claude + codex personas) load even
+without a project init, so 'doctor providers' typically runs against
+those required providers from anywhere on disk.
 `
 }
 

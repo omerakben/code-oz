@@ -11,7 +11,7 @@ The upstream templates are influence; this file is the authority for `code-oz`. 
   - `~/Projects/agents/templates/Archon` — function-like provider shape (stateless, each call self-contained)
   - `~/Projects/agents/templates/Auto-claude-code-research-in-sleep` — narrow cross-family REVIEW primitive (`requestReview`); broad `consult()` deliberately deferred to v0.3
 - **No code dependency, no submodule, no copy-paste.** Patterns are borrowed; the implementation is `code-oz`.
-- **Sync policy:** internal auth file shapes for upstream CLIs (`~/.claude/auth.json`, `~/.codex/auth.json`) are **not pinned** by this spec. Adapters read them opportunistically and classify unreadable/unknown shapes as `provider_auth_missing` or `provider_auth_expired`. If upstream CLIs change their auth file format, `code-oz` adapts without a spec bump.
+- **Sync policy (subscription-first auth, locked in M4 commit 8 per [`docs/design/CODEX_RESPONSE_M4_ADAPTERS.md`](../design/CODEX_RESPONSE_M4_ADAPTERS.md)):** v0.1 adapters delegate auth entirely to the upstream CLIs (`claude login`, `codex login`). code-oz NEVER reads or transmits OAuth tokens directly — `~/.claude/auth.json` and `~/.codex/auth.json` are not in our trust boundary. Health probes use the CLIs' own status surfaces (`claude --version`, `codex login status`). If upstream CLIs change their auth file format or token storage backend (some platforms use the OS credential store), `code-oz` is unaffected. The W3 milestone may add HTTP-based adapters with their own OAuth flows; until then, every provider call goes through the upstream CLI as a subprocess.
 
 ## Why this exists
 
@@ -36,7 +36,7 @@ interface IAgentProvider {
 }
 ```
 
-Adapters are stateless. Every `invoke()` call reads OAuth fresh, builds the API request, returns a stream. No shared mutable state across calls. The Archon discipline.
+Adapters are stateless. Every `invoke()` call spawns the upstream CLI fresh (subscription-first via `claude login` / `codex login`) or, for `FakeProvider`, walks its scripted expectation queue. No shared mutable state across calls; no in-memory token caching. The Archon discipline.
 
 ## Request DTO split
 
@@ -226,22 +226,27 @@ Output formats:
 
 The command never crashes on a single failed health probe; failures are aggregated into the output.
 
-## Auth file location (NOT format)
+## Auth model — subprocess delegation (v0.1)
 
-`ClaudeProvider` reads from `authPath ?? '~/.claude/auth.json'`.
-`CodexProvider` reads from `authPath ?? '~/.codex/auth.json'`.
-`GeminiProvider` does not read auth; it always returns `provider_gemini_not_yet_supported`.
+The v0.1 adapters delegate auth entirely to the upstream CLIs. code-oz never reads, parses, or transmits an OAuth token, and never knows what platform-specific storage backend (auth.json file, OS credential store, etc.) the CLI uses.
 
-Adapters take an optional `authPath` (or `homeDir`) override for testing. Default reads happen against `~` only when no override is supplied. Tests must inject paths; no test ever reads or writes the real `~/.claude` or `~/.codex`.
+- **`ClaudeProvider`** spawns `claude --print --output-format json --no-session-persistence` from an empty `mkdtemp()` working directory, with manifest content piped through stdin. Auth is whatever `claude login` set up. Health probe is `claude --version` (ENOENT → `'missing'`; non-zero exit → `'unknown'`; zero exit → `'ok'`). The empty temp cwd is a privacy guard — Claude Code auto-discovers `CLAUDE.md` files up the working-directory hierarchy at session start, so an inherited project cwd would expand the trust surface beyond the explicit manifest.
+- **`CodexProvider`** spawns `codex exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -` (read prompt from stdin) from an empty `mkdtemp()` working directory. Auth is whatever `codex login` set up. Health probe is `codex login status` (parses `'logged in'` substring on either stdout or stderr — codex CLI 0.125 writes to stderr — to set `'ok'`; ENOENT → `'missing'`; otherwise → `'unknown'`).
+- **`GeminiProvider`** does not spawn anything. `invoke()` throws `provider_gemini_not_yet_supported`; `health()` returns `authStatus: 'unsupported'`. Real Gemini lands in W3+.
+- **`FakeProvider`** never spawns. Tests register expectations against the in-process adapter.
 
-The internal JSON shape of these files is upstream-CLI behavior and is **not pinned** by this spec. Readers classify:
+Adapters expose two test-injection seams that never touch the real filesystem in the default suite:
 
-- ENOENT or unreadable → `provider_auth_missing`
-- JSON parse failure or unrecognized shape → `provider_auth_missing` (same code; the file is "missing in any usable form")
-- Parses but indicates token expiry (per upstream's documented expiry field, when documented) → `provider_auth_expired`
-- Parses and looks valid → `'ok'`
+- **`runner`** — a `(cmd, args, options) => Promise<{stdout, stderr, exitCode}>` function. Default uses `Bun.spawn`; tests inject mocks that return canned subprocess results.
+- **`tempCwd`** — a `() => Promise<string>` factory that returns the working directory passed to the runner. Default creates a fresh `mkdtemp()`; tests can inspect or replace.
 
-If upstream CLIs change their auth file format, `code-oz` adapts; the contract is *what we look for*, not *the upstream layout*.
+Failure mapping for non-zero CLI exits:
+
+- ENOENT during spawn → `provider_io_error` with rule `"<provider> CLI not found in PATH"`.
+- Non-zero exit + auth-keyword stderr (`"not logged in"`, `"please log in"`, `"login required"`) → `provider_auth_missing` with `actionableSuggestions: ["run \`<provider> login\`"]`.
+- Non-zero exit otherwise → `provider_io_error` with the CLI's stderr in `detail`.
+
+The W3 upgrade path replaces the subprocess with a direct HTTP adapter (e.g., opencode-style OAuth+PKCE → `chatgpt.com/backend-api/codex/responses` for Codex; equivalent if/when Anthropic ships subscription HTTP auth for Claude Max). The `IAgentProvider` contract is unchanged; only adapter internals swap. Wrappers (`src/providers/invoke.ts`) and tools (`src/tools/review-request.ts`) keep working without modification.
 
 ## Lock boundaries
 
@@ -275,8 +280,9 @@ Any validation failure is reported as a typed `ProviderError` with `{ code, rule
 - **`consult()` in v0.1.** Only `requestReview` at REVIEW gate. Broad consult ships in v0.3 if there's evidence the narrower primitive is insufficient.
 - **Putting file content in `ProviderRequest`.** Use `ProviderFileRef` paths-only; the wrapper produces `PreparedProviderRequest`. Anything else lets phase code load bytes before the permission check.
 - **Adapters writing `NEEDS_INTERVENTION.json` or appending `intervention` events.** Wrapper-only.
-- **OAuth caching with mtime invalidation in v0.1.** Read on every call. Revisit when telemetry shows IO is a real bottleneck.
+- **Reading or transmitting OAuth tokens from `~/.claude/auth.json` or `~/.codex/auth.json`.** Subscription-first delegates auth to the upstream CLIs. code-oz spawns the CLIs and lets them handle their own token storage / refresh / expiry. Adapters that read these files are rejected for v0.1.
 - **Inferring `buildProvider` from event log inside `requestReview`.** Pass it explicitly via `ReviewRequest.buildProvider`.
+- **Inheriting the caller's cwd in subprocess-backed adapters.** Both Claude and Codex auto-discover context files (CLAUDE.md, AGENTS.md, .codexrc) up the working-directory hierarchy. Always spawn from an empty `mkdtemp()` cwd and clean it in `finally`.
 - **Pinning private auth file formats as a durable spec.** Readers are opportunistic; this spec describes `code-oz` behavior, not upstream-CLI internals.
 - **Pre-call comparison of advisory PLAN tool-call estimates against the config cap.** Cap is a streaming counter; PLAN estimates (`estimatedToolCalls`, M6+) are advisory only.
 - **Comparing `ProviderId` fields directly for cross-family checks.** Use `registry.familyOf()`.

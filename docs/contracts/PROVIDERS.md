@@ -49,8 +49,10 @@ identical.
 
 ## Privacy guards
 
-The Codex adapter applies three guards beyond the wrapper's manifest
-discipline (rule 13: privacy by default; explicit file manifests):
+Both subprocess adapters apply guards beyond the wrapper's manifest
+discipline (rule 13: privacy by default; explicit file manifests).
+
+**Codex adapter (`src/providers/codex.ts`):**
 
 1. **Empty temp working directory.** `codex exec` runs in a fresh
    `mkdtemp()` directory, NOT the project root — closes the
@@ -60,10 +62,23 @@ discipline (rule 13: privacy by default; explicit file manifests):
    or `-C` flags that would be visible in `ps`.
 3. **Sandbox flags.** `--skip-git-repo-check` (empty dir is not a repo)
    + `--sandbox read-only` (no shell mutations from inside the sandbox)
-   + `--ephemeral` (no session files persisted).
+   + `--ephemeral` (no session files persisted) + `--color never`
+   (clean output for buffered parsing).
 
-The Claude adapter doesn't need analogous flags because `claude --print`
-operates on stdin only and doesn't recursively scan its cwd.
+**Claude adapter (`src/providers/claude.ts`):**
+
+1. **Empty temp working directory.** `claude --print` runs in a fresh
+   `mkdtemp()` directory. Claude Code auto-discovers `CLAUDE.md` files
+   up the working-directory hierarchy at session start (per
+   https://code.claude.com/docs/en/memory). Without an empty cwd, the
+   subprocess would inherit project + parent + ancestor `CLAUDE.md`
+   context outside the wrapper's explicit manifest.
+2. **Manifest content via stdin.** Same pattern as Codex — never via
+   path arguments or `--add-dir` flags that would expand the cwd
+   surface.
+3. **No session persistence.** `--no-session-persistence` skips the
+   on-disk session file so the print-mode invocation can't be resumed
+   from disk and leaves no manifest residue after the call.
 
 ## `code-oz doctor providers`
 

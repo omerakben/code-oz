@@ -1,5 +1,8 @@
 import { describe, test, expect } from 'bun:test'
 import { Buffer } from 'node:buffer'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { ClaudeProvider } from '../src/providers/claude.ts'
 import { ProviderError } from '../src/providers/errors.ts'
@@ -231,5 +234,78 @@ describe('ClaudeProvider — invoke', () => {
     }
     expect(caught?.issues[0]?.code).toBe('provider_io_error')
     expect(caught?.issues[0]?.rule).toContain('not found in PATH')
+  })
+})
+
+describe('ClaudeProvider — privacy guards (M4 Codex review block-push fix)', () => {
+  test('PRIVACY GUARD: cwd is a temp dir, NOT inherited from caller', async () => {
+    let observedCwd: string | undefined
+    const runner: Runner = async (_cmd, _args, options) => {
+      observedCwd = options?.cwd
+      return { stdout: JSON.stringify({ result: 'ok' }), stderr: '', exitCode: 0 }
+    }
+    const c = new ClaudeProvider({ runner })
+    await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(observedCwd).toBeDefined()
+    // Bun's tmpdir is /var/folders/... or /tmp/... — never under our cwd.
+    expect(observedCwd?.startsWith(tmpdir())).toBe(true)
+    expect(observedCwd).toContain('code-oz-claude-')
+  })
+
+  test('PRIVACY GUARD: --no-session-persistence is passed (no on-disk session file)', async () => {
+    const { runner, calls } = makeRecordingRunner({
+      stdout: JSON.stringify({ result: 'ok' }),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(calls[0]?.args).toContain('--no-session-persistence')
+  })
+
+  test('temp cwd is cleaned up after invoke (success path)', async () => {
+    let createdCwd: string | undefined
+    const tempCwd = async (): Promise<string> => {
+      createdCwd = await mkdtemp(join(tmpdir(), 'code-oz-claude-test-'))
+      return createdCwd
+    }
+    const { runner } = makeRecordingRunner({
+      stdout: JSON.stringify({ result: 'ok' }),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner, tempCwd })
+    await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(createdCwd).toBeDefined()
+    let exists = true
+    try {
+      await stat(createdCwd!)
+    } catch {
+      exists = false
+    }
+    expect(exists).toBe(false)
+  })
+
+  test('temp cwd is cleaned up even on subprocess failure (ENOENT)', async () => {
+    let createdCwd: string | undefined
+    const tempCwd = async (): Promise<string> => {
+      createdCwd = await mkdtemp(join(tmpdir(), 'code-oz-claude-test-'))
+      return createdCwd
+    }
+    const enoent = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    const c = new ClaudeProvider({ runner: throwingRunner(enoent), tempCwd })
+    try {
+      await collectProviderResponse(c.invoke(preparedRequest()))
+    } catch {
+      // expected
+    }
+    let exists = true
+    try {
+      await stat(createdCwd!)
+    } catch {
+      exists = false
+    }
+    expect(exists).toBe(false)
+    if (createdCwd) await rm(createdCwd, { recursive: true, force: true }).catch(() => undefined)
   })
 })

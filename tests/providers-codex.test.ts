@@ -159,7 +159,7 @@ describe('CodexProvider — invoke', () => {
     expect(observedCwd).toContain('code-oz-codex-')
   })
 
-  test('PRIVACY GUARD: --skip-git-repo-check + --sandbox read-only + --ephemeral are passed', async () => {
+  test('PRIVACY GUARD: --skip-git-repo-check + --sandbox read-only + --ephemeral + --color never are passed', async () => {
     const { runner, calls } = makeRecordingRunner({
       stdout: 'ok',
       stderr: '',
@@ -173,6 +173,9 @@ describe('CodexProvider — invoke', () => {
     const sandboxIdx = args.indexOf('--sandbox')
     expect(args[sandboxIdx + 1]).toBe('read-only')
     expect(args).toContain('--ephemeral')
+    expect(args).toContain('--color')
+    const colorIdx = args.indexOf('--color')
+    expect(args[colorIdx + 1]).toBe('never')
     expect(args).toContain('-') // read prompt from stdin
   })
 
