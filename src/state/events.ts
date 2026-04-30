@@ -475,6 +475,146 @@ export function validateEvent(
       if (lIssue) return lIssue
       break
     }
+
+    case 'worktree_created': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'worktree_created', e.phase, line)
+      const baseIssue = idMatches(file, e.baseCommitSha, /^[0-9a-f]{40}$/, 'worktree_created.baseCommitSha', line)
+      if (baseIssue) return baseIssue
+      const wpIssue = nonEmptyString(file, e.worktreePath, 'worktree_created.worktreePath', line)
+      if (wpIssue) return wpIssue
+      const POLICIES = ['clean-base', 'stash-and-pin']
+      if (typeof e.dirtyTreePolicy !== 'string' || !POLICIES.includes(e.dirtyTreePolicy)) {
+        return enumInvalid(file, 'worktree_created.dirtyTreePolicy', POLICIES, e.dirtyTreePolicy, line)
+      }
+      break
+    }
+
+    case 'worktree_failed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'worktree_failed', e.phase, line)
+      if (typeof e.step !== 'number' || ![1, 2, 3, 4].includes(e.step)) {
+        return enumInvalid(file, 'worktree_failed.step', ['1', '2', '3', '4'], e.step, line)
+      }
+      const codeIssue = nonEmptyString(file, e.code, 'worktree_failed.code', line)
+      if (codeIssue) return codeIssue
+      const reasonIssue = nonEmptyString(file, e.reason, 'worktree_failed.reason', line)
+      if (reasonIssue) return reasonIssue
+      break
+    }
+
+    case 'worktree_patch_applied': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'worktree_patch_applied', e.phase, line)
+      const shaIssue = idMatches(
+        file, e.patchSha256, /^[0-9a-f]{64}$/, 'worktree_patch_applied.patchSha256', line,
+      )
+      if (shaIssue) return shaIssue
+      const ppIssue = nonEmptyString(file, e.patchPath, 'worktree_patch_applied.patchPath', line)
+      if (ppIssue) return ppIssue
+      const aIssue = positiveInteger(file, e.attempt, 'worktree_patch_applied.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'worktree_patch_applied.taskId', line)
+      if (tIssue) return tIssue
+      break
+    }
+
+    case 'worktree_patch_failed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'worktree_patch_failed', e.phase, line)
+      const codeIssue = nonEmptyString(file, e.code, 'worktree_patch_failed.code', line)
+      if (codeIssue) return codeIssue
+      const aIssue = positiveInteger(file, e.attempt, 'worktree_patch_failed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'worktree_patch_failed.taskId', line)
+      if (tIssue) return tIssue
+      const rIssue = nonEmptyString(file, e.reason, 'worktree_patch_failed.reason', line)
+      if (rIssue) return rIssue
+      break
+    }
+
+    case 'worktree_forensics_preserved': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'worktree_forensics_preserved', e.phase, line)
+      const aIssue = positiveInteger(file, e.attempt, 'worktree_forensics_preserved.attempt', line)
+      if (aIssue) return aIssue
+      const fpIssue = nonEmptyString(file, e.forensicsPath, 'worktree_forensics_preserved.forensicsPath', line)
+      if (fpIssue) return fpIssue
+      if (!Array.isArray(e.entries) || !e.entries.every((s: unknown) => typeof s === 'string')) {
+        return strArrInvalid(file, 'worktree_forensics_preserved.entries', line)
+      }
+      if (e.entries.length === 0) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'worktree_forensics_preserved.entries must have at least one entry',
+          line,
+        }
+      }
+      break
+    }
+
+    case 'worktree_destroyed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'worktree_destroyed', e.phase, line)
+      const wpIssue = nonEmptyString(file, e.worktreePath, 'worktree_destroyed.worktreePath', line)
+      if (wpIssue) return wpIssue
+      break
+    }
+
+    case 'build_started': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'build_started', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'build_started.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'build_started.attempt', line)
+      if (aIssue) return aIssue
+      const baseIssue = idMatches(file, e.baseCommitSha, /^[0-9a-f]{40}$/, 'build_started.baseCommitSha', line)
+      if (baseIssue) return baseIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'build_started.taskId', line)
+      if (tIssue) return tIssue
+      break
+    }
+
+    case 'build_patch_applied': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'build_patch_applied', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'build_patch_applied.agent', line)
+      if (agentIssue) return agentIssue
+      const shaIssue = idMatches(
+        file, e.patchSha256, /^[0-9a-f]{64}$/, 'build_patch_applied.patchSha256', line,
+      )
+      if (shaIssue) return shaIssue
+      const aIssue = positiveInteger(file, e.attempt, 'build_patch_applied.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'build_patch_applied.taskId', line)
+      if (tIssue) return tIssue
+      break
+    }
+
+    case 'build_completed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'build_completed', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'build_completed.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'build_completed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'build_completed.taskId', line)
+      if (tIssue) return tIssue
+      const cIssue = nonNegativeInteger(file, e.changedFileCount, 'build_completed.changedFileCount', line)
+      if (cIssue) return cIssue
+      const reportIssue = idMatches(
+        file, e.buildReportSha256, /^[0-9a-f]{64}$/, 'build_completed.buildReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      break
+    }
+
+    case 'build_failed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'build_failed', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'build_failed.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'build_failed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'build_failed.taskId', line)
+      if (tIssue) return tIssue
+      const codeIssue = nonEmptyString(file, e.code, 'build_failed.code', line)
+      if (codeIssue) return codeIssue
+      const reasonIssue = nonEmptyString(file, e.reason, 'build_failed.reason', line)
+      if (reasonIssue) return reasonIssue
+      break
+    }
   }
 
   return null
@@ -545,6 +685,24 @@ function nonEmptyString(
       file,
       code: 'event_invalid_value',
       rule: `${field} must be a non-empty string`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
+  return null
+}
+
+function positiveInteger(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be a positive integer (>= 1)`,
       detail: `got ${JSON.stringify(value)}`,
       line,
     }

@@ -146,6 +146,18 @@ export async function doctorCommand(args: string[]): Promise<void> {
     process.exit(report.exitCode)
   }
 
+  if (subcommand === 'git') {
+    const subArgs = args.slice(1)
+    const json = subArgs.includes('--json')
+    const report = await runDoctorGit()
+    if (json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+    } else {
+      process.stdout.write(formatGitReport(report))
+    }
+    process.exit(report.exitCode)
+  }
+
   if (subcommand !== 'providers') {
     process.stderr.write(`code-oz doctor: unknown subcommand '${subcommand}'\n\n`)
     process.stderr.write(doctorHelp())
@@ -255,20 +267,178 @@ export function doctorHelp(): string {
 Subcommands:
   providers        Probe each provider adapter (auth + CLI presence)
   tools            Probe required external tools (rg / ripgrep)
+  git              Probe git version (>= 2.40 required for M7+ worktree subsystem)
   help             Show this help
 
-Options for 'providers':
-  --json           Emit the ProviderHealth[] report as JSON
+Options:
+  --json           Emit the report as JSON (providers, tools, git)
 
 Exit codes:
-  0                Every required provider is healthy
-  1                At least one required provider is unhealthy
+  0                Probe succeeded
+  1                At least one required check failed
 
 A provider is "required" when at least one loaded agent declares it in
 frontmatter. Bundled default agents (claude + codex personas) load even
 without a project init, so 'doctor providers' typically runs against
 those required providers from anywhere on disk.
 `
+}
+
+// --- doctor git (M7) ------------------------------------------------
+
+/** Required git version for the M7 worktree subsystem (per WORKTREE.md). */
+export const MIN_GIT_VERSION: readonly [number, number] = [2, 40]
+
+export interface DoctorGitReport {
+  /** True if `git --version` ran successfully. */
+  readonly available: boolean
+  /** Parsed major.minor (e.g., [2, 47]); only present when available. */
+  readonly version?: readonly [number, number]
+  /** Raw first line of `git --version` output, when available. */
+  readonly versionRaw?: string
+  /** True when version >= MIN_GIT_VERSION. */
+  readonly meetsMinimum?: boolean
+  /** Error message if `git` is missing or `--version` failed. */
+  readonly error?: string
+  /** 0 when git is available and meets minimum; 1 otherwise. */
+  readonly exitCode: 0 | 1
+}
+
+/**
+ * `code-oz doctor git` — probes `git --version` and checks against
+ * MIN_GIT_VERSION. Per WORKTREE.md, git 2.40 is the first version where
+ * `git worktree add --detach <path>` is reliable across edge cases.
+ *
+ * Failure produces exit code 1; runs that reach BUILD will hit the same
+ * check at run start and emit `NEEDS_INTERVENTION.json` with code
+ * `worktree_git_version_unsupported`.
+ */
+export async function runDoctorGit(): Promise<DoctorGitReport> {
+  const probe = await probeGitVersion()
+  if (!probe.ok) {
+    return Object.freeze({
+      available: false,
+      error: probe.error,
+      exitCode: 1 as const,
+    })
+  }
+  const meets = compareVersion(probe.version, MIN_GIT_VERSION) >= 0
+  return Object.freeze({
+    available: true,
+    version: probe.version,
+    versionRaw: probe.versionRaw,
+    meetsMinimum: meets,
+    exitCode: meets ? (0 as const) : (1 as const),
+  })
+}
+
+interface GitProbeOk {
+  readonly ok: true
+  readonly version: readonly [number, number]
+  readonly versionRaw: string
+  readonly error?: undefined
+}
+
+interface GitProbeErr {
+  readonly ok: false
+  readonly error: string
+  readonly version?: undefined
+  readonly versionRaw?: undefined
+}
+
+async function probeGitVersion(): Promise<GitProbeOk | GitProbeErr> {
+  const { spawn } = await import('node:child_process')
+  return await new Promise<GitProbeOk | GitProbeErr>((resolveProbe) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn('git', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      resolveProbe({ ok: false, error: (err as Error).message })
+      return
+    }
+    let stdout = ''
+    let errored = false
+    child.stdout?.on('data', (b: Buffer) => {
+      stdout += b.toString('utf8')
+    })
+    child.on('error', (err) => {
+      errored = true
+      const code = (err as NodeJS.ErrnoException).code
+      resolveProbe({
+        ok: false,
+        error: code === 'ENOENT' ? 'git not on PATH' : err.message,
+      })
+    })
+    child.on('close', (exitCode) => {
+      if (errored) return
+      if (exitCode !== 0) {
+        resolveProbe({ ok: false, error: `git exited ${exitCode}` })
+        return
+      }
+      const firstLine = stdout.split('\n')[0]?.trim() ?? ''
+      const parsed = parseGitVersion(firstLine)
+      if (!parsed) {
+        resolveProbe({
+          ok: false,
+          error: `cannot parse git version from: ${firstLine}`,
+        })
+        return
+      }
+      resolveProbe({ ok: true, version: parsed, versionRaw: firstLine })
+    })
+  })
+}
+
+/**
+ * Parses the major.minor from `git --version` output.
+ *
+ * Examples:
+ *   "git version 2.47.0"            → [2, 47]
+ *   "git version 2.40.1.windows.1"  → [2, 40]
+ *   "git version 2.43.GIT"          → [2, 43]
+ *   "not a git output"              → null
+ */
+export function parseGitVersion(line: string): readonly [number, number] | null {
+  const m = line.match(/git version (\d+)\.(\d+)/)
+  if (!m) return null
+  const major = Number(m[1])
+  const minor = Number(m[2])
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return null
+  return [major, minor] as const
+}
+
+/** Returns negative if a < b, 0 if equal, positive if a > b. */
+export function compareVersion(
+  a: readonly [number, number],
+  b: readonly [number, number],
+): number {
+  if (a[0] !== b[0]) return a[0] - b[0]
+  return a[1] - b[1]
+}
+
+function formatGitReport(report: DoctorGitReport): string {
+  const lines: string[] = []
+  if (!report.available) {
+    lines.push(`git: not available (${report.error ?? 'unknown'})`)
+    lines.push('')
+    lines.push(`code-oz requires git ${MIN_GIT_VERSION[0]}.${MIN_GIT_VERSION[1]} or newer for the M7+ worktree subsystem.`)
+    lines.push('Install: brew install git   (macOS)')
+    lines.push('         sudo apt install git   (Debian/Ubuntu)')
+    return lines.join('\n') + '\n'
+  }
+  const v = report.version!
+  lines.push(`git: ${report.versionRaw}`)
+  lines.push(`parsed: ${v[0]}.${v[1]}`)
+  lines.push(`required: >= ${MIN_GIT_VERSION[0]}.${MIN_GIT_VERSION[1]}`)
+  lines.push('')
+  if (report.meetsMinimum) {
+    lines.push('git meets minimum required version.')
+  } else {
+    lines.push('git does NOT meet minimum required version.')
+    lines.push('Runs that reach BUILD will fail with worktree_git_version_unsupported.')
+    lines.push('Upgrade git to 2.40 or newer.')
+  }
+  return lines.join('\n') + '\n'
 }
 
 export function formatProvidersJson(report: DoctorProvidersReport): string {

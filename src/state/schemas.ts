@@ -119,6 +119,23 @@ export const EVENT_TYPES = [
   // kill at 100% still produces a NEEDS_INTERVENTION; the warning is a
   // forward-looking signal so operators can plan ahead.
   'budget_warning',
+  // M7 — worktree subsystem (per docs/contracts/WORKTREE.md). Orchestrator-
+  // owned events covering the per-run isolated worktree lifecycle. None of
+  // these fire on BUILD-pass alone; cleanup is gated on VERIFY-pass (M8+).
+  'worktree_created',
+  'worktree_failed',
+  'worktree_patch_applied',
+  'worktree_patch_failed',
+  'worktree_forensics_preserved',
+  'worktree_destroyed',
+  // M7 — BUILD phase (per docs/contracts/BUILD.md). build_failed is distinct
+  // from worktree_patch_failed: the worktree event names the apply-side
+  // failure; build_failed names the phase-level failure that produces
+  // NEEDS_INTERVENTION (rule 11).
+  'build_started',
+  'build_patch_applied',
+  'build_completed',
+  'build_failed',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -273,6 +290,123 @@ export type PhaseEvent =
       readonly ratio: number
       readonly current: number
       readonly limit: number
+    }
+  // M7 worktree events (orchestrator-owned).
+  | {
+      readonly version: 1
+      readonly type: 'worktree_created'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** 40-char lower-case hex sha of the base commit. */
+      readonly baseCommitSha: string
+      /** Absolute path to the worktree directory. */
+      readonly worktreePath: string
+      readonly dirtyTreePolicy: 'clean-base' | 'stash-and-pin'
+    }
+  | {
+      readonly version: 1
+      readonly type: 'worktree_failed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** Step in the four-step creation sequence (1=rev-parse, 2=worktree add,
+       * 3=mkdir supporting dirs, 4=write base.txt+README). */
+      readonly step: 1 | 2 | 3 | 4
+      readonly code: string
+      readonly reason: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'worktree_patch_applied'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** 64-char lower-case hex sha of the patch file bytes. */
+      readonly patchSha256: string
+      /** Path relative to project root. */
+      readonly patchPath: string
+      readonly attempt: number
+      readonly taskId: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'worktree_patch_failed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly code: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly reason: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'worktree_forensics_preserved'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly attempt: number
+      /** Absolute path to the forensics/<N>/ directory. */
+      readonly forensicsPath: string
+      /** Names of files written under forensicsPath. */
+      readonly entries: readonly string[]
+    }
+  | {
+      readonly version: 1
+      readonly type: 'worktree_destroyed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly worktreePath: string
+    }
+  // M7 BUILD phase events (per docs/contracts/BUILD.md).
+  | {
+      readonly version: 1
+      readonly type: 'build_started'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly baseCommitSha: string
+      readonly taskId: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'build_patch_applied'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly patchSha256: string
+      readonly attempt: number
+      readonly taskId: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'build_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly changedFileCount: number
+      /** 64-char lower-case hex sha of the canonical BUILD_REPORT.md content. */
+      readonly buildReportSha256: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'build_failed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly code: string
+      readonly reason: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)
