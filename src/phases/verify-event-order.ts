@@ -63,20 +63,17 @@ export interface ValidateVerifyFailureEventOrderInput {
 export function validateVerifyFailureEventOrder(
   input: ValidateVerifyFailureEventOrderInput,
 ): VerifyFailureEventOrderIssue | null {
-  // Filter to events scoped to this attempt. The four canonical events
-  // have asymmetric scope:
-  //   - worktree_forensics_preserved + worktree_destroyed: run-scoped
-  //     (no taskId / attempt field on the schema). We accept all that
-  //     match runId.
-  //   - verify_failed + verify_restart_initiated: scoped to (runId,
-  //     taskId, attempt). We filter on all three.
+  // Filter to events scoped to this attempt. After M8 fix 7 all four
+  // canonical events carry an `attempt` field; verify_* additionally
+  // carries `taskId`. Worktree events are run-scoped on taskId because
+  // the worktree subsystem is per-run, not per-task.
   const scoped = input.events.filter((e) => {
     if (e.runId !== input.runId) return false
     if (!(CANONICAL_VERIFY_FAILURE_EVENT_ORDER as readonly string[]).includes(e.type)) return false
+    const ev = e as LoggedEvent & { taskId?: string; attempt?: number }
+    if (ev.attempt !== input.attempt) return false
     if (e.type === 'verify_failed' || e.type === 'verify_restart_initiated') {
-      const ev = e as LoggedEvent & { taskId?: string; attempt?: number }
       if (ev.taskId !== input.taskId) return false
-      if (ev.attempt !== input.attempt) return false
     }
     return true
   })

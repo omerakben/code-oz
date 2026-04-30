@@ -73,6 +73,7 @@ const WORKTREE_DESTROYED: PhaseEvent = {
   ts: TS,
   runId: RUN_ID,
   phase: PHASE,
+  attempt: 1,
   worktreePath: '/abs/.code-oz/runs/abc/worktree',
 }
 

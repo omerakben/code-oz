@@ -368,6 +368,14 @@ export type PhaseEvent =
       readonly ts: string
       readonly runId: string
       readonly phase: Phase
+      /**
+       * The attempt this destruction belongs to. On a VERIFY-pass approve,
+       * this is the just-passed attempt's number. On a VERIFY-fail
+       * scheduling, this is the just-failed attempt's number. The field
+       * lets the canonical-event-order validator scope worktree_destroyed
+       * to a specific attempt without ambiguity in retry chains.
+       */
+      readonly attempt: number
       readonly worktreePath: string
     }
   // M7 BUILD phase events (per docs/contracts/BUILD.md).

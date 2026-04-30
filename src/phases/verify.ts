@@ -74,7 +74,7 @@ import {
   type EventLogPaths,
 } from '../state/events.ts'
 import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
-import { type RunPaths } from '../state/run.ts'
+import { requireGate, type RunPaths } from '../state/run.ts'
 import { writeVerifyForensicsBundle } from '../worktree/forensics.ts'
 
 export const VERIFY_READY_SIGNAL = '<verify-ready/>'
@@ -122,6 +122,10 @@ export interface VerifyFailed {
   readonly status: 'failed'
   readonly verifyReportPath: string
   readonly forensicsPath: string
+  /** Task whose VERIFY just failed; the scheduler scopes restart events by it. */
+  readonly taskId: string
+  /** Just-failed attempt N (1..4 for restart, ≥4 → intervention). */
+  readonly attempt: number
   readonly nextAction: 'restart' | 'intervention'
   readonly nextAttempt?: number
   readonly carryForward?: BuildReportCarryForward
@@ -402,6 +406,14 @@ export async function runVerify(opts: RunVerifyOptions): Promise<VerifyResult> {
     expectedVerdict: computedVerdict,
   })
   if (!personaResponse.ok) {
+    // Persist both rejected drafts so the operator can inspect the
+    // exact failure (Codex review M8-fix fix-soon #1). Drafts are
+    // written before recordVerifyIntervention so the actionable
+    // suggestion's pointer at VERIFY.draft.md actually resolves.
+    await persistRejectedDrafts({
+      artifactRoot: opts.runPaths.artifactRoot,
+      drafts: personaResponse.drafts ?? [],
+    })
     return recordVerifyIntervention(interventionCtx, personaResponse.code, personaResponse.reason)
   }
 
@@ -495,6 +507,17 @@ export async function runVerify(opts: RunVerifyOptions): Promise<VerifyResult> {
       verifyReportSha256,
       mutationStatus: canonical.mutation.status as 'pass' | 'not-applicable',
     })
+    // gate_required(verify) signals to runApprove that VERIFY.md was
+    // written by THIS run and is ready for `code-oz approve verify`.
+    // Without this event, approve refuses (CODEX_REVIEW_M5 round 2
+    // finding B + Codex review M8-fix bp#1). Mirrors runPlan + runBuild.
+    await requireGate({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      phase: 'verify',
+      blockedOn: 'code-oz approve verify',
+      now,
+    })
     return Object.freeze({
       status: 'completed' as const,
       verifyReportPath,
@@ -579,6 +602,8 @@ export async function runVerify(opts: RunVerifyOptions): Promise<VerifyResult> {
       status: 'failed' as const,
       verifyReportPath,
       forensicsPath: forensicsResult.forensicsPath,
+      taskId: opts.taskId,
+      attempt: opts.attempt,
       nextAction: 'restart' as const,
       nextAttempt: restartDecision.nextAttempt,
       carryForward: prepareCarryForward({
@@ -601,6 +626,8 @@ export async function runVerify(opts: RunVerifyOptions): Promise<VerifyResult> {
     status: 'failed' as const,
     verifyReportPath,
     forensicsPath: forensicsResult.forensicsPath,
+    taskId: opts.taskId,
+    attempt: opts.attempt,
     nextAction: 'intervention' as const,
   })
 }
@@ -697,7 +724,13 @@ interface InvokeWithRepairInput {
 
 type InvokeWithRepairResult =
   | { readonly ok: true; readonly value: PersonaParsedFields }
-  | { readonly ok: false; readonly code: string; readonly reason: string }
+  | {
+      readonly ok: false
+      readonly code: string
+      readonly reason: string
+      /** Both rejected drafts (initial + repair attempt) for forensic inspection. */
+      readonly drafts?: readonly string[]
+    }
 
 /**
  * Single-repair-turn invocation per Codex M8 decision 9: initial draft +
@@ -710,7 +743,11 @@ async function invokeWithRepair(input: InvokeWithRepairInput): Promise<InvokeWit
   try {
     draft1 = await input.invokePersona(initialPrompt)
   } catch (err) {
-    return { ok: false, code: 'verify_persona_invoke_failed', reason: (err as Error).message.slice(0, 200) }
+    return {
+      ok: false,
+      code: 'verify_persona_invoke_failed',
+      reason: (err as Error).message.slice(0, 200),
+    }
   }
   const parse1 = parseVerifyPersonaResponse(draft1, input.expectedVerdict)
   if (parse1.ok) return { ok: true, value: parse1.value }
@@ -730,6 +767,7 @@ async function invokeWithRepair(input: InvokeWithRepairInput): Promise<InvokeWit
       ok: false,
       code: 'verify_persona_invoke_failed',
       reason: `repair turn threw: ${(err as Error).message.slice(0, 200)}`,
+      drafts: [draft1],
     }
   }
   const parse2 = parseVerifyPersonaResponse(draft2, input.expectedVerdict)
@@ -738,6 +776,21 @@ async function invokeWithRepair(input: InvokeWithRepairInput): Promise<InvokeWit
     ok: false,
     code: 'verify_validation_failed',
     reason: `persona response failed both initial draft and repair: ${parse2.violation}`,
+    drafts: [draft1, draft2],
+  }
+}
+
+async function persistRejectedDrafts(input: {
+  readonly artifactRoot: string
+  readonly drafts: readonly string[]
+}): Promise<void> {
+  const { writeFile, mkdir } = await import('node:fs/promises')
+  await mkdir(input.artifactRoot, { recursive: true })
+  if (input.drafts[0] !== undefined) {
+    await writeFile(join(input.artifactRoot, 'VERIFY.draft.md'), input.drafts[0], 'utf8')
+  }
+  if (input.drafts[1] !== undefined) {
+    await writeFile(join(input.artifactRoot, 'VERIFY.draft.repair.md'), input.drafts[1], 'utf8')
   }
 }
 

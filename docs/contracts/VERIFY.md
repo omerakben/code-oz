@@ -10,7 +10,7 @@ VERIFY reads `BUILD_REPORT.md`, executes the validation command verbatim against
 
 ## `VERIFY.md` schema
 
-`.code-oz/artifacts/VERIFY.md` is plain Markdown with locked H2 sections in canonical order. The orchestrator parses it; the persona authors `Verdict.Rationale`, `Mutation` (when applicable), and the `Failure constraint` body when verdict = fail. All other fields are orchestrator-recorded.
+`.code-oz/artifacts/VERIFY.md` is plain Markdown with locked H2 sections in canonical order. The orchestrator parses it. The persona authors a small structured response (extracted into `Verdict.Rationale` always, plus `Failure constraint.Failure summary` + `Failure constraint.Constraint` when verdict = fail). All other fields — including `Verdict.Verdict` (the binary pass/fail decision) and `Mutation.Notes` — are orchestrator-computed. The persona's narrative about mutation lives only in `Verdict.Rationale`; the orchestrator-owned `Mutation.Notes` is the diagnostic note returned by the mutation-status mapping.
 
 ```markdown
 # VERIFY
@@ -62,7 +62,7 @@ VERIFY reads `BUILD_REPORT.md`, executes the validation command verbatim against
 | `## Validation command` | The command shape executed (verbatim from BUILD_REPORT.md) | 4 bullets (Command, Working directory, Timeout (ms), Expected exit code) |
 | `## Evidence` | What the execution produced | 6 bullets (Exit code, Duration (ms), Stdout bytes, Stderr bytes, Stdout log, Stderr log) |
 | `## Verdict` | Pass-or-fail decision and one-line rationale | 2 bullets (Verdict, Rationale) |
-| `## Mutation` | Mutation-test gate result | 2 bullets (Status, Notes); Status ∈ {`pass`, `fail`, `not-applicable`} |
+| `## Mutation` | Mutation-test gate result; **orchestrator-recorded** | 2 bullets (Status, Notes); Status ∈ {`pass`, `fail`, `not-applicable`}; Notes is the gate's diagnostic line, not persona prose |
 | `## Failure constraint` | Compact directive for attempt N+1 (only on fail) | bullets per locked grammar (below); `- None (verdict pass).` when verdict = pass |
 
 Sections appear in canonical order. Bullets are one line each.
@@ -92,6 +92,10 @@ Captured from the executed process, not the persona. `Stdout log` and `Stderr lo
 - `Verdict: fail` requires `Evidence.Exit code` to differ from `Validation command.Expected exit code` **or** `Mutation.Status` = `fail`.
 
 A persona-authored verdict that contradicts evidence fails with `verify_verdict_evidence_mismatch`.
+
+### `## Mutation` (orchestrator-recorded)
+
+`Mutation.Status` is computed by the mutation gate from the runner's `terminationReason` and `exitCode` (per the gate semantics below). `Mutation.Notes` is the diagnostic note returned by the mutation-status mapping — describing why the gate passed, failed, or was skipped. **The persona may not author either field.** A persona that emits a `## Mutation` section in its draft response has those fields dropped; the persona's narrative about mutation belongs in `Verdict.Rationale`.
 
 ### `## Mutation` gate
 

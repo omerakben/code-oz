@@ -555,6 +555,76 @@ describe('runVerify — e2e mutation-applicable path with real RevertSeam (Codex
   })
 })
 
+describe('runVerify pass + code-oz approve verify (Codex M8-fix bp#1)', () => {
+  test('runVerify pass emits gate_required(verify), then runApprove approves and writes the gate', async () => {
+    const { baseCommitSha } = await setupGitRepoAndWorktree()
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({ taskId: 'T-001', attempt: 1, baseCommitSha }),
+    )
+    fake.expect({ phase: 'verify', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+
+    const verifyResult = await runVerify(buildOpts({
+      invokePersona: async () => `${VERIFY_READY_SIGNAL}\n\n## Rationale\nvalidation passed.\n`,
+    }))
+    expect(verifyResult.status).toBe('completed')
+
+    // gate_required(verify) event must be present after pass
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const gr = events.find((e) => e.type === 'gate_required' && (e as { phase: string }).phase === 'verify')
+    expect(gr).toBeDefined()
+
+    // runApprove({phase: 'verify'}) must succeed: validates VERIFY.md,
+    // removes worktree, emits worktree_destroyed, writes
+    // GATE_VERIFY_PASSED.json. The hook is idempotent on "worktree
+    // already gone"; createRunWorktree did create one, so this
+    // exercises the real removal path.
+    // We can't import runApprove with bootstrap easily here (needs
+    // active.json + project init). Instead we directly call the
+    // exported preApproveVerifyHook which is the load-bearing piece.
+    const { preApproveVerifyHook } = await import('../src/commands/approve.ts')
+    await preApproveVerifyHook({
+      cwd: tmp,
+      runId: RUN,
+      runPaths: { eventsFile: paths.eventsFile, lockDir: paths.lockDir },
+      verifyPath: join(paths.artifactRoot, 'VERIFY.md'),
+      now: () => '2026-04-30T19:30:00.000Z',
+    })
+
+    // worktree_destroyed event emitted
+    const events2 = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const wd = events2.find((e) => e.type === 'worktree_destroyed')
+    expect(wd).toBeDefined()
+    expect((wd as { attempt: number }).attempt).toBe(1)
+  })
+})
+
+describe('runVerify — VERIFY.draft.md persistence on rejection (Codex M8-fix fix-soon #1)', () => {
+  test('persona response failure persists rejected drafts before durable intervention', async () => {
+    const { baseCommitSha } = await setupGitRepoAndWorktree()
+    await writeFile(
+      join(paths.artifactRoot, 'BUILD_REPORT.md'),
+      makeBuildReport({ taskId: 'T-001', attempt: 1, baseCommitSha }),
+    )
+
+    let callCount = 0
+    const result = await runVerify(buildOpts({
+      invokePersona: async () => {
+        callCount++
+        // Both drafts are bad (no marker)
+        return `bogus draft ${callCount}\n`
+      },
+    }))
+    expect(result.status).toBe('intervention')
+
+    // Both drafts persisted to disk
+    const draft1 = await readFile(join(paths.artifactRoot, 'VERIFY.draft.md'), 'utf8')
+    const draft2 = await readFile(join(paths.artifactRoot, 'VERIFY.draft.repair.md'), 'utf8')
+    expect(draft1).toBe('bogus draft 1\n')
+    expect(draft2).toBe('bogus draft 2\n')
+  })
+})
+
 describe('runVerify — durable interventions (Codex bp#2)', () => {
   test('intervention writes NEEDS_INTERVENTION.json + appends intervention event', async () => {
     const { readFile, access } = await import('node:fs/promises')

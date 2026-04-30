@@ -21,10 +21,11 @@ function ev(over: Record<string, unknown>): LoggedEvent {
   } as LoggedEvent
 }
 
-function forensicsPreserved(): LoggedEvent {
+function forensicsPreserved(attempt = ATTEMPT): LoggedEvent {
   return ev({
     type: 'worktree_forensics_preserved',
     phase: 'verify',
+    attempt,
     forensicsPath: '.code-oz/runs/01HX/forensics/1/',
     entries: ['diff.patch', 'VERIFY.md'],
   })
@@ -45,10 +46,11 @@ function verifyFailed(attempt = ATTEMPT, runId = RUN, taskId = TASK): LoggedEven
   })
 }
 
-function worktreeDestroyed(): LoggedEvent {
+function worktreeDestroyed(attempt = ATTEMPT): LoggedEvent {
   return ev({
     type: 'worktree_destroyed',
     phase: 'verify',
+    attempt,
     worktreePath: '.code-oz/runs/01HX/worktree/',
   })
 }
@@ -175,6 +177,45 @@ describe('validateVerifyFailureEventOrder — rejection paths', () => {
     const issue = validateVerifyFailureEventOrder({ events, runId: RUN, taskId: TASK, attempt: ATTEMPT })
     expect(issue).not.toBeNull()
     expect(issue?.code).toBe('verify_event_order_duplicate')
+  })
+})
+
+describe('validateVerifyFailureEventOrder — retry-safe scoping (M8 fix 7)', () => {
+  test('multi-attempt run: validates attempt 2 ignores attempt 1 events', () => {
+    // Attempt 1 fail (full canonical sequence) followed by attempt 2 fail
+    // (full canonical sequence). The validator scoped to attempt=2 must
+    // not pick up attempt 1 events.
+    const events: LoggedEvent[] = [
+      forensicsPreserved(1),
+      verifyFailed(1),
+      worktreeDestroyed(1),
+      verifyRestart(1),
+      forensicsPreserved(2),
+      verifyFailed(2),
+      worktreeDestroyed(2),
+      verifyRestart(2),
+    ]
+    expect(validateVerifyFailureEventOrder({ events, runId: RUN, taskId: TASK, attempt: 1 })).toBeNull()
+    expect(validateVerifyFailureEventOrder({ events, runId: RUN, taskId: TASK, attempt: 2 })).toBeNull()
+  })
+
+  test('attempt 2 is missing forensics_preserved → reports missing scoped to attempt 2', () => {
+    const events: LoggedEvent[] = [
+      forensicsPreserved(1),
+      verifyFailed(1),
+      worktreeDestroyed(1),
+      verifyRestart(1),
+      // attempt 2 missing forensics_preserved
+      verifyFailed(2),
+      worktreeDestroyed(2),
+      verifyRestart(2),
+    ]
+    const issue = validateVerifyFailureEventOrder({ events, runId: RUN, taskId: TASK, attempt: 2 })
+    expect(issue).not.toBeNull()
+    expect(issue?.code).toBe('verify_event_order_missing')
+    expect(issue?.rule).toContain('worktree_forensics_preserved')
+    // But attempt 1 still validates
+    expect(validateVerifyFailureEventOrder({ events, runId: RUN, taskId: TASK, attempt: 1 })).toBeNull()
   })
 })
 

@@ -551,6 +551,8 @@ export function validateEvent(
 
     case 'worktree_destroyed': {
       if (!isPhase(e.phase)) return phaseInvalid(file, 'worktree_destroyed', e.phase, line)
+      const aIssue = positiveInteger(file, e.attempt, 'worktree_destroyed.attempt', line)
+      if (aIssue) return aIssue
       const wpIssue = nonEmptyString(file, e.worktreePath, 'worktree_destroyed.worktreePath', line)
       if (wpIssue) return wpIssue
       break

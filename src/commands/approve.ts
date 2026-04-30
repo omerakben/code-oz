@@ -340,6 +340,9 @@ export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Pr
       ts: input.now(),
       runId: input.runId,
       phase: 'verify',
+      // The attempt that just passed VERIFY. The hook receives it via the
+      // run state; for v0.1 we read it from VERIFY.md's BUILD ref.
+      attempt: verifyData.buildRef.attempt,
       worktreePath: removed.worktreePath,
     },
   )

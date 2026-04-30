@@ -73,6 +73,8 @@ describe('scheduleAttemptNPlus1 — restart path', () => {
       status: 'failed',
       verifyReportPath: join(paths.artifactRoot, 'VERIFY.md'),
       forensicsPath: join(paths.runDir, 'forensics', '1'),
+      taskId: 'T-001',
+      attempt: 1,
       nextAction: 'restart',
       nextAttempt: 2,
       carryForward: {
@@ -129,6 +131,8 @@ describe('scheduleAttemptNPlus1 — intervention path', () => {
       status: 'failed',
       verifyReportPath: join(paths.artifactRoot, 'VERIFY.md'),
       forensicsPath: join(paths.runDir, 'forensics', '4'),
+      taskId: 'T-007',
+      attempt: 4,
       nextAction: 'intervention',
     }
 
@@ -165,6 +169,8 @@ describe('scheduleAttemptNPlus1 — worktree removal failure', () => {
       status: 'failed',
       verifyReportPath: join(paths.artifactRoot, 'VERIFY.md'),
       forensicsPath: join(paths.runDir, 'forensics', '1'),
+      taskId: 'T-001',
+      attempt: 1,
       nextAction: 'restart',
       nextAttempt: 2,
       carryForward: {

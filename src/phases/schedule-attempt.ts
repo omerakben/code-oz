@@ -112,13 +112,14 @@ export async function scheduleAttemptNPlus1(
     })
   }
 
-  // Emit worktree_destroyed.
+  // Emit worktree_destroyed scoped to the just-failed attempt.
   await appendEvent(eventPaths, {
     version: 1,
     type: 'worktree_destroyed',
     ts: now(),
     runId: opts.runId,
     phase: 'verify',
+    attempt: opts.verifyFailed.attempt,
     worktreePath: removed.worktreePath,
   })
 
@@ -130,10 +131,8 @@ export async function scheduleAttemptNPlus1(
       ts: now(),
       runId: opts.runId,
       phase: 'verify',
-      taskId: opts.verifyFailed.carryForward!.priorAttempt
-        ? extractTaskIdFromForensics(opts.verifyFailed.forensicsPath)
-        : 'T-001',
-      attempt: opts.verifyFailed.carryForward!.priorAttempt,
+      taskId: opts.verifyFailed.taskId,
+      attempt: opts.verifyFailed.attempt,
       nextAction: 'restart' as const,
       nextAttempt: opts.verifyFailed.nextAttempt as number,
       forensicsPath: opts.verifyFailed.forensicsPath,
@@ -155,8 +154,8 @@ export async function scheduleAttemptNPlus1(
     ts: now(),
     runId: opts.runId,
     phase: 'verify',
-    taskId: extractTaskIdFromForensics(opts.verifyFailed.forensicsPath),
-    attempt: 4, // cap is at attempt 4
+    taskId: opts.verifyFailed.taskId,
+    attempt: opts.verifyFailed.attempt,
     nextAction: 'intervention' as const,
     forensicsPath: opts.verifyFailed.forensicsPath,
   })
@@ -164,17 +163,4 @@ export async function scheduleAttemptNPlus1(
     ok: true as const,
     nextAction: 'intervention' as const,
   })
-}
-
-/**
- * Best-effort extraction of taskId from a forensics path. v0.1 stores
- * forensics under runs/<runId>/forensics/<attempt>/ without a taskId
- * in the path; the caller (M9 run-loop) should pass taskId explicitly.
- * For M8, this returns the conventional 'T-001' default since
- * VerifyFailed does not currently carry taskId.
- */
-function extractTaskIdFromForensics(_forensicsPath: string): string {
-  // v0.1 stub: VerifyFailed could carry taskId in a future revision,
-  // but for now the run-loop knows the taskId from its own context.
-  return 'T-001'
 }
