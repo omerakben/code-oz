@@ -4,7 +4,16 @@ Multi-agent software-company simulation CLI with hard SDLC gates.
 
 ## Status
 
-`v0.1.0-alpha.0` — M1 milestone (CLI bootstrap). See `docs/design/ROADMAP.md` for the full plan.
+`v0.6.0-alpha.0` — M6 milestone. PLAN phase + 3-source verification + repo-context MVP + Scientist substrate + run-level budgets. See `docs/design/ROADMAP.md` for the full plan.
+
+What works in `v0.6`:
+
+- `code-oz init` — scaffolds `.code-oz/` with greenfield/brownfield detection.
+- `code-oz run` — DEFINE phase via the BA persona; on `code-oz approve define`, advances to PLAN; PLAN phase via the Lead persona, with the Scientist phase-tail emitting `HYPOTHESES.md` + `OPEN_QUESTIONS.md` and gate-preflight blocking on overdue or blocking-importance open questions.
+- `code-oz doctor providers` — provider auth + CLI presence probe.
+- `code-oz doctor tools` — checks `rg` (ripgrep) is on PATH for the M6 repo-context tools.
+- `tool_use.repo_context` — `glob`, `grep`, `read` available to personas at locked caps (50 / 16 KB / 20 / 5 s / `network: 'none'`).
+- `budgets.global` — `maxTurns`, `maxProviderCalls`, `maxTokensEstimate`, `maxWallTimeMinutes`; soft warnings at `softWarnAtRatio` (default 0.75); optional `priceTable` for dollar telemetry.
 
 ## What it is
 
@@ -18,7 +27,7 @@ Greenfield: `DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP`.
 
 Brownfield: `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP`. Auto-detected on boot.
 
-## Try it (M1 alpha)
+## Try it (M6 alpha)
 
 ```bash
 # Clone and install
@@ -32,9 +41,12 @@ bun run build:binary
 mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
 ~/Projects/code-oz/dist/code-oz init
 ls -la .code-oz/
+
+# Verify external dependencies (ripgrep is needed for M6 repo-context tools)
+~/Projects/code-oz/dist/code-oz doctor tools
 ```
 
-`run` and `doctor` commands are stubs in M1 — full implementations land in M2–M7. See `docs/design/ROADMAP.md` for the milestone plan.
+BUILD/VERIFY/REVIEW phases land in M7. See `docs/design/ROADMAP.md` for the milestone plan.
 
 ## Influence library
 

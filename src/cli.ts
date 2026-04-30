@@ -4,7 +4,7 @@ import { runCommand } from './commands/run.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { approveCommand } from './commands/approve.ts'
 
-export const PKG_VERSION = '0.5.0-alpha.0'
+export const PKG_VERSION = '0.6.0-alpha.0'
 
 function printHelp(): void {
   process.stdout.write(`code-oz v${PKG_VERSION}
@@ -13,9 +13,11 @@ Usage: code-oz <command> [options]
 
 Commands:
   init             Scaffold a code-oz project in the current directory
-  run              Run the DEFINE phase to produce a SPEC.md (M5)
+  run              Run the active phase (DEFINE → PLAN; M7 adds BUILD onward)
   approve          Approve the current phase of the active run
-  doctor           Probe provider health (subcommand: 'doctor providers')
+  doctor           Probe environment health
+                     'doctor providers' — provider auth + CLI presence
+                     'doctor tools'     — required external tools (rg)
   help             Show this help
 
 Run 'code-oz <command> --help' for command-specific options.
