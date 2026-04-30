@@ -23,7 +23,11 @@ import { stat as statAsync } from 'node:fs/promises'
 import * as readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 
-import { bootstrap, getProviderRegistry } from '../cli/bootstrap.ts'
+import {
+  bootstrap,
+  buildProviderRegistry,
+  type ProviderOverride,
+} from '../cli/bootstrap.ts'
 import { loadConfig } from '../config/load.ts'
 import {
   initRun,
@@ -79,7 +83,9 @@ export async function runCommand(args: string[]): Promise<void> {
     process.exit(2)
   }
 
-  const providerRegistry = getProviderRegistry()
+  const { registry: providerRegistry } = buildProviderRegistry({
+    providerOverride: parsed.providerOverride,
+  })
   const runId = generateUlid()
   const runPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, runId)
   await initRun({ paths: runPaths, profile: 'greenfield', runId })
@@ -143,6 +149,7 @@ type InputMode = InputSourceTTY | InputSourceInline | InputSourceFile
 interface ParsedOk {
   readonly kind: 'ok'
   readonly input: InputMode
+  readonly providerOverride?: ProviderOverride
 }
 interface ParsedError {
   readonly kind: 'error'
@@ -153,6 +160,7 @@ interface ParsedError {
 function parseRunArgs(args: string[]): ParsedOk | ParsedError {
   let request: string | null = null
   let requestFile: string | null = null
+  let providerOverride: ProviderOverride | undefined
   let help = false
 
   for (let i = 0; i < args.length; i++) {
@@ -187,6 +195,24 @@ function parseRunArgs(args: string[]): ParsedOk | ParsedError {
       requestFile = a.slice('--request-file='.length)
       continue
     }
+    if (a === '--provider') {
+      const value = args[i + 1]
+      if (value === undefined) {
+        return { kind: 'error', message: '--provider requires a value', help: true }
+      }
+      const result = parseProviderOverride(value)
+      if (result.kind === 'error') return result
+      providerOverride = result.value
+      i++
+      continue
+    }
+    if (a.startsWith('--provider=')) {
+      const value = a.slice('--provider='.length)
+      const result = parseProviderOverride(value)
+      if (result.kind === 'error') return result
+      providerOverride = result.value
+      continue
+    }
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
   }
 
@@ -202,16 +228,30 @@ function parseRunArgs(args: string[]): ParsedOk | ParsedError {
       help: false,
     }
   }
+  const base = (input: InputMode): ParsedOk =>
+    providerOverride !== undefined
+      ? { kind: 'ok', input, providerOverride }
+      : { kind: 'ok', input }
+
   if (request !== null) {
     if (request.trim().length === 0) {
       return { kind: 'error', message: '--request must be non-empty', help: false }
     }
-    return { kind: 'ok', input: { kind: 'inline', text: request } }
+    return base({ kind: 'inline', text: request })
   }
   if (requestFile !== null) {
-    return { kind: 'ok', input: { kind: 'file', path: requestFile } }
+    return base({ kind: 'file', path: requestFile })
   }
-  return { kind: 'ok', input: { kind: 'tty' } }
+  return base({ kind: 'tty' })
+}
+
+function parseProviderOverride(value: string): { kind: 'ok'; value: ProviderOverride } | ParsedError {
+  if (value === 'fake') return { kind: 'ok', value: 'fake' }
+  return {
+    kind: 'error',
+    message: `--provider only accepts 'fake' in v0.1 (got ${JSON.stringify(value)})`,
+    help: false,
+  }
 }
 
 interface InputSource {
@@ -382,6 +422,9 @@ Options:
   --request "<text>"       Use <text> as the initial user request (turn 0).
   --request-file <path>    Read user turns from a comment-delimited transcript fixture.
                            File must contain <!-- turn:user -->...<!-- /turn --> blocks.
+  --provider <id>          Runtime provider override. v0.1 accepts only 'fake':
+                           every ProviderId routes to a single shared FakeProvider
+                           instance. Useful for offline tests and CI replays.
   -h, --help               Show this help.
 
 --request and --request-file are mutually exclusive.
