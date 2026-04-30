@@ -40,3 +40,31 @@ No blocker found in the exact-line ready-token extraction, prompt-only conversat
 Validation: `bun run typecheck` passed. I could not rerun the targeted temp-dir tests in this read-only sandbox because `mkdtemp` fails with `EPERM`, so I did not use those failures as implementation evidence.
 
 Verdict: `fix-first` - must close findings 1, 2, 3, and 4 before tagging `v0.5.0-alpha.0`.
+
+---
+
+## Round 2 (re-review of `0246039`)
+
+- **Thread ID:** `019ddc2a-f30c-7db0-b562-cba164da4180`
+- **Date:** 2026-04-30
+- **HEAD reviewed:** `0246039`
+
+Round 1 findings 1, 3, and 4 confirmed closed. Three new block-* findings surfaced:
+
+A. `block-push` — `approve define --artifact` reads the artifact before the gate path-safety checks. A malicious `--artifact ../../etc/passwd` would be read+parsed before approveGate's later realpath check.
+   Recommendation: reuse / export gates.ts's path resolver so approve.ts validates the path before readFile.
+
+B. `block-push` — Direct `approve define` can still bind a stale valid SPEC.md from another run. `runApprove` only checks the current phase + parseSpec; if a new DEFINE run fails before runDefine reaches requireGate while an old valid `.code-oz/artifacts/SPEC.md` exists, approve will parse and bind the old artifact for the new run.
+   Recommendation: require a current-run `gate_required` event for the target phase before approval.
+
+C. `block-next-milestone` — The empty-content guard at src/providers/invoke.ts:151 is too broad. The provider contract models `stopReason: 'tool_use'`, `tool_call` events, and optional `response.toolCalls`; a legitimate tool-only turn has empty assistant prose. M5 DEFINE is text-only but M7 BUILD/tool orchestration will need this.
+   Recommendation: allow empty content when `stopReason === 'tool_use'` or `toolCalls` is non-empty.
+
+Verdict: `fix-first`.
+
+Closed in `c31fe0e`:
+- A: `_validateArtifactSyncPath` reused in approve.ts before readFile
+- B: gate_required event check added before parseSpec validation; all test fixtures emit one
+- C: carve-out for stopReason 'tool_use' OR non-empty toolCalls
+
+542 / 542 tests passing after the round-2 fix.
