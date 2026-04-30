@@ -134,6 +134,9 @@ export interface RunnerResultShape {
   readonly exitCode: number | null
   readonly durationMs: number
   readonly truncated?: { readonly stdout: boolean; readonly stderr: boolean }
+  /** Optional byte counts; populated by the production test-runner, ignored by mutation status logic. */
+  readonly stdoutBytes?: number
+  readonly stderrBytes?: number
 }
 
 /**
