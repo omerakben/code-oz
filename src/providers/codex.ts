@@ -131,7 +131,10 @@ export class CodexProvider implements IAgentProvider {
     }
 
     if (result.exitCode === 0) {
-      const out = result.stdout.toLowerCase()
+      // codex login status writes "Logged in using ChatGPT" to stderr (as of
+      // codex-cli ~0.125.0). Some future version might switch to stdout, so
+      // check both streams to be drift-tolerant.
+      const out = (result.stdout + ' ' + result.stderr).toLowerCase()
       if (out.includes('logged in')) {
         return Object.freeze({
           provider: 'codex' as const,
@@ -148,7 +151,7 @@ export class CodexProvider implements IAgentProvider {
         lastError: {
           code: 'provider_auth_missing',
           rule: 'codex login status did not report `logged in`',
-          detail: result.stdout.trim(),
+          detail: (result.stderr.trim() + ' ' + result.stdout.trim()).trim(),
         },
       })
     }

@@ -67,7 +67,7 @@ function throwingRunner(err: Error): Runner {
 }
 
 describe('CodexProvider — health', () => {
-  test('login status with "Logged in" → authStatus ok', async () => {
+  test('login status with "Logged in" on stdout → authStatus ok', async () => {
     const { runner, calls } = makeRecordingRunner({
       stdout: 'Logged in using ChatGPT',
       stderr: '',
@@ -79,6 +79,17 @@ describe('CodexProvider — health', () => {
     expect(h.modelDefaultAvailable).toBe(true)
     expect(calls[0]?.cmd).toBe('codex')
     expect(calls[0]?.args).toEqual(['login', 'status'])
+  })
+
+  test('login status with "Logged in" on stderr → authStatus ok (codex CLI 0.125 writes to stderr)', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: '',
+      stderr: 'Logged in using ChatGPT',
+      exitCode: 0,
+    })
+    const c = new CodexProvider({ runner })
+    const h = await c.health()
+    expect(h.authStatus).toBe('ok')
   })
 
   test('login status with non-"logged in" stdout → authStatus missing', async () => {
