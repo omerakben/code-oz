@@ -9,6 +9,7 @@
 
 import defineSystemPath from './define-system.md' with { type: 'file' }
 import commonRationalizationsPath from './common-rationalizations.md' with { type: 'file' }
+import universalRulesPath from './universal-rules.md' with { type: 'file' }
 
 const ASSET_CACHE = new Map<string, string>()
 
@@ -34,6 +35,15 @@ export async function loadDefineSystemTemplate(): Promise<string> {
 
 export async function loadCommonRationalizations(): Promise<string> {
   return loadAsset(commonRationalizationsPath)
+}
+
+/**
+ * Load the universal rule sheet (CLAUDE.md rule 16). Every persona's
+ * composed prompt must include this. Adding a new persona without injecting
+ * universal-rules.md is a project-rule violation.
+ */
+export async function loadUniversalRules(): Promise<string> {
+  return loadAsset(universalRulesPath)
 }
 
 // --- conversation rendering ----------------------------------------
@@ -86,6 +96,7 @@ const TOKEN_AGENT_BODY = '{{AGENT_BODY}}'
 const TOKEN_RATIONALIZATIONS = '{{COMMON_RATIONALIZATIONS}}'
 const TOKEN_READY_SIGNAL = '{{READY_SIGNAL}}'
 const TOKEN_CONVERSATION = '{{CONVERSATION}}'
+const TOKEN_UNIVERSAL_RULES = '{{UNIVERSAL_RULES}}'
 
 const REQUIRED_TOKENS = [
   TOKEN_AGENT_BODY,
@@ -97,6 +108,13 @@ const REQUIRED_TOKENS = [
 /**
  * Pure composer (no I/O). Caller supplies the loaded assets so this function
  * stays trivially testable.
+ *
+ * universalRules is required per CLAUDE.md rule 16. Optional in the function
+ * signature for a transitional period only — tests that pass nothing get an
+ * empty injection but the canonical caller (`composeDefinePrompt`) loads the
+ * bundled asset and passes it through. M5 templates that have no
+ * `{{UNIVERSAL_RULES}}` token get the rules prepended to the agent body so
+ * the rule's intent ("every persona's prompt imports these") survives.
  */
 export function composeDefinePromptPure(args: {
   readonly templateBody: string
@@ -104,6 +122,7 @@ export function composeDefinePromptPure(args: {
   readonly agentBody: string
   readonly history: readonly AskMeTurn[]
   readonly readySignal: string
+  readonly universalRules?: string
 }): string {
   for (const tok of REQUIRED_TOKENS) {
     if (!args.templateBody.includes(tok)) {
@@ -111,11 +130,20 @@ export function composeDefinePromptPure(args: {
     }
   }
   const conversation = renderConversation(args.history)
+  const rules = args.universalRules?.trim() ?? ''
+  // Prepend rules to the agent body when the template has no
+  // {{UNIVERSAL_RULES}} token (M5 transitional path — define-system.md
+  // predates the token).
+  const agentBodyWithRules =
+    rules.length > 0 && !args.templateBody.includes(TOKEN_UNIVERSAL_RULES)
+      ? `## Universal rules (apply to every persona)\n\n${rules}\n\n${args.agentBody.trim()}`
+      : args.agentBody.trim()
   return args.templateBody
-    .replaceAll(TOKEN_AGENT_BODY, args.agentBody.trim())
+    .replaceAll(TOKEN_AGENT_BODY, agentBodyWithRules)
     .replaceAll(TOKEN_RATIONALIZATIONS, args.commonRationalizations.trim())
     .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
     .replaceAll(TOKEN_CONVERSATION, conversation)
+    .replaceAll(TOKEN_UNIVERSAL_RULES, rules)
 }
 
 /**
@@ -124,9 +152,10 @@ export function composeDefinePromptPure(args: {
  * directly with hand-crafted strings to avoid the cache.
  */
 export async function composeDefinePrompt(input: ComposeDefinePromptInput): Promise<string> {
-  const [templateBody, commonRationalizations] = await Promise.all([
+  const [templateBody, commonRationalizations, universalRules] = await Promise.all([
     loadDefineSystemTemplate(),
     loadCommonRationalizations(),
+    loadUniversalRules(),
   ])
   return composeDefinePromptPure({
     templateBody,
@@ -134,5 +163,6 @@ export async function composeDefinePrompt(input: ComposeDefinePromptInput): Prom
     agentBody: input.agentBody,
     history: input.history,
     readySignal: input.readySignal,
+    universalRules,
   })
 }
