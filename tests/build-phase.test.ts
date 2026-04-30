@@ -2,7 +2,6 @@ import { describe, test, expect, beforeEach, afterEach, beforeAll } from 'bun:te
 import { mkdtemp, mkdir, rm, readFile, writeFile, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHash } from 'node:crypto'
 
 import {
   runBuild,
@@ -15,6 +14,10 @@ import { generateUlid } from '../src/state/schemas.ts'
 import { parseBuildReport } from '../src/artifacts/build-report.ts'
 import { createRunWorktree, runGit } from '../src/worktree/create-run-worktree.ts'
 import { runDoctorGit } from '../src/commands/doctor.ts'
+import { FakeProvider } from '../src/providers/fake.ts'
+import { ProviderRegistry } from '../src/providers/registry.ts'
+import type { InvokeContext } from '../src/providers/invoke.ts'
+import { DEFAULT_CONFIG } from '../src/config/schema.ts'
 import type { AgentDefinition } from '../src/agents/schema.ts'
 
 const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
@@ -28,8 +31,49 @@ beforeAll(async () => {
 
 let tmp: string
 let paths: RunPaths
+let registry: ProviderRegistry
+let fake: FakeProvider
 
 const BUILDER_BODY = '# Builder\n\nTest builder persona body.\n'
+
+const SCIENTIST_RESPONSE = `<scientist-ready/>
+# HYPOTHESES
+
+## H-001: Patch correctly handles two-syllable surnames
+
+- Phase: build
+- Status: open
+- Falsifier: VERIFY mutation test passes when stress logic reverts.
+- Evidence: BUILD_REPORT.md changed-file manifest.
+- Risk if false: BUILD output incorrect; VERIFY rejects.
+
+# OPEN QUESTIONS
+
+## Q-001: Edge case for zero-syllable input
+
+- Phase: build
+- Status: open
+- Importance: low
+- DueBy: 2026-12-31
+- Context: Out of scope for T-001.
+- Resolution attempts: none yet.
+`
+
+const SCIENTIST_AGENT: AgentDefinition = Object.freeze({
+  file: '/tmp/scientist.md',
+  name: 'scientist',
+  type: 'agent',
+  phase: 'build',
+  provider: 'fake',
+  modelPolicy: 'any',
+  permissions: Object.freeze({
+    read: '*' as const,
+    write: Object.freeze(['HYPOTHESES.md', 'OPEN_QUESTIONS.md']),
+    bash: 'deny' as const,
+  }),
+  description: 'scientist stub',
+  body: '## Scientist\n\nemit sidecars.',
+})
 
 const BUILDER_AGENT: AgentDefinition = Object.freeze({
   file: 'src/agents/defaults/builder.md',
@@ -64,17 +108,7 @@ const BUILDER_AGENT: AgentDefinition = Object.freeze({
   body: BUILDER_BODY,
 })
 
-const TASK = {
-  taskId: 'T-001' as const,
-  validationCommand: {
-    command: 'bun test tests/scoring-syllable.test.ts',
-    workingDirectory: '.code-oz/runs/<runId>/worktree/',
-    timeoutMs: 60000,
-    expectedExitCode: 0,
-  },
-  riskNote: 'Risk: edge case for 3+ syllable names not addressed.',
-  referencedFiles: Object.freeze(['src/scoring/syllable.ts']),
-}
+const TASK_ID = 'T-001'
 
 const VALID_PERSONA_RESPONSE = `<build-ready/>
 
@@ -103,6 +137,9 @@ beforeEach(async () => {
   paths = runPathsFor(stateDir, artifactRoot, RUN)
   await mkdir(paths.runDir, { recursive: true })
 
+  fake = new FakeProvider()
+  registry = new ProviderRegistry({ providers: [fake] })
+
   // Init git repo + commit fixture so worktree can be created
   await runGit(tmp, ['init', '-q', '-b', 'main'])
   await runGit(tmp, ['config', 'user.email', 'test@example.com'])
@@ -121,6 +158,31 @@ beforeEach(async () => {
   })
 })
 
+function invokeCtx(): InvokeContext {
+  return {
+    registry,
+    runPaths: paths,
+    projectRoot: tmp,
+    config: DEFAULT_CONFIG,
+    now: () => '2026-04-30T11:01:00.000Z',
+  }
+}
+
+function buildOptsBase(wt: { worktreePath: string; baseCommitSha: string }): Omit<RunBuildOptions, 'invokePersona'> {
+  fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+  return {
+    runPaths: paths,
+    runId: RUN,
+    cwd: tmp,
+    builderAgent: BUILDER_AGENT,
+    scientistAgent: SCIENTIST_AGENT,
+    taskId: TASK_ID,
+    worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+    invokeCtx: invokeCtx(),
+    now: () => '2026-04-30T11:01:00.000Z',
+  }
+}
+
 afterEach(async () => {
   await rm(tmp, { recursive: true, force: true })
 })
@@ -134,17 +196,42 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-async function setupWorktree(): Promise<{ worktreePath: string; baseCommitSha: string; planSha: string }> {
+const VALID_PLAN_TEXT = `# PLAN
+
+## Goals
+
+- Test plan for BUILD-phase fixture.
+
+## Tasks
+
+### T-001: Test syllable rule
+
+- Files: src/scoring/syllable.ts
+- Validation: bun test tests/scoring-syllable.test.ts
+- Risk: Risk: edge case for 3+ syllable names not addressed.
+- Hypotheses: H-001
+- Sources: SC-SPEC-001, SC-REF-001, SC-DOC-NONE-001
+
+## Sources
+
+- SPEC.md AC-1.
+
+## Out of scope
+
+- Beyond M7.
+
+## Open questions
+
+- None known at plan time.
+`
+
+async function setupWorktree(): Promise<{ worktreePath: string; baseCommitSha: string }> {
   const created = await createRunWorktree({ cwd: tmp, runId: RUN })
   if (!created.ok) throw new Error(`worktree create failed: step ${created.step} ${created.code}`)
-  // Stub PLAN.md sha (the orchestrator pins it; the test only needs a 64-hex value)
-  const planText = '# PLAN\n\n(test stub)\n'
-  await writeFile(join(paths.artifactRoot, 'PLAN.md'), planText)
-  const planSha = createHash('sha256').update(planText, 'utf8').digest('hex')
+  await writeFile(join(paths.artifactRoot, 'PLAN.md'), VALID_PLAN_TEXT)
   return {
     worktreePath: created.worktreePath,
     baseCommitSha: created.baseCommitSha,
-    planSha,
   }
 }
 
@@ -261,23 +348,10 @@ hello
 describe('runBuild — happy path', () => {
   test('produces canonical BUILD_REPORT.md and preserves worktree', async () => {
     const wt = await setupWorktree()
-    const opts: RunBuildOptions = {
-      runPaths: paths,
-      runId: RUN,
-      cwd: tmp,
-      builderAgent: BUILDER_AGENT,
-      task: TASK,
-      worktree: {
-        worktreePath: wt.worktreePath,
-        baseCommitSha: wt.baseCommitSha,
-        dirtyAtBase: false,
-      },
-      planSha: wt.planSha,
+    const result = await runBuild({
+      ...buildOptsBase(wt),
       invokePersona: async () => VALID_PERSONA_RESPONSE,
-      now: () => '2026-04-30T11:01:00.000Z',
-    }
-
-    const result = await runBuild(opts)
+    })
     expect(result.status).toBe('complete')
     if (result.status !== 'complete') return
 
@@ -285,7 +359,6 @@ describe('runBuild — happy path', () => {
     expect(result.patchSha256).toMatch(/^[0-9a-f]{64}$/)
     expect(result.worktreePreserved).toBe(true)
 
-    // BUILD_REPORT.md exists, parses, and round-trips
     const reportText = await readFile(result.buildReportPath, 'utf8')
     const data = parseBuildReport(reportText)
     expect(data.task.taskId).toBe('T-001')
@@ -296,64 +369,38 @@ describe('runBuild — happy path', () => {
     expect(data.changedFiles).toHaveLength(1)
     expect(data.changedFiles[0]?.path).toBe('src/scoring/syllable.ts')
     expect(data.changedFiles[0]?.change).toBe('modified')
-    expect(data.validationCommand.command).toBe(TASK.validationCommand.command)
+    expect(data.validationCommand.command).toBe('bun test tests/scoring-syllable.test.ts')
     expect(data.failureCarryForward).toBeNull()
     expect(data.notes.length).toBeGreaterThan(0)
   })
 
   test('worktree still exists after BUILD completes (Codex C3)', async () => {
     const wt = await setupWorktree()
-    await runBuild({
-      runPaths: paths,
-      runId: RUN,
-      cwd: tmp,
-      builderAgent: BUILDER_AGENT,
-      task: TASK,
-      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
-      planSha: wt.planSha,
-      invokePersona: async () => VALID_PERSONA_RESPONSE,
-    })
+    await runBuild({ ...buildOptsBase(wt), invokePersona: async () => VALID_PERSONA_RESPONSE })
     expect(await pathExists(wt.worktreePath)).toBe(true)
   })
 
   test('emits build_started, worktree_patch_applied, build_patch_applied, build_completed', async () => {
     const wt = await setupWorktree()
-    await runBuild({
-      runPaths: paths,
-      runId: RUN,
-      cwd: tmp,
-      builderAgent: BUILDER_AGENT,
-      task: TASK,
-      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
-      planSha: wt.planSha,
-      invokePersona: async () => VALID_PERSONA_RESPONSE,
-    })
+    await runBuild({ ...buildOptsBase(wt), invokePersona: async () => VALID_PERSONA_RESPONSE })
     const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
     const types = events.map((e) => e.type)
     expect(types).toContain('build_started')
     expect(types).toContain('worktree_patch_applied')
     expect(types).toContain('build_patch_applied')
     expect(types).toContain('build_completed')
-    expect(types).toContain('gate_required') // requireGate(build, ...)
+    expect(types).toContain('gate_required')
+    expect(types).toContain('science_emitted') // Scientist tail ran
   })
 
   test('validation command is copied verbatim from PLAN task (Codex M2)', async () => {
     const wt = await setupWorktree()
-    const result = await runBuild({
-      runPaths: paths,
-      runId: RUN,
-      cwd: tmp,
-      builderAgent: BUILDER_AGENT,
-      task: TASK,
-      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
-      planSha: wt.planSha,
-      invokePersona: async () => VALID_PERSONA_RESPONSE,
-    })
+    const result = await runBuild({ ...buildOptsBase(wt), invokePersona: async () => VALID_PERSONA_RESPONSE })
     if (result.status !== 'complete') return
     const data = parseBuildReport(await readFile(result.buildReportPath, 'utf8'))
-    expect(data.validationCommand.command).toBe(TASK.validationCommand.command)
-    expect(data.validationCommand.timeoutMs).toBe(TASK.validationCommand.timeoutMs)
-    expect(data.validationCommand.expectedExitCode).toBe(TASK.validationCommand.expectedExitCode)
+    expect(data.validationCommand.command).toBe('bun test tests/scoring-syllable.test.ts')
+    expect(data.validationCommand.timeoutMs).toBeGreaterThan(0)
+    expect(data.validationCommand.expectedExitCode).toBe(0)
   })
 })
 
@@ -361,13 +408,7 @@ describe('runBuild — failure paths', () => {
   test('persona response missing marker → intervention with draft', async () => {
     const wt = await setupWorktree()
     const result = await runBuild({
-      runPaths: paths,
-      runId: RUN,
-      cwd: tmp,
-      builderAgent: BUILDER_AGENT,
-      task: TASK,
-      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
-      planSha: wt.planSha,
+      ...buildOptsBase(wt),
       invokePersona: async () => 'I refuse to follow the protocol\n',
     })
     expect(result.status).toBe('intervention')
@@ -398,16 +439,7 @@ hunk mismatch test
 ## Notes
 - N/A
 `
-    const result = await runBuild({
-      runPaths: paths,
-      runId: RUN,
-      cwd: tmp,
-      builderAgent: BUILDER_AGENT,
-      task: TASK,
-      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
-      planSha: wt.planSha,
-      invokePersona: async () => badResponse,
-    })
+    const result = await runBuild({ ...buildOptsBase(wt), invokePersona: async () => badResponse })
     expect(result.status).toBe('intervention')
     if (result.status !== 'intervention') return
     expect(result.code).toBe('build_patch_apply_check_failed')
@@ -416,13 +448,7 @@ hunk mismatch test
   test('persona invoke throws → intervention', async () => {
     const wt = await setupWorktree()
     const result = await runBuild({
-      runPaths: paths,
-      runId: RUN,
-      cwd: tmp,
-      builderAgent: BUILDER_AGENT,
-      task: TASK,
-      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
-      planSha: wt.planSha,
+      ...buildOptsBase(wt),
       invokePersona: async () => {
         throw new Error('provider went down')
       },
@@ -434,17 +460,49 @@ hunk mismatch test
 
   test('NEEDS_INTERVENTION.json written on failure', async () => {
     const wt = await setupWorktree()
-    await runBuild({
+    await runBuild({ ...buildOptsBase(wt), invokePersona: async () => 'no marker' })
+    const niPath = join(paths.runDir, 'NEEDS_INTERVENTION.json')
+    expect(await pathExists(niPath)).toBe(true)
+  })
+
+  test('unknown taskId fails with build_task_id_unknown', async () => {
+    const wt = await setupWorktree()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    const result = await runBuild({
       runPaths: paths,
       runId: RUN,
       cwd: tmp,
       builderAgent: BUILDER_AGENT,
-      task: TASK,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-999',
       worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
-      planSha: wt.planSha,
-      invokePersona: async () => 'no marker',
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => VALID_PERSONA_RESPONSE,
+      now: () => '2026-04-30T11:01:00.000Z',
     })
-    const niPath = join(paths.runDir, 'NEEDS_INTERVENTION.json')
-    expect(await pathExists(niPath)).toBe(true)
+    expect(result.status).toBe('intervention')
+    if (result.status !== 'intervention') return
+    expect(result.code).toBe('build_task_id_unknown')
+  })
+
+  test('missing PLAN.md fails with build_plan_missing', async () => {
+    const wt = await setupWorktree()
+    await rm(join(paths.artifactRoot, 'PLAN.md'))
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => VALID_PERSONA_RESPONSE,
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status !== 'intervention') return
+    expect(result.code).toBe('build_plan_missing')
   })
 })

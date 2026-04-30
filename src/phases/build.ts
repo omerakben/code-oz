@@ -16,7 +16,7 @@
 // requestDebate runtime (M10).
 
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile, access } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { AgentDefinition } from '../agents/schema.ts'
@@ -27,8 +27,12 @@ import {
   type BuildReportData,
 } from '../artifacts/build-report.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
+import { parsePlan, type PlanTask } from '../artifacts/plan.ts'
 import { applyAgentPatch } from '../patches/apply-agent-patch.ts'
 import { composeBuildPrompt } from '../prompts/index.ts'
+import { runScientistPhaseTail } from './scientist.ts'
+import { validateScientistSidecars } from './gate-preflight.ts'
+import type { InvokeContext } from '../providers/invoke.ts'
 import {
   appendEvent,
   type EventLogPaths,
@@ -68,38 +72,42 @@ export interface RunBuildOptions {
   readonly runId: string
   readonly cwd: string
   readonly builderAgent: AgentDefinition
-  /** The selected PLAN task to implement (one BUILD attempt = one task). */
-  readonly task: PlanTaskBinding
+  /** Scientist persona — required at BUILD gate per CLAUDE.md rule 15. */
+  readonly scientistAgent: AgentDefinition
+  /** The PLAN task to implement (T-NNN). Orchestrator parses PLAN.md and
+   *  derives validationCommand / risk / files from the task block — the
+   *  caller never supplies them (per Codex M7 review block-push #2 + #3:
+   *  PLAN binding must be enforced from approved PLAN.md, not caller). */
+  readonly taskId: string
   /** Pre-resolved worktree state (worktree must already exist before BUILD). */
   readonly worktree: WorktreeBinding
-  /** sha256 of the PLAN.md content at BUILD entry (preflight pin). */
-  readonly planSha: string
+  /** Wrapper-layer context for invoking Scientist + (in M8+) builder. */
+  readonly invokeCtx: InvokeContext
   /**
-   * Persona-response provider. The orchestrator does not invoke providers
-   * directly here; the runner takes the composed prompt and returns the
-   * persona's response text. This lets the e2e test inject a FakeProvider
-   * response without round-tripping the InvokeContext for M7.
+   * Persona-response shim. M7 simplification — hooking BUILD into the
+   * full InvokeContext tool-use dispatch is M8 work. The runner takes the
+   * composed prompt and returns the persona's response text.
    */
   readonly invokePersona: (composedPrompt: string) => Promise<string>
+  /** Default validation timeout / working directory / exit code when the
+   *  PLAN task does not declare them (PLAN.md task grammar today only
+   *  carries `Validation:` command text). M8 may extend PLAN.md to
+   *  include these fields. */
+  readonly validationDefaults?: ValidationDefaults
   readonly attempt?: number
   readonly fsyncDir?: boolean
   readonly now?: () => string
 }
 
-export interface PlanTaskBinding {
-  readonly taskId: string // T-NNN
-  /** Validation command bullets, copied verbatim from PLAN task block (Codex M2). */
-  readonly validationCommand: {
-    readonly command: string
-    readonly workingDirectory: string
-    readonly timeoutMs: number
-    readonly expectedExitCode: number
-  }
-  /** Risk note from PLAN task — required in BUILD_REPORT.md § Notes. */
-  readonly riskNote: string
-  /** Files the PLAN task says it touches (for drift check). */
-  readonly referencedFiles: readonly string[]
+export interface ValidationDefaults {
+  readonly workingDirectory?: string  // defaults to .code-oz/runs/<runId>/worktree/
+  readonly timeoutMs?: number         // defaults to 60000 (1 minute)
+  readonly expectedExitCode?: number  // defaults to 0
 }
+
+const DEFAULT_VALIDATION_TIMEOUT_MS = 60_000
+const MAX_VALIDATION_TIMEOUT_MS = 600_000  // 10 minutes — bounded per Codex finding #4
+const DEFAULT_VALIDATION_EXIT_CODE = 0
 
 export interface WorktreeBinding {
   /** Absolute path to the run worktree. */
@@ -246,13 +254,29 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
   const attempt = opts.attempt ?? 1
   const eventPaths = eventPathsFor(opts.runPaths)
 
-  // BUILD entry preflight: drift check (per BUILD.md § "BUILD entry preflight").
-  // If the PLAN task references a file absent from the bound base AND not
-  // declared as `added`, abort with build_plan_base_drift. We treat the
-  // referenced file list as authoritative for drift.
+  // BUILD entry preflight: parse PLAN.md, look up task, compute planSha.
+  // Caller may NOT supply task data (per Codex M7 review block-push #2 + #3).
+  const planLoad = await loadPlanAndSelectTask({
+    artifactRoot: opts.runPaths.artifactRoot,
+    taskId: opts.taskId,
+  })
+  if (!planLoad.ok) {
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.builderAgent.name,
+      code: planLoad.code,
+      rule: planLoad.reason,
+      now,
+    })
+    return interventionResult(planLoad.code, planLoad.reason)
+  }
+  const { task, planSha } = planLoad
+
+  // Drift check on PLAN-referenced files (Codex C2).
   const driftCheck = await checkPlanBaseDrift({
     worktreePath: opts.worktree.worktreePath,
-    referencedFiles: opts.task.referencedFiles,
+    referencedFiles: task.files,
   })
   if (!driftCheck.ok) {
     await recordIntervention({
@@ -266,6 +290,15 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     return interventionResult(driftCheck.code, driftCheck.reason)
   }
 
+  // Build the validation-command record from PLAN's task.validation +
+  // orchestrator defaults (Codex M2: command text comes from PLAN; the
+  // other fields are orchestrator-owned).
+  const validationCommand = buildValidationCommand({
+    planValidationCommand: task.validation,
+    worktreePath: opts.worktree.worktreePath,
+    defaults: opts.validationDefaults,
+  })
+
   // Emit build_started.
   await appendEvent(eventPaths, {
     version: 1,
@@ -276,7 +309,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     agent: opts.builderAgent.name,
     attempt,
     baseCommitSha: opts.worktree.baseCommitSha,
-    taskId: opts.task.taskId,
+    taskId: task.id,
   })
 
   // Compose prompt + invoke persona.
@@ -300,7 +333,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
       runId: opts.runId,
       agent: opts.builderAgent.name,
       attempt,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       code: 'build_persona_invoke_failed',
       reason,
       now,
@@ -314,7 +347,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     const draftPath = await preserveBuildDraft({
       cwd: opts.cwd,
       runId: opts.runId,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       attempt,
       content: responseText,
       filename: 'response.draft.md',
@@ -324,7 +357,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
       runId: opts.runId,
       agent: opts.builderAgent.name,
       attempt,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       code: parsed.code,
       reason: parsed.reason,
       now,
@@ -341,7 +374,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
   const apply = await applyAgentPatch({
     cwd: opts.cwd,
     runId: opts.runId,
-    taskId: opts.task.taskId,
+    taskId: task.id,
     attempt,
     patchContent: parsed.patchContent,
   })
@@ -350,7 +383,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     await preserveBuildDraft({
       cwd: opts.cwd,
       runId: opts.runId,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       attempt,
       content: responseText,
       filename: 'response.draft.md',
@@ -366,7 +399,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
         phase: 'build',
         code: apply.code,
         attempt,
-        taskId: opts.task.taskId,
+        taskId: task.id,
         reason: apply.reason,
       })
     }
@@ -375,7 +408,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
       runId: opts.runId,
       agent: opts.builderAgent.name,
       attempt,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       code: apply.code,
       reason: apply.reason,
       now,
@@ -393,7 +426,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     patchSha256: apply.patchSha256,
     patchPath: apply.patchPath,
     attempt,
-    taskId: opts.task.taskId,
+    taskId: task.id,
   })
   await appendEvent(eventPaths, {
     version: 1,
@@ -404,7 +437,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     agent: opts.builderAgent.name,
     patchSha256: apply.patchSha256,
     attempt,
-    taskId: opts.task.taskId,
+    taskId: task.id,
   })
 
   // Compute manifest.
@@ -418,7 +451,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
       runId: opts.runId,
       agent: opts.builderAgent.name,
       attempt,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       code: manifest.code,
       reason: manifest.reason,
       now,
@@ -431,9 +464,9 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
   // (per Codex C1).
   const reportData: BuildReportData = Object.freeze({
     task: {
-      taskId: opts.task.taskId,
+      taskId: task.id,
       title: parsed.title,
-      planSha: opts.planSha,
+      planSha,
       attempt,
     },
     base: {
@@ -447,9 +480,9 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
       patchBytes: apply.patchBytes,
     },
     changedFiles: manifest.entries,
-    validationCommand: opts.task.validationCommand,
+    validationCommand: validationCommand,
     failureCarryForward: null, // M7: always attempt 1 with no prior carry-forward
-    notes: ensureRiskNote(parsed.notes, opts.task.riskNote),
+    notes: ensureRiskNote(parsed.notes, task.risk),
   })
 
   const buildReportText = serializeBuildReport(reportData)
@@ -468,7 +501,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
       runId: opts.runId,
       agent: opts.builderAgent.name,
       attempt,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       code: 'build_report_validation_failed',
       reason: reason.slice(0, 200),
       now,
@@ -479,6 +512,54 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
   // Atomic write.
   const reportPath = join(opts.runPaths.artifactRoot, 'BUILD_REPORT.md')
   await atomicWriteFile(reportPath, buildReportText)
+
+  // Scientist phase-tail (per CLAUDE.md rule 15 + Codex M7 review block-push #1).
+  // Runs against BUILD_REPORT.md as the primary artifact; reads prior
+  // HYPOTHESES.md / OPEN_QUESTIONS.md (set by PLAN tail), emits updates
+  // for BUILD's claims (e.g., "this patch handles X correctly").
+  const tail = await runScientistPhaseTail({
+    invokeCtx: opts.invokeCtx,
+    runPaths: opts.runPaths,
+    runId: opts.runId,
+    agent: opts.scientistAgent,
+    phase: 'build',
+    primaryArtifactPath: reportPath,
+    fsyncDir: opts.fsyncDir ?? false,
+    now,
+  })
+  if (tail.status === 'intervention') {
+    await recordBuildFailure({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.builderAgent.name,
+      attempt,
+      taskId: task.id,
+      code: tail.code,
+      reason: tail.rule,
+      now,
+    })
+    return interventionResult(tail.code, tail.rule)
+  }
+
+  // Gate-preflight: validate Scientist sidecars before requireGate (per
+  // CLAUDE.md rule 15). Mirrors plan.ts's preflight pattern.
+  const sidecarCheck = await validateScientistSidecars({
+    artifactRoot: opts.runPaths.artifactRoot,
+    phase: 'build',
+  })
+  if (!sidecarCheck.ok) {
+    await recordBuildFailure({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.builderAgent.name,
+      attempt,
+      taskId: task.id,
+      code: sidecarCheck.code,
+      reason: sidecarCheck.rule,
+      now,
+    })
+    return interventionResult(sidecarCheck.code, sidecarCheck.rule)
+  }
 
   // Sanity: assert worktree still exists at BUILD completion (per Codex
   // C3 — M7 stops before VERIFY; cleanup must NOT fire here).
@@ -491,7 +572,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
       runId: opts.runId,
       agent: opts.builderAgent.name,
       attempt,
-      taskId: opts.task.taskId,
+      taskId: task.id,
       code: 'build_worktree_destroyed_prematurely',
       reason: 'worktree absent at build_completed; M7 must preserve through VERIFY (M8+)',
       now,
@@ -512,7 +593,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     phase: 'build',
     agent: opts.builderAgent.name,
     attempt,
-    taskId: opts.task.taskId,
+    taskId: task.id,
     changedFileCount: manifest.entries.length,
     buildReportSha256: buildReportSha,
   })
@@ -539,6 +620,70 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
 
 function eventPathsFor(paths: RunPaths): EventLogPaths {
   return { file: paths.eventsFile, lockDir: paths.lockDir }
+}
+
+async function loadPlanAndSelectTask(args: {
+  readonly artifactRoot: string
+  readonly taskId: string
+}): Promise<
+  | { ok: true; task: PlanTask; planSha: string }
+  | { ok: false; code: string; reason: string }
+> {
+  if (!/^T-\d{3,}$/.test(args.taskId)) {
+    return {
+      ok: false,
+      code: 'build_task_id_invalid',
+      reason: `taskId must match /^T-\\d{3,}$/; got ${args.taskId}`,
+    }
+  }
+  const planPath = join(args.artifactRoot, 'PLAN.md')
+  let planText: string
+  try {
+    planText = await readFile(planPath, 'utf8')
+  } catch {
+    return {
+      ok: false,
+      code: 'build_plan_missing',
+      reason: `cannot read PLAN.md at ${planPath}; PLAN must be approved before BUILD`,
+    }
+  }
+  const planSha = createHash('sha256').update(planText, 'utf8').digest('hex')
+  let plan
+  try {
+    plan = parsePlan(planText, planPath)
+  } catch (err) {
+    const reason = (err as Error).message.slice(0, 200)
+    return { ok: false, code: 'build_plan_unparsable', reason }
+  }
+  const task = plan.tasks.find((t) => t.id === args.taskId)
+  if (task === undefined) {
+    return {
+      ok: false,
+      code: 'build_task_id_unknown',
+      reason: `T-NNN ${args.taskId} not found in PLAN.md (tasks: ${plan.tasks.map((t) => t.id).join(', ')})`,
+    }
+  }
+  return { ok: true, task, planSha }
+}
+
+function buildValidationCommand(args: {
+  readonly planValidationCommand: string
+  readonly worktreePath: string
+  readonly defaults?: ValidationDefaults
+}): {
+  readonly command: string
+  readonly workingDirectory: string
+  readonly timeoutMs: number
+  readonly expectedExitCode: number
+} {
+  const requested = args.defaults?.timeoutMs ?? DEFAULT_VALIDATION_TIMEOUT_MS
+  const timeoutMs = Math.min(MAX_VALIDATION_TIMEOUT_MS, Math.max(1, requested))
+  return Object.freeze({
+    command: args.planValidationCommand,
+    workingDirectory: args.defaults?.workingDirectory ?? args.worktreePath,
+    timeoutMs,
+    expectedExitCode: args.defaults?.expectedExitCode ?? DEFAULT_VALIDATION_EXIT_CODE,
+  })
 }
 
 async function checkPlanBaseDrift(args: {

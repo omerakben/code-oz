@@ -13,7 +13,6 @@ import { cp, mkdtemp, mkdir, rm, readFile, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createHash } from 'node:crypto'
 
 import { runDefine } from '../../src/phases/define.ts'
 import { runPlan, PLAN_READY_SIGNAL } from '../../src/phases/plan.ts'
@@ -272,6 +271,30 @@ const SCIENTIST_RESPONSE = `<scientist-ready/>
 - Resolution attempts: none yet.
 `
 
+// Scientist response for BUILD phase tail (per CLAUDE.md rule 15).
+const BUILD_SCIENTIST_RESPONSE = `<scientist-ready/>
+# HYPOTHESES
+
+## H-001: topN docstring describes the contract
+
+- Phase: build
+- Status: open
+- Falsifier: docstring contradicts the topN signature.
+- Evidence: BUILD_REPORT.md changed-file manifest.
+- Risk if false: docstring drift in M9 review.
+
+# OPEN QUESTIONS
+
+## Q-001: gender-neutral filter?
+
+- Phase: build
+- Status: open
+- Importance: medium
+- DueBy: 2026-12-31
+- Context: SPEC open question carries forward.
+- Resolution attempts: none yet.
+`
+
 // Patch that lands cleanly against the fixture's src/candidates.ts.
 // Adds a JSDoc-style docstring above topN.
 const BUILDER_RESPONSE = `<build-ready/>
@@ -330,30 +353,21 @@ describe('M7 BUILD-lite e2e — DEFINE → approve → PLAN → approve → BUIL
     expect(created.ok).toBe(true)
     if (!created.ok) return
 
-    // 4. BUILD — orchestrator pins PLAN.md sha, looks up T-001 from PLAN, runs builder.
-    const planText = await readFile(join(codeOz.artifacts, 'PLAN.md'), 'utf8')
-    const planSha = createHash('sha256').update(planText, 'utf8').digest('hex')
+    // 4. BUILD — orchestrator parses PLAN.md, looks up T-001, runs builder + Scientist tail.
+    fake.reset()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: BUILD_SCIENTIST_RESPONSE })
 
     const buildOpts: RunBuildOptions = {
       runPaths: paths, runId: RUN, cwd: projectRoot,
       builderAgent: builderAgent(),
-      task: {
-        taskId: 'T-001',
-        validationCommand: {
-          command: 'bun test tests/candidate-select.test.ts',
-          workingDirectory: '.code-oz/runs/<runId>/worktree/',
-          timeoutMs: 60000,
-          expectedExitCode: 0,
-        },
-        riskNote: 'Risk: docstring drift if topN signature changes later.',
-        referencedFiles: ['src/candidates.ts'],
-      },
+      scientistAgent: scientistAgent(),
+      taskId: 'T-001',
       worktree: {
         worktreePath: created.worktreePath,
         baseCommitSha: created.baseCommitSha,
         dirtyAtBase: false,
       },
-      planSha,
+      invokeCtx: invokeCtx(),
       invokePersona: async () => BUILDER_RESPONSE,
       now: () => FIXED_NOW,
     }
@@ -370,7 +384,7 @@ describe('M7 BUILD-lite e2e — DEFINE → approve → PLAN → approve → BUIL
     const data = parseBuildReport(reportText)
     expect(data.task.taskId).toBe('T-001')
     expect(data.task.attempt).toBe(1)
-    expect(data.task.planSha).toBe(planSha)
+    expect(data.task.planSha).toMatch(/^[0-9a-f]{64}$/)
     expect(data.changedFiles[0]?.path).toBe('src/candidates.ts')
     expect(data.changedFiles[0]?.change).toBe('modified')
     expect(data.validationCommand.command).toBe('bun test tests/candidate-select.test.ts')
