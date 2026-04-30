@@ -57,6 +57,103 @@ export const M7_REQUIRED_FORENSICS_ENTRIES = [
 ] as const
 
 /**
+ * The three M8 forensics entries appended on a VERIFY-fail attempt
+ * (per docs/contracts/WORKTREE.md § "Forensics extensibility" + the
+ * M8 commit-0 synthesis pin). `attempt-N.patch` is templated by the
+ * `attemptPatchName(n)` helper because the suffix tracks the attempt
+ * number. The M7 layout is never relocated; M8 entries live alongside
+ * the six required names in the same forensics/<N>/ directory.
+ */
+export const M8_FORENSICS_EXTRA_NAMES = Object.freeze({
+  verifyReport: 'VERIFY.md',
+  buildPromptSnapshot: 'build-prompt-snapshot.md',
+  attemptPatchTemplate: 'attempt-<N>.patch',
+} as const)
+
+/** Resolves the templated attempt-patch filename for a given attempt N. */
+export function attemptPatchName(attempt: number): string {
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new Error(`attemptPatchName: attempt must be a positive integer; got ${attempt}`)
+  }
+  return `attempt-${attempt}.patch`
+}
+
+export interface WriteVerifyForensicsBundleOptions {
+  readonly cwd: string
+  readonly runId: string
+  readonly attempt: number
+  readonly baseCommitSha: string
+  readonly stdout: string
+  readonly stderr: string
+  readonly buildReportContent: string
+  readonly manifestText: string
+  readonly promptConstraints: string
+  /** Frozen VERIFY.md content (the persona-authored + orchestrator-validated artifact). */
+  readonly verifyReportContent: string
+  /** Frozen patch content for this attempt (the same patch that BUILD applied). */
+  readonly attemptPatchContent: string
+  /** Snapshot of the BUILD persona prompt that fed this attempt. */
+  readonly buildPromptSnapshot: string
+}
+
+/**
+ * M8-aware forensics writer: invokes writeForensicsBundle with the
+ * three M8 extras populated under their canonical names. Per Codex M8
+ * decision 8 modification, this writer fires within the
+ * orchestrator's locked sequence:
+ *
+ *   write logs → write canonical VERIFY.md → write forensics bundle
+ *   → emit worktree_forensics_preserved → emit verify_failed
+ *   → remove worktree → emit worktree_destroyed
+ *   → emit verify_restart_initiated (or intervention)
+ *
+ * This function only handles the "write forensics bundle" step. The
+ * caller (M8 commit 10) is responsible for event emission ordering
+ * and the worktree removal that follows.
+ */
+export async function writeVerifyForensicsBundle(
+  opts: WriteVerifyForensicsBundleOptions,
+): Promise<WriteForensicsBundleResult> {
+  if (!opts.verifyReportContent.trim()) {
+    return Object.freeze({
+      ok: false as const,
+      code: 'forensics_verify_report_empty',
+      reason: 'verifyReportContent must be non-empty',
+    })
+  }
+  if (!opts.attemptPatchContent.trim()) {
+    return Object.freeze({
+      ok: false as const,
+      code: 'forensics_attempt_patch_empty',
+      reason: 'attemptPatchContent must be non-empty',
+    })
+  }
+  if (!opts.buildPromptSnapshot.trim()) {
+    return Object.freeze({
+      ok: false as const,
+      code: 'forensics_prompt_snapshot_empty',
+      reason: 'buildPromptSnapshot must be non-empty',
+    })
+  }
+  return writeForensicsBundle({
+    cwd: opts.cwd,
+    runId: opts.runId,
+    attempt: opts.attempt,
+    baseCommitSha: opts.baseCommitSha,
+    stdout: opts.stdout,
+    stderr: opts.stderr,
+    buildReportContent: opts.buildReportContent,
+    manifestText: opts.manifestText,
+    promptConstraints: opts.promptConstraints,
+    extras: {
+      [M8_FORENSICS_EXTRA_NAMES.verifyReport]: opts.verifyReportContent,
+      [attemptPatchName(opts.attempt)]: opts.attemptPatchContent,
+      [M8_FORENSICS_EXTRA_NAMES.buildPromptSnapshot]: opts.buildPromptSnapshot,
+    },
+  })
+}
+
+/**
  * Writes the forensics bundle for a failed attempt N. The diff is captured
  * from the live worktree; all other files come from the caller (M8 has
  * already collected them by the time it calls this).
