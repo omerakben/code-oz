@@ -95,4 +95,36 @@ I expected the main risk to be cap composition. The implementation's cap orderin
 
 ---
 
+## Re-review (thread `019de138`, HEAD `a15c44e`)
+
+Verdict: **`fix-first`**. Two bp#3 sub-issues still open + three test/message gaps:
+
+- bp#3 symlink escape — lexical resolve+relative passes a worktree-internal symlink that points outside; `readFile` follows it.
+- bp#3 `Line: 0` — `range.end > lineCount` is false for any positive lineCount, so `Line: 0` survives.
+- bp#4 phase-level test gap — registry-tests lock the constructor, but a regression to static `familyOf()` in build.ts/review.ts would silently pass under default identity mapping.
+- fs#2 message branching gap — the resume-mismatch intervention always says "no review_round_completed event" even when the actual cause is sha_mismatch.
+- fs#2 fyi: migration risk on stale events.jsonl files (no production runs to migrate; can document and accept).
+
+Closure summary: bp#1, bp#2, bp#4 (source), fs#1, fs#2 (event-binding) closed. bp#3 + bp#4 phase-level + fs#2 message branching still open.
+
+---
+
+## Re-review #2 (thread `019de140`, HEAD `100b9da`)
+
+Verdict: **`push`**.
+
+Closure-by-closure:
+
+1. **bp#3 symlink escape** — closed at [`src/phases/review.ts:1444-1528`](../../src/phases/review.ts#L1444). Realpath both worktree root and resolved file before `readFile`; canonical-prefix check rejects symlink escapes. Regression test creates a real symlink escape at [`tests/review-phase.test.ts:890`](../../tests/review-phase.test.ts#L890).
+2. **bp#3 `Line: 0`** — closed at [`src/phases/review.ts:1540`](../../src/phases/review.ts#L1540). Lower-bound check (`range.start < 1`) runs before the upper-bound. Test at [`tests/review-phase.test.ts:861`](../../tests/review-phase.test.ts#L861).
+3. **bp#4 phase-level wiring** — closed. BUILD records family via `opts.invokeCtx.registry.familyOf(...)` at [`src/phases/build.ts:678`](../../src/phases/build.ts#L678); REVIEW uses the same registry authority at [`src/phases/review.ts:567`](../../src/phases/review.ts#L567). Phase-level override test at [`tests/review-phase.test.ts:517`](../../tests/review-phase.test.ts#L517) uses `familyOverrides: { codex: 'claude' }` to lock the wiring.
+4. **fs#2 sha mismatch message branching** — closed. `probeReviewResume` returns reason at [`src/phases/review-resume.ts:150`](../../src/phases/review-resume.ts#L150); `runReview` branches the operator-facing message at [`src/phases/review.ts:523`](../../src/phases/review.ts#L523). Test at [`tests/review-phase.test.ts:1107`](../../tests/review-phase.test.ts#L1107).
+5. **fs#2 event/artifact binding + migration risk** — acceptable for tag. Field is schema-required + validator-enforced; migration fyi documented in commit 100b9da (no production runs to migrate; M9 is the first tag).
+
+Validation: `bun run typecheck` passed under read-only sandbox.
+
+**Tag `v0.9.0-alpha.0` is approved.**
+
+---
+
 End of review.
