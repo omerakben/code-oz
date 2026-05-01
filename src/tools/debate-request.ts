@@ -40,6 +40,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative } from 'node:path'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import {
+  parseBriefing,
   parseDecision,
   parseResponse,
   serializeBriefing,
@@ -242,7 +243,6 @@ async function* run(
 
   type PrepResult =
     | { kind: 'fresh'; allowedFiles: readonly string[]; previewSha256: string; briefingSha256: string }
-    | { kind: 'resume-opposing'; allowedFiles: readonly string[]; briefingSha256: string; previewSha256: string }
     | {
         kind: 'resume-synthesis'
         allowedFiles: readonly string[]
@@ -260,7 +260,14 @@ async function* run(
 
       const priorStarted = events.find(
         (e) => e.type === 'debate_started' && (e as { topic?: string }).topic === req.topic,
-      ) as (LoggedEvent & { topic: string; briefingSha256: string; opposingProvider: ProviderId }) | undefined
+      ) as
+        | (LoggedEvent & {
+            topic: string
+            briefingSha256: string
+            manifestPreviewSha256: string
+            opposingProvider: ProviderId
+          })
+        | undefined
       const priorResolved = events.find(
         (e) => e.type === 'debate_resolved' && (e as { topic?: string }).topic === req.topic,
       ) as (LoggedEvent & { topic: string }) | undefined
@@ -276,8 +283,20 @@ async function* run(
       }
 
       // D8 resume path: same topic has prior debate_started but no
-      // debate_resolved. Validate briefing-sha + provider-suffix; detect
-      // RESPONSE presence; resume from synthesis if RESPONSE is valid.
+      // debate_resolved. Per Codex CODEX_REVIEW_M10.md round-2 bp#4 + bp#5:
+      //   - resume only fires for the canonical D8 case (BRIEFING +
+      //     RESPONSE present + DECISION absent → re-invoke synthesis).
+      //   - the "RESPONSE absent" sub-case is indistinguishable from an
+      //     in-flight concurrent debate without process-liveness probing,
+      //     so we reject it as concurrent rather than racing the opponent
+      //     turn (closes bp#4).
+      //   - file manifest on resume comes from the sha-checked BRIEFING.md
+      //     frontmatter, NOT from req.files. The original session's
+      //     manifest-preview gate already approved those files; the resume
+      //     session must not be able to expand the file set (closes bp#5).
+      //   - DECISION-present orphan check fires before RESPONSE check
+      //     so a completed-but-unresolved state cannot fall through to
+      //     resume-from-synthesis (closes fs#4).
       if (priorStarted !== undefined) {
         if (priorStarted.opposingProvider !== req.opposingProvider) {
           throw providerError(
@@ -311,94 +330,61 @@ async function* run(
           )
         }
 
-        // Surface "what files were on the BRIEFING.md manifest" for the
-        // synthesis turn. Re-build the preview deterministically from
-        // req.files so the read scope of the synthesis turn matches what
-        // the original session would have surfaced. The preview is
-        // re-written in case it was lost; sha-binding uses the rewritten
-        // value (post-resume preview is informational only).
-        let previewOnResume
-        try {
-          previewOnResume = await buildDebateManifestPreview({
-            topic: req.topic,
-            callerProvider,
-            callerFamily,
-            opposingProvider: req.opposingProvider,
-            opposingFamily,
-            files: req.files.map((f) => f.path),
-            projectRoot: req.projectRoot,
-            date: req.date,
-          })
-        } catch (err) {
-          if (err instanceof IgnorePolicyError) {
-            throw providerError(
-              'debate_manifest_blocked',
-              `ignore-policy fail-closed on resume: ${err.message}`,
-              [
-                'fix .code-ozignore syntax issues before resuming',
-                'unsupported gitignore syntax fails closed; only the documented subset is allowed',
-              ],
-            )
-          }
-          throw err
-        }
-        if (previewOnResume.blockedFiles.length > 0) {
+        // Orphan-DECISION check (fs#4): runs before RESPONSE so a
+        // completed-but-unresolved state cannot fall through.
+        if (existsSync(decisionPath)) {
           throw providerError(
-            'debate_manifest_blocked',
-            `${previewOnResume.blockedFiles.length} file(s) now blocked by ignore-policy on resume`,
+            'debate_topic_collision',
+            `debate '${req.topic}' has DECISION.md on disk but no debate_resolved event; orphaned terminal state`,
             [
-              'manifest changed since original briefing; reconcile .code-ozignore or pick a new topic',
+              'investigate state corruption: DECISION should always be paired with debate_resolved',
+              'pick a new topic slug to make forward progress',
             ],
           )
         }
 
-        // RESPONSE present? If so, validate before declaring resume.
-        if (existsSync(responsePath)) {
-          const existingResponseRaw = await readFile(responsePath, 'utf8')
-          let existingResponse: ResponseDoc
-          try {
-            existingResponse = parseResponse(existingResponseRaw, opposingSide)
-          } catch (err: unknown) {
-            throw providerError(
-              'debate_response_invalid',
-              `RESPONSE.${opposingSide}.md failed parse on resume`,
-              [
-                'the persisted RESPONSE.md is corrupt; restore from backup or pick a new topic',
-                'intervention beats replay (D8 lock)',
-              ],
-              err instanceof Error ? err.message : String(err),
-            )
-          }
-          // DECISION present? If so, this is a "previously completed but
-          // debate_resolved was never appended" state — extremely rare,
-          // and we treat it as collision because the next caller cannot
-          // reason about it (no audit trail confirming completion).
-          if (existsSync(decisionPath)) {
-            throw providerError(
-              'debate_topic_collision',
-              `debate '${req.topic}' has DECISION.md on disk but no debate_resolved event; orphaned terminal state`,
-              [
-                'investigate state corruption: DECISION should always be paired with debate_resolved',
-                'pick a new topic slug to make forward progress',
-              ],
-            )
-          }
-          return {
-            kind: 'resume-synthesis' as const,
-            allowedFiles: previewOnResume.allowedFiles,
-            briefingSha256: onDiskBriefingSha,
-            previewSha256: previewOnResume.sha256,
-            existingResponse,
-            existingResponseRaw,
-          }
+        // bp#4: no RESPONSE means either a still-running debate or a
+        // crash-before-RESPONSE. Without process-liveness detection we
+        // cannot distinguish; the safe default is to fail with the
+        // concurrent-limit error so the operator can investigate.
+        if (!existsSync(responsePath)) {
+          throw providerError(
+            'debate_concurrent_limit_exceeded',
+            `debate '${req.topic}' has prior debate_started but no RESPONSE.${opposingSide}.md yet (in-flight debate or crash-before-RESPONSE)`,
+            [
+              'wait for the in-flight debate to complete, or remove the topic dir if the prior process is dead',
+              `expected RESPONSE.${opposingSide}.md at ${responsePath}`,
+            ],
+          )
         }
 
-        // RESPONSE absent → resume from opposing turn.
+        // Canonical D8 resume case: BRIEFING + RESPONSE present, DECISION
+        // absent. Parse the existing artifacts, derive allowedFiles from
+        // the SHA-checked BRIEFING.md (bp#5), and resume from synthesis.
+        const briefingDoc = parseBriefing(onDiskBriefing, briefingPath)
+        const allowedFromBriefing = briefingDoc.frontmatter.files
+        const existingResponseRaw = await readFile(responsePath, 'utf8')
+        let existingResponse: ResponseDoc
+        try {
+          existingResponse = parseResponse(existingResponseRaw, opposingSide)
+        } catch (err: unknown) {
+          throw providerError(
+            'debate_response_invalid',
+            `RESPONSE.${opposingSide}.md failed parse on resume`,
+            [
+              'the persisted RESPONSE.md is corrupt; restore from backup or pick a new topic',
+              'intervention beats replay (D8 lock)',
+            ],
+            err instanceof Error ? err.message : String(err),
+          )
+        }
         return {
-          kind: 'resume-opposing' as const,
-          allowedFiles: previewOnResume.allowedFiles,
+          kind: 'resume-synthesis' as const,
+          allowedFiles: allowedFromBriefing,
           briefingSha256: onDiskBriefingSha,
-          previewSha256: previewOnResume.sha256,
+          previewSha256: priorStarted.manifestPreviewSha256,
+          existingResponse,
+          existingResponseRaw,
         }
       }
 

@@ -113,4 +113,24 @@ This violates D12 and weakens D9 privacy controls.
 
 All `block-push` + `fix-soon` findings are closed per the no-tech-debt-at-milestone-close rule. Only n#1 (deferable per Codex) remains open.
 
-**Re-validation:** 1805 tests pass / 1 skip / 0 fail (was 1795 before fixes; +10 regression tests added). Typecheck clean.
+**Re-validation (round 1 fixes):** 1805 tests pass / 1 skip / 0 fail. Typecheck clean.
+
+## Round 2 review (re-review of fixes)
+
+**Thread:** `019de42e-ee97-7b52-8b1f-0d0db4f46fcc`
+**Date:** 2026-05-01
+**Verdict:** `fix-first`
+
+Codex re-reviewed the round-1 closures and found three NEW findings, all clustered around the resume-opposing branch I added on top of D8.
+
+| Finding | Severity | What | Status | Closed in |
+|---|---|---|---|---|
+| bp#4 | block-push | An active in-flight debate is indistinguishable from a crash-resume case. After caller 1 appends `debate_started` and releases the run lock, but before writing RESPONSE, caller 2 sees `priorStarted + no RESPONSE` → enters resume-opposing → both call the provider. bp#3 is not fully closed. | **closed** | Removed the resume-opposing branch entirely. `priorStarted && !existsSync(responsePath)` now rejects as `debate_concurrent_limit_exceeded`. The safe default is operator investigation, not racing the in-flight session. |
+| bp#5 | block-push | Resume revalidation rebuilt the manifest from current `req.files`, not from the SHA-bound original BRIEFING.md / MANIFEST.preview.md. A resume after `debate_started` could send a different file set to the opponent than the signed briefing recorded. | **closed** | Resume now parses the SHA-checked BRIEFING.md and uses `frontmatter.files` as the only allowed file list. `req.files` is ignored on resume. The manifest preview sha is read from the prior `debate_started` event (no rebuild). |
+| fs#4 | fix-soon | DECISION orphan detection was nested under `existsSync(responsePath)`. If DECISION existed without RESPONSE (corruption), the code fell through to resume-opposing instead of collision. | **closed** | DECISION-orphan check fires immediately after BRIEFING sha-validation, before the RESPONSE check. |
+
+**Re-validation (round 2 fixes):** 1808 tests pass / 1 skip / 0 fail (3 new regression tests for bp#4, bp#5, fs#4). Typecheck clean.
+
+## Round 3 expected verdict: `push`
+
+The remaining open finding is n#1 (line-anchored tag detection in `extractDebateRequest`), which Codex marked as deferable.

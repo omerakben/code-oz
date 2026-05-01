@@ -448,6 +448,123 @@ describe('parseDecision — fs#2 opposing_verdict mismatch', () => {
   })
 })
 
+describe('requestDebate — bp#4 in-flight or crashed-before-RESPONSE rejects', () => {
+  test('priorStarted + no RESPONSE rejects as debate_concurrent_limit_exceeded', async () => {
+    fake
+      .expect({ phase: 'plan', agent: 'debate-opponent' })
+      .respondWith({ content: VALID_RESPONSE_MD })
+    fake.expect({ phase: 'plan', agent: 'lead-test' }).respondWith({ content: VALID_DECISION_MD })
+    const runner1 = requestDebate(invokeCtx(), makeRequest())
+    for await (const _ev of runner1) { /* drain */ }
+
+    // Simulate "in-flight": rip RESPONSE.codex.md AND DECISION.md AND
+    // debate_resolved event. priorStarted persists; no RESPONSE on disk.
+    const debateDir = join(paths.runDir, 'artifacts', 'debates', 'plan-source-priority')
+    await rm(join(debateDir, 'RESPONSE.codex.md'))
+    await rm(join(debateDir, 'DECISION.md'))
+    const eventsRaw = await readFile(paths.eventsFile, 'utf8')
+    const filtered = eventsRaw
+      .split('\n')
+      .filter((line) => !line.includes('"debate_resolved"'))
+      .join('\n')
+    await writeFile(paths.eventsFile, filtered)
+
+    // Re-fire — should reject as concurrent limit (cannot distinguish
+    // crashed-before-RESPONSE from a still-running debate without
+    // process-liveness probing).
+    const runner2 = requestDebate(invokeCtx(), makeRequest())
+    let threw: ProviderError | null = null
+    try {
+      for await (const _ev of runner2) { /* drain */ }
+    } catch (err) {
+      threw = err as ProviderError
+    }
+    expect(threw?.issues[0]?.code).toBe('debate_concurrent_limit_exceeded')
+    expect(threw?.issues[0]?.rule).toContain('crash-before-RESPONSE')
+  })
+})
+
+describe('requestDebate — bp#5 resume binds files to sha-checked BRIEFING.md', () => {
+  test('resume-synthesis allowed-files come from BRIEFING.md frontmatter, not req.files', async () => {
+    // Stage a real file so the manifest validates.
+    await mkdir(join(tmp, 'src'), { recursive: true })
+    await writeFile(join(tmp, 'src/x.ts'), 'export const x = 1\n')
+    await writeFile(join(tmp, 'src/y.ts'), 'export const y = 2\n')
+
+    fake
+      .expect({ phase: 'plan', agent: 'debate-opponent' })
+      .respondWith({ content: VALID_RESPONSE_MD })
+    fake.expect({ phase: 'plan', agent: 'lead-test' }).respondWith({ content: VALID_DECISION_MD })
+
+    // Original session: BRIEFING.md captures only src/x.ts.
+    const originalRunner = requestDebate(
+      invokeCtx(),
+      makeRequest({ files: [{ path: 'src/x.ts' }] }),
+    )
+    for await (const _ev of originalRunner) { /* drain */ }
+    expect(originalRunner.result()).not.toBeNull()
+
+    // Crash AFTER RESPONSE persisted but BEFORE DECISION.
+    const debateDir = join(paths.runDir, 'artifacts', 'debates', 'plan-source-priority')
+    await rm(join(debateDir, 'DECISION.md'))
+    const eventsRaw = await readFile(paths.eventsFile, 'utf8')
+    const filtered = eventsRaw
+      .split('\n')
+      .filter((line) => !line.includes('"debate_resolved"'))
+      .join('\n')
+    await writeFile(paths.eventsFile, filtered)
+
+    // Resume session attempts to ADD a file via req.files. BRIEFING.md
+    // already pinned src/x.ts; the resume must NOT honor src/y.ts.
+    fake.expect({ phase: 'plan', agent: 'lead-test' }).respondWith({ content: VALID_DECISION_MD })
+    const resumeRunner = requestDebate(
+      invokeCtx(),
+      makeRequest({ files: [{ path: 'src/x.ts' }, { path: 'src/y.ts' }] }),
+    )
+    for await (const _ev of resumeRunner) { /* drain */ }
+    const result = resumeRunner.result()
+    expect(result).not.toBeNull()
+
+    // BRIEFING.md still lists only src/x.ts (not tampered).
+    const briefingText = await readFile(join(debateDir, 'BRIEFING.md'), 'utf8')
+    expect(briefingText).toContain('src/x.ts')
+    expect(briefingText).not.toContain('src/y.ts')
+  })
+})
+
+describe('requestDebate — fs#4 DECISION-orphan check fires before RESPONSE', () => {
+  test('priorStarted + DECISION present + RESPONSE absent → collision (orphan)', async () => {
+    fake
+      .expect({ phase: 'plan', agent: 'debate-opponent' })
+      .respondWith({ content: VALID_RESPONSE_MD })
+    fake.expect({ phase: 'plan', agent: 'lead-test' }).respondWith({ content: VALID_DECISION_MD })
+    const runner1 = requestDebate(invokeCtx(), makeRequest())
+    for await (const _ev of runner1) { /* drain */ }
+
+    // Simulate corrupted state: DECISION.md still present, RESPONSE.md
+    // gone (impossible with atomic writes but the parser must guard
+    // against it). debate_resolved event removed.
+    const debateDir = join(paths.runDir, 'artifacts', 'debates', 'plan-source-priority')
+    await rm(join(debateDir, 'RESPONSE.codex.md'))
+    const eventsRaw = await readFile(paths.eventsFile, 'utf8')
+    const filtered = eventsRaw
+      .split('\n')
+      .filter((line) => !line.includes('"debate_resolved"'))
+      .join('\n')
+    await writeFile(paths.eventsFile, filtered)
+
+    const runner2 = requestDebate(invokeCtx(), makeRequest())
+    let threw: ProviderError | null = null
+    try {
+      for await (const _ev of runner2) { /* drain */ }
+    } catch (err) {
+      threw = err as ProviderError
+    }
+    expect(threw?.issues[0]?.code).toBe('debate_topic_collision')
+    expect(threw?.issues[0]?.rule).toContain('orphan')
+  })
+})
+
 describe('requestDebate — fs#1 IgnorePolicyError surfaces as debate_manifest_blocked', () => {
   test('unsupported .code-ozignore syntax fails closed and wraps as ProviderError', async () => {
     // .code-ozignore with a negation pattern (unsupported per D6 lock).
