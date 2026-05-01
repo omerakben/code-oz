@@ -43,7 +43,6 @@ import { withLock } from '../state/lock.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import { computeManifest } from '../worktree/manifest.ts'
 import { runPaths as worktreeRunPaths, buildDraftsAttemptPath } from '../worktree/paths.ts'
-import { familyOf } from '../providers/families.ts'
 import type { ProviderId } from '../providers/types.ts'
 
 // --- public API ----------------------------------------------------
@@ -667,11 +666,15 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     buildReportSha256: buildReportSha,
   })
 
-  // M9 substrate (CODEX_RESPONSE_M9.md decision 5): record the BUILD
-  // adapter's resolved provider id + family + model durably so REVIEW's
-  // invocation-time check can compare BUILD family to reviewer adapter
-  // family without re-deriving either. familyOf() shares its lookup with
-  // src/agents/loader.ts's load-time enforcement.
+  // M9 substrate (CODEX_RESPONSE_M9.md decision 5 + commit 13 bp#4):
+  // record the BUILD adapter's RESOLVED provider id + family + model
+  // durably so REVIEW's invocation-time check can compare BUILD family
+  // to reviewer adapter family without re-deriving either. The family
+  // comes from the runtime ProviderRegistry (which validates
+  // adapter.family vs familyOf(adapter.id) at construction), not from
+  // the static familyOf() — so a misregistered adapter that would
+  // launder cross-family is rejected at registry construction, and
+  // the recorded family is the one REVIEW will compare against.
   await appendEvent(eventPaths, {
     version: 1,
     type: 'build_provider_recorded',
@@ -681,7 +684,7 @@ export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
     attempt,
     taskId: task.id,
     provider: opts.builderAgent.provider,
-    family: familyOf(opts.builderAgent.provider as ProviderId),
+    family: opts.invokeCtx.registry.familyOf(opts.builderAgent.provider as ProviderId),
     ...(opts.builderAgent.model !== undefined ? { model: opts.builderAgent.model } : {}),
   })
 

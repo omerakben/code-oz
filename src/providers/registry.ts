@@ -34,17 +34,8 @@ export class ProviderRegistry {
   private readonly familyById: ReadonlyMap<ProviderId, ProviderFamily>
 
   constructor(opts: ProviderRegistryOptions) {
-    const providersById = new Map<ProviderId, IAgentProvider>()
-    for (const provider of opts.providers) {
-      if (providersById.has(provider.id)) {
-        throw new Error(
-          `ProviderRegistry: duplicate provider id ${JSON.stringify(provider.id)}`,
-        )
-      }
-      providersById.set(provider.id, provider)
-    }
-    this.providersById = providersById
-
+    // Resolve familyById FIRST so the adapter validation below can use
+    // the canonical lookup with overrides applied.
     const familyById = new Map<ProviderId, ProviderFamily>()
     for (const id of Object.keys(DEFAULT_FAMILY_BY_ID) as ProviderId[]) {
       familyById.set(id, DEFAULT_FAMILY_BY_ID[id])
@@ -57,6 +48,33 @@ export class ProviderRegistry {
       }
     }
     this.familyById = familyById
+
+    const providersById = new Map<ProviderId, IAgentProvider>()
+    for (const provider of opts.providers) {
+      if (providersById.has(provider.id)) {
+        throw new Error(
+          `ProviderRegistry: duplicate provider id ${JSON.stringify(provider.id)}`,
+        )
+      }
+      // M9 commit 13 bp#4 (Codex review): adapter.family must match the
+      // registry-resolved family for adapter.id. Without this check, a
+      // misregistered adapter (e.g., declares family='codex' but is
+      // registered under id='claude') could launder cross-family REVIEW
+      // — REVIEW's invocation-time check compares families derived
+      // from the recorded adapter id, not the adapter's own declared
+      // family. Honor familyOverrides when present (test seams + W3+
+      // when adapters legitimately share families).
+      const expectedFamily = familyById.get(provider.id)
+      if (expectedFamily !== undefined && provider.family !== expectedFamily) {
+        throw new Error(
+          `ProviderRegistry: adapter for id ${JSON.stringify(provider.id)} declares family ` +
+            `${JSON.stringify(provider.family)} but the registry resolved family ${JSON.stringify(expectedFamily)}. ` +
+            `Cross-family REVIEW would be laundered. Either correct the adapter's declared family or supply a familyOverrides entry.`,
+        )
+      }
+      providersById.set(provider.id, provider)
+    }
+    this.providersById = providersById
   }
 
   /**

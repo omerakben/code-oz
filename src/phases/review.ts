@@ -104,7 +104,6 @@ import {
   type ReviewRemediationDecision,
 } from './review-remediation.ts'
 import type { BuildReportCarryForward } from '../artifacts/build-report.ts'
-import { familyOf } from '../providers/families.ts'
 import type { ProviderId } from '../providers/types.ts'
 import {
   appendEvent,
@@ -551,7 +550,14 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
       `events.jsonl has no build_provider_recorded for taskId=${opts.taskId} attempt=${attempt}`,
     )
   }
-  const reviewerFamily = familyOf(opts.reviewerAgent.provider as ProviderId)
+  // M9 commit 13 bp#4 (Codex review): use the runtime ProviderRegistry's
+  // family lookup (which validates adapter.family vs familyOf(adapter.id)
+  // at registration), not the static familyOf(). This closes the
+  // misregistered-adapter laundering hole — both BUILD and REVIEW now
+  // compare registry-resolved families.
+  const reviewerFamily = opts.invokeCtx.registry.familyOf(
+    opts.reviewerAgent.provider as ProviderId,
+  )
   if (buildFamily === reviewerFamily) {
     return recordReviewIntervention(
       ictx,
