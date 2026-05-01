@@ -32,6 +32,7 @@ import type {
   ProviderId,
 } from '../src/providers/types.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
+import { capabilityOf, type ProviderCapability } from '../src/providers/capabilities.ts'
 import { ProviderError } from '../src/providers/errors.ts'
 import type { InvokeContext } from '../src/providers/invoke.ts'
 import { requestDebate } from '../src/tools/debate-request.ts'
@@ -66,13 +67,16 @@ const DEFAULT_CONFIG = {
 class ProxyAdapter implements IAgentProvider {
   readonly id: ProviderId
   readonly family: ProviderFamily
+  readonly capability: ProviderCapability
   constructor(
     id: ProviderId,
     family: ProviderFamily,
     private readonly backing: FakeProvider,
+    capability: ProviderCapability = capabilityOf(id),
   ) {
     this.id = id
     this.family = family
+    this.capability = capability
   }
   invoke(req: PreparedProviderRequest): AsyncIterable<ProviderEvent> {
     return this.backing.invoke(req)
@@ -264,7 +268,14 @@ describe('requestDebate — bp#1 generic permission enforcement', () => {
   })
 
   test('rejects opposingProvider not in declared list', async () => {
-    const caller = makeCallerAgent({ opposingProviders: ['gemini'] as readonly ProviderId[] })
+    // M11 update: this fixture used to declare opposingProviders=['gemini']
+    // to test "requested opposingProvider not in declared list" by
+    // requesting codex. After M11 (CODEX_REVIEW_M11.md bp#1) gemini
+    // would fail at the loader for phase ineligibility; this test
+    // bypasses the loader to exercise requestDebate's runtime check
+    // directly, but the fixture is updated to use 'fake' (eligible
+    // for every phase, still a not-in-list distinct family from codex).
+    const caller = makeCallerAgent({ opposingProviders: ['fake'] as readonly ProviderId[] })
     const runner = requestDebate(
       invokeCtx(),
       makeRequest({ caller, opposingProvider: 'codex' }),
@@ -387,21 +398,26 @@ describe('requestDebate — bp#2 D8 sha-bound resume', () => {
     await writeFile(paths.eventsFile, filtered)
 
     // Re-fire with a different opposingProvider; persona allows both.
+    // M11 update: this used gemini before CODEX_REVIEW_M11.md bp#1
+    // closed the synthetic-debate-opponent eligibility bypass. The
+    // unit test bypasses the loader to exercise requestDebate runtime
+    // collision behavior, but the fixture should not normalize
+    // gemini-as-eligible-opposing — it's not eligible for any phase
+    // in v0.1. Replaced with `fake` (different family from codex,
+    // eligible for every phase).
     const callerWithBoth = makeCallerAgent({
-      opposingProviders: ['codex', 'gemini'] as readonly ProviderId[],
+      opposingProviders: ['codex', 'fake'] as readonly ProviderId[],
     })
-    // Register gemini adapter so registry.familyOf doesn't throw.
     registry = new ProviderRegistry({
       providers: [
         fake,
         new ProxyAdapter('claude', 'claude', fake),
         new ProxyAdapter('codex', 'codex', fake),
-        new ProxyAdapter('gemini', 'gemini', fake),
       ],
     })
     const runner2 = requestDebate(
       invokeCtx(),
-      makeRequest({ caller: callerWithBoth, opposingProvider: 'gemini' }),
+      makeRequest({ caller: callerWithBoth, opposingProvider: 'fake' }),
     )
     let threw: ProviderError | null = null
     try {

@@ -31,6 +31,7 @@ type ProviderFamily = 'claude' | 'codex' | 'gemini' | 'fake'   // == ProviderId 
 interface IAgentProvider {
   readonly id: ProviderId
   readonly family: ProviderFamily
+  readonly capability: ProviderCapability   // M11 — see § "Capability and eligibility (M11)" below
   invoke(req: PreparedProviderRequest): AsyncIterable<ProviderEvent>
   health(): Promise<ProviderHealth>
 }
@@ -289,9 +290,107 @@ Any validation failure is reported as a typed `ProviderError` with `{ code, rule
 - **Holding the per-run lock across a network call.** Always two short locks, never one long lock.
 - **`health()` writing to `events.jsonl` or any gate file.** Doctor runs outside any active run.
 
+## Capability and eligibility (M11)
+
+M11 lands a static `ProviderCapability` record per provider plus a load-time check that an agent's declared `provider` is eligible to run for that agent's declared `phase`. Authority boundary (CLAUDE.md rule 20): provider eligibility. M11 introduces no new persona-side frontmatter, no new runtime surface, and no parallel-provider parallelism (rule 21).
+
+```ts
+type AuthSource =
+  | 'claude-cli-oauth'
+  | 'chatgpt-cli-oauth'
+  | 'gemini-stub'
+  | 'in-process-fake'
+
+interface ProviderCostPerMTok {
+  readonly input: number      // USD per 1M input tokens
+  readonly output: number     // USD per 1M output tokens
+}
+
+interface ProviderRateLimits {
+  readonly requestsPerMinute?: number
+  readonly tokensPerMinute?: number
+  readonly outputTokensPerMinute?: number
+}
+
+interface ProviderCapability {
+  readonly authSource: AuthSource
+  readonly eligiblePhases: readonly AgentPhase[]   // AgentPhase from src/agents/schema.ts
+  readonly costPerMTok?: ProviderCostPerMTok       // advisory; M13 may enforce
+  readonly rateLimits?: ProviderRateLimits         // advisory; M13 may enforce
+}
+```
+
+The shape is **strict-minimal**. Four traits the M11 ROADMAP row originally named (`editSemantics`, `shellSemantics`, `mcpSupport`, `sandboxProfile`) are deliberately *not* on this record. Load-bearing reason: v0.1's `tool_use` runtime is provider-uniform — the wrapper extracts tools from the persona response and applies them in-process (or via orchestrator-side patch application for `write`, or via subprocess for `execute`), regardless of provider. Encoding those traits as TS fields in M11 would mark orchestrator-owned behavior as provider-owned behavior and turn decorative slots into accidental enforcement hooks. Divergent runtime semantics land in W3+ when HTTP adapters arrive (opencode-style OAuth+PKCE for Codex; equivalent for Claude). Until then, those traits live as deferred contract territory in this section's prose; the TS shape stays focused on what is real today (auth source, eligibility) and what feeds future enforcement (advisory cost / rate-limits for M13).
+
+### `authSource` — mechanism, not subscription
+
+`authSource` records the **mechanism** the adapter uses to authenticate, not the user's subscription tier. Max / Plus / Pro are SKU labels outside the code-oz trust boundary and may rebrand. Claude Max users authenticate through `claude login`, which is the same mechanism a hypothetical Claude Pro user would use; both record `authSource: 'claude-cli-oauth'`. This contract does not encode subscription tier.
+
+### Default eligibility (v0.1)
+
+| ProviderId | `authSource` | `eligiblePhases` | Reason |
+|---|---|---|---|
+| `claude` | `'claude-cli-oauth'` | every value in `AGENT_PHASES` | live adapter |
+| `codex` | `'chatgpt-cli-oauth'` | every value in `AGENT_PHASES` | live adapter |
+| `gemini` | `'gemini-stub'` | `[]` (empty) | stub; runtime throws `provider_gemini_not_yet_supported` |
+| `fake` | `'in-process-fake'` | every value in `AGENT_PHASES` | test runtime supports all |
+
+"Eligible" means *the provider may run an agent for this phase*, not *the phase runtime exists*. SHIP and AUDIT are stubbed today; eligibility for them is a forward-compat statement, not a claim about implementation status. Per CLAUDE.md rule 9, the runtime stub is itself the actionable error if a stubbed phase is exercised — eligibility is the load-time gate, not a phase-runtime probe.
+
+`gemini`'s empty list is the rule-20 teeth: a config that names `gemini` as the BUILD provider (or any other phase) fails at agent-load time with `loader_provider_phase_not_eligible`, before any run begins. Today that same misconfig fails later, at runtime CLI spawn (`provider_gemini_not_yet_supported`); M11 moves the failure to load time without changing the surface area of any other provider.
+
+### Cost and rate-limit advisory data
+
+`costPerMTok` and `rateLimits` are **advisory** in M11. Recorded for telemetry; consumed by M13 under the existing `budgets.global` namespace (rule 19 — no parallel namespace). M11 adds no enforcement; raising `budgets.global.maxTokensEstimate` already covers spend ceilings.
+
+Concrete dollar / token values rot quickly. The defaults module (`src/providers/capabilities.ts`) carries dated source comments for every populated value (e.g., `// per CLAUDE.md model reference, 2026-04-30`). When verified data is unavailable, the field is omitted; this contract does not pretend to know current vendor pricing without a source.
+
+### Authority — where capabilities live
+
+`src/providers/capabilities.ts` is the single source of truth: a frozen `DEFAULT_CAPABILITY_BY_ID: Readonly<Record<ProviderId, ProviderCapability>>` table plus a pure `capabilityOf(id): ProviderCapability` function. Same architectural pattern as `src/providers/families.ts` (M9): the load-time loader (`src/agents/loader.ts`) imports `capabilityOf()` directly because no `ProviderRegistry` exists at load time; the runtime registry seeds from the same defaults and layers optional overrides on top.
+
+`ProviderRegistry` gains:
+
+- `capabilityOverrides?: Readonly<Partial<Record<ProviderId, ProviderCapability>>>` constructor field, paralleling `familyOverrides`. Test seam + W3+ seam (when HTTP adapters land with divergent capability records).
+- `capabilityOf(id): ProviderCapability` instance method, seeded from `DEFAULT_CAPABILITY_BY_ID`, layered with overrides.
+- An adapter cross-check at registration time: `adapter.capability` must equal the registry-resolved capability for `adapter.id` under **structural equality** (deep value comparison), mirroring the existing `family` cross-check that prevents misregistered-adapter laundering. Reference equality is brittle for composite objects.
+
+Adapters declare their capability statically, by reading from `capabilityOf(this.id)`. The data does not duplicate across `capabilities.ts` and adapter source.
+
+### Eligibility check (load time)
+
+`src/agents/loader.ts` runs `enforceProviderPhaseEligibility(definitions)` in the existing load chain. For every loaded agent it asserts `capabilityOf(agent.provider).eligiblePhases.includes(agent.phase)`. The same check then walks any persona's `tool_use.debate.opposingProviders` and asserts each declared opposing provider is also eligible for the persona's phase — closing the M10 synthetic-debate-opponent path that would otherwise route a runtime-built `provider: opposing, phase: caller` agent past the load-time gate. Failures aggregate into the existing `AgentLoadError` issues array as `AgentLoadIssue { file, code: 'loader_provider_phase_not_eligible', rule, detail }`. The check runs after schema validation and before bootstrap returns.
+
+`AgentLoadIssue` does **not** carry `actionableSuggestions` in v0.1. M11 does not extend the loader's error shape; the existing `rule` and `detail` fields carry the fix hint (e.g., `rule: "agent's provider is not eligible for the agent's phase"`, `detail: "agent file=src/agents/defaults/builder.md, provider=gemini, phase=build, eligible phases for gemini=[]"`). If a future milestone needs structured suggestions on loader issues, it adds the field deliberately, with its own contract decision.
+
+### Doctor unchanged
+
+`code-oz doctor providers` keeps the M4 contract intact. `health()` remains scoped to auth + model availability; no capability probe. M11 surfaces all eligibility failures at agent-load time, not preflight, not a `--probe` flag. The doctor's exit policy and side-effect-free discipline stay as defined in this document above.
+
+### Forward-compat
+
+- **M12 (company roster)** introduces a config-side `company:` block mapping role → provider+model+budgets+permissions. M12's load-time check reuses `capabilityOf(provider).eligiblePhases.includes(phase)` against the role's chosen phase. No M11 hook required; M12 builds on the existing surface.
+- **M13 (role-cost policy)** consumes `costPerMTok` and `rateLimits` advisory fields under existing `budgets.global` namespace.
+- **M14 (reviewer panel v1)** may derive `phase → ProviderId[]` reverse maps on demand; M11 does not store the reverse direction.
+- **W3 HTTP adapters** introduce divergent `editSemantics` / `shellSemantics` / `mcpSupport` / `sandboxProfile` fields when the runtime stops being provider-uniform. The shape change lands at that milestone's contract.
+
+### Anti-patterns rejected by this M11 spec
+
+- **Calling `ProviderRegistry.capabilityOf()` from agent-load time.** The registry does not exist yet at load time; loader imports pure `capabilityOf()` from `src/providers/capabilities.ts`, mirroring `familyOf()`.
+- **Smuggling `actionableSuggestions` into `AgentLoadIssue`.** Use `rule` and `detail`. Adding the field is a separate contract decision.
+- **Reference equality on capability objects.** Composite `ProviderCapability` requires structural equality; the family check's primitive comparison does not generalize.
+- **Storing a reverse `phase → ProviderId[]` map.** Derive on demand; a stored hybrid will drift and quietly serve M14 before M14 earns it.
+- **Naming the eligibility field "role" or "eligibleRoles".** M11 has no roles; that vocabulary belongs to M12. The check is `(provider, phase)` only.
+- **Encoding subscription tier (Max / Plus / Pro) in the `authSource` enum.** Mechanism only.
+- **Adding `editSemantics` / `shellSemantics` / `mcpSupport` / `sandboxProfile` as v0.1 TS fields.** Decorative slots become accidental enforcement hooks; defer to W3 when divergent runtime semantics arrive.
+- **Per-phase `sandboxProfile` overrides.** Forecloses M12 / M14 role policy; sandboxing in v0.1 is a fact of the upstream CLI invocation, not a per-role decision.
+
+Designed in `docs/research/CODEX_BRIEFING_M11.md` and `docs/research/CODEX_RESPONSE_M11.md` (thread `019de44e-e8a7-7441-9d82-d79a0595f591`); locks in `docs/design/SESSION_M11_KICKOFF.md`.
+
 ## What this file is not
 
 - **Not the M4 implementation plan.** See `docs/design/SESSION_M4_KICKOFF.md` and `docs/design/CODEX_RESPONSE_M4.md` for that.
 - **Not a substitute for reading the upstream templates.** `pi-mono` shaped the streaming model; `Archon` shaped the stateless adapter discipline; `Auto-claude-code-research-in-sleep` shaped the cross-family review primitive. Read those for patterns; this file pins the contract for `code-oz`.
 - **Not the marketplace contract.** Provider-pack distribution is W3+.
 - **Not the Gemini integration design.** Gemini is a stub in v0.1. W3 may flip the adapter to a real implementation; this spec's `provider_gemini_not_yet_supported` code stays.
+- **Not the company roster contract.** M11's eligibility check anchors on `phase`; M12's `company:` block lands the role → provider+model+budgets mapping. Until then, role vocabulary stays out of this contract.

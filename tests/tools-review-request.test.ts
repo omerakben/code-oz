@@ -7,6 +7,7 @@ import { requestReview, type ReviewRequest } from '../src/tools/review-request.t
 import { type InvokeContext } from '../src/providers/invoke.ts'
 import { ProviderError } from '../src/providers/errors.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
+import { capabilityOf, type ProviderCapability } from '../src/providers/capabilities.ts'
 import { collectProviderResponse } from '../src/providers/fake.ts'
 import type {
   IAgentProvider,
@@ -51,6 +52,7 @@ class TestProvider implements IAgentProvider {
     public readonly id: ProviderId,
     public readonly family: ProviderFamily,
     private readonly response: string = 'reviewed',
+    public readonly capability: ProviderCapability = capabilityOf(id),
   ) {}
 
   async *invoke(_req: PreparedProviderRequest): AsyncIterable<ProviderEvent> {

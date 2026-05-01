@@ -96,6 +96,12 @@ describe('tool_use.debate — happy path', () => {
   })
 
   test('multiple opposingProviders permitted (cross-family list)', () => {
+    // M11 update: gemini is no longer valid here because
+    // capabilityOf('gemini').eligiblePhases is []. The cross-family
+    // invariant still holds (claude persona, opposing list contains
+    // only non-claude families), but each entry must also pass the
+    // M11 eligibility check at the loader layer (Codex CODEX_REVIEW_M11.md
+    // bp#1 — closes the synthetic-debate-opponent bypass).
     const reg = buildRegistry({
       defaults: [
         fmFile({
@@ -103,14 +109,14 @@ describe('tool_use.debate — happy path', () => {
           write: ['.code-oz/artifacts/PLAN.md'],
           bash: 'deny',
           tool_use: {
-            debate: { ...VALID_DEBATE, opposingProviders: ['codex', 'gemini'] },
+            debate: { ...VALID_DEBATE, opposingProviders: ['codex', 'fake'] },
           },
         }),
       ],
       overrides: [],
     })
     const d = reg.listAll()[0]?.permissions.tool_use?.debate
-    expect(d?.opposingProviders).toEqual(['codex', 'gemini'])
+    expect(d?.opposingProviders).toEqual(['codex', 'fake'])
   })
 
   test('maxFiles=0 permitted (purely-design debate, no codebase context)', () => {
@@ -251,8 +257,14 @@ describe('tool_use.debate — opposingProviders field', () => {
     ).toThrow(AgentLoadError)
   })
 
-  test('cross-family invariant: persona may debate against any other family', () => {
-    // claude persona, opposing list = [codex, gemini] — both valid
+  test('cross-family invariant: persona may debate against any eligible other family', () => {
+    // claude persona, opposing list = [codex, fake]. M11 update: this
+    // test originally used gemini; per CODEX_REVIEW_M11.md bp#1, gemini
+    // is no longer eligible (capabilityOf('gemini').eligiblePhases=[]),
+    // so the loader rejects it before bootstrap returns. The
+    // cross-family schema invariant is preserved (no entry shares
+    // claude's family); the M11 eligibility check narrows the universe
+    // of valid opposing providers to those declared eligible.
     const reg = buildRegistry({
       defaults: [
         fmFile(
@@ -261,7 +273,7 @@ describe('tool_use.debate — opposingProviders field', () => {
             write: ['.code-oz/artifacts/PLAN.md'],
             bash: 'deny',
             tool_use: {
-              debate: { ...VALID_DEBATE, opposingProviders: ['codex', 'gemini'] },
+              debate: { ...VALID_DEBATE, opposingProviders: ['codex', 'fake'] },
             },
           },
           'claude',

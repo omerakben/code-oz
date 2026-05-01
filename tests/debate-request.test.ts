@@ -19,6 +19,7 @@ import { runPathsFor, initRun, type RunPaths } from '../src/state/run.ts'
 import { FakeProvider } from '../src/providers/fake.ts'
 import type { IAgentProvider, ProviderEvent, ProviderHealth, PreparedProviderRequest, ProviderId, ProviderFamily } from '../src/providers/types.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
+import { capabilityOf, type ProviderCapability } from '../src/providers/capabilities.ts'
 import { ProviderError } from '../src/providers/errors.ts'
 import type { InvokeContext } from '../src/providers/invoke.ts'
 import { requestDebate } from '../src/tools/debate-request.ts'
@@ -148,13 +149,16 @@ const VALID_DECISION_MD = [
 class ProxyAdapter implements IAgentProvider {
   readonly id: ProviderId
   readonly family: ProviderFamily
+  readonly capability: ProviderCapability
   constructor(
     id: ProviderId,
     family: ProviderFamily,
     private readonly backing: FakeProvider,
+    capability: ProviderCapability = capabilityOf(id),
   ) {
     this.id = id
     this.family = family
+    this.capability = capability
   }
   invoke(req: PreparedProviderRequest): AsyncIterable<ProviderEvent> {
     return this.backing.invoke(req)

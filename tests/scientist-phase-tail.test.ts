@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { runScientistPhaseTail } from '../src/phases/scientist.ts'
 import { FakeProvider } from '../src/providers/fake.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
+import { capabilityOf } from '../src/providers/capabilities.ts'
 import type { InvokeContext } from '../src/providers/invoke.ts'
 import type { AgentDefinition } from '../src/agents/schema.ts'
 import { initRun, runPathsFor, type RunPaths } from '../src/state/run.ts'
@@ -295,6 +296,7 @@ describe('runScientistPhaseTail — universal-rules injection (Codex M6 review b
     const observerFake = {
       id: 'fake' as const,
       family: 'fake' as const,
+      capability: capabilityOf('fake'),
       async *invoke(req: { prompt: string }) {
         observedPrompt = req.prompt
         yield { type: 'turn_started' as const, model: 'fake-default' }

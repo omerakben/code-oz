@@ -100,10 +100,62 @@ runs outside any active run; the per-run lock and event log don't exist
 in that context. Provider failures *inside* an active run write gates —
 that's the wrapper's job (see `src/providers/invoke.ts`).
 
+## Capabilities and eligibility (M11)
+
+Every provider declares a static `ProviderCapability` record naming its
+auth source and the phases it is eligible to run an agent for. Eligibility
+is checked at agent-load time, before any run starts. The full TypeScript
+shape and design rationale live in
+[`docs/references/provider-contract.md`](../references/provider-contract.md)
+§ "Capability and eligibility (M11)".
+
+### v0.1 defaults
+
+| Provider | Auth source                | Eligible phases                              |
+|----------|----------------------------|----------------------------------------------|
+| `claude` | `claude-cli-oauth`         | every phase (`define`, `plan`, `build`, `verify`, `review`, `ship`, `audit`) |
+| `codex`  | `chatgpt-cli-oauth`        | every phase                                                                  |
+| `gemini` | `gemini-stub`              | none — stub provider; running it surfaces `provider_gemini_not_yet_supported` at runtime today, and `loader_provider_phase_not_eligible` at agent-load time as of M11 |
+| `fake`   | `in-process-fake`          | every phase (test runtime supports all)                                      |
+
+"Eligible for phase X" means *the provider may run an agent declared with
+`phase: X`*. It does not mean phase X's runtime exists — SHIP and AUDIT
+remain stubbed in v0.1, and exercising them surfaces those stubs as the
+actionable error.
+
+### What M11 does
+
+- Adds `ProviderCapability` as a static per-provider record (`authSource`,
+  `eligiblePhases`, optional advisory `costPerMTok`, optional advisory
+  `rateLimits`).
+- Adds load-time eligibility check: an agent declaring `provider: gemini,
+  phase: build` fails at load time before any run begins, with
+  `loader_provider_phase_not_eligible` aggregated into `AgentLoadError`.
+- Preserves cross-family REVIEW (`registry.familyOf` authority unchanged).
+- Preserves subscription-first auth (`authSource` records the mechanism, not
+  the user's subscription tier).
+- Preserves doctor's contract: `health()` remains side-effect-free and
+  scoped to auth + model availability; no capability probe.
+
+### What M11 does not do
+
+- Does not introduce a company roster, role naming, or role-to-provider
+  routing — those are M12.
+- Does not enforce cost or rate-limit budgets — that is M13 under existing
+  `budgets.global` namespace.
+- Does not encode `editSemantics`, `shellSemantics`, `mcpSupport`, or
+  `sandboxProfile` as v0.1 TypeScript fields. The v0.1 `tool_use` runtime is
+  provider-uniform; those traits become divergent in W3+ when HTTP adapters
+  arrive. They live in the canonical contract as deferred prose.
+- Does not extend `AgentLoadIssue` with `actionableSuggestions` or any
+  provider-error shape. Loader issues use `rule` + `detail`.
+
 ## See also
 
-- [`docs/references/provider-contract.md`](../references/provider-contract.md) — IAgentProvider, request DTOs, ProviderFamily, error codes
+- [`docs/references/provider-contract.md`](../references/provider-contract.md) — IAgentProvider, request DTOs, ProviderFamily, error codes, M11 capability and eligibility
 - [`docs/references/file-based-gates.md`](../references/file-based-gates.md) — NEEDS_INTERVENTION schema; agent_invoked metric fields
 - [`docs/references/agent-skill-format.md`](../references/agent-skill-format.md) — permissions semantics (upper bound, not glob expansion)
 - [`docs/design/CODEX_RESPONSE_M4.md`](../design/CODEX_RESPONSE_M4.md) — the M4 planning round + locked 10-commit order
 - [`docs/design/CODEX_RESPONSE_M4_ADAPTERS.md`](../design/CODEX_RESPONSE_M4_ADAPTERS.md) — the commit-8 adapter shape sub-consultation (subscription-first decision)
+- [`docs/research/CODEX_BRIEFING_M11.md`](../research/CODEX_BRIEFING_M11.md) and [`docs/research/CODEX_RESPONSE_M11.md`](../research/CODEX_RESPONSE_M11.md) — M11 planning-convergence debate (thread `019de44e-e8a7-7441-9d82-d79a0595f591`)
+- [`docs/design/SESSION_M11_KICKOFF.md`](../design/SESSION_M11_KICKOFF.md) — synthesized M11 locks and 4-commit sequence

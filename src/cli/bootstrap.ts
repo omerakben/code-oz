@@ -16,6 +16,7 @@ import { loadBundledDefaults } from '../agents/bundled-defaults.ts'
 import { loadRegistry, type AgentRegistry } from '../agents/loader.ts'
 import { paths, type CodeOzPaths } from '../paths.ts'
 
+import { capabilityOf } from '../providers/capabilities.ts'
 import { ProviderRegistry } from '../providers/registry.ts'
 import { FakeProvider } from '../providers/fake.ts'
 import { ClaudeProvider } from '../providers/claude.ts'
@@ -151,9 +152,18 @@ function aliasFakeProvider(targetId: ProviderId, target: FakeProvider): IAgentPr
   // call under id 'codex' has family 'codex' — `familyOf(...)` answers per
   // id, never delegating to the underlying FakeProvider's intrinsic family.
   const family: ProviderFamily = targetId as ProviderFamily
+  // Per-id capability mirrors the family pattern: the alias declares the
+  // default capability for `targetId` (resolved via the pure `capabilityOf`
+  // lookup). If the registry is constructed with capabilityOverrides for
+  // `targetId`, the registry's adapter cross-check fails — same shape as
+  // the family check, on purpose. Tests that need a non-default capability
+  // for an aliased FakeProvider construct an inline IAgentProvider literal
+  // rather than going through this helper. (M11 Codex Decision H lock:
+  // no FakeProvider({ capability }) seam.)
   return {
     id: targetId,
     family,
+    capability: capabilityOf(targetId),
     invoke: (req) => target.invoke(req),
     health: async () => {
       const h = await target.health()

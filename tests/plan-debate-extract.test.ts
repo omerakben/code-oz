@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import { runPlan, PLAN_READY_SIGNAL } from '../src/phases/plan.ts'
 import { FakeProvider } from '../src/providers/fake.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
+import { capabilityOf, type ProviderCapability } from '../src/providers/capabilities.ts'
 import type {
   IAgentProvider,
   PreparedProviderRequest,
@@ -51,13 +52,16 @@ let fake: FakeProvider
 class ProxyAdapter implements IAgentProvider {
   readonly id: ProviderId
   readonly family: ProviderFamily
+  readonly capability: ProviderCapability
   constructor(
     id: ProviderId,
     family: ProviderFamily,
     private readonly backing: FakeProvider,
+    capability: ProviderCapability = capabilityOf(id),
   ) {
     this.id = id
     this.family = family
+    this.capability = capability
   }
   invoke(req: PreparedProviderRequest): AsyncIterable<ProviderEvent> {
     return this.backing.invoke(req)
