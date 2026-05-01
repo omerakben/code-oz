@@ -1,6 +1,36 @@
+import type { AgentProvider } from '../agents/schema.ts'
+
 export type Profile = 'greenfield' | 'brownfield'
 
 export type Phase = 'define' | 'plan' | 'build' | 'verify' | 'review' | 'ship' | 'audit'
+
+// M12 (rule 20: role-to-provider routing authority). The shipped roster of
+// company roles. Project-local personas with names outside this constant
+// are NOT routable as company roles in v0.1; the locked list is the single
+// authority. Custom role routing is M16+ only when measurable need is
+// evidenced. Per Codex Decision A flip in CODEX_RESPONSE_M12.md (thread
+// 019de4bb): without the constant, M12 quietly becomes "custom role
+// routing" — a feature the project does not yet earn.
+export const M12_COMPANY_ROLES = [
+  'ba',
+  'lead',
+  'builder',
+  'verifier',
+  'reviewer',
+  'scientist',
+] as const
+export type CompanyRole = (typeof M12_COMPANY_ROLES)[number]
+
+// v0.1 ships `{ provider?, model? }` only. Per Codex Decision B, budgets
+// are M13 and permissions stay persona-shaped; unsupported row keys
+// (`permissions`, `budgets`, `bash`) raise a typed config issue at
+// load time so users do not get false authority over a deferred surface.
+export interface CompanyRoleOverride {
+  readonly provider?: AgentProvider
+  readonly model?: string
+}
+
+export type CompanyConfig = Readonly<Partial<Record<CompanyRole, CompanyRoleOverride>>>
 
 export interface PhaseBudget {
   maxTurns: number
@@ -111,10 +141,17 @@ export interface CodeOzConfig {
     requireApprovalForBuild: boolean
   }
   phases: PhasesConfig
+  // M12 (rule 20: role-to-provider routing). Optional. Absent = identity
+  // routing — every persona's frontmatter `provider` and `model` are the
+  // resolved values. When present, the company:block wins over persona
+  // frontmatter; the resolved values feed cross-family REVIEW, provider
+  // eligibility, debate-opposing-family, and runtime invocation. See
+  // docs/contracts/COMPANY.md.
+  company?: CompanyConfig
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {
-  version: '0.10.0-alpha.0',
+  version: '0.12.0-alpha.0',
   profile: 'greenfield',
   defaultProvider: 'claude',
   models: {

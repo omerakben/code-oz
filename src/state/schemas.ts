@@ -218,6 +218,14 @@ export type PhaseEvent =
       readonly bytesSent: number
       readonly tokensEstimate: number
       readonly fieldsRemovedByScope: number
+      /** M12 (Codex Risk #3 in CODEX_RESPONSE_M12.md, thread 019de4bb):
+       *  durable record of the resolved model the wrapper sent to the
+       *  adapter. Present when either the persona's frontmatter or the
+       *  company:block declared a model — `req.model ?? req.agent.model`
+       *  in src/providers/manifest.ts. Omitted when neither did, so M11
+       *  and earlier readers parse new events identically. M13's
+       *  role-cost policy reads this against `budgets.global.priceTable`. */
+      readonly model?: string
       /** M10 forward-compat correlation. Present only when the call is
        *  inside a debate; the runtime sets it from the debate context.
        *  Consumers ignore unknown fields, so M9 readers are unaffected.

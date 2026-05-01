@@ -10,7 +10,11 @@ import { parse as parseYaml } from 'yaml'
 import { paths as codeOzPaths } from '../paths.ts'
 import {
   DEFAULT_CONFIG,
+  M12_COMPANY_ROLES,
   type CodeOzConfig,
+  type CompanyConfig,
+  type CompanyRole,
+  type CompanyRoleOverride,
   type PhaseBudget,
   type GlobalBudget,
   type Budgets,
@@ -19,6 +23,7 @@ import {
   type AskMeConfig,
   type OnMaxRoundsBehavior,
 } from './schema.ts'
+import { AGENT_PROVIDERS, type AgentProvider } from '../agents/schema.ts'
 import type { Phase, Profile } from '../state/schemas.ts'
 
 export interface LoadConfigOptions {
@@ -136,6 +141,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   const budgets = mergeBudgets(raw.budgets, file, issues)
   const permissions = mergePermissions(raw.permissions, file, issues)
   const phases = mergePhases(raw.phases, file, issues)
+  const company = mergeCompany(raw.company, file, issues)
 
   if (issues.length > 0) {
     throw new ConfigLoadError(issues)
@@ -149,7 +155,112 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
     budgets,
     permissions,
     phases,
+    ...(company !== undefined ? { company } : {}),
   })
+}
+
+// M12: company:block validation. Validates the entire shape at config-load
+// time so misconfigurations fail fast — before the agent loader runs and
+// before any run starts. Per Codex Decision G in CODEX_RESPONSE_M12.md
+// (thread 019de4bb), the new error code `loader_company_role_unknown`
+// fires here against the locked `M12_COMPANY_ROLES` constant; per
+// Decision B and Risk #5, unsupported row keys (`permissions`, `budgets`,
+// `bash`) raise typed config issues so the user does not get false
+// authority over deferred surfaces.
+const COMPANY_ROW_FIELDS = ['provider', 'model'] as const
+
+function mergeCompany(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): CompanyConfig | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'company must be a mapping',
+    })
+    return undefined
+  }
+  const c = raw as Record<string, unknown>
+  const out: Partial<Record<CompanyRole, CompanyRoleOverride>> = {}
+  for (const [key, rowRaw] of Object.entries(c)) {
+    if (!(M12_COMPANY_ROLES as readonly string[]).includes(key)) {
+      issues.push({
+        file,
+        code: 'loader_company_role_unknown',
+        rule: `company.<role> must be one of: ${M12_COMPANY_ROLES.join(' | ')}`,
+        detail: `got '${key}' (project-local personas with names outside this list are not routable as company roles in v0.1)`,
+      })
+      continue
+    }
+    const role = key as CompanyRole
+    const override = mergeCompanyRow(rowRaw, role, file, issues)
+    if (override !== undefined) {
+      out[role] = override
+    }
+  }
+  if (Object.keys(out).length === 0) return undefined
+  return Object.freeze(out)
+}
+
+function mergeCompanyRow(
+  raw: unknown,
+  role: CompanyRole,
+  file: string,
+  issues: ConfigLoadIssue[],
+): CompanyRoleOverride | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: `company.${role} must be a mapping`,
+    })
+    return undefined
+  }
+  const r = raw as Record<string, unknown>
+  // Surface every unsupported row key, not just the first — users typing a
+  // YAML row often add several at once (`permissions`, `budgets`, `bash`).
+  for (const k of Object.keys(r)) {
+    if (!(COMPANY_ROW_FIELDS as readonly string[]).includes(k)) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `company.${role} may contain only ${COMPANY_ROW_FIELDS.join(' / ')} in v0.1 (per-role budgets are M13; permissions stay persona-shaped)`,
+        detail: `unsupported key: '${k}'`,
+      })
+    }
+  }
+  const override: { provider?: AgentProvider; model?: string } = {}
+  if (r.provider !== undefined) {
+    if (
+      typeof r.provider !== 'string' ||
+      !(AGENT_PROVIDERS as readonly string[]).includes(r.provider)
+    ) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `company.${role}.provider must be one of: ${AGENT_PROVIDERS.join(' | ')}`,
+        detail: `got ${JSON.stringify(r.provider)}`,
+      })
+    } else {
+      override.provider = r.provider as AgentProvider
+    }
+  }
+  if (r.model !== undefined) {
+    if (typeof r.model !== 'string' || r.model.length === 0) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `company.${role}.model must be a non-empty string`,
+        detail: `got ${JSON.stringify(r.model)}`,
+      })
+    } else {
+      override.model = r.model
+    }
+  }
+  return Object.freeze(override)
 }
 
 function mergeModels(

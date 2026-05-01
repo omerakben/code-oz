@@ -26,20 +26,27 @@ const CLI_ENTRY = join(REPO_ROOT, 'src/cli.ts')
 
 // --- finding #1 — version bump ------------------------------------
 
-describe('finding #1: versions report 0.10.0-alpha.0 across all surfaces', () => {
+describe('finding #1: versions report consistently across all surfaces', () => {
+  // M5 finding #1 closed the divergence between PKG_VERSION,
+  // DEFAULT_CONFIG.version, and package.json.version. The test now
+  // pins the current version so every milestone close that bumps must
+  // update all three together. M11 missed the bump (left at
+  // `0.10.0-alpha.0`); M12 commit 6 catches up to `0.12.0-alpha.0`.
+  const CURRENT = '0.12.0-alpha.0'
+
   test('PKG_VERSION', () => {
-    expect(PKG_VERSION).toBe('0.10.0-alpha.0')
+    expect(PKG_VERSION).toBe(CURRENT)
   })
 
   test('DEFAULT_CONFIG.version', () => {
-    expect(DEFAULT_CONFIG.version).toBe('0.10.0-alpha.0')
+    expect(DEFAULT_CONFIG.version).toBe(CURRENT)
   })
 
   test('package.json.version', async () => {
     const pkg = JSON.parse(
       await readFile(join(REPO_ROOT, 'package.json'), 'utf8'),
     )
-    expect(pkg.version).toBe('0.10.0-alpha.0')
+    expect(pkg.version).toBe(CURRENT)
   })
 })
 

@@ -107,6 +107,10 @@ export async function* invokeAgent(
           phase: req.phase,
           agent: req.agent.name,
           provider: req.agent.provider,
+          // M12 (Codex Risk #3): record the resolved model so
+          // events.jsonl carries durable provenance for cost/audit
+          // tooling. `prepared.model` is `req.model ?? req.agent.model`.
+          ...(prepared.model !== undefined ? { model: prepared.model } : {}),
           manifest: prepared.manifest,
           filesSent: prepared.metrics.filesSent,
           bytesSent: prepared.metrics.bytesSent,
