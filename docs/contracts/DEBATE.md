@@ -187,9 +187,16 @@ interface AgentPermissions {
     repo_context?: { /* M6 — see REPO_CONTEXT.md */ }
     write?:        { /* M7 — see BUILD.md */ }
     debate?: {
-      // Which providers this persona may debate against.
-      // Cross-family enforced at load time (rule 2): cannot include the persona's own family.
-      opposingProviders: readonly ('claude' | 'codex' | 'gemini')[]
+      // Which provider families this persona may debate against. Subset
+      // of PROVIDER_FAMILIES (`claude | codex | gemini | fake` in v0.1).
+      // Cross-family enforced at load time (rule 2): cannot include the
+      // persona's own family. M11 narrows the operative universe to
+      // families whose ProviderCapability.eligiblePhases contains the
+      // persona's own phase — a `claude` PLAN persona declaring
+      // `opposingProviders: ['gemini']` is rejected at load time
+      // because gemini's eligiblePhases is `[]` (see PROVIDERS.md
+      // § "Capabilities and eligibility (M11)").
+      opposingProviders: readonly ProviderFamily[]
       // Maximum concurrent open debates per phase invocation.
       maxConcurrent: number
       // Manifest preview gate: paths matching .code-ozignore are blocked at preview.
@@ -208,8 +215,10 @@ interface AgentPermissions {
 ```
 
 - `previewBeforeSend` is fixed at `true`. The runtime (M10 commit 5, `src/tools/debate-permissions.ts`) writes a non-interactive `MANIFEST.preview.md` audit artifact before BRIEFING.md is sent to the opposing provider; the artifact's sha256 is bound to `debate_started.manifestPreviewSha256`. The runtime blocks on `.code-ozignore` matches (per CLAUDE.md rule 13) and on lexical path-safety violations (absolute, `..`, backslash). Operator review is post-hoc via `events.jsonl` and `code-oz doctor --bundle`. **Interactive operator approval (e.g., a `code-oz approve debate` command) is deferred to W2 / TUI work.** This addresses Codex's "Debate can violate privacy and budgets faster than REVIEW" risk.
-- `opposingProviders` enforces cross-family at the permission layer (rule 2). A `claude` persona's debate sub-scope cannot include `claude`. The runtime rejects with `debate_opposing_provider_same_family` at load time (M2-style validation).
-- The schema lands in `src/agents/schema.ts` during M10. M7 references this contract by name only.
+- `opposingProviders` is checked at the permission layer (rule 2) AND the eligibility layer (M11):
+  - **Schema validation** (`src/agents/schema.ts` `validateDebate`): `opposingProviders` must be a non-empty subset of `PROVIDER_FAMILIES` and must NOT include the persona's own family. Same-family entries fail with `schema_invalid_permissions` at load time.
+  - **Loader eligibility** (`src/agents/loader.ts` `enforceProviderPhaseEligibility`, M11): every entry in `opposingProviders` must have `capabilityOf(provider).eligiblePhases` covering the persona's phase. Phase-ineligible entries fail with `loader_provider_phase_not_eligible` at load time, closing the synthetic-debate-opponent bypass `requestDebate` would otherwise expose.
+- The schema lands in `src/agents/schema.ts` during M10. M7 references this contract by name only. M11 adds the load-time eligibility walk in `src/agents/loader.ts`.
 
 ## Budget accounting (under `budgets.global`)
 
@@ -241,7 +250,8 @@ No parallel `budgets.debate` namespace (CLAUDE.md rule 19). M10 commit 7 ships t
 | `debate_briefing_missing_section` | BRIEFING.md skips a required H2 | Author repair |
 | `debate_response_verdict_invalid` | RESPONSE.*.md verdict outside the locked enum | Author repair |
 | `debate_decision_no_rationale` | DECISION.md present but `## Rationale` empty | Author repair |
-| `debate_opposing_provider_same_family` | `tool_use.debate.opposingProviders` includes the persona's own family | Permission validation; persona repair |
+| `schema_invalid_permissions` | `tool_use.debate.opposingProviders` includes the persona's own family or an out-of-set value | Schema validation (load time); persona repair. (M10 originally named this `debate_opposing_provider_same_family`; the schema-validator path actually emits the existing `schema_invalid_permissions` code with the same rule-string content.) |
+| `loader_provider_phase_not_eligible` | `tool_use.debate.opposingProviders` includes a provider whose `capabilityOf(provider).eligiblePhases` does not cover the persona's phase | M11 loader eligibility check (load time); change opposing provider or persona phase |
 | `debate_manifest_blocked` | Manifest preview hit a `.code-ozignore` match | User reviews; either edits manifest or extends ignore policy |
 | `debate_concurrent_limit_exceeded` | More than `maxConcurrent` debates open per phase invocation | Resolve open debates first |
 
