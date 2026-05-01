@@ -94,6 +94,21 @@ function enforceProviderPhaseEligibility(definitions: readonly AgentDefinition[]
   // the registry does not exist at agent-load time. Same load/runtime
   // split as familyOf() above (M9 substrate).
   //
+  // The check is layered:
+  //   (1) the persona's declared (provider, phase) must be eligible
+  //       — the obvious case.
+  //   (2) every provider declared in `tool_use.debate.opposingProviders`
+  //       must be eligible for the persona's own phase. This closes the
+  //       M10 synthetic-debate-opponent bypass: requestDebate() builds a
+  //       runtime AgentDefinition with `provider = opposingProvider` and
+  //       `phase = callerPhase`, copying the opposingProvider directly out
+  //       of the persona's permission list. Without (2), a persona
+  //       declaring `opposingProviders: ['gemini']` would route a
+  //       synthetic plan-phase opponent to gemini even though
+  //       capabilityOf('gemini').eligiblePhases is []. Per Codex M11
+  //       implementation review (CODEX_REVIEW_M11.md, thread
+  //       019de46d-b8c9-7f13-8257-81b572121306, block-push #1).
+  //
   // Failures aggregate into AgentLoadError. Per Codex CODEX_RESPONSE_M11.md
   // "Risks the proposing side missed", AgentLoadIssue does NOT carry
   // actionableSuggestions; the rule + detail fields carry the fix hint.
@@ -110,6 +125,27 @@ function enforceProviderPhaseEligibility(definitions: readonly AgentDefinition[]
           `phase=${def.phase}, eligible phases for ${def.provider}=` +
           (cap.eligiblePhases.length === 0 ? '[]' : `[${cap.eligiblePhases.join(', ')}]`),
       })
+    }
+    const debate = def.permissions.tool_use?.debate
+    if (debate !== undefined) {
+      for (const opposingProvider of debate.opposingProviders) {
+        const opposingCap = capabilityOf(opposingProvider as ProviderId)
+        if (!opposingCap.eligiblePhases.includes(def.phase)) {
+          conflicts.push({
+            file: def.file,
+            code: 'loader_provider_phase_not_eligible',
+            rule:
+              "agent's tool_use.debate.opposingProviders includes a provider that is not eligible " +
+              "for the agent's phase (CLAUDE.md rule 20: provider eligibility; closes M10 synthetic-opponent bypass)",
+            detail:
+              `agent='${def.name}' (file=${def.file}), agent phase=${def.phase}, ` +
+              `opposingProvider=${opposingProvider}, eligible phases for ${opposingProvider}=` +
+              (opposingCap.eligiblePhases.length === 0
+                ? '[]'
+                : `[${opposingCap.eligiblePhases.join(', ')}]`),
+          })
+        }
+      }
     }
   }
   if (conflicts.length > 0) {

@@ -48,13 +48,13 @@ function fmFile(
 }
 
 describe('load-time provider/phase eligibility — happy paths (M11 commit 4)', () => {
+  // Per Codex M11 review (CODEX_REVIEW_M11.md nit #2): the prior `review`
+  // skip was a stale precaution; with only one agent in each call, the
+  // cross-family check is a no-op (it requires both BUILD and REVIEW
+  // agents to be present). Removed.
   test('claude is eligible for every AGENT_PHASES value', () => {
     for (const phase of AGENT_PHASES) {
-      // skip 'review' to avoid cross-family conflict with the default
-      // claude builder that we add below.
-      if (phase === 'review') continue
       const a = fmFile(`agent-${phase}`, { phase, provider: 'claude' })
-      // No conflict: only one agent. eligibility check passes.
       const reg = buildRegistry({ defaults: [a], overrides: [] })
       expect(reg.getByName(`agent-${phase}`)?.phase).toBe(phase)
     }
@@ -62,7 +62,6 @@ describe('load-time provider/phase eligibility — happy paths (M11 commit 4)', 
 
   test('codex is eligible for every AGENT_PHASES value', () => {
     for (const phase of AGENT_PHASES) {
-      if (phase === 'review') continue
       const a = fmFile(`agent-${phase}`, { phase, provider: 'codex' })
       const reg = buildRegistry({ defaults: [a], overrides: [] })
       expect(reg.getByName(`agent-${phase}`)?.phase).toBe(phase)
@@ -71,10 +70,92 @@ describe('load-time provider/phase eligibility — happy paths (M11 commit 4)', 
 
   test('fake is eligible for every AGENT_PHASES value', () => {
     for (const phase of AGENT_PHASES) {
-      if (phase === 'review') continue
       const a = fmFile(`agent-${phase}`, { phase, provider: 'fake' })
       const reg = buildRegistry({ defaults: [a], overrides: [] })
       expect(reg.getByName(`agent-${phase}`)?.phase).toBe(phase)
+    }
+  })
+})
+
+describe('load-time eligibility — debate opposing-provider check (Codex M11 review bp#1)', () => {
+  // Closes the M10 synthetic-debate-opponent bypass: a persona declaring
+  // `tool_use.debate.opposingProviders: ['gemini']` would route a
+  // runtime synthetic plan-phase opponent to gemini even though
+  // capabilityOf('gemini').eligiblePhases is []. The eligibility check
+  // now walks the persona's opposingProviders list at load time.
+
+  function planPersonaWithOpposingProviders(
+    name: string,
+    opposingProviders: readonly string[],
+  ): SourceFile {
+    const data = {
+      name,
+      type: 'agent',
+      phase: 'plan',
+      provider: 'claude',
+      modelPolicy: 'opus-default',
+      permissions: {
+        read: '*',
+        write: ['./docs/**'],
+        bash: 'deny',
+        tool_use: {
+          debate: {
+            opposingProviders,
+            maxConcurrent: 1,
+            previewBeforeSend: true,
+            maxFiles: 20,
+            timeoutMs: 600000,
+          },
+        },
+      },
+      description: `${name} stub for debate eligibility test.`,
+    }
+    const yaml = Object.entries(data)
+      .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      .join('\n')
+    return {
+      file: `src/agents/defaults/${name}.md`,
+      content: `---\n${yaml}\n---\n# Title\n\nbody\n`,
+    }
+  }
+
+  test('phase=plan + opposingProviders=[gemini] fails before bootstrap returns', () => {
+    const persona = planPersonaWithOpposingProviders('lead', ['gemini'])
+    try {
+      buildRegistry({ defaults: [persona], overrides: [] })
+      throw new Error('expected loader to reject')
+    } catch (err) {
+      expect(err).toBeInstanceOf(AgentLoadError)
+      const e = err as AgentLoadError
+      const issue = e.issues[0]!
+      expect(issue.code).toBe('loader_provider_phase_not_eligible')
+      expect(issue.file).toBe('src/agents/defaults/lead.md')
+      expect(issue.rule.toLowerCase()).toContain('opposingproviders')
+      expect(issue.detail).toContain('opposingProvider=gemini')
+      expect(issue.detail).toContain('agent phase=plan')
+      expect(issue.detail).toContain('[]')
+    }
+  })
+
+  test('phase=plan + opposingProviders=[codex] passes (codex eligible for every phase)', () => {
+    const persona = planPersonaWithOpposingProviders('lead', ['codex'])
+    const reg = buildRegistry({ defaults: [persona], overrides: [] })
+    expect(reg.getByName('lead')?.phase).toBe('plan')
+  })
+
+  test('multiple opposing providers — one ineligible — fails on the ineligible entry', () => {
+    // The schema's cross-family invariant prevents the persona's own
+    // family being in opposingProviders, so we use codex (eligible) +
+    // gemini (ineligible) on a claude-provider persona.
+    const persona = planPersonaWithOpposingProviders('lead', ['codex', 'gemini'])
+    try {
+      buildRegistry({ defaults: [persona], overrides: [] })
+      throw new Error('expected loader to reject')
+    } catch (err) {
+      const e = err as AgentLoadError
+      // Only one ineligible entry → exactly one issue.
+      expect(e.issues).toHaveLength(1)
+      expect(e.issues[0]!.detail).toContain('opposingProvider=gemini')
     }
   })
 })

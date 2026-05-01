@@ -77,7 +77,7 @@ Acceptance: `bun test tests/providers-registry.test.ts tests/provider-capabiliti
 
 Files:
 - `src/agents/errors.ts` — add `loader_provider_phase_not_eligible` to `AgentLoadErrorCode` union.
-- `src/agents/loader.ts` — extend with `validateProviderPhaseEligibility(loadedAgents): AgentLoadIssue[]` step (or inline) that for each loaded agent imports pure `capabilityOf` from `src/providers/capabilities.ts` and asserts `capabilityOf(agent.provider).eligiblePhases.includes(agent.phase)`. Failures aggregate into the existing `AgentLoadError` issues array. Runs before bootstrap returns.
+- `src/agents/loader.ts` — extend with `enforceProviderPhaseEligibility(definitions): void` step that for each loaded agent imports pure `capabilityOf` from `src/providers/capabilities.ts` and asserts `capabilityOf(agent.provider).eligiblePhases.includes(agent.phase)`. The check also walks any persona's `tool_use.debate.opposingProviders` and asserts each is eligible for the persona's phase, closing the M10 synthetic-debate-opponent bypass per Codex CODEX_REVIEW_M11.md bp#1 (thread `019de46d-b8c9-7f13-8257-81b572121306`). Failures aggregate into the existing `AgentLoadError` issues array. Runs before bootstrap returns.
 - `tests/agent-loader-eligibility.test.ts` (new) — gemini-as-builder fails with `loader_provider_phase_not_eligible` and an actionable `rule` + `detail` payload; v0.1 default personas (ba/lead/scientist/builder/verifier/reviewer) all pass; the issue is collected alongside other load-time issues (multi-issue aggregation works).
 - `tests/agents-loader.test.ts` (existing) — extend assertions to confirm the new check runs in the load chain without breaking existing chain.
 

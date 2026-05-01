@@ -31,6 +31,7 @@ type ProviderFamily = 'claude' | 'codex' | 'gemini' | 'fake'   // == ProviderId 
 interface IAgentProvider {
   readonly id: ProviderId
   readonly family: ProviderFamily
+  readonly capability: ProviderCapability   // M11 — see § "Capability and eligibility (M11)" below
   invoke(req: PreparedProviderRequest): AsyncIterable<ProviderEvent>
   health(): Promise<ProviderHealth>
 }
@@ -358,7 +359,7 @@ Adapters declare their capability statically, by reading from `capabilityOf(this
 
 ### Eligibility check (load time)
 
-`src/agents/loader.ts` runs `validateProviderPhaseEligibility(loadedAgents)` in the existing load chain. For every loaded agent it asserts `capabilityOf(agent.provider).eligiblePhases.includes(agent.phase)`. Failures aggregate into the existing `AgentLoadError` issues array as `AgentLoadIssue { file, code: 'loader_provider_phase_not_eligible', rule, detail }`. The check runs after schema validation and before bootstrap returns.
+`src/agents/loader.ts` runs `enforceProviderPhaseEligibility(definitions)` in the existing load chain. For every loaded agent it asserts `capabilityOf(agent.provider).eligiblePhases.includes(agent.phase)`. The same check then walks any persona's `tool_use.debate.opposingProviders` and asserts each declared opposing provider is also eligible for the persona's phase — closing the M10 synthetic-debate-opponent path that would otherwise route a runtime-built `provider: opposing, phase: caller` agent past the load-time gate. Failures aggregate into the existing `AgentLoadError` issues array as `AgentLoadIssue { file, code: 'loader_provider_phase_not_eligible', rule, detail }`. The check runs after schema validation and before bootstrap returns.
 
 `AgentLoadIssue` does **not** carry `actionableSuggestions` in v0.1. M11 does not extend the loader's error shape; the existing `rule` and `detail` fields carry the fix hint (e.g., `rule: "agent's provider is not eligible for the agent's phase"`, `detail: "agent file=src/agents/defaults/builder.md, provider=gemini, phase=build, eligible phases for gemini=[]"`). If a future milestone needs structured suggestions on loader issues, it adds the field deliberately, with its own contract decision.
 
