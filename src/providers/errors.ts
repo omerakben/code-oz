@@ -18,6 +18,15 @@ export type ProviderErrorCode =
   | 'provider_tool_call_cap_exceeded'
   | 'provider_gemini_not_yet_supported'
   | 'provider_io_error'
+  // M10 Debate runtime error codes (per docs/contracts/DEBATE.md
+  // § Common errors + CODEX_RESPONSE_M10.md). All flow through the
+  // wrapper's existing intervention plumbing; no new event-type drift
+  // (Codex risk #4).
+  | 'debate_topic_collision'
+  | 'debate_concurrent_limit_exceeded'
+  | 'debate_manifest_blocked'
+  | 'debate_response_invalid'
+  | 'debate_decision_invalid'
 
 export interface ProviderErrorIssue {
   readonly code: ProviderErrorCode
