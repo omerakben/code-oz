@@ -3,6 +3,7 @@ import { join, relative, isAbsolute } from 'node:path'
 import { parseFrontmatter } from './frontmatter.ts'
 import { validateAgent, type AgentDefinition, type AgentPhase } from './schema.ts'
 import { AgentLoadError, type AgentLoadIssue } from './errors.ts'
+import { capabilityOf } from '../providers/capabilities.ts'
 import { familyOf } from '../providers/families.ts'
 import type { ProviderId } from '../providers/types.ts'
 
@@ -77,8 +78,43 @@ export function buildRegistry(opts: BuildRegistryOptions): AgentRegistry {
 
   const definitions = Array.from(map.values())
   enforceCrossFamilyReview(definitions)
+  enforceProviderPhaseEligibility(definitions)
 
   return makeRegistry(definitions)
+}
+
+function enforceProviderPhaseEligibility(definitions: readonly AgentDefinition[]): void {
+  // Load-time eligibility: an agent declaring (provider X, phase Y) must
+  // be runnable — provider X's static ProviderCapability declaration must
+  // include Y in its eligiblePhases. Pinned in M11 (CLAUDE.md rule 20:
+  // provider eligibility authority).
+  //
+  // This loader uses the pure capabilityOf() lookup from
+  // src/providers/capabilities.ts, NOT ProviderRegistry.capabilityOf() —
+  // the registry does not exist at agent-load time. Same load/runtime
+  // split as familyOf() above (M9 substrate).
+  //
+  // Failures aggregate into AgentLoadError. Per Codex CODEX_RESPONSE_M11.md
+  // "Risks the proposing side missed", AgentLoadIssue does NOT carry
+  // actionableSuggestions; the rule + detail fields carry the fix hint.
+  const conflicts: AgentLoadIssue[] = []
+  for (const def of definitions) {
+    const cap = capabilityOf(def.provider as ProviderId)
+    if (!cap.eligiblePhases.includes(def.phase)) {
+      conflicts.push({
+        file: def.file,
+        code: 'loader_provider_phase_not_eligible',
+        rule: "agent's provider is not eligible for the agent's phase (CLAUDE.md rule 20: provider eligibility)",
+        detail:
+          `agent='${def.name}' (file=${def.file}), provider=${def.provider}, ` +
+          `phase=${def.phase}, eligible phases for ${def.provider}=` +
+          (cap.eligiblePhases.length === 0 ? '[]' : `[${cap.eligiblePhases.join(', ')}]`),
+      })
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new AgentLoadError(conflicts)
+  }
 }
 
 function enforceCrossFamilyReview(definitions: readonly AgentDefinition[]): void {
