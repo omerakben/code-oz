@@ -126,13 +126,13 @@ export interface ExecuteToolPermissions {
   readonly network: 'none'
 }
 
-// `tool_use.review_request` is the M9 sub-scope for the REVIEW persona's
-// reviewer-side declaration of the M4 `requestReview` primitive (per
+// `tool_use.review_request` is the REVIEW persona's reviewer-side
+// declaration of the `requestReview` primitive (per
 // docs/contracts/REVIEW.md § "Permissions required" + CLAUDE.md
 // non-negotiable rule 6 — max 4 rounds, exit on score≥6 + verdict=ready).
 // v0.1 ships only the `request-review` tool; the runtime is the wrapper
-// in src/tools/review-request.ts which already enforces cross-family at
-// invocation time (M9 commit 7 will tighten that with build_provider_recorded).
+// in src/tools/review-request.ts which enforces cross-family at
+// invocation time.
 //
 // Load-time validation pins the families list to PROVIDER_FAMILIES (so
 // typos like `providers: ['claud']` fail the run before BUILD), and caps

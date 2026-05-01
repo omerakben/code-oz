@@ -1166,11 +1166,10 @@ export function canonicalizeFindings(
   }
 
   for (const draft of input.draftFindings) {
-    // M9 commit 23 (QA 4.1): reject duplicate fingerprints in the same
-    // draft. Two findings with `(file, normalized title)` matching but
-    // (e.g.) different severities would both mint distinct ids without
-    // this check, leaving the operator with confusing duplicates that
-    // ping-pong on the next round.
+    // Reject duplicate fingerprints in the same draft. Two findings with
+    // `(file, normalized title)` matching but different severities would
+    // both mint distinct ids, leaving the operator with confusing
+    // duplicates that ping-pong on the next round.
     const fingerprint = fingerprintFinding(draft.file, draft.title)
     if (draftFingerprints.has(fingerprint)) {
       throw new Error(
@@ -1186,11 +1185,10 @@ export function canonicalizeFindings(
       // Existing id; persona may be updating roundResolved.
       const prior = priorById.get(id)!
       roundRaised = prior.roundRaised
-      // M9 commit 23 (QA 4.4): track explicit-id reopens. If the
-      // persona keeps the prior id but flips roundResolved from a
-      // numeric value (resolved) back to 'unresolved', that's a
-      // ping-pong reopen and should surface in reopenedIds the same
-      // way fingerprint-driven reopens do.
+      // Track explicit-id reopens. If the persona keeps the prior id
+      // but flips roundResolved from a numeric value (resolved) back to
+      // 'unresolved', that's a ping-pong reopen and should surface in
+      // reopenedIds the same way fingerprint-driven reopens do.
       if (
         typeof prior.roundResolved === 'number' &&
         roundResolved === 'unresolved'

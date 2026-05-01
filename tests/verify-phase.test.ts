@@ -576,8 +576,8 @@ describe('runVerify pass + code-oz approve verify (Codex M8-fix bp#1)', () => {
     expect(gr).toBeDefined()
 
     // runApprove({phase: 'verify'}) validates VERIFY.md and confirms
-    // verdict=pass; per M9 commit 1 substrate, worktree removal moved
-    // to preApproveReviewHook so REVIEW can read changed files. See
+    // verdict=pass. Worktree removal is deferred to preApproveReviewHook
+    // so REVIEW can read changed files; see
     // tests/worktree-lifetime-through-review.test.ts for the cleanup
     // path. Here we only verify the verify hook succeeds on a pass
     // verdict.

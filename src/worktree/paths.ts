@@ -4,14 +4,13 @@
 //   .code-oz/runs/<runId>/        — worktree, patches, forensics, base.txt, README.md (this file)
 //   .code-oz/state/runs/<runId>/  — events.jsonl, gate files, current.json (state subsystem)
 //
-// All helpers return absolute paths (resolved against cwd). M9 commit 21
-// (security audit MEDIUM-2): every helper validates `runId` matches the
-// 26-char Crockford ULID regex before joining. A corrupted active.json or
-// any caller passing an untrusted runId would otherwise trigger
-// path-traversal in `git worktree remove --force` or other downstream
-// fs operations. Defense-in-depth: callers should still validate at the
-// command-layer entry point, but the helpers refuse anything that
-// doesn't match the locked ULID format.
+// All helpers return absolute paths (resolved against cwd). Every helper
+// validates `runId` matches the 26-char Crockford ULID regex before
+// joining. A corrupted active.json or any caller passing an untrusted
+// runId would otherwise trigger path-traversal in `git worktree remove
+// --force` or other downstream fs operations. Defense-in-depth: callers
+// should still validate at the command-layer entry point, but the
+// helpers refuse anything that doesn't match the locked ULID format.
 
 import { join } from 'node:path'
 import { paths } from '../paths.ts'

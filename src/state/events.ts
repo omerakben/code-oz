@@ -132,19 +132,13 @@ export function validateEvent(
     return null
   }
 
-  // Note (security audit M9 commit 21 review): MEDIUM-1 in the security
-  // audit recommended rejecting newline characters in string fields to
-  // block JSONL injection. That recommendation is a false positive —
+  // No defense-in-depth check for newlines in event string fields:
   // appendEvent serializes via JSON.stringify(event) + '\n', and
-  // JSON.stringify escapes literal newlines in strings as `\n` (the
-  // two-character backslash-n escape). A newline in a string field can
-  // therefore NEVER break JSONL line parsing. Persona-authored fields
-  // (ask_me_persona_reply.response, finding recommendations, etc.) are
-  // legitimately multiline; rejecting newlines would break DEFINE +
-  // ask-me + REVIEW persona flows. The injection vector the audit
-  // described requires hand-crafting a malformed JSONL line that
-  // bypasses JSON.stringify, which is not possible from event-emit
-  // code paths. No defense-in-depth check is added.
+  // JSON.stringify escapes literal newlines as `\n`. A newline in a
+  // string field can therefore never break JSONL line parsing.
+  // Persona-authored fields (ask_me_persona_reply.response, finding
+  // recommendations, etc.) are legitimately multiline; rejecting
+  // newlines would break DEFINE + ask-me + REVIEW persona flows.
 
   switch (e.type) {
     case 'run_started':

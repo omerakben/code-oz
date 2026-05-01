@@ -395,13 +395,13 @@ function actionableSuggestionsFor(code: string): readonly string[] {
 // --- main entry point ---------------------------------------------
 
 /**
- * M9 commit 22 (QA finding 1.1): mkdir-as-mutex over the runReview
- * orchestration. Two concurrent runReview calls for the same (runId,
- * round) would otherwise both pass the resume probe (no draft yet),
- * both invoke the persona, both write REVIEW.md (last-writer-wins via
- * atomic rename), both append review_round_completed (different scores
- * + shas). The fs#2 sha-mismatch probe surfaces the divergence later,
- * but only after both sessions completed.
+ * Mkdir-as-mutex over the runReview orchestration. Two concurrent
+ * runReview calls for the same (runId, round) would otherwise both
+ * pass the resume probe (no draft yet), both invoke the persona, both
+ * write REVIEW.md (last-writer-wins via atomic rename), and both
+ * append review_round_completed with different scores + shas. The
+ * sha-mismatch probe surfaces the divergence later, but only after
+ * both sessions complete.
  *
  * The lock is a SEPARATE dir from runPaths.lockDir (which serializes
  * appendEvent / writeGate). runReview's lock is held for the duration
@@ -1604,8 +1604,8 @@ async function validateFindingPaths(
         detail: `Finding ${f.id} cites Line ${f.line} (start=${range.start}); line numbers must start at 1`,
       }
     }
-    // M9 commit 23 (QA 5.2): reject reversed line ranges. Without this
-    // check, "Line: 10-5" would silently pass (start=10≥1, end=5≤lineCount).
+    // Reject reversed line ranges. Without this check, "Line: 10-5"
+    // would silently pass (start=10 >= 1, end=5 <= lineCount).
     if (range.end < range.start) {
       return {
         code: 'review_finding_line_out_of_range',

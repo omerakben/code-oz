@@ -174,10 +174,10 @@ async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Prom
 }
 
 /**
- * M9 commit 13 bp#1: review approval requires (a) build_provider_recorded
- * for the (taskId, attempt) pair AND (b) a review_resolved event whose
- * reviewReportSha256 matches REVIEW.md. Test fixtures call this AFTER
- * initRun (since events.jsonl needs run_started present).
+ * Review approval requires (a) build_provider_recorded for the
+ * (taskId, attempt) pair AND (b) a review_resolved event whose
+ * reviewReportSha256 matches REVIEW.md. Test fixtures call this
+ * AFTER initRun (events.jsonl needs run_started present).
  */
 async function stageReviewApprovalPrereqs(runId: string): Promise<void> {
   const stateDir = join(cwd, '.code-oz', 'state')

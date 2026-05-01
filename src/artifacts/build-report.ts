@@ -65,25 +65,24 @@ export interface BuildReportValidationCommand {
 }
 
 /**
- * Source of a BUILD attempt N+1's failure carry-forward block. Locked
- * enum (M9 commit 9 substrate per kickoff Decision 8): the carry-forward
- * grammar must distinguish where the prior attempt's failure came from
- * because the two paths produce structurally different evidence:
+ * Source of a BUILD attempt N+1's failure carry-forward block. The
+ * carry-forward grammar must distinguish where the prior attempt's
+ * failure came from because the two paths produce structurally
+ * different evidence:
  *
- *   - 'verify-fail' (M8): a VERIFY.md verdict=fail produced a typed
+ *   - 'verify-fail': a VERIFY.md verdict=fail produced a typed
  *     VerifiedFailedAttempt; restart-policy.prepareCarryForward maps
  *     it to this shape. Prior verdict + failure summary describe a
  *     validation-command failure.
- *   - 'review-needs-revision' (M9 c10+): a REVIEW round N exited with
+ *   - 'review-needs-revision': a REVIEW round N exited with
  *     verdict=needs-revision; review-remediation maps the unresolved
  *     fix-first findings into the same shape. Prior verdict + failure
  *     summary describe the reviewer's recommendation.
  *
- * Codex's M9 substrate catch (CODEX_RESPONSE_M9.md decision 8): reusing
- * M8's grammar would create fake forensics — the BUILD prompt would see
- * "Prior verdict: fail (exit code 1, ...)" for a finding that never ran
- * a validation command. Adding the typed Source field forces both paths
- * to use grammar that's honest about origin.
+ * Without the typed Source, the BUILD prompt would see "Prior verdict:
+ * fail (exit code 1, ...)" for a finding that never ran a validation
+ * command — fake forensics. The typed field forces both paths to use
+ * grammar that's honest about origin (CODEX_RESPONSE_M9.md decision 8).
  */
 export const BUILD_REPORT_CARRY_FORWARD_SOURCES = [
   'verify-fail',

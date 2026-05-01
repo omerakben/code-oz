@@ -56,14 +56,14 @@ export class ProviderRegistry {
           `ProviderRegistry: duplicate provider id ${JSON.stringify(provider.id)}`,
         )
       }
-      // M9 commit 13 bp#4 (Codex review): adapter.family must match the
-      // registry-resolved family for adapter.id. Without this check, a
-      // misregistered adapter (e.g., declares family='codex' but is
-      // registered under id='claude') could launder cross-family REVIEW
-      // — REVIEW's invocation-time check compares families derived
-      // from the recorded adapter id, not the adapter's own declared
-      // family. Honor familyOverrides when present (test seams + W3+
-      // when adapters legitimately share families).
+      // adapter.family must match the registry-resolved family for
+      // adapter.id. Without this check, a misregistered adapter (e.g.,
+      // declares family='codex' but is registered under id='claude')
+      // could launder cross-family REVIEW — REVIEW's invocation-time
+      // check compares families derived from the recorded adapter id,
+      // not the adapter's own declared family. Honor familyOverrides
+      // when present (test seams + W3+ when adapters legitimately
+      // share families).
       const expectedFamily = familyById.get(provider.id)
       if (expectedFamily !== undefined && provider.family !== expectedFamily) {
         throw new Error(

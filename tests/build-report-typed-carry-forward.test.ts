@@ -138,7 +138,7 @@ describe('BuildReportCarryForward — typed Source field (M9 commit 9)', () => {
       `- Timeout (ms): 60000\n` +
       `- Expected exit code: 0\n\n` +
       `## Failure carry-forward\n\n` +
-      // No Source line — the M8 shape that M9 commit 9 forbids.
+      // No Source line — the M8-era shape, now forbidden.
       `- Prior attempt: 1\n` +
       `- Prior forensics: .code-oz/runs/01HX/forensics/1/\n` +
       `- Prior validation command: bun t\n` +

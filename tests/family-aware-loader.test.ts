@@ -67,7 +67,7 @@ describe('buildRegistry cross-family enforcement uses familyOf, not literal ids'
       // Family info present in detail — proof the comparison went through
       // familyOf() rather than a literal provider-id check.
       expect(issue.detail).toContain('family=claude')
-      // Rule string mentions FAMILY explicitly (M9 commit 1 contract change).
+      // Rule string mentions FAMILY explicitly per the cross-family contract.
       expect(issue.rule).toContain('family')
     }
   })

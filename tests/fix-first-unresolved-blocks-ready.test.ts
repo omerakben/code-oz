@@ -1,4 +1,4 @@
-// M9 commit 1 substrate: REVIEW.md locks the stricter `fix-first` rule.
+// REVIEW.md locks the stricter `fix-first` rule.
 //
 // The original draft of REVIEW.md carried a contradiction (Codex
 // CODEX_RESPONSE_M9.md decision 3 catch):
@@ -6,10 +6,9 @@
 //   - Findings grammar exit rule: "An exit with `Final verdict: ready`
 //     and any `block` or `fix-first` finding still `unresolved` fails"
 //
-// The exit rule wins. M9 commit 1 makes the severity table consistent
-// with the exit rule. M9 commit 4 (REVIEW.md parser) and commit 7
-// (REVIEW orchestrator) consume this locked rule when computing the
-// canonical Final verdict.
+// The exit rule wins. The severity table is now consistent with the
+// exit rule; the REVIEW parser and orchestrator consume this locked
+// rule when computing the canonical Final verdict.
 
 import { describe, test, expect } from 'bun:test'
 import { readFile } from 'node:fs/promises'
@@ -17,7 +16,7 @@ import { join } from 'node:path'
 
 const REVIEW_MD_PATH = join(import.meta.dir, '..', 'docs', 'contracts', 'REVIEW.md')
 
-describe('REVIEW.md — fix-first unresolved blocks ready (M9 commit 1)', () => {
+describe('REVIEW.md — fix-first unresolved blocks ready', () => {
   test('severity table marks fix-first as a blocker for ready exit', async () => {
     const text = await readFile(REVIEW_MD_PATH, 'utf8')
     // The severity bullet must say "fix-first — must clear before the loop

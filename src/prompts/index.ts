@@ -437,8 +437,8 @@ export interface ComposeReviewPromptPureInput {
   readonly availableTools: readonly string[]
   /** Pre-rendered run-specific context block: round number, upstream refs,
    *  changed-file manifest, VERIFY pass summary, prior round digests. The
-   *  caller (M9 commit 7 runReview) renders this from durable state; the
-   *  composer treats it as opaque text. */
+   *  caller (runReview) renders this from durable state; the composer
+   *  treats it as opaque text. */
   readonly reviewContext: string
 }
 
