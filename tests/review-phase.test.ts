@@ -346,6 +346,21 @@ async function seedBuildAndVerifyArtifacts(opts: {
   )
 }
 
+/**
+ * M9 commit 13 bp#3: runReview validates that finding-cited line ranges
+ * exist in the run worktree. Tests that include findings citing
+ * `src/foo.ts:1-3` need that file to exist in the worktree with at
+ * least 3 lines. This helper stages a 10-line file under the canonical
+ * worktree path.
+ */
+async function seedWorktreeFile(relPath: string = 'src/foo.ts', lines: number = 10): Promise<void> {
+  const worktreeRoot = join(tmp, '.code-oz/runs', RUN, 'worktree')
+  const fileAbs = join(worktreeRoot, relPath)
+  await mkdir(join(fileAbs, '..'), { recursive: true })
+  const text = Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+  await writeFile(fileAbs, text)
+}
+
 async function seedBuildProviderEvent(opts: {
   readonly taskId?: string
   readonly attempt?: number
@@ -604,6 +619,7 @@ describe('runReview — round 1 needs-revision', () => {
   test('unresolved fix-first finding → needs_revision regardless of score', async () => {
     await seedBuildAndVerifyArtifacts()
     await seedBuildProviderEvent()
+    await seedWorktreeFile('src/foo.ts', 10)
 
     const result = await runReview(
       buildOpts({
@@ -635,6 +651,7 @@ describe('runReview — round 1 block', () => {
   test('block-severity finding → blocked + review_blocked(reason=block) + NEEDS_INTERVENTION', async () => {
     await seedBuildAndVerifyArtifacts()
     await seedBuildProviderEvent()
+    await seedWorktreeFile('src/foo.ts', 10)
     expectScientistResponse()
 
     const result = await runReview(
@@ -743,6 +760,104 @@ describe('runReview — persona response handling', () => {
         'review_persona_missing_ready_signal',
         'review_validation_failed',
       ]).toContain(result.code)
+    }
+  })
+
+  test('M9 commit 13 bp#3: finding cites a deleted-file path → review_finding_path_deleted', async () => {
+    // Hand-craft a BUILD_REPORT.md with a deleted-file manifest entry.
+    const taskId = 'T-001'
+    const attempt = 1
+    const buildText = makeBuildReport({ taskId, attempt }).replace(
+      'change: modified',
+      'change: deleted',
+    )
+    await writeFile(join(paths.artifactRoot, 'BUILD_REPORT.md'), buildText)
+    await writeFile(
+      join(paths.artifactRoot, 'VERIFY.md'),
+      makeVerifyReport({ taskId, attempt }),
+    )
+    await seedBuildProviderEvent()
+    // No worktree file needed for this test — the deleted-file check
+    // fires before line-range existence.
+
+    const result = await runReview(
+      buildOpts({
+        invokePersona: async () =>
+          makeReadyPersonaResponse({
+            score: 8,
+            findings: [
+              {
+                title: 'orphan ref',
+                file: 'src/foo.ts',
+                line: '1',
+                severity: 'fix-first',
+                recommendation: 'orphaned reference; deleted-file findings forbidden',
+              },
+            ],
+          }),
+      }),
+    )
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_finding_path_deleted')
+    }
+  })
+
+  test('M9 commit 13 bp#3: finding cites a line range past the worktree file end → review_finding_line_out_of_range', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    // Worktree file has only 5 lines; persona cites 10-12.
+    await seedWorktreeFile('src/foo.ts', 5)
+
+    const result = await runReview(
+      buildOpts({
+        invokePersona: async () =>
+          makeReadyPersonaResponse({
+            score: 8,
+            findings: [
+              {
+                title: 'phantom line',
+                file: 'src/foo.ts',
+                line: '10-12',
+                severity: 'fix-first',
+                recommendation: 'cite an existing line',
+              },
+            ],
+          }),
+      }),
+    )
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_finding_line_out_of_range')
+    }
+  })
+
+  test('M9 commit 13 bp#3: finding cites a worktree file that does not exist → review_finding_file_unreadable', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    // Manifest says src/foo.ts modified, but no file exists in the
+    // worktree (e.g., worktree was cleaned up before REVIEW or
+    // misconfigured runId).
+    const result = await runReview(
+      buildOpts({
+        invokePersona: async () =>
+          makeReadyPersonaResponse({
+            score: 8,
+            findings: [
+              {
+                title: 'real-looking finding',
+                file: 'src/foo.ts',
+                line: '1',
+                severity: 'fix-first',
+                recommendation: 'fix it',
+              },
+            ],
+          }),
+      }),
+    )
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_finding_file_unreadable')
     }
   })
 

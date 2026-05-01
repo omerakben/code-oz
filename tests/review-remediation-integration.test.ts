@@ -8,6 +8,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -280,6 +281,14 @@ describe('runReview integration — REVIEW cap exhausted on round 4', () => {
     // Seed BUILD/VERIFY artifacts for attempt 4 + build_provider_recorded for it.
     await writeFile(join(paths.artifactRoot, 'BUILD_REPORT.md'), makeBuildReport(4))
     await writeFile(join(paths.artifactRoot, 'VERIFY.md'), makeVerifyReport(4))
+    // M9 commit 13 bp#3: stage the worktree file the persona's finding
+    // will cite (src/foo.ts) so the line-range existence check passes.
+    const worktreeFile = join(tmp, '.code-oz/runs', RUN, 'worktree', 'src/foo.ts')
+    await mkdir(dirname(worktreeFile), { recursive: true })
+    await writeFile(
+      worktreeFile,
+      Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n') + '\n',
+    )
     await appendEvent(
       { file: paths.eventsFile, lockDir: paths.lockDir },
       {

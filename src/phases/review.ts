@@ -60,6 +60,7 @@ import { join } from 'node:path'
 import type { AgentDefinition } from '../agents/schema.ts'
 import type { InvokeContext } from '../providers/invoke.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
+import { runPaths as worktreePathsFor } from '../worktree/paths.ts'
 import {
   cleanupReviewDraftsForRound,
   persistReviewDraft,
@@ -70,6 +71,7 @@ import {
   parseBuildReport,
   BuildReportLoadError,
 } from '../artifacts/build-report.ts'
+import type { ManifestEntry } from '../worktree/manifest.ts'
 import {
   parseVerifyReport,
   VerifyReportLoadError,
@@ -316,6 +318,21 @@ function actionableSuggestionsFor(code: string): readonly string[] {
       return Object.freeze([
         'A finding cited a file path that is not in BUILD_REPORT.md Changed files.',
         'Persona may not raise findings against unmodified files in v0.1.',
+      ])
+    case 'review_finding_path_deleted':
+      return Object.freeze([
+        'A finding cited a deleted-file path; deleted-file findings are rejected in M9.',
+        'No locked convention for deleted-file review yet — manual remediation required.',
+      ])
+    case 'review_finding_line_out_of_range':
+      return Object.freeze([
+        'A finding cited a line / range that is outside the current file in the run worktree.',
+        'Inspect REVIEW.md and verify the cited line numbers against the actual file content.',
+      ])
+    case 'review_finding_file_unreadable':
+      return Object.freeze([
+        'A cited finding file is not readable under the run worktree.',
+        'Check the worktree state and the manifest entry; the file may have been removed manually.',
       ])
     case 'review_round_out_of_range':
       return Object.freeze([
@@ -611,11 +628,47 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   }
 
   // 9. Canonicalize findings (fingerprint reuse + ping-pong reopen).
-  const canonical = canonicalizeFindings({
-    draftFindings: repairResult.findings,
-    priorFindings,
-    round: opts.round,
+  // M9 commit 13 fs#1 (Codex review): wrap canonicalizeFindings in
+  // try/catch so a draft that produces a duplicate-id collision after
+  // fingerprint canonicalization surfaces an actionable
+  // review_validation_failed intervention instead of crashing the
+  // phase.
+  let canonical: ReturnType<typeof canonicalizeFindings>
+  try {
+    canonical = canonicalizeFindings({
+      draftFindings: repairResult.findings,
+      priorFindings,
+      round: opts.round,
+    })
+  } catch (err) {
+    return recordReviewIntervention(
+      ictx,
+      'review_validation_failed',
+      `canonicalizeFindings threw: ${(err as Error).message.slice(0, 200)}`,
+      undefined,
+      reviewDraftPath(opts.runPaths.runDir, opts.round, 1),
+    )
+  }
+
+  // M9 commit 13 bp#3 (Codex review): finalize-time path validation per
+  // kickoff Decision 7 — reject deleted-file findings and verify cited
+  // line ranges are within the worktree files. Runs AFTER canonicalize
+  // so the canonical findings (with stable ids) are what gets validated.
+  const worktreeRoot = worktreePathsFor(opts.cwd, opts.runId).worktree
+  const pathIssue = await validateFindingPaths({
+    findings: canonical.findings,
+    manifest: buildReport.changedFiles,
+    worktreeRoot,
   })
+  if (pathIssue !== null) {
+    return recordReviewIntervention(
+      ictx,
+      pathIssue.code,
+      pathIssue.detail,
+      undefined,
+      reviewDraftPath(opts.runPaths.runDir, opts.round, 1),
+    )
+  }
 
   // 10. Compute orchestrator-owned verdict.
   const personaScore = repairResult.finalScore
@@ -1330,6 +1383,143 @@ function findUnknownPath(
     }
   }
   return null
+}
+
+// --- bp#3 validation: deleted-file rejection + line-range existence ---
+
+interface PathValidationIssue {
+  readonly code:
+    | 'review_finding_path_unknown'
+    | 'review_finding_path_deleted'
+    | 'review_finding_line_out_of_range'
+    | 'review_finding_file_unreadable'
+  readonly id: string
+  readonly file: string
+  readonly line: string
+  readonly detail: string
+}
+
+interface ValidateFindingPathsInput {
+  readonly findings: readonly ReviewFinding[]
+  readonly manifest: readonly ManifestEntry[]
+  readonly worktreeRoot: string
+}
+
+/**
+ * M9 commit 13 bp#3 (Codex review): finalize-time path validation per
+ * kickoff Decision 7:
+ *
+ *   - Reject `change: deleted` findings (deleted-file findings are not
+ *     a locked M9 convention; they go to operator intervention).
+ *   - For `added` | `modified`, read the file under the run worktree
+ *     and verify the cited Line / Line range is within the current
+ *     file's line count.
+ *   - Path-not-in-manifest produces review_finding_path_unknown
+ *     (unchanged from the M9 commit 7 behavior).
+ *
+ * Returns `null` if all findings pass; the first violating finding's
+ * issue otherwise. The orchestrator surfaces the issue via the bounded
+ * repair prompt path.
+ */
+async function validateFindingPaths(
+  input: ValidateFindingPathsInput,
+): Promise<PathValidationIssue | null> {
+  const { readFile } = await import('node:fs/promises')
+  const { resolve, relative, isAbsolute } = await import('node:path')
+  const manifestByPath = new Map(input.manifest.map((m) => [m.path, m]))
+  for (const f of input.findings) {
+    const entry = manifestByPath.get(f.file)
+    if (entry === undefined) {
+      return {
+        code: 'review_finding_path_unknown',
+        id: f.id,
+        file: f.file,
+        line: `- File: ${f.file} (finding ${f.id})`,
+        detail: `File ${f.file} is not in BUILD_REPORT.md Changed files manifest`,
+      }
+    }
+    if (entry.change === 'deleted') {
+      return {
+        code: 'review_finding_path_deleted',
+        id: f.id,
+        file: f.file,
+        line: `- File: ${f.file} (finding ${f.id}; manifest change=deleted)`,
+        detail: `Finding ${f.id} cites a deleted-file path; deleted-file findings are rejected in M9`,
+      }
+    }
+    // Resolve under worktreeRoot; reject symlink escape via realpath +
+    // relative-prefix check.
+    const absResolved = resolve(input.worktreeRoot, f.file)
+    if (isAbsolute(f.file)) {
+      return {
+        code: 'review_finding_path_unknown',
+        id: f.id,
+        file: f.file,
+        line: `- File: ${f.file} (finding ${f.id}; absolute path rejected)`,
+        detail: `Finding ${f.id} cites an absolute path; only relative paths under the worktree are allowed`,
+      }
+    }
+    const rel = relative(input.worktreeRoot, absResolved)
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      return {
+        code: 'review_finding_path_unknown',
+        id: f.id,
+        file: f.file,
+        line: `- File: ${f.file} (finding ${f.id}; resolves outside worktree)`,
+        detail: `Finding ${f.id} cites a path that escapes the run worktree`,
+      }
+    }
+    let text: string
+    try {
+      text = await readFile(absResolved, 'utf8')
+    } catch (err) {
+      return {
+        code: 'review_finding_file_unreadable',
+        id: f.id,
+        file: f.file,
+        line: `- File: ${f.file} (finding ${f.id}; not readable under worktree)`,
+        detail: `Finding ${f.id} cited file ${absResolved} is not readable: ${(err as Error).message.slice(0, 100)}`,
+      }
+    }
+    const lineCount = countLines(text)
+    const range = parseLineRange(f.line)
+    if (range.end > lineCount) {
+      return {
+        code: 'review_finding_line_out_of_range',
+        id: f.id,
+        file: f.file,
+        line: `- Line: ${f.line} (finding ${f.id}; file has ${lineCount} lines)`,
+        detail: `Finding ${f.id} cites Line ${f.line} but ${f.file} has only ${lineCount} lines in the worktree`,
+      }
+    }
+  }
+  return null
+}
+
+function countLines(text: string): number {
+  if (text.length === 0) return 0
+  // Newline-separated lines, with the convention that "X" (no trailing
+  // newline) and "X\n" both count as 1 line. "X\nY" counts as 2.
+  let count = 1
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x0a) {
+      count++
+    }
+  }
+  // Trailing newline at EOF is canonical and shouldn't bump the count.
+  if (text.charCodeAt(text.length - 1) === 0x0a) count--
+  return count
+}
+
+function parseLineRange(spec: string): { start: number; end: number } {
+  const dashIdx = spec.indexOf('-')
+  if (dashIdx === -1) {
+    const n = Number.parseInt(spec, 10)
+    return { start: n, end: n }
+  }
+  const start = Number.parseInt(spec.slice(0, dashIdx), 10)
+  const end = Number.parseInt(spec.slice(dashIdx + 1), 10)
+  return { start, end }
 }
 
 async function persistDraft(
