@@ -126,7 +126,7 @@ buildRegistry(opts):
 |---|---|---|
 | `company:` declares a key not in `M12_COMPANY_ROLES` | `loader_company_role_unknown` | defensive backstop in `applyCompanyOverrides` for callers that bypass `loadConfig` (e.g., tests that construct `CompanyConfig` via TypeScript escape hatch) — the primary site is `mergeCompany` at config-load |
 | resolved provider's family appears in the persona's frontmatter `tool_use.debate.opposingProviders` | `schema_invalid_permissions` | post-override re-check; the schema-time check at `validateDebate` ran against the frontmatter provider |
-| BUILD and REVIEW resolve to the same provider family | `loader_cross_family_violation` | reuses M9's existing check; `detail` names both the persona's frontmatter provider and the resolved provider |
+| BUILD and REVIEW resolve to the same provider family | `loader_cross_family_violation` | reuses M9's existing check, run against the resolved providers; `detail` names the resolved providers and families (the bundled-vs-override merge layer drops pre-override metadata) |
 | resolved (provider, phase) is not in `capabilityOf(provider).eligiblePhases` | `loader_provider_phase_not_eligible` | reuses M11's existing check; debate-opposing-provider walk also runs against the resolved phase |
 
 Per the locked AgentLoadIssue shape (M11), every loader issue carries `{ file, code, rule, detail? }`. There is no `actionableSuggestions` field — `rule` and `detail` carry the fix hint.
@@ -176,7 +176,16 @@ The fix is independent of the company override — the latent bug was present fr
 | **M15 — debate-policy scheduler** | Single-opponent debate scheduling rules | Reads from per-persona `tool_use.debate.opposingProviders`, not from `company:`. |
 | **PE-1 — xAI direct provider** | `AGENT_PROVIDERS` gains `'xai'`; new `authSource` mechanism | `company.<role>.provider: xai` works automatically once PE-1 lands. No COMPANY.md migration. |
 
-## Worked example (full lifecycle override)
+## Worked example (mixed pass/fail override)
+
+The example below overrides every persona row to demonstrate both the
+happy path (most rows resolve cleanly) and the post-override
+debate-family check (`lead.provider: codex` overrides the bundled
+`claude` provider into a family that already appears in the bundled
+`lead.md`'s `tool_use.debate.opposingProviders: ['codex']` — load-time
+fail). Real configs typically declare a few targeted overrides, not a
+full sweep.
+
 
 ```yaml
 # .code-oz/config.yaml

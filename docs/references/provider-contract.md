@@ -369,7 +369,7 @@ Adapters declare their capability statically, by reading from `capabilityOf(this
 
 ### Forward-compat
 
-- **M12 (company roster)** introduces a config-side `company:` block mapping role → provider+model+budgets+permissions. M12's load-time check reuses `capabilityOf(provider).eligiblePhases.includes(phase)` against the role's chosen phase. No M11 hook required; M12 builds on the existing surface.
+- **M12 (company roster — closed 2026-05-01, `v0.12.0-alpha.0`)** introduced a config-side `company:` block mapping the six bundled-persona role names (`ba | lead | builder | verifier | reviewer | scientist`) to `{ provider?, model? }` overrides only. Per-role budgets defer to M13 under `budgets.global`; permissions stay persona-shaped. M12's load-time check reuses `capabilityOf(provider).eligiblePhases.includes(phase)` against the resolved phase, plus a post-override debate-family re-check. See `docs/contracts/COMPANY.md` for the canonical contract.
 - **M13 (role-cost policy)** consumes `costPerMTok` and `rateLimits` advisory fields under existing `budgets.global` namespace.
 - **M14 (reviewer panel v1)** may derive `phase → ProviderId[]` reverse maps on demand; M11 does not store the reverse direction.
 - **W3 HTTP adapters** introduce divergent `editSemantics` / `shellSemantics` / `mcpSupport` / `sandboxProfile` fields when the runtime stops being provider-uniform. The shape change lands at that milestone's contract.
@@ -393,4 +393,4 @@ Designed in `docs/research/CODEX_BRIEFING_M11.md` and `docs/research/CODEX_RESPO
 - **Not a substitute for reading the upstream templates.** `pi-mono` shaped the streaming model; `Archon` shaped the stateless adapter discipline; `Auto-claude-code-research-in-sleep` shaped the cross-family review primitive. Read those for patterns; this file pins the contract for `code-oz`.
 - **Not the marketplace contract.** Provider-pack distribution is W3+.
 - **Not the Gemini integration design.** Gemini is a stub in v0.1. W3 may flip the adapter to a real implementation; this spec's `provider_gemini_not_yet_supported` code stays.
-- **Not the company roster contract.** M11's eligibility check anchors on `phase`; M12's `company:` block lands the role → provider+model+budgets mapping. Until then, role vocabulary stays out of this contract.
+- **Not the company roster contract.** M11's eligibility check anchors on `phase`; M12's `company:` block lands the role → `{ provider?, model? }` mapping (per-role budgets defer to M13). See `docs/contracts/COMPANY.md` for the company-roster contract; role vocabulary belongs there, not in this provider-eligibility document.
