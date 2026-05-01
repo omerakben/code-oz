@@ -4,12 +4,27 @@
 //   .code-oz/runs/<runId>/        — worktree, patches, forensics, base.txt, README.md (this file)
 //   .code-oz/state/runs/<runId>/  — events.jsonl, gate files, current.json (state subsystem)
 //
-// All helpers return absolute paths (resolved against cwd). Callers passing
-// untrusted runId must validate format before calling — these helpers do not
-// path-escape-check, they just join.
+// All helpers return absolute paths (resolved against cwd). M9 commit 21
+// (security audit MEDIUM-2): every helper validates `runId` matches the
+// 26-char Crockford ULID regex before joining. A corrupted active.json or
+// any caller passing an untrusted runId would otherwise trigger
+// path-traversal in `git worktree remove --force` or other downstream
+// fs operations. Defense-in-depth: callers should still validate at the
+// command-layer entry point, but the helpers refuse anything that
+// doesn't match the locked ULID format.
 
 import { join } from 'node:path'
 import { paths } from '../paths.ts'
+
+const RUN_ID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/
+
+function assertValidRunId(runId: string): void {
+  if (!RUN_ID_REGEX.test(runId)) {
+    throw new Error(
+      `invalid runId: ${JSON.stringify(runId)} (must be a 26-char Crockford ULID)`,
+    )
+  }
+}
 
 export interface WorktreePaths {
   /** `.code-oz/runs/<runId>/` — the run directory root. */
@@ -29,6 +44,7 @@ export interface WorktreePaths {
 }
 
 export function runPaths(cwd: string, runId: string): WorktreePaths {
+  assertValidRunId(runId)
   const run = join(paths(cwd).runs, runId)
   return Object.freeze({
     run,
@@ -52,6 +68,7 @@ export function patchFilePath(
   taskId: string,
   attempt: number,
 ): string {
+  assertValidRunId(runId)
   if (!/^T-\d{3,}$/.test(taskId)) {
     throw new Error(`invalid taskId: ${taskId} (must match /^T-\\d{3,}$/)`)
   }
@@ -67,6 +84,7 @@ export function patchFilePath(
  * Layout: `.code-oz/runs/<runId>/forensics/<N>/`.
  */
 export function forensicsAttemptPath(cwd: string, runId: string, attempt: number): string {
+  assertValidRunId(runId)
   if (!Number.isInteger(attempt) || attempt < 1) {
     throw new Error(`invalid attempt: ${attempt} (must be a positive integer)`)
   }
@@ -85,6 +103,7 @@ export function buildDraftsAttemptPath(
   taskId: string,
   attempt: number,
 ): string {
+  assertValidRunId(runId)
   if (!/^T-\d{3,}$/.test(taskId)) {
     throw new Error(`invalid taskId: ${taskId} (must match /^T-\\d{3,}$/)`)
   }
