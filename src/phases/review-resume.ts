@@ -28,6 +28,7 @@
 // best-effort.
 
 import { mkdir, readFile, rm } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
@@ -107,15 +108,28 @@ export interface ResumeProbeInput {
   readonly taskId: string
   readonly attempt: number
   readonly round: number
+  /** Optional path to the canonical REVIEW.md the orchestrator is about
+   *  to check. M9 commit 13 fs#2: when a review_round_completed event
+   *  is present for the active round, the probe verifies its
+   *  reviewReportSha256 matches the on-disk artifact. Without this
+   *  verification, an orphan event whose canonical artifact was
+   *  overwritten or never written would falsely suppress the
+   *  resume-mismatch signal. Pass undefined to skip the check (legacy
+   *  callers / tests that don't have a canonical artifact path). */
+  readonly reviewReportPath?: string
 }
 
 export interface ResumeProbeResult {
   /** True iff a partial draft from a prior session exists for the round
-   *  WITHOUT a matching review_round_completed event. */
+   *  WITHOUT a matching review_round_completed event, OR a matching
+   *  event exists but its reviewReportSha256 does not match the
+   *  on-disk REVIEW.md (M9 commit 13 fs#2). */
   readonly mismatched: boolean
   /** When mismatched, the path of the partial draft for the operator to
    *  inspect. Undefined when the round is fresh. */
   readonly draftPath?: string
+  /** When mismatched due to sha disagreement, names the violation. */
+  readonly reason?: 'no_completed_event' | 'sha_mismatch'
 }
 
 /**
@@ -135,29 +149,47 @@ export interface ResumeProbeResult {
  */
 export async function probeReviewResume(input: ResumeProbeInput): Promise<ResumeProbeResult> {
   const draftPath = reviewDraftPath(input.runDir, input.round, 1)
-  const draftExists = await fileExists(draftPath)
-  if (!draftExists) {
+  const draftText = await readIfExists(draftPath)
+  if (draftText === null) {
     return { mismatched: false }
   }
   const known = input.events.filter(isKnownPhaseEvent)
-  const haveCompleted = known.some(
+  const completed = known.find(
     (e) =>
       e.type === 'review_round_completed' &&
       e.taskId === input.taskId &&
       e.attempt === input.attempt &&
       e.round === input.round,
   )
-  if (haveCompleted) {
-    return { mismatched: false }
+  if (completed === undefined) {
+    return { mismatched: true, draftPath, reason: 'no_completed_event' }
   }
-  return { mismatched: true, draftPath }
+  // M9 commit 13 fs#2: verify the event's reviewReportSha256 matches
+  // the on-disk canonical REVIEW.md. If not, the artifact was
+  // overwritten or never written — treat as mismatch.
+  if (input.reviewReportPath !== undefined) {
+    const onDisk = await readIfExists(input.reviewReportPath)
+    if (onDisk === null) {
+      return { mismatched: true, draftPath, reason: 'sha_mismatch' }
+    }
+    const eventSha = (completed as { readonly reviewReportSha256?: unknown })
+      .reviewReportSha256
+    const onDiskSha = sha256Of(onDisk)
+    if (typeof eventSha !== 'string' || eventSha !== onDiskSha) {
+      return { mismatched: true, draftPath, reason: 'sha_mismatch' }
+    }
+  }
+  return { mismatched: false }
 }
 
-async function fileExists(path: string): Promise<boolean> {
+async function readIfExists(path: string): Promise<string | null> {
   try {
-    await readFile(path, 'utf8')
-    return true
+    return await readFile(path, 'utf8')
   } catch {
-    return false
+    return null
   }
+}
+
+function sha256Of(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
 }

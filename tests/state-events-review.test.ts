@@ -120,6 +120,7 @@ describe('review_round_completed — validator', () => {
       verdict: 'ready',
       findingsRaised: 0,
       findingsResolved: 0,
+      reviewReportSha256: 'a'.repeat(64),
       ...overrides,
     }
   }
@@ -192,6 +193,20 @@ describe('review_round_completed — validator', () => {
     expect(
       validateEvent(valid({ findingsRaised: 0, findingsResolved: 3 }), 'events.jsonl'),
     ).toBeNull()
+  })
+
+  test('M9 commit 13 fs#2: rejects missing reviewReportSha256', () => {
+    const ev = valid()
+    delete (ev as Record<string, unknown>).reviewReportSha256
+    const issue = validateEvent(ev, 'events.jsonl')
+    expect(issue).not.toBeNull()
+    expect(issue?.rule).toContain('review_round_completed.reviewReportSha256')
+  })
+
+  test('M9 commit 13 fs#2: rejects malformed reviewReportSha256', () => {
+    expect(
+      validateEvent(valid({ reviewReportSha256: 'not-hex' }), 'events.jsonl')?.rule,
+    ).toContain('review_round_completed.reviewReportSha256')
   })
 })
 

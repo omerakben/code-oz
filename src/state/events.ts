@@ -850,6 +850,12 @@ export function validateEvent(
         file, e.findingsResolved, 'review_round_completed.findingsResolved', line,
       )
       if (resolvedIssue) return resolvedIssue
+      // M9 commit 13 fs#2: reviewReportSha256 is required so resume
+      // probes can verify event/artifact agreement.
+      const reportIssue = idMatches(
+        file, e.reviewReportSha256, SHA256_REGEX, 'review_round_completed.reviewReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
       break
     }
 

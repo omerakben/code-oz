@@ -517,6 +517,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     taskId: opts.taskId,
     attempt,
     round: opts.round,
+    // M9 commit 13 fs#2: verify event/artifact agreement on resume.
+    reviewReportPath: join(opts.runPaths.artifactRoot, 'REVIEW.md'),
   })
   if (probe.mismatched) {
     return recordReviewIntervention(
@@ -765,6 +767,9 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     verdict,
     findingsRaised: canonical.newIds.length,
     findingsResolved: findingsResolvedCount,
+    // M9 commit 13 fs#2: bind the event to the canonical artifact via
+    // sha256 so resume probes can verify event/artifact agreement.
+    reviewReportSha256,
   })
 
   // Clean up the round's draft directory now that the canonical write

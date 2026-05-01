@@ -890,6 +890,96 @@ describe('runReview — persona response handling', () => {
   })
 })
 
+// --- M9 commit 13 fs#1: canonicalizeFindings throw caught -----------
+
+describe('runReview — canonicalizeFindings throw caught (fs#1)', () => {
+  test('persona draft causes duplicate-id collision after canonicalization → review_validation_failed (no crash)', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    await seedWorktreeFile('src/foo.ts', 10)
+
+    // priorReport has F-001 unresolved at fingerprint (src/foo.ts, "Same title").
+    // Persona drafts two findings with the same fingerprint: one with
+    // explicit id F-001, one with F-NEW. The canonicalizer assigns
+    // F-001 to the explicit one (priorById) AND reuses F-001 for the
+    // F-NEW (fingerprint match) → duplicate id throw.
+    const { serializeReviewReport: serialize } = await import('../src/artifacts/review-report.ts')
+    const priorReviewMd = serialize({
+      upstreamRefs: {
+        buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+        buildReportSha256: 'a'.repeat(64),
+        verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+        verifyReportSha256: 'b'.repeat(64),
+        taskId: 'T-001', attempt: 1,
+        baseCommitSha: 'b'.repeat(40),
+        patchSha256: 'c'.repeat(64),
+      },
+      reviewer: {
+        providerFamily: 'codex', providerId: 'codex', modelPolicy: 'any',
+        crossFamilyCheck: 'passed' as const, buildFamily: 'claude',
+      },
+      roundTimeline: [{
+        round: 1, timestamp: NOW, findingsRaised: 1,
+        score: 4, verdict: 'needs-revision' as const,
+      }],
+      findings: [{
+        id: 'F-001',
+        title: 'Same title',
+        file: 'src/foo.ts',
+        line: '1',
+        severity: 'fix-first' as const,
+        recommendation: 'still unresolved',
+        roundRaised: 1,
+        roundResolved: 'unresolved' as const,
+      }],
+      score: {
+        roundCount: 1, finalScore: 4,
+        finalVerdict: 'needs-revision' as const,
+        exitReason: 'needs-revision (round 1)',
+      },
+      capStatus: { cap: 4, roundsUsed: 1, capExhausted: false },
+    })
+
+    const collidingResponse = `${REVIEW_READY_SIGNAL}
+
+## Findings
+
+### F-001: Same title
+- File: src/foo.ts
+- Line: 1
+- Severity: fix-first
+- Recommendation: still unresolved
+- Round raised: 1
+- Round resolved: unresolved
+
+### F-NEW: Same title
+- File: src/foo.ts
+- Line: 1
+- Severity: fix-first
+- Recommendation: same fingerprint causes collision
+- Round raised: 2
+- Round resolved: unresolved
+
+## Score
+
+- Final score: 4
+`
+    const result = await runReview(
+      buildOpts({
+        invokePersona: async () => collidingResponse,
+        round: 2,
+        priorReviewMd,
+      }),
+    )
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_validation_failed')
+      expect(result.rule).toContain('canonicalizeFindings threw')
+      expect(result.rule).toContain('duplicate id')
+    }
+  })
+})
+
 // --- resume-mismatch detection -------------------------------------
 
 describe('runReview — resume-mismatch detection', () => {
@@ -915,6 +1005,40 @@ describe('runReview — resume-mismatch detection', () => {
     // initial run_started + phase_entered).
     const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
     expect(events.some((e) => e.type === 'review_started')).toBe(false)
+  })
+
+  test('M9 commit 13 fs#2: partial draft + matching event but sha mismatch → mismatched (sha_mismatch)', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    expectScientistResponse()
+
+    // First produce a real round 1 ready exit so the run has a canonical
+    // REVIEW.md + matching review_round_completed event.
+    const result = await runReview(buildOpts())
+    expect(result.status).toBe('resolved')
+
+    // Now tamper with REVIEW.md so its sha no longer matches the
+    // recorded event's reviewReportSha256.
+    const reviewPath = join(paths.artifactRoot, 'REVIEW.md')
+    const tampered = (await readFile(reviewPath, 'utf8')) + '\n# tamper\n'
+    await writeFile(reviewPath, tampered)
+
+    // Stage a stale draft + run probe.
+    const draftPath = reviewDraftPath(paths.runDir, 1, 1)
+    await mkdir(reviewDraftsDir(paths.runDir), { recursive: true })
+    await atomicWriteFile(draftPath, 'partial draft\n')
+    const { probeReviewResume } = await import('../src/phases/review-resume.ts')
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const probe = await probeReviewResume({
+      runDir: paths.runDir,
+      events,
+      taskId: 'T-001',
+      attempt: 1,
+      round: 1,
+      reviewReportPath: reviewPath,
+    })
+    expect(probe.mismatched).toBe(true)
+    expect(probe.reason).toBe('sha_mismatch')
   })
 
   test('partial draft + matching review_round_completed event → no mismatch (replay-safe)', async () => {

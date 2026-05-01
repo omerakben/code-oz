@@ -589,6 +589,13 @@ export type PhaseEvent =
       /** Count of findings resolved in this round (non-negative). May
        *  exceed findingsRaised when prior-round findings are resolved. */
       readonly findingsResolved: number
+      /** 64-char lower-case hex of the canonical REVIEW.md content
+       *  written for this round. M9 commit 13 fs#1: kickoff Decision 10
+       *  says a round is complete only when canonical REVIEW.md AND
+       *  the round-completed event agree. The sha lets resume probes
+       *  verify that agreement instead of trusting event presence
+       *  alone. */
+      readonly reviewReportSha256: string
     }
   | {
       readonly version: 1

@@ -267,6 +267,7 @@ async function seedRound(round: number, attempt: number): Promise<void> {
       verdict: 'needs-revision',
       findingsRaised: 1,
       findingsResolved: 0,
+      reviewReportSha256: 'a'.repeat(64),
     },
   )
 }
