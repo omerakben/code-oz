@@ -164,6 +164,20 @@ export const EVENT_TYPES = [
   'review_round_completed',
   'review_resolved',
   'review_blocked',
+  // M10 — Debate runtime (per docs/contracts/DEBATE.md § "Event types").
+  // Two events cover the lifecycle: debate_started (BRIEFING.md +
+  // MANIFEST.preview.md atomically written; opposing-party invocation
+  // begins) and debate_resolved (DECISION.md atomically written; control
+  // returns to the calling phase). DEBATE.md pins exactly two events;
+  // M10 does NOT introduce additional warning events (per Codex M10
+  // response risk #4: "warning events are contract drift").
+  // Authority-data distinction (CLAUDE.md rule 9): the calling persona
+  // authors DECISION.md; the orchestrator validates shape and records
+  // both opposing and caller verdicts in the debate_resolved event for
+  // audit. The orchestrator never auto-merges the opposing party's
+  // verdict — that would defeat rule 9.
+  'debate_started',
+  'debate_resolved',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -204,8 +218,29 @@ export type PhaseEvent =
       readonly bytesSent: number
       readonly tokensEstimate: number
       readonly fieldsRemovedByScope: number
+      /** M10 forward-compat correlation. Present only when the call is
+       *  inside a debate; the runtime sets it from the debate context.
+       *  Consumers ignore unknown fields, so M9 readers are unaffected.
+       *  M14+ panel territory will rely on these to pair provider calls
+       *  with debate dirs once concurrency >1 is unlocked. */
+      readonly debateTopic?: string
+      /** M10 forward-compat. 'opposing' = opposing-party turn;
+       *  'synthesis' = caller's DECISION-authoring turn; 'continuation'
+       *  = caller's post-decision phase-continuation invocation. */
+      readonly debateTurn?: 'opposing' | 'synthesis' | 'continuation'
     }
-  | { readonly version: 1; readonly type: 'agent_completed'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly agent: string; readonly tokensUsed?: number }
+  | {
+      readonly version: 1
+      readonly type: 'agent_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly tokensUsed?: number
+      /** M10 forward-compat correlation; mirrors agent_invoked. */
+      readonly debateTopic?: string
+      readonly debateTurn?: 'opposing' | 'synthesis' | 'continuation'
+    }
   | { readonly version: 1; readonly type: 'gate_written'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly file: string }
   | { readonly version: 1; readonly type: 'gate_required'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly blockedOn: string }
   | { readonly version: 1; readonly type: 'intervention'; readonly ts: string; readonly runId: string; readonly code: string; readonly phase?: Phase }
@@ -635,6 +670,60 @@ export type PhaseEvent =
       /** 64-char lower-case hex of the canonical REVIEW.md content
        *  (REVIEW.md is written even on block / cap-exhausted exits). */
       readonly reviewReportSha256: string
+    }
+  // M10 Debate runtime events. Two events cover one debate lifecycle.
+  // Both events bind the calling phase via `phase`; both tie the artifact
+  // directory by `topic` (run-scoped unique slug `<phase>-<topic>`).
+  | {
+      readonly version: 1
+      readonly type: 'debate_started'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** Calling persona name (e.g., 'lead'). */
+      readonly agent: string
+      /** Topic slug (lowercase-kebab-case, ≤ 48 chars; phase-prefixed:
+       *  `<phase>-<topic>`). Run-scoped unique. */
+      readonly topic: string
+      /** Absolute path to .code-oz/artifacts/debates/<topic>/. */
+      readonly debateDirPath: string
+      /** 64-char lower-case hex of the canonical BRIEFING.md content. */
+      readonly briefingSha256: string
+      /** 64-char lower-case hex of the canonical MANIFEST.preview.md
+       *  content (D9 lock: non-interactive audit; sha bound to event). */
+      readonly manifestPreviewSha256: string
+      /** Calling persona's provider family (cross-family invariant
+       *  recorded for audit; opposingFamily must differ). */
+      readonly callerFamily: string
+      /** Opposing party's provider id (e.g., 'codex'); resolves via
+       *  registry to opposingFamily at invocation time. */
+      readonly opposingProvider: string
+      /** Opposing party's provider family. Must NOT equal callerFamily
+       *  (CLAUDE.md rule 2; validated at write time). */
+      readonly opposingFamily: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'debate_resolved'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** Calling persona name (matches debate_started.agent). */
+      readonly agent: string
+      /** Topic slug (matches debate_started.topic). */
+      readonly topic: string
+      /** Absolute path to .code-oz/artifacts/debates/<topic>/. */
+      readonly debateDirPath: string
+      /** 64-char lower-case hex of the canonical DECISION.md content. */
+      readonly decisionSha256: string
+      /** Caller persona's verdict (DECISION.md authority — rule 9). */
+      readonly callerVerdict: 'accept' | 'accept-with-modifications' | 'reject' | 'feature-with-modifications'
+      /** Opposing party's verdict (RESPONSE.{codex,claude}.md data —
+       *  recorded for audit; never auto-merged into authority). */
+      readonly responseVerdict: 'accept' | 'accept-with-modifications' | 'reject' | 'feature-with-modifications'
+      /** One-line rationale summary, ≤ 200 characters. The full
+       *  rationale lives in DECISION.md § Rationale. */
+      readonly rationaleSummary: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

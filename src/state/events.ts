@@ -48,6 +48,22 @@ const REVIEW_SCORE_READY_MIN = 6
 const REVIEW_SCORE_MAX = 10
 const REVIEW_VERDICTS = ['ready', 'needs-revision', 'block'] as const
 const REVIEW_BLOCK_REASONS = ['block', 'cap_exhausted'] as const
+// M10 — debate runtime constants per docs/contracts/DEBATE.md.
+// Planning-debate verdict enum (locked in DEBATE.md § Verdict enum); the
+// review-debate enum (push | fix-first | debate-required) is for code-review
+// debates only and not emitted by the runtime.
+const DEBATE_VERDICTS = [
+  'accept',
+  'accept-with-modifications',
+  'reject',
+  'feature-with-modifications',
+] as const
+// Topic slug grammar: lowercase-kebab-case, ≤ 48 chars, phase-prefixed.
+const DEBATE_TOPIC_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
+const DEBATE_TOPIC_MAX_LEN = 48
+const DEBATE_RATIONALE_SUMMARY_MAX_LEN = 200
+// Forward-compat correlation values (D3 lock).
+const DEBATE_TURN_VALUES = ['opposing', 'synthesis', 'continuation'] as const
 
 /**
  * Validate an in-memory event object against the v1 schema. Returns null when
@@ -226,6 +242,10 @@ export function validateEvent(
         nonNegativeInteger(file, e.tokensEstimate, 'agent_invoked.tokensEstimate', line) ??
         nonNegativeInteger(file, e.fieldsRemovedByScope, 'agent_invoked.fieldsRemovedByScope', line)
       if (metricIssue) return metricIssue
+      const debateCorrelationIssue = validateDebateCorrelation(
+        file, e.debateTopic, e.debateTurn, 'agent_invoked', line,
+      )
+      if (debateCorrelationIssue) return debateCorrelationIssue
       break
     }
 
@@ -244,6 +264,10 @@ export function validateEvent(
           }
         }
       }
+      const debateCorrelationIssue = validateDebateCorrelation(
+        file, e.debateTopic, e.debateTurn, 'agent_completed', line,
+      )
+      if (debateCorrelationIssue) return debateCorrelationIssue
       break
     }
 
@@ -965,8 +989,176 @@ export function validateEvent(
       if (reportIssue) return reportIssue
       break
     }
+
+    case 'debate_started': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'debate_started', e.phase, line)
+      const stringIssue =
+        nonEmptyString(file, e.agent, 'debate_started.agent', line) ??
+        validateDebateTopic(file, e.topic, 'debate_started.topic', line) ??
+        nonEmptyString(file, e.debateDirPath, 'debate_started.debateDirPath', line)
+      if (stringIssue) return stringIssue
+      const briefingIssue = idMatches(
+        file, e.briefingSha256, SHA256_REGEX, 'debate_started.briefingSha256', line,
+      )
+      if (briefingIssue) return briefingIssue
+      const previewIssue = idMatches(
+        file, e.manifestPreviewSha256, SHA256_REGEX, 'debate_started.manifestPreviewSha256', line,
+      )
+      if (previewIssue) return previewIssue
+      const callerFamilyIssue = nonEmptyString(file, e.callerFamily, 'debate_started.callerFamily', line)
+      if (callerFamilyIssue) return callerFamilyIssue
+      const opposingProviderIssue = nonEmptyString(
+        file, e.opposingProvider, 'debate_started.opposingProvider', line,
+      )
+      if (opposingProviderIssue) return opposingProviderIssue
+      const opposingFamilyIssue = nonEmptyString(
+        file, e.opposingFamily, 'debate_started.opposingFamily', line,
+      )
+      if (opposingFamilyIssue) return opposingFamilyIssue
+      // Cross-family invariant (CLAUDE.md rule 2 + DEBATE.md): the
+      // event-recorded callerFamily must differ from opposingFamily.
+      // Same-family events are corrupt and should never have been written;
+      // surfacing as event_invalid_value lets `code-oz doctor` flag them.
+      if (e.callerFamily === e.opposingFamily) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'debate_started.callerFamily must differ from debate_started.opposingFamily (cross-family invariant — CLAUDE.md rule 2)',
+          detail: `callerFamily=${JSON.stringify(e.callerFamily)}, opposingFamily=${JSON.stringify(e.opposingFamily)}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'debate_resolved': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'debate_resolved', e.phase, line)
+      const stringIssue =
+        nonEmptyString(file, e.agent, 'debate_resolved.agent', line) ??
+        validateDebateTopic(file, e.topic, 'debate_resolved.topic', line) ??
+        nonEmptyString(file, e.debateDirPath, 'debate_resolved.debateDirPath', line)
+      if (stringIssue) return stringIssue
+      const decisionIssue = idMatches(
+        file, e.decisionSha256, SHA256_REGEX, 'debate_resolved.decisionSha256', line,
+      )
+      if (decisionIssue) return decisionIssue
+      if (typeof e.callerVerdict !== 'string' || !(DEBATE_VERDICTS as readonly string[]).includes(e.callerVerdict)) {
+        return enumInvalid(file, 'debate_resolved.callerVerdict', DEBATE_VERDICTS, e.callerVerdict, line)
+      }
+      if (typeof e.responseVerdict !== 'string' || !(DEBATE_VERDICTS as readonly string[]).includes(e.responseVerdict)) {
+        return enumInvalid(file, 'debate_resolved.responseVerdict', DEBATE_VERDICTS, e.responseVerdict, line)
+      }
+      if (typeof e.rationaleSummary !== 'string') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'debate_resolved.rationaleSummary must be a string',
+          line,
+        }
+      }
+      if (e.rationaleSummary.length === 0) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'debate_resolved.rationaleSummary must not be empty',
+          line,
+        }
+      }
+      if (e.rationaleSummary.length > DEBATE_RATIONALE_SUMMARY_MAX_LEN) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `debate_resolved.rationaleSummary must be ≤ ${DEBATE_RATIONALE_SUMMARY_MAX_LEN} characters`,
+          detail: `got ${e.rationaleSummary.length}`,
+          line,
+        }
+      }
+      break
+    }
   }
 
+  return null
+}
+
+/**
+ * M10 forward-compat correlation validator. The optional `debateTopic` and
+ * `debateTurn` fields appear on agent_invoked / agent_completed only when
+ * the call is inside a debate. M9 readers ignore unknown fields; M10
+ * readers validate when present (both fields must agree: both present or
+ * both absent — an `agent_invoked` claiming a debate turn without a topic
+ * is malformed).
+ */
+function validateDebateCorrelation(
+  file: string,
+  topic: unknown,
+  turn: unknown,
+  eventType: 'agent_invoked' | 'agent_completed',
+  line?: number,
+): EventLogIssue | null {
+  if (topic === undefined && turn === undefined) return null
+  if (topic === undefined || turn === undefined) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${eventType}.debateTopic and ${eventType}.debateTurn must both be present or both absent`,
+      detail: `topic=${JSON.stringify(topic)}, turn=${JSON.stringify(turn)}`,
+      line,
+    }
+  }
+  if (typeof topic !== 'string' || topic.length === 0) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${eventType}.debateTopic must be a non-empty string when present`,
+      line,
+    }
+  }
+  const topicIssue = validateDebateTopic(file, topic, `${eventType}.debateTopic`, line)
+  if (topicIssue) return topicIssue
+  if (typeof turn !== 'string' || !(DEBATE_TURN_VALUES as readonly string[]).includes(turn)) {
+    return enumInvalid(file, `${eventType}.debateTurn`, DEBATE_TURN_VALUES, turn, line)
+  }
+  return null
+}
+
+/**
+ * Topic slug grammar validator. Per DEBATE.md § "Topic slug grammar":
+ * lowercase-kebab-case, ≤ 48 characters, descriptive. Phase prefix is the
+ * caller's responsibility (e.g., `plan-source-priority`); this validator
+ * enforces the regex + length only.
+ */
+function validateDebateTopic(
+  file: string,
+  topic: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (typeof topic !== 'string' || topic.length === 0) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be a non-empty string`,
+      line,
+    }
+  }
+  if (topic.length > DEBATE_TOPIC_MAX_LEN) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be ≤ ${DEBATE_TOPIC_MAX_LEN} characters`,
+      detail: `got ${topic.length}`,
+      line,
+    }
+  }
+  if (!DEBATE_TOPIC_REGEX.test(topic)) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must match lowercase-kebab-case (^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$)`,
+      detail: `got ${JSON.stringify(topic)}`,
+      line,
+    }
+  }
   return null
 }
 
