@@ -521,10 +521,17 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     reviewReportPath: join(opts.runPaths.artifactRoot, 'REVIEW.md'),
   })
   if (probe.mismatched) {
+    // M9 commit 18 (Codex re-review fs#2 follow-up): differentiate the
+    // intervention message based on probe.reason — sha_mismatch and
+    // no_completed_event are different recovery paths.
+    const reasonText =
+      probe.reason === 'sha_mismatch'
+        ? `review_round_completed event exists for round=${opts.round} but its reviewReportSha256 does not match the on-disk REVIEW.md`
+        : `no review_round_completed event for round=${opts.round}`
     return recordReviewIntervention(
       ictx,
       'review_resume_mismatch',
-      `partial draft exists at ${probe.draftPath} but no review_round_completed event for round=${opts.round}`,
+      `partial draft exists at ${probe.draftPath}; ${reasonText}`,
       undefined,
       probe.draftPath,
     )
@@ -1435,9 +1442,19 @@ interface ValidateFindingPathsInput {
 async function validateFindingPaths(
   input: ValidateFindingPathsInput,
 ): Promise<PathValidationIssue | null> {
-  const { readFile } = await import('node:fs/promises')
+  const { readFile, realpath } = await import('node:fs/promises')
   const { resolve, relative, isAbsolute } = await import('node:path')
   const manifestByPath = new Map(input.manifest.map((m) => [m.path, m]))
+  // Realpath the worktree root once for the symlink-escape check below.
+  // If the worktree directory itself is missing, every file check will
+  // surface review_finding_file_unreadable per-finding; we handle that
+  // path inside the loop rather than throwing here.
+  let worktreeRootReal: string | null = null
+  try {
+    worktreeRootReal = await realpath(input.worktreeRoot)
+  } catch {
+    worktreeRootReal = null
+  }
   for (const f of input.findings) {
     const entry = manifestByPath.get(f.file)
     if (entry === undefined) {
@@ -1458,9 +1475,6 @@ async function validateFindingPaths(
         detail: `Finding ${f.id} cites a deleted-file path; deleted-file findings are rejected in M9`,
       }
     }
-    // Resolve under worktreeRoot; reject symlink escape via realpath +
-    // relative-prefix check.
-    const absResolved = resolve(input.worktreeRoot, f.file)
     if (isAbsolute(f.file)) {
       return {
         code: 'review_finding_path_unknown',
@@ -1470,14 +1484,45 @@ async function validateFindingPaths(
         detail: `Finding ${f.id} cites an absolute path; only relative paths under the worktree are allowed`,
       }
     }
-    const rel = relative(input.worktreeRoot, absResolved)
-    if (rel.startsWith('..') || isAbsolute(rel)) {
+    // Lexical pre-check: reject paths that lexically escape the worktree
+    // (e.g., "../foo" or "src/../../escape").
+    const absResolved = resolve(input.worktreeRoot, f.file)
+    const lexRel = relative(input.worktreeRoot, absResolved)
+    if (lexRel.startsWith('..') || isAbsolute(lexRel)) {
       return {
         code: 'review_finding_path_unknown',
         id: f.id,
         file: f.file,
         line: `- File: ${f.file} (finding ${f.id}; resolves outside worktree)`,
         detail: `Finding ${f.id} cites a path that escapes the run worktree`,
+      }
+    }
+    // M9 commit 18 bp#3 follow-up (Codex re-review): realpath-based
+    // symlink-escape check. A symlink inside the worktree pointing
+    // outside the worktree would lexically pass the prefix check
+    // above; realpath dereferences it so we can verify the canonical
+    // target is still under the canonical worktree root. Done BEFORE
+    // readFile (which would otherwise follow the symlink).
+    let absResolvedReal: string | null = null
+    try {
+      absResolvedReal = await realpath(absResolved)
+    } catch {
+      absResolvedReal = null
+    }
+    if (worktreeRootReal !== null && absResolvedReal !== null) {
+      const realRel = relative(worktreeRootReal, absResolvedReal)
+      if (realRel === '' || (!realRel.startsWith('..') && !isAbsolute(realRel))) {
+        // Stays within worktree after realpath — accept.
+      } else {
+        return {
+          code: 'review_finding_path_unknown',
+          id: f.id,
+          file: f.file,
+          line: `- File: ${f.file} (finding ${f.id}; symlink escape rejected)`,
+          detail:
+            `Finding ${f.id} cited file ${f.file} is a symlink whose realpath ${absResolvedReal} ` +
+            `lies outside the run worktree ${worktreeRootReal}`,
+        }
       }
     }
     let text: string
@@ -1494,6 +1539,19 @@ async function validateFindingPaths(
     }
     const lineCount = countLines(text)
     const range = parseLineRange(f.line)
+    // M9 commit 18 bp#3 follow-up: reject impossible line citations.
+    // The persona-response parser accepts any digits (`/^\d+(?:-\d+)?$/`),
+    // so `Line: 0` would survive without this lower-bound guard. Lines
+    // are 1-indexed in REVIEW.md citations.
+    if (!Number.isInteger(range.start) || range.start < 1) {
+      return {
+        code: 'review_finding_line_out_of_range',
+        id: f.id,
+        file: f.file,
+        line: `- Line: ${f.line} (finding ${f.id}; line numbers are 1-indexed)`,
+        detail: `Finding ${f.id} cites Line ${f.line} (start=${range.start}); line numbers must start at 1`,
+      }
+    }
     if (range.end > lineCount) {
       return {
         code: 'review_finding_line_out_of_range',

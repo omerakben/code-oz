@@ -513,6 +513,32 @@ describe('runReview — entry validation', () => {
       expect(result.code).toBe('review_cross_family_violation')
     }
   })
+
+  test('M9 commit 18 bp#4 follow-up: cross-family check uses registry.familyOf (registry override surfaces in REVIEW.md)', async () => {
+    // Register an override that remaps codex→claude family. With
+    // registry-backed familyOf, the reviewer (provider=codex) is now in
+    // family=claude — same as the BUILD agent. The cross-family check
+    // must fire even though the static familyOf would have said codex.
+    // This locks the bp#4 phase-level wiring: regressing
+    // opts.invokeCtx.registry.familyOf back to the static familyOf
+    // would let this test pass when it should fail.
+    fake = new FakeProvider()
+    registry = new ProviderRegistry({
+      providers: [fake],
+      familyOverrides: { codex: 'claude' },
+    })
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent({ family: 'claude' })
+
+    const result = await runReview(buildOpts({ reviewerAgent: REVIEWER_AGENT }))
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_cross_family_violation')
+      // The intervention message should name "claude" twice — once for
+      // BUILD and once for the registry-resolved reviewer family.
+      expect(result.rule).toContain('claude')
+    }
+  })
 })
 
 // --- happy paths ---------------------------------------------------
@@ -832,6 +858,77 @@ describe('runReview — persona response handling', () => {
     }
   })
 
+  test('M9 commit 18 bp#3 follow-up: rejects Line: 0 (1-indexed lower bound)', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    await seedWorktreeFile('src/foo.ts', 10)
+
+    const result = await runReview(
+      buildOpts({
+        invokePersona: async () =>
+          makeReadyPersonaResponse({
+            score: 8,
+            findings: [
+              {
+                title: 'impossible line',
+                file: 'src/foo.ts',
+                line: '0',
+                severity: 'fix-first',
+                recommendation: 'cite a 1-indexed line',
+              },
+            ],
+          }),
+      }),
+    )
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_finding_line_out_of_range')
+      expect(result.rule).toContain('start at 1')
+    }
+  })
+
+  test('M9 commit 18 bp#3 follow-up: rejects symlink escape via realpath check', async () => {
+    await seedBuildAndVerifyArtifacts({ changedFile: 'src/foo.ts' })
+    await seedBuildProviderEvent()
+    // Create the worktree with a symlink at src/foo.ts that points to a
+    // file OUTSIDE the worktree. Lexical resolve+relative would pass
+    // (the path is "src/foo.ts", which resolves under the worktree),
+    // but realpath dereferences the symlink and reveals the escape.
+    const { symlink } = await import('node:fs/promises')
+    const worktreeRoot = join(tmp, '.code-oz/runs', RUN, 'worktree')
+    const escapeTargetDir = join(tmp, 'outside-worktree')
+    await mkdir(escapeTargetDir, { recursive: true })
+    await writeFile(
+      join(escapeTargetDir, 'evil.ts'),
+      Array.from({ length: 10 }, (_, i) => `evil ${i + 1}`).join('\n') + '\n',
+    )
+    await mkdir(join(worktreeRoot, 'src'), { recursive: true })
+    await symlink(join(escapeTargetDir, 'evil.ts'), join(worktreeRoot, 'src/foo.ts'))
+
+    const result = await runReview(
+      buildOpts({
+        invokePersona: async () =>
+          makeReadyPersonaResponse({
+            score: 8,
+            findings: [
+              {
+                title: 'symlink escape',
+                file: 'src/foo.ts',
+                line: '1',
+                severity: 'fix-first',
+                recommendation: 'will not be read',
+              },
+            ],
+          }),
+      }),
+    )
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_finding_path_unknown')
+      expect(result.rule).toContain('symlink')
+    }
+  })
+
   test('M9 commit 13 bp#3: finding cites a worktree file that does not exist → review_finding_file_unreadable', async () => {
     await seedBuildAndVerifyArtifacts()
     await seedBuildProviderEvent()
@@ -1005,6 +1102,33 @@ describe('runReview — resume-mismatch detection', () => {
     // initial run_started + phase_entered).
     const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
     expect(events.some((e) => e.type === 'review_started')).toBe(false)
+  })
+
+  test('M9 commit 18 fs#2 follow-up: runReview surfaces sha_mismatch reason in intervention message (not a generic "no event" string)', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    expectScientistResponse()
+    // First produce a real round 1 ready exit so the run has a canonical
+    // REVIEW.md + matching review_round_completed event.
+    const result1 = await runReview(buildOpts())
+    expect(result1.status).toBe('resolved')
+    // Tamper REVIEW.md so the recorded sha no longer matches.
+    const reviewPath = join(paths.artifactRoot, 'REVIEW.md')
+    await writeFile(reviewPath, (await readFile(reviewPath, 'utf8')) + '\n# tamper\n')
+    // Stage a stale draft for round 1 and re-run runReview round 1.
+    const draftPath = reviewDraftPath(paths.runDir, 1, 1)
+    await mkdir(reviewDraftsDir(paths.runDir), { recursive: true })
+    await atomicWriteFile(draftPath, 'partial draft\n')
+
+    const result2 = await runReview(buildOpts())
+    expect(result2.status).toBe('intervention')
+    if (result2.status === 'intervention') {
+      expect(result2.code).toBe('review_resume_mismatch')
+      // The message must specifically call out the sha mismatch, NOT
+      // the "no review_round_completed event" branch (which is what
+      // the bug surfaced before this fix).
+      expect(result2.rule).toContain('reviewReportSha256 does not match')
+    }
   })
 
   test('M9 commit 13 fs#2: partial draft + matching event but sha mismatch → mismatched (sha_mismatch)', async () => {
