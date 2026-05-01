@@ -227,16 +227,20 @@ Output formats:
 
 The command never crashes on a single failed health probe; failures are aggregated into the output.
 
-## Auth model — subprocess delegation (v0.1)
+## Auth model — subprocess delegation + API-key transmission (v0.1)
 
-The v0.1 adapters delegate auth entirely to the upstream CLIs. code-oz never reads, parses, or transmits an OAuth token, and never knows what platform-specific storage backend (auth.json file, OS credential store, etc.) the CLI uses.
+v0.1 supports two auth shapes: subprocess delegation to upstream CLIs (Claude / Codex), and direct API-key transmission for HTTP adapters that have no upstream-CLI option (PE-1: xAI). The two shapes share the same `IAgentProvider` contract; only their auth substrates differ.
+
+### Subprocess delegation (Claude, Codex)
+
+Subprocess-backed adapters delegate auth entirely to the upstream CLIs. code-oz never reads, parses, or transmits an OAuth token, and never knows what platform-specific storage backend (auth.json file, OS credential store, etc.) the CLI uses.
 
 - **`ClaudeProvider`** spawns `claude --print --output-format json --no-session-persistence` from an empty `mkdtemp()` working directory, with manifest content piped through stdin. Auth is whatever `claude login` set up. Health probe is `claude --version` (ENOENT → `'missing'`; non-zero exit → `'unknown'`; zero exit → `'ok'`). The empty temp cwd is a privacy guard — Claude Code auto-discovers `CLAUDE.md` files up the working-directory hierarchy at session start, so an inherited project cwd would expand the trust surface beyond the explicit manifest.
 - **`CodexProvider`** spawns `codex exec --skip-git-repo-check --sandbox read-only --ephemeral --color never -` (read prompt from stdin) from an empty `mkdtemp()` working directory. Auth is whatever `codex login` set up. Health probe is `codex login status` (parses `'logged in'` substring on either stdout or stderr — codex CLI 0.125 writes to stderr — to set `'ok'`; ENOENT → `'missing'`; otherwise → `'unknown'`).
 - **`GeminiProvider`** does not spawn anything. `invoke()` throws `provider_gemini_not_yet_supported`; `health()` returns `authStatus: 'unsupported'`. Real Gemini lands in W3+.
 - **`FakeProvider`** never spawns. Tests register expectations against the in-process adapter.
 
-Adapters expose two test-injection seams that never touch the real filesystem in the default suite:
+Subprocess adapters expose two test-injection seams that never touch the real filesystem in the default suite:
 
 - **`runner`** — a `(cmd, args, options) => Promise<{stdout, stderr, exitCode}>` function. Default uses `Bun.spawn`; tests inject mocks that return canned subprocess results.
 - **`tempCwd`** — a `() => Promise<string>` factory that returns the working directory passed to the runner. Default creates a fresh `mkdtemp()`; tests can inspect or replace.
@@ -247,7 +251,49 @@ Failure mapping for non-zero CLI exits:
 - Non-zero exit + auth-keyword stderr (`"not logged in"`, `"please log in"`, `"login required"`) → `provider_auth_missing` with `actionableSuggestions: ["run \`<provider> login\`"]`.
 - Non-zero exit otherwise → `provider_io_error` with the CLI's stderr in `detail`.
 
-The W3 upgrade path replaces the subprocess with a direct HTTP adapter (e.g., opencode-style OAuth+PKCE → `chatgpt.com/backend-api/codex/responses` for Codex; equivalent if/when Anthropic ships subscription HTTP auth for Claude Max). The `IAgentProvider` contract is unchanged; only adapter internals swap. Wrappers (`src/providers/invoke.ts`) and tools (`src/tools/review-request.ts`) keep working without modification.
+The W3 upgrade path replaces these subprocesses with direct HTTP integrations (e.g., opencode-style OAuth+PKCE → `chatgpt.com/backend-api/codex/responses` for Codex; equivalent if/when Anthropic ships subscription HTTP auth for Claude Max). The `IAgentProvider` contract is unchanged; only adapter internals swap. Wrappers (`src/providers/invoke.ts`) and tools (`src/tools/review-request.ts`) keep working without modification.
+
+### API-key transmission for HTTP adapters (PE-1)
+
+PE-1 ships the first HTTP-based adapter (`XaiProvider`) that reads an API key from the environment and transmits it directly to the upstream over HTTPS. Until PE-1, every v0.1 adapter either subprocess-delegated to a CLI that handled its own auth or ran in-process. The API-key transmission path is a categorical trust-boundary expansion, not "another adapter."
+
+The shape is intentionally narrow: a single env var per provider, mandatory redaction, and a fixed HTTP-status-to-`ProviderErrorCode` mapping. Cloud-IAM auth (Azure / Bedrock / Vertex) is v0.2+ scope and earns its own contract section when committed.
+
+**Env var naming convention.** Per-provider env var, named `<PROVIDER>_API_KEY` (e.g., `XAI_API_KEY`). No generic `API_KEY` or shared name across providers. Adapters read via `process.env.XAI_API_KEY` (or equivalent) at invocation time and surface a typed `ProviderError(provider_auth_missing)` when the value is absent or empty (after `trim()`).
+
+**Redaction discipline (mandatory).** API keys must never appear in any artifact code-oz produces or persists:
+
+- `events.jsonl` (no `agent_invoked.detail`, no `intervention.detail`, etc.)
+- gate files (`NEEDS_INTERVENTION.json`, `GATE_*_PASSED.json`)
+- doctor command output (table form and `--json` form)
+- `ProviderError` messages and the structured `issues[].detail` field
+- HTTP request and response logging at any layer (adapter, wrapper, future telemetry)
+
+The redaction discipline is a property of the artifact-producing layer, not of the adapter alone. Tests assert it for every artifact path that touches an HTTP-adapter code path.
+
+**Never log Authorization headers.** The set of header names that must not appear in any artifact, in any case (case-insensitive matching where applicable):
+
+- `Authorization`
+- `x-api-key`
+- `api-key`
+- any provider-specific auth header (e.g., `xi-api-key`, `OpenAI-Project`)
+
+Adapters that record the HTTP request for debugging strip these headers before serialization. The same rule applies to response headers (some upstreams echo auth back).
+
+**HTTP error mapping.** HTTP-based adapters map upstream status codes onto the existing `ProviderErrorCode` set:
+
+| HTTP status | `ProviderErrorCode` | `actionableSuggestions` |
+|---|---|---|
+| 401 | `provider_auth_missing` | export the per-provider env var (`XAI_API_KEY=...`) and rerun |
+| 403 | `provider_permissions_violation` | check API-key scopes / enabled models on the upstream account |
+| 429 | `provider_rate_limit` | wait and retry; or raise `budgets.global.maxProviderCalls` if the cap is the cause |
+| 5xx | `provider_io_error` | upstream transient error; retry, then file an issue if persistent |
+| network / DNS / abort | `provider_io_error` | check connectivity; verify the configured base URL |
+| malformed JSON body | `provider_malformed_response` | rerun; if persistent, the upstream API has likely changed shape |
+
+Adapters never bypass the `ProviderError` model on HTTP failures — every failure path maps to a typed code with at least one actionable suggestion.
+
+**Test-injection seam.** Mirroring the subprocess `runner` seam, HTTP adapters take an injectable fetch-like function as a constructor option (`runner` for symmetry, or a more specific name per the adapter). Default is `Bun.fetch`; tests inject mocks that return canned `Response` objects, keeping the offline-test discipline (rule 8) intact. Live tests against the real upstream endpoint are gated behind an opt-in env flag.
 
 ## Lock boundaries
 
@@ -289,6 +335,9 @@ Any validation failure is reported as a typed `ProviderError` with `{ code, rule
 - **Comparing `ProviderId` fields directly for cross-family checks.** Use `registry.familyOf()`.
 - **Holding the per-run lock across a network call.** Always two short locks, never one long lock.
 - **`health()` writing to `events.jsonl` or any gate file.** Doctor runs outside any active run.
+- **Logging `Authorization`, `x-api-key`, or any provider-specific auth header in any artifact.** Includes `events.jsonl`, gate files, doctor output, error messages, and request / response logs. Strip these headers before any serialization. Mirrors the OAuth-token rule for subprocess adapters; same trust boundary, different substrate.
+- **Embedding API keys in `ProviderRequest` / `PreparedProviderRequest` / persona prompt bodies.** Auth lives at the adapter layer; the request DTO never carries credentials. Phase logic constructs `ProviderRequest` without ever touching env-resolved secrets, and the wrapper's `buildManifest` only loads file content (the request body's `prompt` and the persona's body), never auth material.
+- **Enabling provider-native server-side tools (e.g., xAI built-in `web_search`, `x_search`, `code_interpreter`) without an explicit `tool_use` permission scope authorizing them.** v0.1 HTTP adapters disable these by default. For OpenAI-compatible chat-completions endpoints that take an opt-in `tools` field, "disable" means **never sending the field** — sending an empty array `tools: []` is also acceptable but the omission form is preferred so a misuse adding `tools.push(...)` mid-request can't accidentally arm them. A future permission scope (`tool_use.upstream_native_tools`) may authorize specific tools when measurable demand surfaces.
 
 ## Capability and eligibility (M11)
 
@@ -372,6 +421,7 @@ Adapters declare their capability statically, by reading from `capabilityOf(this
 - **M12 (company roster — closed 2026-05-01, `v0.12.0-alpha.0`)** introduced a config-side `company:` block mapping the six bundled-persona role names (`ba | lead | builder | verifier | reviewer | scientist`) to `{ provider?, model? }` overrides only. Per-role budgets defer to M13 under `budgets.global`; permissions stay persona-shaped. M12's load-time check reuses `capabilityOf(provider).eligiblePhases.includes(phase)` against the resolved phase, plus a post-override debate-family re-check. See `docs/contracts/COMPANY.md` for the canonical contract.
 - **M13 (role-cost policy)** consumes `costPerMTok` and `rateLimits` advisory fields under existing `budgets.global` namespace.
 - **M14 (reviewer panel v1)** may derive `phase → ProviderId[]` reverse maps on demand; M11 does not store the reverse direction.
+- **PE-1 (xAI direct HTTP adapter)** adds the `xai-api-key` value to `AuthSource` and a `xai` row to `DEFAULT_CAPABILITY_BY_ID`. **No new field on `ProviderCapability`.** The trust-boundary expansion (outbound HTTPS, API-key transmission) lives in § "Auth model — subprocess delegation + API-key transmission (v0.1)" above, not in the capability record. The strict-minimal shape (`authSource` + `eligiblePhases` + advisory cost / rate-limit) is sufficient: doctor's `health()` already owns probe semantics, and `authSource` already names the mechanism. Adding a `transport` field at PE-1 would foreclose decisions M14 / M15 should make on their own evidence (Codex Decision D in `docs/research/CODEX_RESPONSE_XAI_EXPANSION.md`).
 - **W3 HTTP adapters** introduce divergent `editSemantics` / `shellSemantics` / `mcpSupport` / `sandboxProfile` fields when the runtime stops being provider-uniform. The shape change lands at that milestone's contract.
 
 ### Anti-patterns rejected by this M11 spec

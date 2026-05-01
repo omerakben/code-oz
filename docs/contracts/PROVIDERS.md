@@ -4,10 +4,18 @@ User-facing summary of the four IAgentProvider adapters that ship in
 v0.1-alpha. The canonical contract — interface shape, error codes, doctor
 exit semantics — lives in [`docs/references/provider-contract.md`](../references/provider-contract.md).
 
-## Subscription-first auth model
+## Auth model (v0.1)
 
-code-oz orchestrates the user's existing paid CLI subscriptions, never a
-separately-billed API key. For each upstream CLI:
+code-oz supports two auth shapes in v0.1: **subscription-first delegation** to
+upstream CLIs, and **direct API-key transmission** for HTTP adapters that
+have no upstream-CLI option. Cloud-IAM auth (Azure / Bedrock / Vertex) is
+v0.2+ scope.
+
+### Subscription-first (preferred when an upstream CLI exists)
+
+For every provider with an upstream CLI that already handles the user's
+subscription auth, code-oz orchestrates the existing CLI rather than
+billing a separate API key. The v0.1 subscription-first adapters:
 
 | Provider | Auth source | How to log in |
 |---|---|---|
@@ -18,8 +26,47 @@ separately-billed API key. For each upstream CLI:
 
 code-oz never reads or transmits OAuth tokens directly. Auth lives entirely
 inside the upstream CLIs (`~/.claude/auth.json`, `~/.codex/auth.json`, OS
-credential stores on some platforms). The v0.1 adapters spawn the CLIs as
-subprocesses and trust the CLIs' own token handling.
+credential stores on some platforms). The subscription-first adapters spawn
+the CLIs as subprocesses and trust the CLIs' own token handling.
+
+### API-key transmission (PE-1: xAI)
+
+When a provider has no upstream-CLI option (xAI is the first), code-oz
+reads a per-provider API key from the environment and transmits it directly
+to the upstream over HTTPS:
+
+| Provider | Auth source | How to set up |
+|---|---|---|
+| xAI | API key via env var | `export XAI_API_KEY=...` (per shell) or `.env` (auto-loaded by Bun) |
+
+**Env var convention:** `<PROVIDER>_API_KEY` (e.g., `XAI_API_KEY`). No
+generic `API_KEY` or shared name across providers. Adapters read the
+variable on each `invoke()` call; missing or empty values surface as a
+typed `ProviderError(provider_auth_missing)` with a concrete suggestion to
+export the right variable.
+
+**Redaction discipline:** API keys must never appear in `events.jsonl`,
+gate files, doctor output, error messages, or request / response logs.
+Authorization headers (`Authorization`, `x-api-key`, `xi-api-key`, etc.)
+are stripped before any serialization at any layer. The discipline is a
+property of every artifact-producing path that touches an HTTP adapter,
+not of the adapter alone.
+
+**HTTP error mapping:** 401 → `provider_auth_missing`; 403 →
+`provider_permissions_violation`; 429 → `provider_rate_limit`; 5xx →
+`provider_io_error`; malformed JSON → `provider_malformed_response`. Each
+code carries at least one actionable suggestion. See
+[`docs/references/provider-contract.md`](../references/provider-contract.md)
+§ "Auth model — subprocess delegation + API-key transmission (v0.1)" for
+the full canonical mapping.
+
+### Cloud-IAM (deferred to v0.2+)
+
+Azure AI Foundry, AWS Bedrock, and Google Vertex AI each carry their own
+IAM, region, deployment-name, and catalog discipline. Each lands as its
+own milestone in v0.2+ when there is measurable demand for it. v0.1
+explicitly does not encode cloud-IAM auth shapes in the contract; PE-1's
+narrow API-key shape does not generalize to cloud routes.
 
 ## v0.1 limitations
 
