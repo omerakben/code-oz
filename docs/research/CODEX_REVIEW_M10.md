@@ -131,6 +131,29 @@ Codex re-reviewed the round-1 closures and found three NEW findings, all cluster
 
 **Re-validation (round 2 fixes):** 1808 tests pass / 1 skip / 0 fail (3 new regression tests for bp#4, bp#5, fs#4). Typecheck clean.
 
-## Round 3 expected verdict: `push`
+## Round 3 (verification of round-2 closures)
 
-The remaining open finding is n#1 (line-anchored tag detection in `extractDebateRequest`), which Codex marked as deferable.
+**Thread:** `019de437-3e3e-7963-8153-6c77e788c6af`
+**Date:** 2026-05-01
+**Verdict:** `push`
+
+Codex confirmed:
+- PrepResult is `fresh | resume-synthesis` only.
+- priorStarted branch ordering is correct (opposingProvider match → BRIEFING present → BRIEFING sha-match → DECISION orphan check → RESPONSE absent (concurrent reject) → resume-synthesis with BRIEFING.frontmatter.files).
+- setResult uses `prep.briefingSha256` + `prep.previewSha256`.
+- bp#4, bp#5, fs#4 regression tests present and passing.
+
+Non-blocking observation: bp#5's regression test proves the resumed BRIEFING.md is not rewritten or expanded with req.files, but does not inspect the provider request file list directly. Acceptable for push because the runtime skips the opponent turn on resume and synthesis receives only BRIEFING.md + RESPONSE.*.md.
+
+The remaining open finding is n#1 (line-anchored tag detection in `extractDebateRequest`), which Codex marked as deferable in round 1 and round 3 did not re-flag.
+
+## Final state
+
+- **3 review rounds:** fix-first → fix-first → push.
+- **9 findings raised total:** 3 bp + 3 fs in round 1; 2 bp + 1 fs in round 2; 0 in round 3.
+- **8 findings closed:** all bp and fs.
+- **3 nits:** n#2 + n#3 closed; n#1 deferred per Codex.
+- **1808 tests pass / 1 skip / 0 fail.** Typecheck clean. (was 1761 at M10 milestone close; +47 net new across PLAN extraction + Codex review closure regression tests.)
+- **Authority boundary:** Debate runtime — exactly one new boundary per CLAUDE.md rule 20.
+
+The discipline worked: cross-family review at planning convergence + cross-family review at implementation completion both caught real bugs that the single-model author missed (bp#4 race indistinguishability + bp#5 manifest binding were not visible from the round-1 fix author's POV).
