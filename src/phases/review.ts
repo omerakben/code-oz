@@ -286,6 +286,11 @@ function actionableSuggestionsFor(code: string): readonly string[] {
         'BUILD_REPORT.md and VERIFY.md taskId/attempt do not agree.',
         'This is a routing bug; do not retry without correcting the orchestrator state.',
       ])
+    case 'review_upstream_mismatch':
+      return Object.freeze([
+        'BUILD_REPORT.md and VERIFY.md upstream refs (baseCommitSha or patchSha256) disagree.',
+        'VERIFY likely passed for a different patch than the one BUILD recorded; reject and re-run BUILD + VERIFY.',
+      ])
     case 'review_no_build_provider':
       return Object.freeze([
         'No build_provider_recorded event for this (runId, taskId, attempt).',
@@ -440,6 +445,24 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
       ictx,
       'review_build_ref_mismatch',
       `VERIFY.md buildRef=(${verifyReport.buildRef.taskId}, ${verifyReport.buildRef.attempt}) != BUILD_REPORT.md=(${opts.taskId}, ${attempt})`,
+    )
+  }
+  // M9 commit 13 bp#2 (Codex review): VERIFY.md and BUILD_REPORT.md must
+  // also agree on the upstream commit + patch refs. Same task/attempt
+  // does not prove same patch — a misrouted VERIFY pass against a
+  // different patch would otherwise be blessed by REVIEW.
+  if (verifyReport.buildRef.baseCommitSha !== buildReport.base.baseCommitSha) {
+    return recordReviewIntervention(
+      ictx,
+      'review_upstream_mismatch',
+      `VERIFY.md baseCommitSha=${verifyReport.buildRef.baseCommitSha} != BUILD_REPORT.md baseCommitSha=${buildReport.base.baseCommitSha}`,
+    )
+  }
+  if (verifyReport.buildRef.patchSha256 !== buildReport.patch.patchSha256) {
+    return recordReviewIntervention(
+      ictx,
+      'review_upstream_mismatch',
+      `VERIFY.md patchSha256=${verifyReport.buildRef.patchSha256} != BUILD_REPORT.md patchSha256=${buildReport.patch.patchSha256}`,
     )
   }
   if (verifyReport.verdict.verdict !== 'pass') {

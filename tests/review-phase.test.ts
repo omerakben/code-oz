@@ -427,6 +427,38 @@ describe('runReview — entry validation', () => {
     }
   })
 
+  test('VERIFY.md baseCommitSha mismatch (bp#2) → review_upstream_mismatch', async () => {
+    // BUILD_REPORT.md uses BASE_COMMIT_SHA = 'b'.repeat(40); craft a
+    // VERIFY.md whose buildRef.baseCommitSha is different.
+    await writeFile(join(paths.artifactRoot, 'BUILD_REPORT.md'), makeBuildReport())
+    const verifyText = makeVerifyReport().replace(BASE_COMMIT_SHA, 'f'.repeat(40))
+    await writeFile(join(paths.artifactRoot, 'VERIFY.md'), verifyText)
+    await seedBuildProviderEvent()
+
+    const result = await runReview(buildOpts())
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_upstream_mismatch')
+      expect(result.rule).toContain('baseCommitSha')
+    }
+  })
+
+  test('VERIFY.md patchSha256 mismatch (bp#2) → review_upstream_mismatch', async () => {
+    // PATCH_SHA = 'c'.repeat(64); craft a VERIFY.md with a different
+    // patch sha but matching base + task + attempt.
+    await writeFile(join(paths.artifactRoot, 'BUILD_REPORT.md'), makeBuildReport())
+    const verifyText = makeVerifyReport().replace(PATCH_SHA, 'f'.repeat(64))
+    await writeFile(join(paths.artifactRoot, 'VERIFY.md'), verifyText)
+    await seedBuildProviderEvent()
+
+    const result = await runReview(buildOpts())
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('review_upstream_mismatch')
+      expect(result.rule).toContain('patchSha256')
+    }
+  })
+
   test('VERIFY.md verdict=fail → review_verify_not_passed', async () => {
     await seedBuildAndVerifyArtifacts({ verifyVerdict: 'fail' })
     const result = await runReview(buildOpts())
