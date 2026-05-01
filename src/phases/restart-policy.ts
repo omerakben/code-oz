@@ -91,6 +91,7 @@ export function prepareCarryForward(
   vfa: VerifiedFailedAttempt,
 ): BuildReportCarryForward {
   return Object.freeze({
+    source: 'verify-fail' as const,
     priorAttempt: vfa.attempt,
     priorForensicsPath: vfa.forensicsPath,
     priorValidationCommand: vfa.validationCommand,

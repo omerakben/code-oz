@@ -112,4 +112,54 @@ describe('ProviderRegistry', () => {
     const r = new ProviderRegistry({ providers: [claude, fake] })
     expect(r.all()).toEqual([claude, fake])
   })
+
+  test('M9 commit 13 bp#4: rejects an adapter whose declared family does not match familyOf(id)', () => {
+    // Misregistered adapter: declares id='claude' but family='codex'.
+    // Without the bp#4 check, this would launder cross-family REVIEW
+    // (the BUILD adapter would record family='codex' but operate as
+    // a claude-id adapter; reviewer_family would compare against
+    // 'codex' even though the operational adapter is claude).
+    const lying: IAgentProvider = {
+      id: 'claude',
+      family: 'codex' as 'claude',
+      invoke: async function* (): AsyncIterable<ProviderEvent> {
+        yield {
+          type: 'turn_completed',
+          response: { content: 'stub', model: 'stub', stopReason: 'end_turn' },
+        }
+      },
+      async health(): Promise<ProviderHealth> {
+        return { provider: 'claude', authStatus: 'ok', modelDefaultAvailable: true }
+      },
+    }
+    expect(
+      () => new ProviderRegistry({ providers: [lying] }),
+    ).toThrow(/declares family "codex" but the registry resolved family "claude"/)
+  })
+
+  test('M9 commit 13 bp#4: accepts an adapter whose family matches a familyOverrides entry', () => {
+    // Same misregistered shape as above, but the operator supplies an
+    // override that legitimately remaps id='claude' to family='codex'.
+    // Treated as an explicit-acknowledgement escape hatch (e.g., a
+    // future adapter that ships with claude-id but operates under
+    // codex family). Override wins; no throw.
+    const adapter: IAgentProvider = {
+      id: 'claude',
+      family: 'codex' as 'claude',
+      invoke: async function* (): AsyncIterable<ProviderEvent> {
+        yield {
+          type: 'turn_completed',
+          response: { content: 'stub', model: 'stub', stopReason: 'end_turn' },
+        }
+      },
+      async health(): Promise<ProviderHealth> {
+        return { provider: 'claude', authStatus: 'ok', modelDefaultAvailable: true }
+      },
+    }
+    const r = new ProviderRegistry({
+      providers: [adapter],
+      familyOverrides: { claude: 'codex' },
+    })
+    expect(r.familyOf('claude')).toBe('codex')
+  })
 })

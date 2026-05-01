@@ -255,28 +255,85 @@ NOT in M8: REVIEW-lite (M9), Debate runtime (M10), explicit `Asserts:` flag in P
 
 ### M9 — `feat(spine): REVIEW-lite with cross-family handoff`
 
-One new authority boundary per CLAUDE.md rule 20: **cross-family REVIEW authority**.
+One new authority boundary per CLAUDE.md rule 20: **cross-family REVIEW authority**. Loop discipline (4-round cap + score+verdict exit) and cross-family enforcement are inseparable halves of one authority — same shape as M8's "VERIFY evidence + restart-on-fail policy" inseparability. Briefing + Codex debate trail: `docs/research/CODEX_BRIEFING_M9.md` + `docs/research/CODEX_RESPONSE_M9.md` (thread `019de05a`, 2026-04-30 — 3 rejects + 10 accept-with-modifications across 13 decisions; 8 risks). Synthesis: `docs/design/SESSION_M9_KICKOFF.md`. Topic-1 sub-decisions for `review-system.md` plumbed from the agent-skills-borrow synthesis (`docs/research/SYNTHESIS_AGENT_SKILLS_AND_PRODUCT_THESIS.md`, 2026-04-30): five-axis scaffolding + tests-first + exact false-security-coverage caveat + REVIEW.md schema unchanged.
 
-Files:
-- `src/phases/review.ts`, `src/artifacts/review-report.ts`
-- `src/agents/defaults/reviewer.md`, `src/prompts/review-system.md`
-- REVIEW's Scientist phase-tail
-- `src/tools/review-request.ts` consumed (M4 primitive); review loop bounded at 4 rounds (CLAUDE.md rule 6)
-- `tests/{review-phase,review-loop-cap,review-cross-family,review-scientist-tail}.test.ts`
-- `tests/e2e/review-lite-greenfield.test.ts`
+Files (commit 1: substrate — worktree lifetime + BUILD provider durability + family-aware loader):
+- `src/commands/approve.ts` — remove worktree-removal from `preApproveVerifyHook`; add `preApproveReviewHook` that removes worktree on REVIEW approve. Worktree preserved through REVIEW.
+- `src/state/schemas.ts` — new `build_provider_recorded` event (`runId`, `taskId`, `attempt`, `provider`, `family`, `model`); resume-safe.
+- `src/phases/build.ts` — emit `build_provider_recorded` after `build_completed`.
+- `src/agents/loader.ts` — family-aware comparison via shared `familyOf()` lookup.
+- `src/providers/families.ts` (new) — pure `familyOf(providerId) → family` lookup; shared by loader and runtime `ProviderRegistry`.
+- `docs/contracts/WORKTREE.md` — cleanup-on-VERIFY-pass deleted; cleanup-on-REVIEW-pass added.
+- `docs/contracts/REVIEW.md` — `fix-first` unresolved blocks `ready` (lock stricter rule per Codex catch on contradiction).
+- `tests/{worktree-lifetime-through-review,build-provider-recorded,family-aware-loader,fix-first-unresolved-blocks-ready}.test.ts`
+
+Files (commit 2: tool_use.review_request schema + load validation):
+- `src/agents/schema.ts` adds `tool_use.review_request` per REVIEW.md
+- `src/agents/load.ts` validates: bounded `maxRounds ≤ 4`, providers list, bounded `timeoutMsPerRound`, `network: 'provider-only'`
+- `tests/agent-load-tool-use-review-request.test.ts`
+
+Files (commit 3: review event types + validators):
+- `src/state/schemas.ts` adds 4 `review_*` events per REVIEW.md
+- `src/state/events.ts` validators
+- `tests/state-events-review.test.ts`
+
+Files (commit 4: review-report parser + serializer with orchestrator-owned binary verdict):
+- `src/artifacts/review-report.ts` — orchestrator owns `Round timeline.<verdict>` per round AND `Score.Final verdict`; persona owns `Findings`, `Score.Final score`, recommendation text. Canonical verdict rule: any current `block` finding → `block`; otherwise unresolved `block` or `fix-first` OR `score < 6` → `needs-revision`; otherwise `ready`. Fingerprint-based `F-NNN` canonicalizer (file + normalized title + recommendation intent); ping-pong recurrence reopens original id. Bounded repair prompt grammar (error code + violated rule + clipped offending lines only — never full failed drafts). Deleted-file findings rejected.
+- `tests/review-report-{parse,serialize,grammar,upstream-refs,timeline,findings,score,cap-status,verdict-authority,fingerprint-canonicalize,ping-pong-reopen,path-validation,fix-first-blocks-ready,deleted-file-rejected}.test.ts`
+
+Files (commit 5: review-system.md template + composer with `{{REVIEW_CONTEXT}}` token):
+- `src/prompts/review-system.md` (~3.5-4.2k; universal-rules + tests-first directive + five-axis scaffolding + exact false-security-coverage caveat + 1 needs-revision example + 1 tiny ready example + 2 inline rebuttals)
+- `src/prompts/index.ts` `composeReviewPromptPure` with new `{{REVIEW_CONTEXT}}` token (round number + upstream refs + changed-file manifest + VERIFY pass summary + prior scores/verdicts + prior findings)
+- `tests/prompts-review-{compose,tokens,topic1-content-snapshot}.test.ts`
+
+Files (commit 6: reviewer persona — replaces M2 stub):
+- `src/agents/defaults/reviewer.md` (~3.5-4k; universal-rules-injection + cross-family framing + `tool_use.repo_context` scope)
+
+Files (commit 7: one-round REVIEW orchestrator):
+- `src/phases/review.ts` — orchestrator: BUILD ref bind → cross-family invocation-time check (recorded BUILD family vs reviewer adapter family) → persona invoke → finalize with two-draft cap + bounded repair prompt → orchestrator computes binary Round-1 verdict + Final verdict → if `ready` exit; if `needs-revision` intervene with M9-followup pointer; if `block` intervention.
+- `src/phases/scientist.ts` extension for REVIEW phase-tail (3/3 cap)
+- `src/phases/review-resume.ts` — per-round atomic resume; partial drafts persisted under `.code-oz/runs/<runId>/review-drafts/round-N-attempt-M.md`; mismatch on resume → intervention.
+- `tests/review-phase-{round-1-pass,round-1-needs-revision,round-1-block,cross-family-check,scientist-tail,partial-draft-resume,resume-mismatch-intervention}.test.ts`
+
+Files (commit 8: one-round REVIEW e2e):
+- `tests/e2e/review-lite-greenfield-pass.test.ts`
+- FakeProvider keying extended to `(phase, agent, taskId, attempt, reviewRound)` with explicit object keying; fresh provider instance per test.
+
+Files (commit 9: typed carry-forward source field for round 2+):
+- `src/artifacts/build-report.ts` — `Failure carry-forward.Source` field added (`verify-fail | review-needs-revision`)
+- `src/artifacts/review-report.ts` — REVIEW round 1 needs-revision exit writes typed carry-forward block (REVIEW.md path/sha + summary + constraint)
+- `src/phases/build.ts` — BUILD prompt accepts attempt > 1 from either source
+- `docs/contracts/BUILD.md` — carry-forward `Source` field documented
+- `tests/build-report-typed-carry-forward.test.ts`, `tests/review-needs-revision-typed-carry-forward.test.ts`
+
+Files (commit 10: REVIEW remediation coordinator + multi-round orchestrator):
+- `src/phases/review-remediation.ts` (NEW coordinator — NOT `scheduleAttemptNPlus1` which is VERIFY-specific). Two monotonic global counters of 4 each per `(runId, taskId)`: max 4 clean BUILD attempts AND max 4 REVIEW provider rounds; whichever trips first owns intervention. Authority overlap: VERIFY-restart-cap-exhausted owns intervention with "while addressing REVIEW round N" context; REVIEW round count does not advance during VERIFY restart. Fingerprint-based ping-pong detection consumed from canonicalizer.
+- `src/phases/review.ts` updated to call `review-remediation` on `needs-revision` exit
+- `tests/review-remediation-{round-2-pass,round-2-block,review-cap-exhausted,build-cap-exhausted-during-review,authority-overlap-verify-owns,ping-pong-cap-naming}.test.ts`
+
+Files (commit 11: multi-round e2e + spine e2e):
+- `tests/e2e/review-lite-greenfield-multi-round.test.ts` (T-003: round 1 needs-revision → BUILD attempt 2 → round 2 ready)
 - `tests/e2e/spine-greenfield.test.ts` — full DEFINE → PLAN → BUILD → VERIFY → REVIEW path
-- `fixtures/greenfield-web/` — toy fixture used across e2e tests
-- `docs/demo/v0.9-spine.md` — the v0.9 demo trail
+- `tests/fixtures/greenfield-baby-name` extended with T-003
+- `docs/demo/v0.9-spine.md`
 
 Acceptance:
-- REVIEW receives changed file paths from BUILD's manifest (CLAUDE.md rule 2: never curated summaries)
-- Cross-family enforcement at load time (M2): BUILD persona's `provider` family ≠ REVIEW persona's `provider` family
-- Loop capped at 4 rounds; exit on score ≥ 6 + verdict = ready (CLAUDE.md rule 6)
-- Full v0.9 spine e2e test passes
-- All M8 tests still pass
-- Tag: `v0.9.0-alpha.0`
+- REVIEW receives changed file paths from BUILD's manifest (CLAUDE.md rule 2: never curated summaries).
+- Cross-family enforcement layered: load-time in `loader.ts` (family-aware via `familyOf()`), invocation-time in `phases/review.ts` (recorded BUILD family vs reviewer adapter family), recorded post-condition in `REVIEW.md` `Reviewer.Cross-family check: passed`.
+- Loop capped at 4 REVIEW rounds AND 4 BUILD attempts per `(runId, taskId)`, both monotonic; whichever trips first owns the intervention. VERIFY-restart cap exhaustion during REVIEW round N is VERIFY-owned with "while addressing REVIEW round N" context.
+- Exit on `score ≥ 6` AND `verdict: ready` AND no unresolved `block` or `fix-first` (locked stricter `fix-first` rule).
+- Worktree preserved through REVIEW; removed at REVIEW approval via `preApproveReviewHook`. Removal failure blocks gate write and emits intervention.
+- Findings ping-pong detection: fingerprint-matched recurrence reopens original `F-NNN` id; cap-exhausted intervention names reopened findings explicitly.
+- Repair prompts bounded: error code + violated rule + clipped offending lines only.
+- Per-round atomic resume; partial drafts persisted; mismatch on resume → intervention.
+- Topic-1 plumb-through verified via prompt-snapshot tests (`review-system.md` contains tests-first language, five-axis scaffolding, exact false-coverage caveat).
+- REVIEW-lite e2e with FakeProvider: success path (one-round ready exit) and multi-round path (round 1 needs-revision → BUILD attempt 2 → round 2 ready). FakeProvider keyed by `(phase, agent, taskId, attempt, reviewRound)`.
+- Full v0.9 spine e2e test passes.
+- All M8 tests still pass (1325 carried).
+- Codex implementation review (CLAUDE.md rule 8) returns `push` after fix-first commits land.
+- Tag: `v0.9.0-alpha.0`.
 
-NOT in M9: SHIP (W4), Debate runtime (M10).
+NOT in M9: SHIP (W4), Debate runtime (M10), reviewer panels (M14 per post-M10 productization), runtime axis metrics for the five axes (M14 panel measurement territory), deleted-file findings (locked convention deferred), persona-authored binary verdicts (orchestrator-owned per M8 lesson), `scheduleAttemptNPlus1` reuse for REVIEW findings (VERIFY-specific; M9 commit 10 introduces separate coordinator), 16-iteration cap interpretation (two global monotonic counters of 4 each).
 
 ### M10 — `feat(debate): Debate runtime + requestDebate() primitive`
 

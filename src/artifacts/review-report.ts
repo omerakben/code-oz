@@ -1,0 +1,1440 @@
+// REVIEW.md parser + serializer + canonicalizer (per docs/contracts/REVIEW.md
+// § "REVIEW.md schema").
+//
+// Authority split per CODEX_RESPONSE_M9.md decision 3 (orchestrator-owned
+// verdict authority):
+//   - Persona authors: ## Findings (each F-NNN block's severity,
+//     recommendation, file path, line range, title); ## Score.Final score
+//     (the integer 0-10).
+//   - Orchestrator authors: ## Upstream refs (immutable run-bound),
+//     ## Reviewer (frozen at config time + recorded family pair),
+//     ## Round timeline (append-only across rounds),
+//     ## Score.Final verdict + Exit reason (canonical verdict rule),
+//     ## Cap status (round count + cap-exhausted flag), F-NNN id
+//     assignment (fingerprint-based; ping-pong reopen).
+//
+// Canonical verdict rule (locked, decision 3 + strict fix-first rule):
+//   1. Any current finding with severity=block → verdict='block'.
+//   2. Otherwise, any current finding with severity in {block, fix-first}
+//      whose roundResolved === 'unresolved', OR the persona's score < 6
+//      → verdict='needs-revision'.
+//   3. Otherwise → verdict='ready'.
+//
+// Cap composition per CODEX_RESPONSE_M9.md decision 4: max 4 REVIEW
+// rounds + max 4 BUILD attempts as TWO MONOTONIC GLOBAL COUNTERS scoped
+// to (runId, taskId). This module records cap-exhaustion at the REVIEW
+// level (round 4 reached without ready exit). VERIFY-cap-during-review
+// is the orchestrator's concern.
+//
+// Deleted-file findings rejected in M9 (no locked path-relativity
+// convention yet); reviewer must cite added/modified files only.
+//
+// Open-type-union of severity / verdict via the locked enum unions; new
+// values require a contract change.
+
+// --- types ---------------------------------------------------------
+
+export const REVIEW_REPORT_TITLE = '# REVIEW' as const
+
+export const REVIEW_REPORT_SECTION_KEYS = [
+  'upstreamRefs',
+  'reviewer',
+  'roundTimeline',
+  'findings',
+  'score',
+  'capStatus',
+] as const
+export type ReviewReportSectionKey = (typeof REVIEW_REPORT_SECTION_KEYS)[number]
+
+export const REVIEW_REPORT_SECTION_HEADINGS: Readonly<
+  Record<ReviewReportSectionKey, string>
+> = Object.freeze({
+  upstreamRefs: 'Upstream refs',
+  reviewer: 'Reviewer',
+  roundTimeline: 'Round timeline',
+  findings: 'Findings',
+  score: 'Score',
+  capStatus: 'Cap status',
+})
+
+export const REVIEW_SEVERITIES = ['block', 'fix-first', 'nit', 'fyi'] as const
+export type ReviewSeverity = (typeof REVIEW_SEVERITIES)[number]
+
+export const REVIEW_VERDICTS = ['ready', 'needs-revision', 'block'] as const
+export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number]
+
+/** CLAUDE.md non-negotiable rule 6: max 4 rounds, exit on score≥6 + verdict=ready. */
+export const REVIEW_ROUND_CAP = 4
+export const REVIEW_SCORE_MIN = 6
+export const REVIEW_SCORE_MAX = 10
+export const REVIEW_TITLE_MAX_CHARS = 120
+export const REVIEW_RECOMMENDATION_MAX_CHARS = 500
+export const REVIEW_REPAIR_OFFENDING_LINES_MAX = 5
+export const REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS = 200
+
+export function isReviewSeverity(value: string): value is ReviewSeverity {
+  return (REVIEW_SEVERITIES as readonly string[]).includes(value)
+}
+
+export function isReviewVerdict(value: string): value is ReviewVerdict {
+  return (REVIEW_VERDICTS as readonly string[]).includes(value)
+}
+
+export interface ReviewUpstreamRefs {
+  readonly buildReportPath: string
+  readonly buildReportSha256: string  // 64-hex
+  readonly verifyReportPath: string
+  readonly verifyReportSha256: string // 64-hex
+  readonly taskId: string             // T-NNN
+  readonly attempt: number            // ≥ 1
+  readonly baseCommitSha: string      // 40-hex
+  readonly patchSha256: string        // 64-hex
+}
+
+export interface ReviewReviewer {
+  readonly providerFamily: string
+  readonly providerId: string
+  readonly modelPolicy: string
+  /** Locked to 'passed' — the orchestrator never serializes a 'failed' value. */
+  readonly crossFamilyCheck: 'passed'
+  /** The recorded BUILD family at the time of REVIEW (must differ from providerFamily). */
+  readonly buildFamily: string
+}
+
+export interface ReviewTimelineEntry {
+  readonly round: number     // 1..4, contiguous from 1
+  readonly timestamp: string // ISO 8601
+  readonly findingsRaised: number
+  readonly score: number     // 0..10
+  readonly verdict: ReviewVerdict
+}
+
+export interface ReviewFinding {
+  readonly id: string                    // F-NNN
+  readonly title: string
+  readonly file: string
+  /** Single line "42" or range "42-58". */
+  readonly line: string
+  readonly severity: ReviewSeverity
+  readonly recommendation: string
+  readonly roundRaised: number           // 1..4
+  /** Round number when resolved, or 'unresolved'. */
+  readonly roundResolved: number | 'unresolved'
+}
+
+export interface ReviewScore {
+  readonly roundCount: number
+  readonly finalScore: number  // 0..10
+  readonly finalVerdict: ReviewVerdict
+  /** Orchestrator-authored summary line. */
+  readonly exitReason: string
+}
+
+export interface ReviewCapStatus {
+  readonly cap: number          // always 4 in v0.1
+  readonly roundsUsed: number   // 1..4
+  readonly capExhausted: boolean
+}
+
+export interface ReviewReportData {
+  readonly upstreamRefs: ReviewUpstreamRefs
+  readonly reviewer: ReviewReviewer
+  readonly roundTimeline: readonly ReviewTimelineEntry[]
+  readonly findings: readonly ReviewFinding[]
+  readonly score: ReviewScore
+  readonly capStatus: ReviewCapStatus
+}
+
+export interface ReviewReportLoadIssue {
+  readonly file: string
+  readonly code: string
+  readonly rule: string
+  readonly detail?: string
+  readonly line?: number
+}
+
+export class ReviewReportLoadError extends Error {
+  readonly issues: readonly ReviewReportLoadIssue[]
+  constructor(issues: readonly ReviewReportLoadIssue[]) {
+    const summary = issues.map((i) => `${i.code}: ${i.rule}`).join('; ')
+    super(`REVIEW.md validation failed: ${summary}`)
+    this.name = 'ReviewReportLoadError'
+    this.issues = Object.freeze([...issues])
+  }
+}
+
+// --- serializer ----------------------------------------------------
+
+/**
+ * Renders the canonical REVIEW.md from structured data. Output is
+ * deterministic: same input, same bytes.
+ */
+export function serializeReviewReport(data: ReviewReportData): string {
+  const lines: string[] = []
+  lines.push(REVIEW_REPORT_TITLE, '')
+
+  // ## Upstream refs
+  lines.push('## Upstream refs', '')
+  lines.push(
+    `- BUILD_REPORT.md: ${data.upstreamRefs.buildReportPath} (sha256: ${data.upstreamRefs.buildReportSha256})`,
+  )
+  lines.push(
+    `- VERIFY.md: ${data.upstreamRefs.verifyReportPath} (sha256: ${data.upstreamRefs.verifyReportSha256})`,
+  )
+  lines.push(`- Task: ${data.upstreamRefs.taskId}`)
+  lines.push(`- Attempt: ${data.upstreamRefs.attempt}`)
+  lines.push(`- Base commit: ${data.upstreamRefs.baseCommitSha}`)
+  lines.push(`- Patch sha256: ${data.upstreamRefs.patchSha256}`)
+  lines.push('')
+
+  // ## Reviewer
+  lines.push('## Reviewer', '')
+  lines.push(`- Provider family: ${data.reviewer.providerFamily}`)
+  lines.push(`- Provider id: ${data.reviewer.providerId}`)
+  lines.push(`- Model policy: ${data.reviewer.modelPolicy}`)
+  lines.push(
+    `- Cross-family check: ${data.reviewer.crossFamilyCheck} (BUILD family: ${data.reviewer.buildFamily}; reviewer family: ${data.reviewer.providerFamily})`,
+  )
+  lines.push('')
+
+  // ## Round timeline
+  lines.push('## Round timeline', '')
+  for (const t of data.roundTimeline) {
+    lines.push(
+      `- Round ${t.round}: ${t.timestamp} | findings raised: ${t.findingsRaised} | score: ${t.score} | verdict: ${t.verdict}`,
+    )
+  }
+  lines.push('')
+
+  // ## Findings
+  lines.push('## Findings', '')
+  if (data.findings.length === 0) {
+    lines.push('- None.')
+    lines.push('')
+  } else {
+    for (let i = 0; i < data.findings.length; i++) {
+      const f = data.findings[i]!
+      lines.push(`### ${f.id}: ${f.title}`, '')
+      lines.push(`- File: ${f.file}`)
+      lines.push(`- Line: ${f.line}`)
+      lines.push(`- Severity: ${f.severity}`)
+      lines.push(`- Recommendation: ${f.recommendation}`)
+      lines.push(`- Round raised: ${f.roundRaised}`)
+      lines.push(`- Round resolved: ${f.roundResolved}`)
+      if (i < data.findings.length - 1) lines.push('')
+    }
+    lines.push('')
+  }
+
+  // ## Score
+  lines.push('## Score', '')
+  lines.push(`- Round count: ${data.score.roundCount}`)
+  lines.push(`- Final score: ${data.score.finalScore}`)
+  lines.push(`- Final verdict: ${data.score.finalVerdict}`)
+  lines.push(`- Exit reason: ${data.score.exitReason}`)
+  lines.push('')
+
+  // ## Cap status
+  lines.push('## Cap status', '')
+  lines.push(`- Cap: ${data.capStatus.cap} rounds`)
+  lines.push(`- Rounds used: ${data.capStatus.roundsUsed}`)
+  lines.push(`- Cap exhausted: ${data.capStatus.capExhausted}`)
+  lines.push('')
+
+  return lines.join('\n')
+}
+
+// --- parser --------------------------------------------------------
+
+const BOM = '﻿'
+
+interface SectionBuf {
+  readonly key: ReviewReportSectionKey
+  readonly bullets: readonly string[]
+  /** H3 sub-blocks; populated only for the findings section. */
+  readonly h3Blocks: readonly H3Block[]
+  readonly headingLine: number
+}
+
+interface H3Block {
+  readonly headingLine: number
+  readonly heading: string  // e.g., "F-001: Title"
+  readonly bullets: readonly string[]
+}
+
+export interface ParseReviewReportOptions {
+  /** When provided, validates Findings.File entries against this manifest. */
+  readonly changedFilePaths?: readonly string[]
+}
+
+/**
+ * Parse a REVIEW.md document. Validates section presence + canonical order +
+ * per-section grammar. Returns frozen ReviewReportData on success; throws
+ * ReviewReportLoadError with accumulated issues on failure.
+ */
+export function parseReviewReport(
+  raw: string,
+  file = 'REVIEW.md',
+  opts: ParseReviewReportOptions = {},
+): ReviewReportData {
+  const issues: ReviewReportLoadIssue[] = []
+  const text = raw.startsWith(BOM) ? raw.slice(BOM.length) : raw
+
+  if (text.trim().length === 0) {
+    throw new ReviewReportLoadError([
+      { file, code: 'review_report_empty', rule: 'REVIEW.md must not be empty' },
+    ])
+  }
+
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/[ \t]+$/, ''))
+  const titleIdx = lines.findIndex((l) => l === REVIEW_REPORT_TITLE)
+  if (titleIdx === -1) {
+    throw new ReviewReportLoadError([
+      {
+        file,
+        code: 'review_report_title_missing',
+        rule: `must contain '${REVIEW_REPORT_TITLE}' as a top-level heading`,
+      },
+    ])
+  }
+
+  const sections = walkSections(lines, titleIdx + 1, file, issues)
+  const orderIssue = checkSectionOrder(sections, file)
+  if (orderIssue) issues.push(orderIssue)
+
+  for (const key of REVIEW_REPORT_SECTION_KEYS) {
+    if (!sections.has(key)) {
+      issues.push({
+        file,
+        code: 'review_report_missing_section',
+        rule: `required H2 section absent: '## ${REVIEW_REPORT_SECTION_HEADINGS[key]}'`,
+      })
+    }
+  }
+  if (issues.some((i) => i.code === 'review_report_missing_section')) {
+    throw new ReviewReportLoadError(issues)
+  }
+
+  const upstreamRefs = parseUpstreamRefs(sections.get('upstreamRefs')!, file, issues)
+  const reviewer = parseReviewer(sections.get('reviewer')!, file, issues)
+  const roundTimeline = parseRoundTimeline(sections.get('roundTimeline')!, file, issues)
+  const findings = parseFindings(sections.get('findings')!, file, issues, opts.changedFilePaths)
+  const score = parseScore(sections.get('score')!, file, issues)
+  const capStatus = parseCapStatus(sections.get('capStatus')!, file, issues)
+
+  // Cross-section invariants.
+  if (roundTimeline && score) {
+    const last = roundTimeline[roundTimeline.length - 1]
+    if (last !== undefined) {
+      if (score.roundCount !== last.round) {
+        issues.push({
+          file,
+          code: 'review_score_round_count_mismatch',
+          rule: 'Score.Round count must equal the last Round timeline entry round',
+          detail: `score.roundCount=${score.roundCount} timeline.last.round=${last.round}`,
+        })
+      }
+      if (score.finalScore !== last.score) {
+        issues.push({
+          file,
+          code: 'review_score_final_score_mismatch',
+          rule: 'Score.Final score must equal the last Round timeline entry score',
+          detail: `score.finalScore=${score.finalScore} timeline.last.score=${last.score}`,
+        })
+      }
+      if (score.finalVerdict !== last.verdict) {
+        issues.push({
+          file,
+          code: 'review_score_final_verdict_mismatch',
+          rule: 'Score.Final verdict must equal the last Round timeline entry verdict',
+          detail: `score.finalVerdict=${score.finalVerdict} timeline.last.verdict=${last.verdict}`,
+        })
+      }
+    }
+  }
+
+  // fix-first / block lock: if Final verdict=ready, no finding may carry
+  // severity in {block, fix-first} with roundResolved=unresolved
+  // (strict rule locked in REVIEW.md).
+  if (findings && score && score.finalVerdict === 'ready') {
+    for (const f of findings) {
+      if (
+        (f.severity === 'block' || f.severity === 'fix-first') &&
+        f.roundResolved === 'unresolved'
+      ) {
+        issues.push({
+          file,
+          code: 'review_unresolved_blocker',
+          rule: 'Final verdict: ready forbids unresolved block / fix-first findings',
+          detail: `${f.id} severity=${f.severity} roundResolved=unresolved`,
+        })
+      }
+    }
+  }
+
+  // Cap status / round count consistency.
+  if (capStatus && score) {
+    if (capStatus.roundsUsed !== score.roundCount) {
+      issues.push({
+        file,
+        code: 'review_cap_status_mismatch',
+        rule: 'Cap status.Rounds used must equal Score.Round count',
+        detail: `capStatus.roundsUsed=${capStatus.roundsUsed} score.roundCount=${score.roundCount}`,
+      })
+    }
+    if (capStatus.cap !== REVIEW_ROUND_CAP) {
+      issues.push({
+        file,
+        code: 'review_cap_status_grammar',
+        rule: `Cap status.Cap must be ${REVIEW_ROUND_CAP} (CLAUDE.md non-negotiable rule 6)`,
+        detail: `got ${capStatus.cap}`,
+      })
+    }
+  }
+
+  if (
+    issues.length > 0 ||
+    !upstreamRefs ||
+    !reviewer ||
+    !roundTimeline ||
+    !findings ||
+    !score ||
+    !capStatus
+  ) {
+    throw new ReviewReportLoadError(issues)
+  }
+
+  return Object.freeze({
+    upstreamRefs,
+    reviewer,
+    roundTimeline,
+    findings,
+    score,
+    capStatus,
+  })
+}
+
+function walkSections(
+  lines: readonly string[],
+  startIdx: number,
+  file: string,
+  issues: ReviewReportLoadIssue[],
+): Map<ReviewReportSectionKey, SectionBuf> {
+  const headingToKey: Record<string, ReviewReportSectionKey> = {}
+  for (const k of REVIEW_REPORT_SECTION_KEYS) {
+    headingToKey[`## ${REVIEW_REPORT_SECTION_HEADINGS[k]}`] = k
+  }
+  const map = new Map<ReviewReportSectionKey, SectionBuf>()
+  let cur: {
+    key: ReviewReportSectionKey
+    bullets: string[]
+    h3Blocks: H3Block[]
+    headingLine: number
+    curH3: { heading: string; bullets: string[]; headingLine: number } | null
+  } | null = null
+
+  const flushH3 = (): void => {
+    if (cur && cur.curH3) {
+      cur.h3Blocks.push(
+        Object.freeze({
+          heading: cur.curH3.heading,
+          bullets: Object.freeze([...cur.curH3.bullets]),
+          headingLine: cur.curH3.headingLine,
+        }),
+      )
+      cur.curH3 = null
+    }
+  }
+
+  const flushSection = (): void => {
+    if (cur) {
+      flushH3()
+      map.set(
+        cur.key,
+        Object.freeze({
+          key: cur.key,
+          bullets: Object.freeze([...cur.bullets]),
+          h3Blocks: Object.freeze([...cur.h3Blocks]),
+          headingLine: cur.headingLine,
+        }),
+      )
+    }
+  }
+
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (line.startsWith('## ')) {
+      flushSection()
+      const key = headingToKey[line]
+      if (key === undefined) {
+        issues.push({
+          file,
+          code: 'review_report_unknown_section',
+          rule: `unknown H2 section: '${line}'`,
+          line: i + 1,
+        })
+        cur = null
+        continue
+      }
+      cur = { key, bullets: [], h3Blocks: [], headingLine: i + 1, curH3: null }
+      continue
+    }
+    if (!cur) continue
+    if (line.startsWith('### ')) {
+      // H3 sub-block. Only meaningful inside Findings — other sections
+      // ignore H3s; the section-grammar parser will flag empty
+      // findings/H3 mismatches.
+      flushH3()
+      cur.curH3 = {
+        heading: line.slice(4),
+        bullets: [],
+        headingLine: i + 1,
+      }
+      continue
+    }
+    if (/^- /.test(line)) {
+      const body = line.slice(2)
+      if (cur.curH3) {
+        cur.curH3.bullets.push(body)
+      } else {
+        cur.bullets.push(body)
+      }
+    }
+  }
+  flushSection()
+  return map
+}
+
+function checkSectionOrder(
+  sections: Map<ReviewReportSectionKey, SectionBuf>,
+  file: string,
+): ReviewReportLoadIssue | null {
+  const present = [...sections.entries()].sort(
+    (a, b) => a[1].headingLine - b[1].headingLine,
+  )
+  const orderActual = present.map(([k]) => k)
+  let canonicalIdx = 0
+  for (const k of orderActual) {
+    while (
+      canonicalIdx < REVIEW_REPORT_SECTION_KEYS.length &&
+      REVIEW_REPORT_SECTION_KEYS[canonicalIdx] !== k
+    ) {
+      canonicalIdx++
+    }
+    if (canonicalIdx >= REVIEW_REPORT_SECTION_KEYS.length) {
+      return {
+        file,
+        code: 'review_report_section_out_of_order',
+        rule: `section '${REVIEW_REPORT_SECTION_HEADINGS[k]}' appears out of canonical order`,
+      }
+    }
+    canonicalIdx++
+  }
+  return null
+}
+
+// --- per-section parsers ------------------------------------------
+
+function parseUpstreamRefs(
+  s: SectionBuf,
+  file: string,
+  issues: ReviewReportLoadIssue[],
+): ReviewUpstreamRefs | null {
+  const m = bulletMap(s.bullets)
+  const buildRef = m.get('BUILD_REPORT.md')
+  const verifyRef = m.get('VERIFY.md')
+  const taskId = m.get('Task')
+  const attemptStr = m.get('Attempt')
+  const baseCommitSha = m.get('Base commit')
+  const patchSha256 = m.get('Patch sha256')
+  if (
+    !buildRef ||
+    !verifyRef ||
+    !taskId ||
+    !attemptStr ||
+    !baseCommitSha ||
+    !patchSha256
+  ) {
+    issues.push({
+      file,
+      code: 'review_upstream_refs_missing',
+      rule:
+        '## Upstream refs requires bullets: BUILD_REPORT.md, VERIFY.md, Task, Attempt, Base commit, Patch sha256',
+    })
+    return null
+  }
+  const buildMatch = buildRef.match(/^(.+?) \(sha256: ([0-9a-f]{64})\)$/)
+  if (!buildMatch) {
+    issues.push({
+      file,
+      code: 'review_upstream_refs_grammar',
+      rule: 'Upstream refs.BUILD_REPORT.md must match `<path> (sha256: <64-hex>)`',
+      detail: buildRef,
+    })
+    return null
+  }
+  const verifyMatch = verifyRef.match(/^(.+?) \(sha256: ([0-9a-f]{64})\)$/)
+  if (!verifyMatch) {
+    issues.push({
+      file,
+      code: 'review_upstream_refs_grammar',
+      rule: 'Upstream refs.VERIFY.md must match `<path> (sha256: <64-hex>)`',
+      detail: verifyRef,
+    })
+    return null
+  }
+  if (!/^T-\d{3,}$/.test(taskId)) {
+    issues.push({
+      file,
+      code: 'review_upstream_refs_grammar',
+      rule: 'Upstream refs.Task must match /^T-\\d{3,}$/',
+      detail: taskId,
+    })
+    return null
+  }
+  const attempt = Number.parseInt(attemptStr, 10)
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    issues.push({
+      file,
+      code: 'review_upstream_refs_grammar',
+      rule: 'Upstream refs.Attempt must be a positive integer',
+      detail: attemptStr,
+    })
+    return null
+  }
+  if (!/^[0-9a-f]{40}$/.test(baseCommitSha)) {
+    issues.push({
+      file,
+      code: 'review_upstream_refs_grammar',
+      rule: 'Upstream refs.Base commit must be 40-char lower-case hex',
+      detail: baseCommitSha,
+    })
+    return null
+  }
+  if (!/^[0-9a-f]{64}$/.test(patchSha256)) {
+    issues.push({
+      file,
+      code: 'review_upstream_refs_grammar',
+      rule: 'Upstream refs.Patch sha256 must be 64-char lower-case hex',
+      detail: patchSha256,
+    })
+    return null
+  }
+  return Object.freeze({
+    buildReportPath: buildMatch[1]!,
+    buildReportSha256: buildMatch[2]!,
+    verifyReportPath: verifyMatch[1]!,
+    verifyReportSha256: verifyMatch[2]!,
+    taskId,
+    attempt,
+    baseCommitSha,
+    patchSha256,
+  })
+}
+
+function parseReviewer(
+  s: SectionBuf,
+  file: string,
+  issues: ReviewReportLoadIssue[],
+): ReviewReviewer | null {
+  const m = bulletMap(s.bullets)
+  const providerFamily = m.get('Provider family')
+  const providerId = m.get('Provider id')
+  const modelPolicy = m.get('Model policy')
+  const crossFamily = m.get('Cross-family check')
+  if (!providerFamily || !providerId || !modelPolicy || !crossFamily) {
+    issues.push({
+      file,
+      code: 'review_reviewer_missing',
+      rule:
+        '## Reviewer requires bullets: Provider family, Provider id, Model policy, Cross-family check',
+    })
+    return null
+  }
+  // Cross-family check shape: `passed (BUILD family: <fam>; reviewer family: <fam>)`
+  const crossMatch = crossFamily.match(
+    /^passed \(BUILD family: ([^;]+); reviewer family: (.+)\)$/,
+  )
+  if (!crossMatch) {
+    issues.push({
+      file,
+      code: 'review_reviewer_grammar',
+      rule:
+        'Reviewer.Cross-family check must match `passed (BUILD family: <fam>; reviewer family: <fam>)`',
+      detail: crossFamily,
+    })
+    return null
+  }
+  const buildFamily = crossMatch[1]!.trim()
+  const reviewerFamilyFromCheck = crossMatch[2]!.trim()
+  if (reviewerFamilyFromCheck !== providerFamily) {
+    issues.push({
+      file,
+      code: 'review_reviewer_grammar',
+      rule:
+        'Reviewer.Cross-family check reviewer family must equal Reviewer.Provider family',
+      detail: `provider=${providerFamily} cross-check=${reviewerFamilyFromCheck}`,
+    })
+    return null
+  }
+  if (buildFamily === providerFamily) {
+    issues.push({
+      file,
+      code: 'review_cross_family_violation',
+      rule:
+        'Reviewer.Cross-family check declares reviewer family equal to BUILD family (cross-family invariant)',
+      detail: `both = ${buildFamily}`,
+    })
+    return null
+  }
+  return Object.freeze({
+    providerFamily,
+    providerId,
+    modelPolicy,
+    crossFamilyCheck: 'passed' as const,
+    buildFamily,
+  })
+}
+
+const ROUND_TIMELINE_REGEX =
+  /^Round (\d+): (.+?) \| findings raised: (\d+) \| score: (\d+) \| verdict: (ready|needs-revision|block)$/
+
+function parseRoundTimeline(
+  s: SectionBuf,
+  file: string,
+  issues: ReviewReportLoadIssue[],
+): readonly ReviewTimelineEntry[] | null {
+  if (s.bullets.length === 0) {
+    issues.push({
+      file,
+      code: 'review_round_timeline_empty',
+      rule: '## Round timeline must contain at least one Round bullet',
+    })
+    return null
+  }
+  const out: ReviewTimelineEntry[] = []
+  for (let i = 0; i < s.bullets.length; i++) {
+    const b = s.bullets[i]!
+    const match = b.match(ROUND_TIMELINE_REGEX)
+    if (!match) {
+      issues.push({
+        file,
+        code: 'review_round_grammar',
+        rule:
+          'Round timeline bullet must match `Round <N>: <ts> | findings raised: <count> | score: <0-10> | verdict: <ready|needs-revision|block>`',
+        detail: b,
+      })
+      return null
+    }
+    const round = Number.parseInt(match[1]!, 10)
+    const timestamp = match[2]!
+    const findingsRaised = Number.parseInt(match[3]!, 10)
+    const score = Number.parseInt(match[4]!, 10)
+    const verdict = match[5]!
+    if (!isReviewVerdict(verdict)) {
+      issues.push({
+        file,
+        code: 'review_round_grammar',
+        rule:
+          'Round timeline verdict must be one of: ready, needs-revision, block',
+        detail: `got ${verdict}`,
+      })
+      return null
+    }
+    if (round !== i + 1) {
+      issues.push({
+        file,
+        code: 'review_round_gap',
+        rule:
+          'Round timeline must start at 1 and increment by 1 (no gaps; no zero or negative rounds)',
+        detail: `expected ${i + 1}, got ${round}`,
+      })
+      return null
+    }
+    if (round > REVIEW_ROUND_CAP) {
+      issues.push({
+        file,
+        code: 'review_round_grammar',
+        rule: `Round timeline.Round must be ≤ ${REVIEW_ROUND_CAP} (CLAUDE.md non-negotiable rule 6)`,
+        detail: `got ${round}`,
+      })
+      return null
+    }
+    if (score < 0 || score > REVIEW_SCORE_MAX) {
+      issues.push({
+        file,
+        code: 'review_round_grammar',
+        rule: `Round timeline.score must be an integer in [0, ${REVIEW_SCORE_MAX}]`,
+        detail: `got ${score}`,
+      })
+      return null
+    }
+    out.push(
+      Object.freeze({
+        round,
+        timestamp,
+        findingsRaised,
+        score,
+        verdict,
+      }),
+    )
+  }
+  return Object.freeze(out)
+}
+
+function parseFindings(
+  s: SectionBuf,
+  file: string,
+  issues: ReviewReportLoadIssue[],
+  changedFilePaths?: readonly string[],
+): readonly ReviewFinding[] | null {
+  // Empty form: `- None.` (no findings raised across the run).
+  if (s.h3Blocks.length === 0) {
+    if (s.bullets.length === 1 && s.bullets[0] === 'None.') {
+      return Object.freeze([])
+    }
+    issues.push({
+      file,
+      code: 'review_findings_grammar',
+      rule:
+        '## Findings must contain `- None.` when no findings exist, or one or more `### F-NNN: <title>` H3 blocks',
+    })
+    return null
+  }
+  const out: ReviewFinding[] = []
+  const seenIds = new Set<string>()
+  for (const block of s.h3Blocks) {
+    const headingMatch = block.heading.match(/^(F-\d{3,}): (.+)$/)
+    if (!headingMatch) {
+      issues.push({
+        file,
+        code: 'review_finding_grammar',
+        rule:
+          'Findings H3 heading must match `### F-NNN: <one-line title>` (NNN = 3+ digits)',
+        detail: block.heading,
+        line: block.headingLine,
+      })
+      return null
+    }
+    const id = headingMatch[1]!
+    const title = headingMatch[2]!
+    if (seenIds.has(id)) {
+      issues.push({
+        file,
+        code: 'review_finding_id_collision',
+        rule: `two findings share id ${id}`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    seenIds.add(id)
+    if (title.length > REVIEW_TITLE_MAX_CHARS) {
+      issues.push({
+        file,
+        code: 'review_finding_grammar',
+        rule: `Findings title must be ≤ ${REVIEW_TITLE_MAX_CHARS} characters`,
+        detail: `${id} title.length=${title.length}`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    const m = bulletMap(block.bullets)
+    const filePath = m.get('File')
+    const line = m.get('Line')
+    const severity = m.get('Severity')
+    const recommendation = m.get('Recommendation')
+    const roundRaisedStr = m.get('Round raised')
+    const roundResolvedStr = m.get('Round resolved')
+    if (
+      !filePath ||
+      !line ||
+      !severity ||
+      recommendation === undefined ||
+      !roundRaisedStr ||
+      !roundResolvedStr
+    ) {
+      issues.push({
+        file,
+        code: 'review_finding_grammar',
+        rule:
+          `Finding ${id} requires bullets: File, Line, Severity, Recommendation, Round raised, Round resolved`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    if (!isReviewSeverity(severity)) {
+      issues.push({
+        file,
+        code: 'review_severity_invalid',
+        rule: `Severity must be one of: ${REVIEW_SEVERITIES.join(', ')}`,
+        detail: `${id} severity=${severity}`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    if (!/^\d+(?:-\d+)?$/.test(line)) {
+      issues.push({
+        file,
+        code: 'review_finding_grammar',
+        rule: 'Finding Line must be a single line "42" or range "42-58"',
+        detail: `${id} Line=${line}`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    if (line.includes('-')) {
+      const [start, end] = line.split('-').map((n) => Number.parseInt(n, 10))
+      if (
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        start! < 1 ||
+        end! < start!
+      ) {
+        issues.push({
+          file,
+          code: 'review_finding_grammar',
+          rule: 'Finding Line range must satisfy start ≥ 1 and end ≥ start',
+          detail: `${id} Line=${line}`,
+          line: block.headingLine,
+        })
+        return null
+      }
+    }
+    if (recommendation.length > REVIEW_RECOMMENDATION_MAX_CHARS) {
+      issues.push({
+        file,
+        code: 'review_finding_grammar',
+        rule: `Recommendation must be ≤ ${REVIEW_RECOMMENDATION_MAX_CHARS} characters`,
+        detail: `${id} length=${recommendation.length}`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    const roundRaised = Number.parseInt(roundRaisedStr, 10)
+    if (
+      !Number.isInteger(roundRaised) ||
+      roundRaised < 1 ||
+      roundRaised > REVIEW_ROUND_CAP
+    ) {
+      issues.push({
+        file,
+        code: 'review_finding_grammar',
+        rule: `Round raised must be an integer in [1, ${REVIEW_ROUND_CAP}]`,
+        detail: `${id} got ${roundRaisedStr}`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    let roundResolved: number | 'unresolved'
+    if (roundResolvedStr === 'unresolved') {
+      roundResolved = 'unresolved'
+    } else {
+      const r = Number.parseInt(roundResolvedStr, 10)
+      if (!Number.isInteger(r) || r < 1 || r > REVIEW_ROUND_CAP || r < roundRaised) {
+        issues.push({
+          file,
+          code: 'review_finding_grammar',
+          rule: `Round resolved must be 'unresolved' or an integer in [Round raised, ${REVIEW_ROUND_CAP}]`,
+          detail: `${id} got ${roundResolvedStr} (raised=${roundRaised})`,
+          line: block.headingLine,
+        })
+        return null
+      }
+      roundResolved = r
+    }
+    // unresolved + severity in {block, fix-first} is the strict rule.
+    // The cross-section invariant in parseReviewReport catches this at
+    // exit; we record the finding shape here and let the caller's exit
+    // check raise review_unresolved_blocker.
+    if (changedFilePaths !== undefined && !changedFilePaths.includes(filePath)) {
+      issues.push({
+        file,
+        code: 'review_finding_path_unknown',
+        rule:
+          'Finding File must be a path present in BUILD_REPORT.md Changed files manifest',
+        detail: `${id} File=${filePath}`,
+        line: block.headingLine,
+      })
+      return null
+    }
+    out.push(
+      Object.freeze({
+        id,
+        title,
+        file: filePath,
+        line,
+        severity,
+        recommendation,
+        roundRaised,
+        roundResolved,
+      }),
+    )
+  }
+  return Object.freeze(out)
+}
+
+function parseScore(
+  s: SectionBuf,
+  file: string,
+  issues: ReviewReportLoadIssue[],
+): ReviewScore | null {
+  const m = bulletMap(s.bullets)
+  const roundCountStr = m.get('Round count')
+  const finalScoreStr = m.get('Final score')
+  const finalVerdictStr = m.get('Final verdict')
+  const exitReason = m.get('Exit reason')
+  if (!roundCountStr || !finalScoreStr || !finalVerdictStr || !exitReason) {
+    issues.push({
+      file,
+      code: 'review_score_missing',
+      rule: '## Score requires bullets: Round count, Final score, Final verdict, Exit reason',
+    })
+    return null
+  }
+  const roundCount = Number.parseInt(roundCountStr, 10)
+  if (!Number.isInteger(roundCount) || roundCount < 1 || roundCount > REVIEW_ROUND_CAP) {
+    issues.push({
+      file,
+      code: 'review_score_grammar',
+      rule: `Score.Round count must be an integer in [1, ${REVIEW_ROUND_CAP}]`,
+      detail: roundCountStr,
+    })
+    return null
+  }
+  const finalScore = Number.parseInt(finalScoreStr, 10)
+  if (!Number.isInteger(finalScore) || finalScore < 0 || finalScore > REVIEW_SCORE_MAX) {
+    issues.push({
+      file,
+      code: 'review_score_grammar',
+      rule: `Score.Final score must be an integer in [0, ${REVIEW_SCORE_MAX}]`,
+      detail: finalScoreStr,
+    })
+    return null
+  }
+  if (!isReviewVerdict(finalVerdictStr)) {
+    issues.push({
+      file,
+      code: 'review_verdict_invalid',
+      rule: `Score.Final verdict must be one of: ${REVIEW_VERDICTS.join(', ')}`,
+      detail: finalVerdictStr,
+    })
+    return null
+  }
+  return Object.freeze({
+    roundCount,
+    finalScore,
+    finalVerdict: finalVerdictStr,
+    exitReason,
+  })
+}
+
+function parseCapStatus(
+  s: SectionBuf,
+  file: string,
+  issues: ReviewReportLoadIssue[],
+): ReviewCapStatus | null {
+  const m = bulletMap(s.bullets)
+  const capStr = m.get('Cap')
+  const roundsUsedStr = m.get('Rounds used')
+  const capExhaustedStr = m.get('Cap exhausted')
+  if (!capStr || !roundsUsedStr || capExhaustedStr === undefined) {
+    issues.push({
+      file,
+      code: 'review_cap_status_missing',
+      rule: '## Cap status requires bullets: Cap, Rounds used, Cap exhausted',
+    })
+    return null
+  }
+  const capMatch = capStr.match(/^(\d+) rounds$/)
+  if (!capMatch) {
+    issues.push({
+      file,
+      code: 'review_cap_status_grammar',
+      rule: 'Cap status.Cap must match `<N> rounds`',
+      detail: capStr,
+    })
+    return null
+  }
+  const cap = Number.parseInt(capMatch[1]!, 10)
+  const roundsUsed = Number.parseInt(roundsUsedStr, 10)
+  if (!Number.isInteger(roundsUsed) || roundsUsed < 1 || roundsUsed > REVIEW_ROUND_CAP) {
+    issues.push({
+      file,
+      code: 'review_cap_status_grammar',
+      rule: `Cap status.Rounds used must be an integer in [1, ${REVIEW_ROUND_CAP}]`,
+      detail: roundsUsedStr,
+    })
+    return null
+  }
+  if (capExhaustedStr !== 'true' && capExhaustedStr !== 'false') {
+    issues.push({
+      file,
+      code: 'review_cap_status_grammar',
+      rule: 'Cap status.Cap exhausted must be `true` or `false`',
+      detail: capExhaustedStr,
+    })
+    return null
+  }
+  return Object.freeze({
+    cap,
+    roundsUsed,
+    capExhausted: capExhaustedStr === 'true',
+  })
+}
+
+// --- canonicalizer + fingerprint reuse ----------------------------
+
+/** Persona drafts may use literal `F-NEW` placeholders; the canonicalizer
+ *  assigns real F-NNN ids. The placeholder is also accepted in finding
+ *  bullet headings (`### F-NEW: <title>`). */
+export const F_NEW_PLACEHOLDER = 'F-NEW'
+
+/** Normalizes a finding title for fingerprint matching (lowercase + collapse
+ *  whitespace + drop trailing punctuation). The fingerprint is `<file>|<title>`
+ *  per CODEX_RESPONSE_M9.md decision 2. */
+export function fingerprintFinding(file: string, title: string): string {
+  const normalizedTitle = title
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.!?]+$/, '')
+  return `${file}|${normalizedTitle}`
+}
+
+export interface CanonicalizeFindingsInput {
+  /** Persona-drafted findings for this round. Each entry's id may be `F-NEW`
+   *  (the canonicalizer assigns); previously-known ids are preserved as-is
+   *  unless they fingerprint-match a prior-resolved finding (ping-pong). */
+  readonly draftFindings: readonly ReviewFinding[]
+  /** Findings carried from prior rounds. Pass [] for round 1. */
+  readonly priorFindings: readonly ReviewFinding[]
+  /** Current round being canonicalized (1..4). */
+  readonly round: number
+}
+
+export interface CanonicalizeFindingsResult {
+  /** Findings list ready for serialization, with stable F-NNN ids. */
+  readonly findings: readonly ReviewFinding[]
+  /** Findings that were re-opened by ping-pong fingerprint match. */
+  readonly reopenedIds: readonly string[]
+  /** Findings that were freshly minted with new F-NNN ids. */
+  readonly newIds: readonly string[]
+}
+
+/**
+ * Assigns canonical F-NNN ids to draft findings, preserving carried ids,
+ * and reopens prior-resolved findings whose fingerprint matches a new
+ * finding (ping-pong detection per CODEX_RESPONSE_M9.md decision 2).
+ *
+ * Rules:
+ *   - A draft finding whose id is in priorFindings keeps its id; its
+ *     `roundResolved` may be updated by the persona (e.g., "this F-001
+ *     was resolved this round" → roundResolved = round).
+ *   - A draft finding using `F-NEW` triggers a fingerprint lookup
+ *     against priorFindings. If the fingerprint matches a prior finding
+ *     whose roundResolved is a number (i.e., resolved before), reopen
+ *     it: keep the original id; set roundResolved='unresolved'; record
+ *     in reopenedIds.
+ *   - Otherwise mint a fresh F-NNN id (highest existing + 1, padded to
+ *     3 digits).
+ *   - Carried-over prior findings whose id is NOT mentioned in the
+ *     draft are preserved as-is (they kept their prior status).
+ */
+export function canonicalizeFindings(
+  input: CanonicalizeFindingsInput,
+): CanonicalizeFindingsResult {
+  const reopenedIds: string[] = []
+  const newIds: string[] = []
+  const priorById = new Map(input.priorFindings.map((f) => [f.id, f]))
+  const priorByFingerprint = new Map<string, ReviewFinding>()
+  for (const f of input.priorFindings) {
+    priorByFingerprint.set(fingerprintFinding(f.file, f.title), f)
+  }
+
+  const usedIds = new Set(input.priorFindings.map((f) => f.id))
+  const out: ReviewFinding[] = []
+  const draftIds = new Set<string>()
+  const draftFingerprints = new Set<string>()
+
+  let nextNumber = 1
+  for (const id of usedIds) {
+    const m = id.match(/^F-(\d+)$/)
+    if (m) {
+      const n = Number.parseInt(m[1]!, 10)
+      if (n >= nextNumber) nextNumber = n + 1
+    }
+  }
+
+  for (const draft of input.draftFindings) {
+    // M9 commit 23 (QA 4.1): reject duplicate fingerprints in the same
+    // draft. Two findings with `(file, normalized title)` matching but
+    // (e.g.) different severities would both mint distinct ids without
+    // this check, leaving the operator with confusing duplicates that
+    // ping-pong on the next round.
+    const fingerprint = fingerprintFinding(draft.file, draft.title)
+    if (draftFingerprints.has(fingerprint)) {
+      throw new Error(
+        `canonicalizeFindings: draft contains two findings with the same fingerprint (file=${draft.file}, title=${draft.title})`,
+      )
+    }
+    draftFingerprints.add(fingerprint)
+
+    let id = draft.id
+    let roundRaised = draft.roundRaised
+    let roundResolved = draft.roundResolved
+    if (id !== F_NEW_PLACEHOLDER && priorById.has(id)) {
+      // Existing id; persona may be updating roundResolved.
+      const prior = priorById.get(id)!
+      roundRaised = prior.roundRaised
+      // M9 commit 23 (QA 4.4): track explicit-id reopens. If the
+      // persona keeps the prior id but flips roundResolved from a
+      // numeric value (resolved) back to 'unresolved', that's a
+      // ping-pong reopen and should surface in reopenedIds the same
+      // way fingerprint-driven reopens do.
+      if (
+        typeof prior.roundResolved === 'number' &&
+        roundResolved === 'unresolved'
+      ) {
+        reopenedIds.push(id)
+      }
+    } else {
+      const priorMatch = priorByFingerprint.get(fingerprint)
+      if (priorMatch && typeof priorMatch.roundResolved === 'number') {
+        // Ping-pong: re-opening a previously-resolved finding under the
+        // same fingerprint. Reuse the original id; reset to unresolved
+        // (the fix did not stick).
+        id = priorMatch.id
+        roundRaised = priorMatch.roundRaised
+        roundResolved = 'unresolved'
+        reopenedIds.push(id)
+      } else if (priorMatch) {
+        // Same fingerprint as an unresolved prior finding; reuse the id.
+        // (No "ping-pong" — it's just a re-statement.)
+        id = priorMatch.id
+        roundRaised = priorMatch.roundRaised
+      } else {
+        // Mint a new id.
+        id = `F-${String(nextNumber).padStart(3, '0')}`
+        nextNumber++
+        roundRaised = input.round
+        newIds.push(id)
+      }
+    }
+    if (draftIds.has(id)) {
+      throw new Error(
+        `canonicalizeFindings: draft contains duplicate id ${id} (after fingerprint canonicalization)`,
+      )
+    }
+    draftIds.add(id)
+    out.push(
+      Object.freeze({
+        id,
+        title: draft.title,
+        file: draft.file,
+        line: draft.line,
+        severity: draft.severity,
+        recommendation: draft.recommendation,
+        roundRaised,
+        roundResolved,
+      }),
+    )
+  }
+
+  // Preserve carried-over prior findings the persona did not mention this
+  // round (they keep their status).
+  for (const prior of input.priorFindings) {
+    if (!draftIds.has(prior.id)) {
+      out.push(prior)
+    }
+  }
+
+  // Sort by numeric id for deterministic output.
+  out.sort((a, b) => {
+    const ai = Number.parseInt(a.id.slice(2), 10)
+    const bi = Number.parseInt(b.id.slice(2), 10)
+    return ai - bi
+  })
+  return Object.freeze({
+    findings: Object.freeze(out),
+    reopenedIds: Object.freeze(reopenedIds),
+    newIds: Object.freeze(newIds),
+  })
+}
+
+// --- canonical verdict rule --------------------------------------
+
+/**
+ * Computes the orchestrator-owned verdict per CODEX_RESPONSE_M9.md
+ * decision 3 + the strict fix-first rule.
+ *
+ * Priority order:
+ *   1. Any current finding with severity=block AND roundResolved=unresolved
+ *      → 'block'.
+ *   2. Otherwise: any current finding with severity in {block, fix-first}
+ *      AND roundResolved=unresolved, OR personaScore < 6 → 'needs-revision'.
+ *   3. Otherwise → 'ready'.
+ *
+ * Note: a `block`-severity finding that's been resolved this round drops
+ * out of category (1) and (2). Only unresolved blockers gate `ready`.
+ */
+export function computeCanonicalVerdict(
+  findings: readonly ReviewFinding[],
+  personaScore: number,
+): ReviewVerdict {
+  const unresolvedBlock = findings.some(
+    (f) => f.severity === 'block' && f.roundResolved === 'unresolved',
+  )
+  if (unresolvedBlock) return 'block'
+  const unresolvedFixFirst = findings.some(
+    (f) => f.severity === 'fix-first' && f.roundResolved === 'unresolved',
+  )
+  if (unresolvedFixFirst || personaScore < REVIEW_SCORE_MIN) {
+    return 'needs-revision'
+  }
+  return 'ready'
+}
+
+// --- typed carry-forward for REVIEW round-N → BUILD attempt N+1 ---
+
+import type { BuildReportCarryForward } from './build-report.ts'
+
+export interface BuildReviewCarryForwardInput {
+  /** Path to the canonical REVIEW.md that produced the needs-revision exit
+   *  (e.g., `.code-oz/artifacts/REVIEW.md`). Recorded as
+   *  `Prior forensics` so a BUILD attempt N+1 can read REVIEW.md
+   *  directly. */
+  readonly reviewReportPath: string
+  /** 64-hex sha256 of the canonical REVIEW.md at the moment of the
+   *  needs-revision exit. Recorded in `Prior verdict` for traceability. */
+  readonly reviewReportSha256: string
+  /** REVIEW round N that exited with needs-revision (1..3 — round 4
+   *  exits as cap_exhausted, not as a remediation seed). */
+  readonly priorRound: number
+  /** Persona-authored summary of why the round needs revision; ≤ 200
+   *  chars per BUILD_REPORT.md grammar. Recorded as
+   *  `Prior failure summary`. */
+  readonly summary: string
+  /** Persona-authored directive for BUILD attempt N+1; ≤ 200 chars.
+   *  Recorded as `Constraint`. */
+  readonly constraint: string
+  /** The just-failed BUILD attempt number that REVIEW reviewed (must
+   *  match REVIEW.md.upstreamRefs.attempt). BUILD attempt N+1 will
+   *  validate `priorAttempt + 1 === task.attempt`. */
+  readonly priorAttempt: number
+  /** Persona-authored validation command snapshot for BUILD attempt
+   *  N+1's recall. Typically copied verbatim from the prior attempt's
+   *  BUILD_REPORT.md so BUILD's `priorValidationCommand` field stays
+   *  truthful. */
+  readonly priorValidationCommand: string
+}
+
+/**
+ * Build a typed `Source: review-needs-revision` carry-forward block
+ * suitable for feeding into BUILD attempt N+1. Mirror of
+ * restart-policy.prepareCarryForward
+ * for REVIEW exits — produces the same BuildReportCarryForward shape so
+ * BUILD's existing `attempt > 1` validation accepts either source.
+ *
+ * The mapping into BUILD's grammar:
+ *   - source                    = 'review-needs-revision'
+ *   - priorAttempt              = the just-reviewed BUILD attempt's number
+ *   - priorForensicsPath        = the canonical REVIEW.md path
+ *   - priorValidationCommand    = passed through verbatim
+ *   - priorVerdict              = `needs-revision (round <N>, sha <sha>)`
+ *                                 — the orchestrator-authored shape that
+ *                                 carries enough context for the BUILD
+ *                                 persona without inventing exit codes
+ *   - priorFailureSummary       = the persona's summary, ≤ 200 chars
+ *   - constraint                = the persona's directive, ≤ 200 chars
+ *
+ * Codex's M9 substrate catch (decision 8): rebranding a REVIEW
+ * needs-revision exit as `Prior verdict: fail (exit code N, ...)` would
+ * fabricate runtime evidence. The orchestrator-shaped Prior verdict is
+ * honest about origin and the typed Source field lets downstream
+ * tooling differentiate.
+ */
+export function serializeReviewCarryForward(
+  input: BuildReviewCarryForwardInput,
+): BuildReportCarryForward {
+  if (input.priorRound < 1 || input.priorRound > REVIEW_ROUND_CAP) {
+    throw new Error(
+      `serializeReviewCarryForward: priorRound must be in [1, ${REVIEW_ROUND_CAP}]; got ${input.priorRound}`,
+    )
+  }
+  if (input.priorAttempt < 1) {
+    throw new Error(
+      `serializeReviewCarryForward: priorAttempt must be ≥ 1; got ${input.priorAttempt}`,
+    )
+  }
+  if (input.summary.length > REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS) {
+    throw new Error(
+      `serializeReviewCarryForward: summary exceeds ${REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS} characters (got ${input.summary.length})`,
+    )
+  }
+  if (input.constraint.length > REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS) {
+    throw new Error(
+      `serializeReviewCarryForward: constraint exceeds ${REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS} characters (got ${input.constraint.length})`,
+    )
+  }
+  if (!/^[0-9a-f]{64}$/.test(input.reviewReportSha256)) {
+    throw new Error(
+      `serializeReviewCarryForward: reviewReportSha256 must be 64-char lower-case hex`,
+    )
+  }
+  return Object.freeze({
+    source: 'review-needs-revision' as const,
+    priorAttempt: input.priorAttempt,
+    priorForensicsPath: input.reviewReportPath,
+    priorValidationCommand: input.priorValidationCommand,
+    priorVerdict: `needs-revision (round ${input.priorRound}, sha ${input.reviewReportSha256})`,
+    priorFailureSummary: input.summary,
+    constraint: input.constraint,
+  })
+}
+
+// --- bounded repair prompt grammar -------------------------------
+
+export interface RepairPromptInput {
+  /** Error code from a review-report load issue. */
+  readonly errorCode: string
+  /** The exact violated rule string from the issue. */
+  readonly violatedRule: string
+  /** Offending lines from the rejected draft, clipped to ≤
+   *  REVIEW_REPAIR_OFFENDING_LINES_MAX entries. */
+  readonly offendingLines: readonly string[]
+}
+
+/**
+ * Renders a bounded repair prompt suitable for re-asking the persona to
+ * correct a single grammatical violation. CODEX_RESPONSE_M9.md decision 9
+ * pinned the format: error code + exact violated rule + ≤ 5 clipped
+ * offending lines. Full failed drafts are NEVER appended.
+ */
+export function renderRepairPrompt(input: RepairPromptInput): string {
+  const lines = input.offendingLines.slice(0, REVIEW_REPAIR_OFFENDING_LINES_MAX)
+  const clip = input.offendingLines.length > REVIEW_REPAIR_OFFENDING_LINES_MAX
+    ? `\n... (${input.offendingLines.length - REVIEW_REPAIR_OFFENDING_LINES_MAX} more lines omitted)`
+    : ''
+  return [
+    `error_code: ${input.errorCode}`,
+    `violated_rule: ${input.violatedRule}`,
+    `offending_lines:`,
+    ...lines.map((l) => `  ${l}`),
+    ...(clip ? [clip] : []),
+    '',
+    'Re-emit the canonical REVIEW.md draft addressing only this violation.',
+    'Do not include the prior draft in your response.',
+  ].join('\n')
+}
+
+// --- helpers -------------------------------------------------------
+
+function bulletMap(bullets: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const b of bullets) {
+    const idx = b.indexOf(': ')
+    if (idx === -1) continue
+    out.set(b.slice(0, idx), b.slice(idx + 2))
+  }
+  return out
+}

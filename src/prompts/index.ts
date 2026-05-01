@@ -13,6 +13,7 @@ import universalRulesPath from './universal-rules.md' with { type: 'file' }
 import planSystemPath from './plan-system.md' with { type: 'file' }
 import buildSystemPath from './build-system.md' with { type: 'file' }
 import verifySystemPath from './verify-system.md' with { type: 'file' }
+import reviewSystemPath from './review-system.md' with { type: 'file' }
 
 const ASSET_CACHE = new Map<string, string>()
 
@@ -59,6 +60,10 @@ export async function loadBuildSystemTemplate(): Promise<string> {
 
 export async function loadVerifySystemTemplate(): Promise<string> {
   return loadAsset(verifySystemPath)
+}
+
+export async function loadReviewSystemTemplate(): Promise<string> {
+  return loadAsset(reviewSystemPath)
 }
 
 // --- conversation rendering ----------------------------------------
@@ -390,5 +395,79 @@ export async function composeVerifyPrompt(input: ComposeVerifyPromptInput): Prom
     agentBody: input.agentBody,
     readySignal: input.readySignal,
     availableTools: input.availableTools,
+  })
+}
+
+// --- REVIEW composer (M9) ----------------------------------------
+//
+// Mirrors VERIFY's composer with one extra dynamic slot: {{REVIEW_CONTEXT}}
+// for the round-specific block (round number, upstream refs, changed-file
+// manifest, VERIFY pass summary, prior scores/verdicts/findings). Per
+// kickoff Decision 12: {{AGENT_BODY}} stays static across rounds; only
+// {{REVIEW_CONTEXT}} changes per invocation.
+
+const TOKEN_REVIEW_CONTEXT = '{{REVIEW_CONTEXT}}'
+
+const REVIEW_REQUIRED_TOKENS = [
+  TOKEN_AGENT_BODY,
+  TOKEN_RATIONALIZATIONS,
+  TOKEN_UNIVERSAL_RULES,
+  TOKEN_AVAILABLE_TOOLS,
+  TOKEN_READY_SIGNAL,
+  TOKEN_REVIEW_CONTEXT,
+] as const
+
+export interface ComposeReviewPromptPureInput {
+  readonly templateBody: string
+  readonly universalRules: string
+  readonly commonRationalizations: string
+  readonly agentBody: string
+  readonly readySignal: string
+  /** Names of tools the REVIEW persona has access to (typically glob/grep/read). */
+  readonly availableTools: readonly string[]
+  /** Pre-rendered run-specific context block: round number, upstream refs,
+   *  changed-file manifest, VERIFY pass summary, prior round digests. The
+   *  caller (M9 commit 7 runReview) renders this from durable state; the
+   *  composer treats it as opaque text. */
+  readonly reviewContext: string
+}
+
+export function composeReviewPromptPure(args: ComposeReviewPromptPureInput): string {
+  for (const tok of REVIEW_REQUIRED_TOKENS) {
+    if (!args.templateBody.includes(tok)) {
+      throw new Error(`review-system.md is missing required token ${tok}`)
+    }
+  }
+  const availableTools = renderAvailableTools(args.availableTools)
+  return args.templateBody
+    .replaceAll(TOKEN_AGENT_BODY, args.agentBody.trim())
+    .replaceAll(TOKEN_RATIONALIZATIONS, args.commonRationalizations.trim())
+    .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
+    .replaceAll(TOKEN_AVAILABLE_TOOLS, availableTools)
+    .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+    .replaceAll(TOKEN_REVIEW_CONTEXT, args.reviewContext.trim())
+}
+
+export interface ComposeReviewPromptInput {
+  readonly agentBody: string
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+  readonly reviewContext: string
+}
+
+export async function composeReviewPrompt(input: ComposeReviewPromptInput): Promise<string> {
+  const [templateBody, commonRationalizations, universalRules] = await Promise.all([
+    loadReviewSystemTemplate(),
+    loadCommonRationalizations(),
+    loadUniversalRules(),
+  ])
+  return composeReviewPromptPure({
+    templateBody,
+    commonRationalizations,
+    universalRules,
+    agentBody: input.agentBody,
+    readySignal: input.readySignal,
+    availableTools: input.availableTools,
+    reviewContext: input.reviewContext,
   })
 }

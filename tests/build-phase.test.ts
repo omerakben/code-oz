@@ -523,6 +523,7 @@ describe('runBuild — restart-state drift (M8 commit 7)', () => {
       invokePersona: async () => VALID_PERSONA_RESPONSE,
       attempt: 1,
       carryForward: {
+        source: 'verify-fail',
         priorAttempt: 0,
         priorForensicsPath: '/x/forensics/0/',
         priorValidationCommand: 'bun t',
@@ -571,6 +572,7 @@ describe('runBuild — restart-state drift (M8 commit 7)', () => {
       invokePersona: async () => VALID_PERSONA_RESPONSE,
       attempt: 3,
       carryForward: {
+        source: 'verify-fail',
         priorAttempt: 1,
         priorForensicsPath: '/x/forensics/1/',
         priorValidationCommand: 'bun t',
@@ -603,6 +605,7 @@ describe('runBuild — restart-state drift (M8 commit 7)', () => {
       invokePersona: async () => VALID_PERSONA_RESPONSE,
       attempt: 2,
       carryForward: {
+        source: 'verify-fail',
         priorAttempt: 1,
         priorForensicsPath: '.code-oz/runs/01HX/forensics/1/',
         priorValidationCommand: 'bun test tests/scoring-syllable.test.ts',

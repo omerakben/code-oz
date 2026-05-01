@@ -112,11 +112,38 @@ describe('inspectRunWorktree', () => {
 
   test('reports baseCommitSha=null when run does not exist', async () => {
     await withFreshRun(async (cwd) => {
-      const insp = await inspectRunWorktree({ cwd, runId: 'nonexistent' })
+      // M9 commit 21 (security audit MEDIUM-2): runPaths now requires
+      // a valid 26-char Crockford ULID. The pre-M9 fixture used the
+      // string "nonexistent"; replaced with a well-formed ULID for a
+      // run that simply was never created on disk. The semantic is
+      // unchanged — we're testing that inspect handles a missing run.
+      const NEVER_CREATED = '00X3AAA4000000000000000001'
+      const insp = await inspectRunWorktree({ cwd, runId: NEVER_CREATED })
       expect(insp.worktreeExists).toBe(false)
       expect(insp.baseCommitSha).toBeNull()
       expect(insp.patchFiles).toEqual([])
     })
+  })
+
+  test('M9 commit 21 bp#sec: runPaths rejects path-traversal runId', async () => {
+    // Security regression: pre-M9 commit 21, runPaths would happily
+    // join an attacker-controlled runId like "../../etc" into the path
+    // because it never validated format. Now the helper enforces the
+    // ULID regex and throws.
+    const { runPaths: worktreePathsFor } = await import(
+      '../src/worktree/paths.ts'
+    )
+    expect(() => worktreePathsFor('/tmp/dummy', '../../../etc')).toThrow(
+      /invalid runId/,
+    )
+    expect(() => worktreePathsFor('/tmp/dummy', '')).toThrow(/invalid runId/)
+    expect(() => worktreePathsFor('/tmp/dummy', 'short')).toThrow(/invalid runId/)
+    expect(() => worktreePathsFor('/tmp/dummy', 'lower-case-must-fail-here')).toThrow(
+      /invalid runId/,
+    )
+    // Valid Crockford ULID still works.
+    const valid = '01HX1ABCDE2FGHJK3MNPQRSTV4'
+    expect(() => worktreePathsFor('/tmp/dummy', valid)).not.toThrow()
   })
 
   test('reports worktreeExists=false after removeRunWorktree', async () => {

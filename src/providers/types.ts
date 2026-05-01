@@ -26,18 +26,13 @@ export type ProviderId = (typeof PROVIDER_IDS)[number]
 // to its same-named family. In W3+ when claude-cli vs anthropic-api adapters
 // land, both share family: 'claude' and REVIEW correctly rejects them as
 // same-family.
+//
+// The default ProviderId -> ProviderFamily mapping lives in
+// src/providers/families.ts so that load-time code (src/agents/loader.ts,
+// which runs before any registry exists) and runtime code (the registry's
+// instance method) share a single source of truth.
 export const PROVIDER_FAMILIES = ['claude', 'codex', 'gemini', 'fake'] as const
 export type ProviderFamily = (typeof PROVIDER_FAMILIES)[number]
-
-// Default ProviderId -> ProviderFamily mapping for v0.1. Kept as data so
-// future adapters (e.g., a hypothetical 'claude-api' id mapping to family
-// 'claude') can register their own mapping with the registry.
-export const DEFAULT_FAMILY_BY_ID: Readonly<Record<ProviderId, ProviderFamily>> = Object.freeze({
-  claude: 'claude',
-  codex: 'codex',
-  gemini: 'gemini',
-  fake: 'fake',
-})
 
 // --- request DTOs --------------------------------------------------
 

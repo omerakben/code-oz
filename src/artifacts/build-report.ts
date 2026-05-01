@@ -64,7 +64,36 @@ export interface BuildReportValidationCommand {
   readonly expectedExitCode: number
 }
 
+/**
+ * Source of a BUILD attempt N+1's failure carry-forward block. Locked
+ * enum (M9 commit 9 substrate per kickoff Decision 8): the carry-forward
+ * grammar must distinguish where the prior attempt's failure came from
+ * because the two paths produce structurally different evidence:
+ *
+ *   - 'verify-fail' (M8): a VERIFY.md verdict=fail produced a typed
+ *     VerifiedFailedAttempt; restart-policy.prepareCarryForward maps
+ *     it to this shape. Prior verdict + failure summary describe a
+ *     validation-command failure.
+ *   - 'review-needs-revision' (M9 c10+): a REVIEW round N exited with
+ *     verdict=needs-revision; review-remediation maps the unresolved
+ *     fix-first findings into the same shape. Prior verdict + failure
+ *     summary describe the reviewer's recommendation.
+ *
+ * Codex's M9 substrate catch (CODEX_RESPONSE_M9.md decision 8): reusing
+ * M8's grammar would create fake forensics — the BUILD prompt would see
+ * "Prior verdict: fail (exit code 1, ...)" for a finding that never ran
+ * a validation command. Adding the typed Source field forces both paths
+ * to use grammar that's honest about origin.
+ */
+export const BUILD_REPORT_CARRY_FORWARD_SOURCES = [
+  'verify-fail',
+  'review-needs-revision',
+] as const
+export type BuildReportCarryForwardSource =
+  (typeof BUILD_REPORT_CARRY_FORWARD_SOURCES)[number]
+
 export interface BuildReportCarryForward {
+  readonly source: BuildReportCarryForwardSource
   readonly priorAttempt: number
   readonly priorForensicsPath: string
   readonly priorValidationCommand: string
@@ -159,6 +188,7 @@ export function serializeBuildReport(data: BuildReportData): string {
     lines.push(`- None (attempt ${data.task.attempt}).`)
   } else {
     const cf = data.failureCarryForward
+    lines.push(`- Source: ${cf.source}`)
     lines.push(`- Prior attempt: ${cf.priorAttempt}`)
     lines.push(`- Prior forensics: ${cf.priorForensicsPath}`)
     lines.push(`- Prior validation command: ${cf.priorValidationCommand}`)
@@ -613,6 +643,7 @@ function parseFailureCarryForward(
   }
 
   const m = bulletMap(s.bullets)
+  const sourceStr = m.get('Source')
   const priorAttempt = m.get('Prior attempt')
   const priorForensicsPath = m.get('Prior forensics')
   const priorValidationCommand = m.get('Prior validation command')
@@ -620,6 +651,7 @@ function parseFailureCarryForward(
   const priorFailureSummary = m.get('Prior failure summary')
   const constraint = m.get('Constraint')
   if (
+    sourceStr === undefined ||
     priorAttempt === undefined ||
     !priorForensicsPath ||
     !priorValidationCommand ||
@@ -630,7 +662,21 @@ function parseFailureCarryForward(
     issues.push({
       file,
       code: 'build_carry_forward_grammar',
-      rule: '## Failure carry-forward bullets missing required fields',
+      rule:
+        '## Failure carry-forward bullets missing required fields ' +
+        '(Source, Prior attempt, Prior forensics, Prior validation command, ' +
+        'Prior verdict, Prior failure summary, Constraint)',
+    })
+    return null
+  }
+  if (
+    !(BUILD_REPORT_CARRY_FORWARD_SOURCES as readonly string[]).includes(sourceStr)
+  ) {
+    issues.push({
+      file,
+      code: 'build_carry_forward_grammar',
+      rule: `Source must be one of: ${BUILD_REPORT_CARRY_FORWARD_SOURCES.join(', ')}`,
+      detail: `got ${JSON.stringify(sourceStr)}`,
     })
     return null
   }
@@ -652,6 +698,7 @@ function parseFailureCarryForward(
     return null
   }
   return Object.freeze({
+    source: sourceStr as BuildReportCarryForwardSource,
     priorAttempt: priorAttemptN,
     priorForensicsPath,
     priorValidationCommand,

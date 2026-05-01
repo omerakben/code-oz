@@ -3,6 +3,8 @@ import { join, relative, isAbsolute } from 'node:path'
 import { parseFrontmatter } from './frontmatter.ts'
 import { validateAgent, type AgentDefinition, type AgentPhase } from './schema.ts'
 import { AgentLoadError, type AgentLoadIssue } from './errors.ts'
+import { familyOf } from '../providers/families.ts'
+import type { ProviderId } from '../providers/types.ts'
 
 export interface SourceFile {
   readonly file: string
@@ -84,15 +86,23 @@ function enforceCrossFamilyReview(definitions: readonly AgentDefinition[]): void
   const reviewAgents = definitions.filter((d) => d.phase === 'review')
   if (buildAgents.length === 0 || reviewAgents.length === 0) return
 
+  // Compare provider FAMILIES, not literal provider ids (Codex M9 substrate
+  // catch, CODEX_RESPONSE_M9.md decision 5). A misconfigured adapter could
+  // otherwise present a 'codex'-declared reviewer that's operationally the
+  // same family as BUILD; the shared familyOf() lookup in
+  // src/providers/families.ts is the single source of truth that runtime
+  // ProviderRegistry.familyOf() also seeds from.
   const conflicts: AgentLoadIssue[] = []
   for (const review of reviewAgents) {
+    const reviewFamily = familyOf(review.provider as ProviderId)
     for (const build of buildAgents) {
-      if (review.provider === build.provider) {
+      const buildFamily = familyOf(build.provider as ProviderId)
+      if (reviewFamily === buildFamily) {
         conflicts.push({
           file: review.file,
           code: 'loader_cross_family_violation',
-          rule: 'REVIEW agent provider must differ from BUILD agent provider (CLAUDE.md non-negotiable rule 2)',
-          detail: `'${review.name}' (review, provider=${review.provider}) shares provider family with '${build.name}' (build)`,
+          rule: 'REVIEW agent provider family must differ from BUILD agent provider family (CLAUDE.md non-negotiable rule 2)',
+          detail: `'${review.name}' (review, provider=${review.provider}, family=${reviewFamily}) shares family with '${build.name}' (build, provider=${build.provider}, family=${buildFamily})`,
         })
       }
     }

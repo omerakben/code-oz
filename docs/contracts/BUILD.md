@@ -121,11 +121,17 @@ Each bullet is `<relative-path> | sha256: <hex64> | change: <added | modified | 
 
 ### `## Failure carry-forward` grammar (locked)
 
-Populated only when `Attempt > 1`. Mirrors the failure-constraint block VERIFY.md emits on fail (see [`VERIFY.md`](./VERIFY.md) § "Failure constraint (on fail)"). Same field set, written from BUILD's perspective on restart:
+Populated only when `Attempt > 1`. Two locked sources feed this block (M9 commit 9 substrate per [`CODEX_RESPONSE_M9.md`](../research/CODEX_RESPONSE_M9.md) decision 8):
+
+1. `Source: verify-fail` — VERIFY.md verdict=fail produced a typed `VerifiedFailedAttempt`; restart-policy maps it to this shape (M8). `Prior verdict` describes a validation-command failure.
+2. `Source: review-needs-revision` — REVIEW round N exited with verdict=needs-revision (M9 commit 10+); review-remediation maps the unresolved findings into this shape. `Prior verdict` is orchestrator-shaped: `needs-revision (round <N>, sha <reviewReportSha>)` — never a fabricated exit-code-style string.
+
+Both produce the same field set and BUILD's `attempt > 1` validation accepts either:
 
 ```markdown
 ## Failure carry-forward
 
+- Source: verify-fail
 - Prior attempt: 1
 - Prior forensics: .code-oz/runs/<runId>/forensics/1/
 - Prior validation command: bun test tests/scoring-syllable.test.ts
@@ -134,7 +140,21 @@ Populated only when `Attempt > 1`. Mirrors the failure-constraint block VERIFY.m
 - Constraint: prefer last-syllable stress for two-syllable surnames.
 ```
 
-`Prior failure summary` and `Constraint` are each capped at 200 characters, single-line. Longer text fails validation; the persona must compress before emit.
+REVIEW-driven shape (M9 commit 10):
+
+```markdown
+## Failure carry-forward
+
+- Source: review-needs-revision
+- Prior attempt: 1
+- Prior forensics: .code-oz/artifacts/REVIEW.md
+- Prior validation command: bun test tests/scoring-syllable.test.ts
+- Prior verdict: needs-revision (round 1, sha eeee...eeee)
+- Prior failure summary: reviewer flagged unexplained side-effect in topN.
+- Constraint: document the side-effect or remove it before re-review.
+```
+
+`Source` is required; the parser rejects carry-forward blocks that omit it (legacy M8 shape) or that name a value outside `verify-fail | review-needs-revision`. `Prior failure summary` and `Constraint` are each capped at 200 characters, single-line. Longer text fails validation; the persona must compress before emit.
 
 ### Task id reference
 

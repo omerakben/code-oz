@@ -136,6 +136,13 @@ export const EVENT_TYPES = [
   'build_patch_applied',
   'build_completed',
   'build_failed',
+  // M9 substrate (per docs/contracts/REVIEW.md § "Cross-family enforcement"
+  // + CODEX_RESPONSE_M9.md decision 5). Records the BUILD adapter's resolved
+  // provider id + family + model durably so REVIEW's invocation-time check
+  // can compare BUILD family to reviewer adapter family without re-deriving
+  // either. Lighter than a BUILD_REPORT.md schema extension. Emitted
+  // immediately after build_completed; durable across resume.
+  'build_provider_recorded',
   // M8 — VERIFY phase (per docs/contracts/VERIFY.md). The four-event shape
   // is locked in VERIFY.md § "Event types emitted". Ordering against
   // worktree_destroyed is the orchestrator's responsibility (Codex M8
@@ -146,6 +153,17 @@ export const EVENT_TYPES = [
   'verify_completed',
   'verify_failed',
   'verify_restart_initiated',
+  // M9 — REVIEW phase (per docs/contracts/REVIEW.md § "Event types
+  // emitted"). The four-event shape covers the lifecycle from invocation
+  // through one of two terminal events. `review_blocked` is NOT emitted
+  // when REVIEW round N's follow-up BUILD attempt exhausts VERIFY's
+  // 4-attempt cap (authority overlap rule, CODEX_RESPONSE_M9.md
+  // decision 4): VERIFY-restart owns the intervention with "while
+  // addressing REVIEW round N" context.
+  'review_started',
+  'review_round_completed',
+  'review_resolved',
+  'review_blocked',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -426,6 +444,26 @@ export type PhaseEvent =
       readonly code: string
       readonly reason: string
     }
+  // M9 substrate: durable BUILD provider/family/model record. Emitted
+  // immediately after build_completed. REVIEW's invocation-time check
+  // reads the latest build_provider_recorded for the (runId, taskId)
+  // pair and compares its `family` to the reviewer
+  // adapter's family. provider is the AgentProvider id from the BUILD
+  // agent's frontmatter; family is the resolved ProviderFamily via
+  // src/providers/families.ts familyOf(); model is the agent's optional
+  // `model` field, omitted when the agent did not pin a model.
+  | {
+      readonly version: 1
+      readonly type: 'build_provider_recorded'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly attempt: number
+      readonly taskId: string
+      readonly provider: string
+      readonly family: string
+      readonly model?: string
+    }
   // M8 VERIFY phase events (per docs/contracts/VERIFY.md § "Event types
   // emitted"). All four bind to the BUILD attempt being verified via
   // taskId + attempt; verify_started additionally carries the BUILD ref
@@ -502,6 +540,101 @@ export type PhaseEvent =
       readonly nextAttempt?: number
       /** Absolute path to the preserved forensics/<N>/ directory for the failed attempt. */
       readonly forensicsPath: string
+    }
+  // M9 REVIEW phase events. All four bind to the BUILD attempt that
+  // produced the artifact under review via taskId + attempt; review_started
+  // additionally records the cross-family pair (buildFamily, reviewerFamily)
+  // so the events.jsonl reader can reconstruct the cross-family proof
+  // without re-reading REVIEW.md.
+  | {
+      readonly version: 1
+      readonly type: 'review_started'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** 40-char lower-case hex; copied from BUILD_REPORT.md Base.Base commit. */
+      readonly baseCommitSha: string
+      /** 64-char lower-case hex; copied from BUILD_REPORT.md Patch.Patch sha256. */
+      readonly patchSha256: string
+      /** 64-char lower-case hex of the canonical BUILD_REPORT.md content. */
+      readonly buildReportSha256: string
+      /** 64-char lower-case hex of the canonical VERIFY.md content (REVIEW
+       *  reads VERIFY.md too — REVIEW.md § "Upstream refs" carries both). */
+      readonly verifyReportSha256: string
+      /** ProviderFamily of the BUILD agent that produced the artifact. */
+      readonly buildFamily: string
+      /** ProviderFamily of the reviewer agent (must differ from buildFamily). */
+      readonly reviewerFamily: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'review_round_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** Round number, 1..4 (CLAUDE.md non-negotiable rule 6). */
+      readonly round: number
+      /** Persona-authored score, 0..10 inclusive. */
+      readonly score: number
+      /** Orchestrator-computed verdict per the canonical verdict rule. */
+      readonly verdict: 'ready' | 'needs-revision' | 'block'
+      /** Count of findings raised in this round (non-negative). */
+      readonly findingsRaised: number
+      /** Count of findings resolved in this round (non-negative). May
+       *  exceed findingsRaised when prior-round findings are resolved. */
+      readonly findingsResolved: number
+      /** 64-char lower-case hex of the canonical REVIEW.md content
+       *  written for this round. Kickoff Decision 10 says a round is
+       *  complete only when canonical REVIEW.md AND the round-completed
+       *  event agree. The sha lets resume probes verify that agreement
+       *  instead of trusting event presence alone. */
+      readonly reviewReportSha256: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'review_resolved'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** The round that exited with score≥6 + verdict=ready (1..4). */
+      readonly finalRound: number
+      /** Final score; must be >= 6 for review_resolved. */
+      readonly finalScore: number
+      /** 64-char lower-case hex of the canonical REVIEW.md content. */
+      readonly reviewReportSha256: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'review_blocked'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /**
+       * Why the loop blocked:
+       *   - 'block': any round emitted verdict=block.
+       *   - 'cap_exhausted': 4-round cap reached without ready exit.
+       * NOT emitted when VERIFY's 4-attempt cap exhausts during a
+       * REVIEW round (authority overlap rule, decision 4): that path
+       * is VERIFY-owned with context "while addressing REVIEW round N".
+       */
+      readonly reason: 'block' | 'cap_exhausted'
+      /** Round at which the loop blocked (1..4). */
+      readonly finalRound: number
+      /** 64-char lower-case hex of the canonical REVIEW.md content
+       *  (REVIEW.md is written even on block / cap-exhausted exits). */
+      readonly reviewReportSha256: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

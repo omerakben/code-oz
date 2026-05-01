@@ -41,6 +41,13 @@ export interface EventLogPaths {
 }
 
 const SHA256_REGEX = /^[0-9a-f]{64}$/
+const REVIEW_ROUND_MIN = 1
+const REVIEW_ROUND_CAP = 4
+const REVIEW_SCORE_MIN = 0
+const REVIEW_SCORE_READY_MIN = 6
+const REVIEW_SCORE_MAX = 10
+const REVIEW_VERDICTS = ['ready', 'needs-revision', 'block'] as const
+const REVIEW_BLOCK_REASONS = ['block', 'cap_exhausted'] as const
 
 /**
  * Validate an in-memory event object against the v1 schema. Returns null when
@@ -108,6 +115,20 @@ export function validateEvent(
   if (!isKnown) {
     return null
   }
+
+  // Note (security audit M9 commit 21 review): MEDIUM-1 in the security
+  // audit recommended rejecting newline characters in string fields to
+  // block JSONL injection. That recommendation is a false positive —
+  // appendEvent serializes via JSON.stringify(event) + '\n', and
+  // JSON.stringify escapes literal newlines in strings as `\n` (the
+  // two-character backslash-n escape). A newline in a string field can
+  // therefore NEVER break JSONL line parsing. Persona-authored fields
+  // (ask_me_persona_reply.response, finding recommendations, etc.) are
+  // legitimately multiline; rejecting newlines would break DEFINE +
+  // ask-me + REVIEW persona flows. The injection vector the audit
+  // described requires hand-crafting a malformed JSONL line that
+  // bypasses JSON.stringify, which is not possible from event-emit
+  // code paths. No defense-in-depth check is added.
 
   switch (e.type) {
     case 'run_started':
@@ -618,6 +639,32 @@ export function validateEvent(
       break
     }
 
+    case 'build_provider_recorded': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'build_provider_recorded', e.phase, line)
+      const aIssue = positiveInteger(file, e.attempt, 'build_provider_recorded.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'build_provider_recorded.taskId', line)
+      if (tIssue) return tIssue
+      const provIssue = nonEmptyString(file, e.provider, 'build_provider_recorded.provider', line)
+      if (provIssue) return provIssue
+      const famIssue = nonEmptyString(file, e.family, 'build_provider_recorded.family', line)
+      if (famIssue) return famIssue
+      // model is optional (agents may not pin a model in frontmatter); when
+      // present it must be a non-empty string.
+      if (e.model !== undefined) {
+        if (typeof e.model !== 'string' || e.model.length === 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: 'build_provider_recorded.model must be a non-empty string when present',
+            detail: `got ${JSON.stringify(e.model)}`,
+            line,
+          }
+        }
+      }
+      break
+    }
+
     case 'verify_started': {
       if (!isPhase(e.phase)) return phaseInvalid(file, 'verify_started', e.phase, line)
       const agentIssue = nonEmptyString(file, e.agent, 'verify_started.agent', line)
@@ -736,6 +783,186 @@ export function validateEvent(
       }
       const fpIssue = nonEmptyString(file, e.forensicsPath, 'verify_restart_initiated.forensicsPath', line)
       if (fpIssue) return fpIssue
+      break
+    }
+
+    case 'review_started': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_started', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_started.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_started.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_started.taskId', line)
+      if (tIssue) return tIssue
+      const baseIssue = idMatches(
+        file, e.baseCommitSha, /^[0-9a-f]{40}$/, 'review_started.baseCommitSha', line,
+      )
+      if (baseIssue) return baseIssue
+      const patchIssue = idMatches(
+        file, e.patchSha256, SHA256_REGEX, 'review_started.patchSha256', line,
+      )
+      if (patchIssue) return patchIssue
+      const buildReportIssue = idMatches(
+        file, e.buildReportSha256, SHA256_REGEX, 'review_started.buildReportSha256', line,
+      )
+      if (buildReportIssue) return buildReportIssue
+      const verifyReportIssue = idMatches(
+        file, e.verifyReportSha256, SHA256_REGEX, 'review_started.verifyReportSha256', line,
+      )
+      if (verifyReportIssue) return verifyReportIssue
+      const buildFamilyIssue = nonEmptyString(file, e.buildFamily, 'review_started.buildFamily', line)
+      if (buildFamilyIssue) return buildFamilyIssue
+      const reviewerFamilyIssue = nonEmptyString(
+        file, e.reviewerFamily, 'review_started.reviewerFamily', line,
+      )
+      if (reviewerFamilyIssue) return reviewerFamilyIssue
+      // Cross-family invariant: families must differ. The runtime check
+      // in src/tools/review-request.ts is authoritative; this validator
+      // catches a corrupted log line that would otherwise be accepted.
+      if (e.buildFamily === e.reviewerFamily) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_started.buildFamily must differ from review_started.reviewerFamily (cross-family invariant)',
+          detail: `both = ${JSON.stringify(e.buildFamily)}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'review_round_completed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_round_completed', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_round_completed.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_round_completed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_round_completed.taskId', line)
+      if (tIssue) return tIssue
+      // round must be 1..4 (CLAUDE.md rule 6).
+      if (
+        typeof e.round !== 'number' ||
+        !Number.isInteger(e.round) ||
+        e.round < REVIEW_ROUND_MIN ||
+        e.round > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_round_completed.round must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+          detail: `got ${JSON.stringify(e.round)}`,
+          line,
+        }
+      }
+      // score must be 0..10 inclusive.
+      if (
+        typeof e.score !== 'number' ||
+        !Number.isInteger(e.score) ||
+        e.score < REVIEW_SCORE_MIN ||
+        e.score > REVIEW_SCORE_MAX
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_round_completed.score must be an integer in [${REVIEW_SCORE_MIN}, ${REVIEW_SCORE_MAX}]`,
+          detail: `got ${JSON.stringify(e.score)}`,
+          line,
+        }
+      }
+      if (typeof e.verdict !== 'string' || !(REVIEW_VERDICTS as readonly string[]).includes(e.verdict)) {
+        return enumInvalid(file, 'review_round_completed.verdict', REVIEW_VERDICTS, e.verdict, line)
+      }
+      const raisedIssue = nonNegativeInteger(
+        file, e.findingsRaised, 'review_round_completed.findingsRaised', line,
+      )
+      if (raisedIssue) return raisedIssue
+      const resolvedIssue = nonNegativeInteger(
+        file, e.findingsResolved, 'review_round_completed.findingsResolved', line,
+      )
+      if (resolvedIssue) return resolvedIssue
+      // reviewReportSha256 is required so resume probes can verify
+      // event/artifact agreement.
+      const reportIssue = idMatches(
+        file, e.reviewReportSha256, SHA256_REGEX, 'review_round_completed.reviewReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      break
+    }
+
+    case 'review_resolved': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_resolved', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_resolved.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_resolved.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_resolved.taskId', line)
+      if (tIssue) return tIssue
+      if (
+        typeof e.finalRound !== 'number' ||
+        !Number.isInteger(e.finalRound) ||
+        e.finalRound < REVIEW_ROUND_MIN ||
+        e.finalRound > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_resolved.finalRound must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+          detail: `got ${JSON.stringify(e.finalRound)}`,
+          line,
+        }
+      }
+      // finalScore must be >= 6 for review_resolved (CLAUDE.md rule 6
+      // exit condition: score≥6 AND verdict=ready).
+      if (
+        typeof e.finalScore !== 'number' ||
+        !Number.isInteger(e.finalScore) ||
+        e.finalScore < REVIEW_SCORE_READY_MIN ||
+        e.finalScore > REVIEW_SCORE_MAX
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_resolved.finalScore must be an integer in [${REVIEW_SCORE_READY_MIN}, ${REVIEW_SCORE_MAX}] (rule 6 exit condition)`,
+          detail: `got ${JSON.stringify(e.finalScore)}`,
+          line,
+        }
+      }
+      const reportIssue = idMatches(
+        file, e.reviewReportSha256, SHA256_REGEX, 'review_resolved.reviewReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      break
+    }
+
+    case 'review_blocked': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_blocked', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_blocked.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_blocked.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_blocked.taskId', line)
+      if (tIssue) return tIssue
+      if (typeof e.reason !== 'string' || !(REVIEW_BLOCK_REASONS as readonly string[]).includes(e.reason)) {
+        return enumInvalid(file, 'review_blocked.reason', REVIEW_BLOCK_REASONS, e.reason, line)
+      }
+      if (
+        typeof e.finalRound !== 'number' ||
+        !Number.isInteger(e.finalRound) ||
+        e.finalRound < REVIEW_ROUND_MIN ||
+        e.finalRound > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_blocked.finalRound must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+          detail: `got ${JSON.stringify(e.finalRound)}`,
+          line,
+        }
+      }
+      const reportIssue = idMatches(
+        file, e.reviewReportSha256, SHA256_REGEX, 'review_blocked.reviewReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
       break
     }
   }

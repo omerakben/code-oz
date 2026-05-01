@@ -2,10 +2,10 @@ import { describe, test, expect } from 'bun:test'
 import {
   PROVIDER_IDS,
   PROVIDER_FAMILIES,
-  DEFAULT_FAMILY_BY_ID,
   type ProviderId,
   type ProviderFamily,
 } from '../src/providers/types.ts'
+import { DEFAULT_FAMILY_BY_ID } from '../src/providers/families.ts'
 import { ProviderError, providerError } from '../src/providers/errors.ts'
 
 describe('ProviderId / ProviderFamily', () => {
