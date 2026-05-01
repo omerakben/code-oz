@@ -1203,6 +1203,52 @@ describe('runReview — resume-mismatch detection', () => {
   })
 })
 
+// --- M9 commit 22: concurrency lock (QA 1.1) -----------------------
+
+describe('runReview — concurrency lock (QA 1.1)', () => {
+  test('concurrent invocations: second call gets review_already_in_flight, first runs to completion', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    expectScientistResponse()
+
+    // Pre-create the lock directory to simulate an in-flight runReview.
+    const lockDir = join(paths.runDir, '.review.lock')
+    await mkdir(lockDir, { recursive: false })
+    try {
+      const result = await runReview(buildOpts())
+      expect(result.status).toBe('intervention')
+      if (result.status === 'intervention') {
+        expect(result.code).toBe('review_already_in_flight')
+        expect(result.rule).toContain('.review.lock')
+      }
+    } finally {
+      // Cleanup so afterEach's tmp wipe is consistent.
+      const { rmdir } = await import('node:fs/promises')
+      await rmdir(lockDir).catch(() => undefined)
+    }
+  })
+
+  test('lock is released on success; subsequent runReview can run another round', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    expectScientistResponse()
+
+    // First call succeeds and releases the lock.
+    const result1 = await runReview(buildOpts())
+    expect(result1.status).toBe('resolved')
+
+    // The lock must NOT exist on disk after the call returns.
+    const lockDir = join(paths.runDir, '.review.lock')
+    let lockStillExists = true
+    try {
+      await access(lockDir)
+    } catch {
+      lockStillExists = false
+    }
+    expect(lockStillExists).toBe(false)
+  })
+})
+
 // --- exposed REVIEW_READY_SIGNAL ----------------------------------
 
 describe('runReview — exposed REVIEW_READY_SIGNAL constant', () => {

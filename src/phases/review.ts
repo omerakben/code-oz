@@ -114,6 +114,7 @@ import {
 } from '../state/events.ts'
 import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
+import { LockBusyError, withLock } from '../state/lock.ts'
 import { isKnownPhaseEvent } from '../state/schemas.ts'
 
 // --- public constants ---------------------------------------------
@@ -381,6 +382,11 @@ function actionableSuggestionsFor(code: string): readonly string[] {
         'Inspect attempt forensics under .code-oz/runs/<runId>/forensics/ and the latest BUILD_REPORT.md.',
         'Reset by starting a new run with a corrected PLAN; do not re-run REVIEW on the same chain.',
       ])
+    case 'review_already_in_flight':
+      return Object.freeze([
+        'Another runReview is in progress for this run (.review.lock present).',
+        'Wait for it to complete; if it crashed, inspect and remove .code-oz/runs/<runId>/.review.lock manually.',
+      ])
     default:
       return Object.freeze(['Inspect REVIEW.md, events.jsonl, and the relevant draft directory.'])
   }
@@ -388,6 +394,23 @@ function actionableSuggestionsFor(code: string): readonly string[] {
 
 // --- main entry point ---------------------------------------------
 
+/**
+ * M9 commit 22 (QA finding 1.1): mkdir-as-mutex over the runReview
+ * orchestration. Two concurrent runReview calls for the same (runId,
+ * round) would otherwise both pass the resume probe (no draft yet),
+ * both invoke the persona, both write REVIEW.md (last-writer-wins via
+ * atomic rename), both append review_round_completed (different scores
+ * + shas). The fs#2 sha-mismatch probe surfaces the divergence later,
+ * but only after both sessions completed.
+ *
+ * The lock is a SEPARATE dir from runPaths.lockDir (which serializes
+ * appendEvent / writeGate). runReview's lock is held for the duration
+ * of the persona invocation (seconds to minutes); holding the per-run
+ * lock that long would block other event-log writes (status reads,
+ * concurrent worktree-destroyed events, etc.). Using a dedicated
+ * `<runDir>/.review.lock/` keeps writers unblocked while still
+ * serializing review orchestration for the run.
+ */
 export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   const now = opts.now ?? (() => new Date().toISOString())
 
@@ -406,6 +429,28 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     })
   }
 
+  // Acquire the review-orchestration mutex. If another runReview holds
+  // it (concurrent invocation for the same run), surface
+  // review_already_in_flight rather than racing.
+  const reviewLockDir = join(opts.runPaths.runDir, '.review.lock')
+  try {
+    return await withLock(reviewLockDir, async () => runReviewInner(opts, now))
+  } catch (err) {
+    if (err instanceof LockBusyError) {
+      return Object.freeze({
+        status: 'intervention' as const,
+        code: 'review_already_in_flight',
+        rule: `another runReview is in progress for run ${opts.runId} (lock at ${reviewLockDir})`,
+      })
+    }
+    throw err
+  }
+}
+
+async function runReviewInner(
+  opts: RunReviewOptions,
+  now: () => string,
+): Promise<ReviewResult> {
   const interventionCtx: InterventionContext = {
     runPaths: opts.runPaths,
     runId: opts.runId,
