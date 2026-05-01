@@ -30,6 +30,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { capabilityOf, type ProviderCapability } from './capabilities.ts'
 import { defaultRunner, type Runner, type RunnerResult } from './runner.ts'
 import { _renderStdin, _nonZeroExit, _spawnFailure } from './claude.ts'
 import type {
@@ -51,6 +52,7 @@ export interface CodexProviderOptions {
 export class CodexProvider implements IAgentProvider {
   readonly id = 'codex' as const
   readonly family = 'codex' as const
+  readonly capability: ProviderCapability = capabilityOf('codex')
   private readonly cliPath: string
   private readonly runner: Runner
   private readonly tempCwd: () => Promise<string>

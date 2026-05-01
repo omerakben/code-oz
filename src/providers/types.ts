@@ -15,6 +15,7 @@
 import type { AgentDefinition } from '../agents/schema.ts'
 import type { Phase } from '../state/schemas.ts'
 import type { AgentManifest } from '../state/schemas.ts'
+import type { ProviderCapability } from './capabilities.ts'
 
 // --- identity ------------------------------------------------------
 
@@ -170,6 +171,18 @@ export interface ProviderHealth {
 export interface IAgentProvider {
   readonly id: ProviderId
   readonly family: ProviderFamily
+  /**
+   * Static capability record. Each adapter declares its capability by
+   * reading from `capabilityOf(this.id)` so the data is not duplicated
+   * across adapter source and the canonical defaults table. Registry
+   * registration cross-checks this value against the registry-resolved
+   * capability (defaults + optional overrides) under structural equality
+   * to prevent capability laundering — same anti-laundering pattern as
+   * the family check, with structural equality replacing the family
+   * primitive comparison. Pinned in M11 (CLAUDE.md rule 20: provider
+   * eligibility authority).
+   */
+  readonly capability: ProviderCapability
   invoke(req: PreparedProviderRequest): AsyncIterable<ProviderEvent>
   health(): Promise<ProviderHealth>
 }

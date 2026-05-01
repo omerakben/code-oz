@@ -27,6 +27,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { capabilityOf, type ProviderCapability } from './capabilities.ts'
 import { providerError } from './errors.ts'
 import { defaultRunner, type Runner, type RunnerResult } from './runner.ts'
 import type {
@@ -48,6 +49,7 @@ export interface ClaudeProviderOptions {
 export class ClaudeProvider implements IAgentProvider {
   readonly id = 'claude' as const
   readonly family = 'claude' as const
+  readonly capability: ProviderCapability = capabilityOf('claude')
   private readonly cliPath: string
   private readonly runner: Runner
   private readonly tempCwd: () => Promise<string>

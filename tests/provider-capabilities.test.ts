@@ -15,6 +15,7 @@ import { describe, test, expect } from 'bun:test'
 import {
   AUTH_SOURCES,
   DEFAULT_CAPABILITY_BY_ID,
+  capabilitiesEqual,
   capabilityOf,
   type AuthSource,
   type ProviderCapability,
@@ -135,6 +136,140 @@ describe('capabilityOf()', () => {
     const cap: ProviderCapability = capabilityOf('claude')
     const src: AuthSource = cap.authSource
     expect(src).toBe('claude-cli-oauth')
+  })
+})
+
+describe('capabilitiesEqual() — structural equality', () => {
+  const baseCap: ProviderCapability = Object.freeze({
+    authSource: 'claude-cli-oauth' as const,
+    eligiblePhases: Object.freeze(['plan', 'build', 'verify'] as const),
+  })
+
+  test('returns true for the same reference', () => {
+    expect(capabilitiesEqual(baseCap, baseCap)).toBe(true)
+  })
+
+  test('returns true for distinct objects with identical contents', () => {
+    const copy: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan', 'build', 'verify'] as const),
+    })
+    expect(capabilitiesEqual(baseCap, copy)).toBe(true)
+  })
+
+  test('returns false on different authSource', () => {
+    const other: ProviderCapability = Object.freeze({
+      authSource: 'codex-cli-oauth' as unknown as AuthSource,
+      eligiblePhases: Object.freeze(['plan', 'build', 'verify'] as const),
+    })
+    expect(capabilitiesEqual(baseCap, other)).toBe(false)
+  })
+
+  test('returns false on different eligiblePhases length', () => {
+    const shorter: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan', 'build'] as const),
+    })
+    expect(capabilitiesEqual(baseCap, shorter)).toBe(false)
+  })
+
+  test('returns false on different eligiblePhases order (order-sensitive)', () => {
+    // eligiblePhases is a list; order is part of the value identity. If a
+    // future change wants order-insensitive equality, that is a contract
+    // decision, not a quiet flip.
+    const reordered: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['build', 'plan', 'verify'] as const),
+    })
+    expect(capabilitiesEqual(baseCap, reordered)).toBe(false)
+  })
+
+  test('costPerMTok asymmetric presence is not equal', () => {
+    const withCost: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan', 'build', 'verify'] as const),
+      costPerMTok: Object.freeze({ input: 5, output: 25 }),
+    })
+    expect(capabilitiesEqual(baseCap, withCost)).toBe(false)
+    expect(capabilitiesEqual(withCost, baseCap)).toBe(false)
+  })
+
+  test('costPerMTok with different values is not equal', () => {
+    const a: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan'] as const),
+      costPerMTok: Object.freeze({ input: 5, output: 25 }),
+    })
+    const b: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan'] as const),
+      costPerMTok: Object.freeze({ input: 5, output: 30 }),
+    })
+    expect(capabilitiesEqual(a, b)).toBe(false)
+  })
+
+  test('rateLimits asymmetric presence is not equal', () => {
+    const withRate: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan', 'build', 'verify'] as const),
+      rateLimits: Object.freeze({ requestsPerMinute: 60 }),
+    })
+    expect(capabilitiesEqual(baseCap, withRate)).toBe(false)
+    expect(capabilitiesEqual(withRate, baseCap)).toBe(false)
+  })
+
+  test('rateLimits with different values is not equal', () => {
+    const a: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan'] as const),
+      rateLimits: Object.freeze({ requestsPerMinute: 60, tokensPerMinute: 1_000_000 }),
+    })
+    const b: ProviderCapability = Object.freeze({
+      authSource: 'claude-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan'] as const),
+      rateLimits: Object.freeze({ requestsPerMinute: 60, tokensPerMinute: 2_000_000 }),
+    })
+    expect(capabilitiesEqual(a, b)).toBe(false)
+  })
+
+  test('two capabilities with identical optional nested records compare equal', () => {
+    const a: ProviderCapability = Object.freeze({
+      authSource: 'chatgpt-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan', 'build'] as const),
+      costPerMTok: Object.freeze({ input: 1, output: 5 }),
+      rateLimits: Object.freeze({
+        requestsPerMinute: 60,
+        tokensPerMinute: 1_000_000,
+        outputTokensPerMinute: 250_000,
+      }),
+    })
+    const b: ProviderCapability = Object.freeze({
+      authSource: 'chatgpt-cli-oauth' as const,
+      eligiblePhases: Object.freeze(['plan', 'build'] as const),
+      costPerMTok: Object.freeze({ input: 1, output: 5 }),
+      rateLimits: Object.freeze({
+        requestsPerMinute: 60,
+        tokensPerMinute: 1_000_000,
+        outputTokensPerMinute: 250_000,
+      }),
+    })
+    expect(capabilitiesEqual(a, b)).toBe(true)
+  })
+
+  test('every default capability equals itself', () => {
+    for (const id of PROVIDER_IDS) {
+      const cap = DEFAULT_CAPABILITY_BY_ID[id]
+      expect(capabilitiesEqual(cap, cap)).toBe(true)
+    }
+  })
+
+  test('different default capabilities are not equal to each other', () => {
+    expect(capabilitiesEqual(DEFAULT_CAPABILITY_BY_ID.claude, DEFAULT_CAPABILITY_BY_ID.gemini)).toBe(
+      false,
+    )
+    expect(capabilitiesEqual(DEFAULT_CAPABILITY_BY_ID.codex, DEFAULT_CAPABILITY_BY_ID.gemini)).toBe(
+      false,
+    )
   })
 })
 

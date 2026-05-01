@@ -15,6 +15,7 @@
 // ProviderError for that (phase, agent) pair, exercising the wrapper
 // layer's NEEDS_INTERVENTION + intervention event path.
 
+import { capabilityOf, type ProviderCapability } from './capabilities.ts'
 import { ProviderError, providerError, type ProviderErrorIssue } from './errors.ts'
 import type {
   IAgentProvider,
@@ -91,6 +92,7 @@ export interface FakeExpectationBuilder {
 export class FakeProvider implements IAgentProvider {
   readonly id = 'fake' as const
   readonly family = 'fake' as const
+  readonly capability: ProviderCapability = capabilityOf('fake')
 
   private readonly expectations: QueuedExpectation[] = []
   private readonly strict: boolean

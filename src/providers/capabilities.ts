@@ -126,3 +126,53 @@ export function capabilityOf(id: ProviderId): ProviderCapability {
   }
   return capability
 }
+
+/**
+ * Structural equality for ProviderCapability values. The registry's
+ * adapter-vs-registry cross-check needs deep value comparison, not
+ * reference equality — capability records are composite objects (unlike
+ * the primitive `family` string) and frozen-shared instances are not the
+ * common case once `capabilityOverrides` enters the picture. Pinned in
+ * Codex's CODEX_RESPONSE_M11.md Decision H lock: "use structural equality
+ * or canonical frozen objects."
+ *
+ * The function compares every field that is part of the public TS shape
+ * (authSource, eligiblePhases array values+order, optional nested
+ * costPerMTok and rateLimits records). It does NOT walk arbitrary unknown
+ * keys; if a future field lands on the type, it must be added here. The
+ * test suite has a regression guard that fails when a new field is
+ * ignored.
+ */
+export function capabilitiesEqual(a: ProviderCapability, b: ProviderCapability): boolean {
+  if (a === b) return true
+  if (a.authSource !== b.authSource) return false
+  if (a.eligiblePhases.length !== b.eligiblePhases.length) return false
+  for (let i = 0; i < a.eligiblePhases.length; i++) {
+    if (a.eligiblePhases[i] !== b.eligiblePhases[i]) return false
+  }
+  if (!optionalCostsEqual(a.costPerMTok, b.costPerMTok)) return false
+  if (!optionalRateLimitsEqual(a.rateLimits, b.rateLimits)) return false
+  return true
+}
+
+function optionalCostsEqual(
+  a: ProviderCostPerMTok | undefined,
+  b: ProviderCostPerMTok | undefined,
+): boolean {
+  if (a === undefined && b === undefined) return true
+  if (a === undefined || b === undefined) return false
+  return a.input === b.input && a.output === b.output
+}
+
+function optionalRateLimitsEqual(
+  a: ProviderRateLimits | undefined,
+  b: ProviderRateLimits | undefined,
+): boolean {
+  if (a === undefined && b === undefined) return true
+  if (a === undefined || b === undefined) return false
+  return (
+    a.requestsPerMinute === b.requestsPerMinute &&
+    a.tokensPerMinute === b.tokensPerMinute &&
+    a.outputTokensPerMinute === b.outputTokensPerMinute
+  )
+}
