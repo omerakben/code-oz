@@ -16,6 +16,9 @@ Thumbs.db
 # Local scratch
 *.local
 
+# Session-launch prompts dropped at repo root by host CLI integrations
+TODO.md
+
 # Bun (legacy binary lockfile; bun.lock text format is committed)
 bun.lockb
 
