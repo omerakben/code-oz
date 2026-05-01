@@ -249,11 +249,11 @@ function mergeCompanyRow(
     }
   }
   if (r.model !== undefined) {
-    if (typeof r.model !== 'string' || r.model.length === 0) {
+    if (typeof r.model !== 'string' || r.model.trim().length === 0) {
       issues.push({
         file,
         code: 'config_invalid_value',
-        rule: `company.${role}.model must be a non-empty string`,
+        rule: `company.${role}.model must be a non-blank string`,
         detail: `got ${JSON.stringify(r.model)}`,
       })
     } else {

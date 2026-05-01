@@ -269,6 +269,27 @@ describe('build_provider_recorded — validator (M9 commit 1)', () => {
       'events.jsonl',
     )
     expect(issue?.rule).toContain('build_provider_recorded.model')
+    expect(issue?.rule).toContain('non-blank')
+  })
+
+  test('rejects whitespace-only model when present (M12 blank-model widening)', () => {
+    const issue = validateEvent(
+      {
+        version: 1,
+        type: 'build_provider_recorded',
+        ts: '2026-04-30T11:01:00.000Z',
+        runId: RUN,
+        phase: 'build',
+        attempt: 1,
+        taskId: 'T-001',
+        provider: 'claude',
+        family: 'claude',
+        model: '   ',
+      },
+      'events.jsonl',
+    )
+    expect(issue?.rule).toContain('build_provider_recorded.model')
+    expect(issue?.rule).toContain('non-blank')
   })
 
   test('rejects missing provider field', () => {

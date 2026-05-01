@@ -137,6 +137,37 @@ describe('validateAgent — enum fields', () => {
   })
 })
 
+describe('validateAgent — model rules (M12 frontmatter blank-model fix)', () => {
+  test('accepts omitted model (bundled-default shape)', () => {
+    const def = validateAgent(fm({ ...VALID_FRONTMATTER }), FILE)
+    expect(def.model).toBeUndefined()
+  })
+
+  test("rejects empty-string 'model'", () => {
+    const err = expectIssue(
+      () => validateAgent(fm({ ...VALID_FRONTMATTER, model: '' }), FILE),
+      'schema_invalid_value',
+    )
+    expect(
+      err.issues.some(
+        (i) => i.code === 'schema_invalid_value' && i.rule.includes("'model' must not be blank"),
+      ),
+    ).toBe(true)
+  })
+
+  test("rejects whitespace-only 'model'", () => {
+    const err = expectIssue(
+      () => validateAgent(fm({ ...VALID_FRONTMATTER, model: '   ' }), FILE),
+      'schema_invalid_value',
+    )
+    expect(
+      err.issues.some(
+        (i) => i.code === 'schema_invalid_value' && i.rule.includes("'model' must not be blank"),
+      ),
+    ).toBe(true)
+  })
+})
+
 describe('validateAgent — name rules', () => {
   test('rejects unicode in name', () => {
     expectIssue(

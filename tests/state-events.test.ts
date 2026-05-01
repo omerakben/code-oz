@@ -287,6 +287,49 @@ describe('validateEvent — rejection cases', () => {
     expect(validateEvent({ ...valid, filesSent: '0' }, 'events.jsonl')?.code).toBe('event_invalid_value')
   })
 
+  test('agent_invoked.model is optional but must be non-blank when present (M12 blank-model fix)', () => {
+    const valid = {
+      version: 1,
+      type: 'agent_invoked',
+      ts: '2026-04-29T17:00:00Z',
+      runId: RUN,
+      phase: 'define',
+      agent: 'ba',
+      provider: 'claude',
+      manifest: { files: [] },
+      filesSent: 0,
+      bytesSent: 0,
+      tokensEstimate: 0,
+      fieldsRemovedByScope: 0,
+    }
+    // Omitted model — bundled-default shape.
+    expect(validateEvent(valid, 'events.jsonl')).toBeNull()
+    // Present, non-blank — accepted.
+    expect(
+      validateEvent({ ...valid, model: 'claude-opus-4-7' }, 'events.jsonl'),
+    ).toBeNull()
+    // Empty string — rejected.
+    {
+      const issue = validateEvent({ ...valid, model: '' }, 'events.jsonl')
+      expect(issue?.code).toBe('event_invalid_value')
+      expect(issue?.rule).toContain('agent_invoked.model')
+      expect(issue?.rule).toContain('non-blank')
+    }
+    // Whitespace-only — rejected.
+    {
+      const issue = validateEvent({ ...valid, model: '   ' }, 'events.jsonl')
+      expect(issue?.code).toBe('event_invalid_value')
+      expect(issue?.rule).toContain('agent_invoked.model')
+      expect(issue?.rule).toContain('non-blank')
+    }
+    // Wrong type — rejected.
+    {
+      const issue = validateEvent({ ...valid, model: 42 }, 'events.jsonl')
+      expect(issue?.code).toBe('event_invalid_value')
+      expect(issue?.rule).toContain('agent_invoked.model')
+    }
+  })
+
   test('gate_written.file with separators is rejected', () => {
     expect(
       validateEvent(

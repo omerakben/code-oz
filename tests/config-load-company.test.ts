@@ -270,7 +270,28 @@ company:
     } catch (err) {
       const e = err as ConfigLoadError
       const issue = e.issues.find(
-        (i) => i.code === 'config_invalid_value' && i.rule.includes('non-empty string'),
+        (i) => i.code === 'config_invalid_value' && i.rule.includes('non-blank string'),
+      )
+      expect(issue).toBeDefined()
+    }
+  })
+
+  test('whitespace-only model is rejected (M12 blank-model fix widening)', async () => {
+    await writeConfig(`
+company:
+  builder:
+    model: "   "
+`)
+    try {
+      await loadConfig({ cwd: tmp })
+      throw new Error('expected ConfigLoadError')
+    } catch (err) {
+      const e = err as ConfigLoadError
+      const issue = e.issues.find(
+        (i) =>
+          i.code === 'config_invalid_value' &&
+          i.rule.includes('non-blank string') &&
+          i.detail?.includes('"   "'),
       )
       expect(issue).toBeDefined()
     }

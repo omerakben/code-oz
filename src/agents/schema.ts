@@ -1062,12 +1062,29 @@ export function validateAgent(parsed: ParsedFrontmatter, file: string): AgentDef
     if (issue) issues.push(issue)
   }
 
-  if ('model' in data && data.model !== undefined && typeof data.model !== 'string') {
-    issues.push({
-      file,
-      code: 'schema_invalid_value',
-      rule: "'model' must be a string when present",
-    })
+  if ('model' in data && data.model !== undefined) {
+    if (typeof data.model !== 'string') {
+      issues.push({
+        file,
+        code: 'schema_invalid_value',
+        rule: "'model' must be a string when present",
+      })
+    } else if (data.model.trim().length === 0) {
+      // M12 made `agent.model` operational via `req.model ?? req.agent.model`
+      // in src/providers/manifest.ts. A persona declaring `model: ""` (or
+      // whitespace-only) would otherwise forward a blank model to adapters.
+      // Mirrors the description rule above and the company-row check in
+      // src/config/load.ts mergeCompanyRow. Closes M12 deferred risk #1
+      // (Codex CODEX_REVIEW_M12.md "Risks the proposing side missed" #1)
+      // and the whitespace-only widening from
+      // CODEX_RESPONSE_REFACTOR_2026-05-01.md "Bugs Claude missed".
+      issues.push({
+        file,
+        code: 'schema_invalid_value',
+        rule: "'model' must not be blank when present",
+        detail: `got ${JSON.stringify(data.model)}`,
+      })
+    }
   }
 
   if ('permissions' in data) {

@@ -236,6 +236,23 @@ export function validateEvent(
         nonNegativeInteger(file, e.tokensEstimate, 'agent_invoked.tokensEstimate', line) ??
         nonNegativeInteger(file, e.fieldsRemovedByScope, 'agent_invoked.fieldsRemovedByScope', line)
       if (metricIssue) return metricIssue
+      // M12 added agent_invoked.model as an optional durable record of the
+      // resolved model the wrapper sent to the adapter (src/state/schemas.ts
+      // PhaseEvent.agent_invoked). Mirror build_provider_recorded.model: when
+      // present, must be a non-blank string. Codex
+      // CODEX_RESPONSE_REFACTOR_2026-05-01.md "Scope corrections" — the
+      // event reader should not silently accept a known empty model field.
+      if (e.model !== undefined) {
+        if (typeof e.model !== 'string' || e.model.trim().length === 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: 'agent_invoked.model must be a non-blank string when present',
+            detail: `got ${JSON.stringify(e.model)}`,
+            line,
+          }
+        }
+      }
       const debateCorrelationIssue = validateDebateCorrelation(
         file, e.debateTopic, e.debateTurn, 'agent_invoked', line,
       )
@@ -668,13 +685,16 @@ export function validateEvent(
       const famIssue = nonEmptyString(file, e.family, 'build_provider_recorded.family', line)
       if (famIssue) return famIssue
       // model is optional (agents may not pin a model in frontmatter); when
-      // present it must be a non-empty string.
+      // present it must be a non-blank string. Trim guard widens the empty
+      // check so whitespace-only ("   ") also fails — matches the schema
+      // and config-load layers (CODEX_RESPONSE_REFACTOR_2026-05-01.md
+      // "Bugs Claude missed").
       if (e.model !== undefined) {
-        if (typeof e.model !== 'string' || e.model.length === 0) {
+        if (typeof e.model !== 'string' || e.model.trim().length === 0) {
           return {
             file,
             code: 'event_invalid_value',
-            rule: 'build_provider_recorded.model must be a non-empty string when present',
+            rule: 'build_provider_recorded.model must be a non-blank string when present',
             detail: `got ${JSON.stringify(e.model)}`,
             line,
           }
