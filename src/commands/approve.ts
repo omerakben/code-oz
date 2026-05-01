@@ -42,7 +42,12 @@ import { _validateArtifactSyncPath } from '../state/gates.ts'
 import { appendEvent, readEvents } from '../state/events.ts'
 import { parseSpec } from '../artifacts/spec.ts'
 import { parseVerifyReport, VerifyReportLoadError } from '../artifacts/verify-report.ts'
+import {
+  parseReviewReport,
+  ReviewReportLoadError,
+} from '../artifacts/review-report.ts'
 import { SpecLoadError } from '../artifacts/errors.ts'
+import { createHash } from 'node:crypto'
 import { removeRunWorktree } from '../worktree/remove-run-worktree.ts'
 import { runPaths as worktreeRunPaths } from '../worktree/paths.ts'
 import { access } from 'node:fs/promises'
@@ -226,16 +231,18 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     })
   }
 
-  // REVIEW-specific approval (M9 commit 1 substrate): remove the
-  // worktree at the REVIEW gate. The hook fails the gate write on
-  // removal failure; the user can repair fs state and retry. Idempotent
-  // when the worktree was already destroyed (manual cleanup, or a
-  // resume scenario).
+  // REVIEW-specific approval (M9 commit 1 substrate + M9 commit 13
+  // bp#1 hardening): validate REVIEW.md + verdict=ready, confirm the
+  // matching review_resolved event exists, then remove the worktree.
+  // The hook fails the gate write on artifact validation failure or
+  // removal failure; the user can repair the artifact / fs state and
+  // retry. Idempotent when the worktree was already destroyed.
   if (targetPhase === 'review') {
     await preApproveReviewHook({
       cwd: opts.cwd ?? process.cwd(),
       runId,
       runPaths,
+      reviewPath: join(ctx.paths.artifacts, artifactPath),
       now: opts.now ?? (() => new Date().toISOString()),
     })
   }
@@ -327,33 +334,138 @@ export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Pr
 }
 
 /**
- * REVIEW-specific pre-approval hook (M9 commit 1 substrate):
- *   1. Resolve the attempt that REVIEW just approved by reading the
- *      latest `build_provider_recorded` event for the run. (M9 commit 7
- *      will replace this with REVIEW.md's recorded BUILD ref once the
- *      parser ships; the hook signature stays the same.)
- *   2. Remove the run worktree via `git worktree remove --force`.
- *   3. Emit `worktree_destroyed` (phase: review) before approveGate
+ * REVIEW-specific pre-approval hook (M9 commit 1 substrate + M9 commit 13
+ * bp#1 hardening):
+ *
+ *   1. Read REVIEW.md from disk; reject malformed (mirrors
+ *      preApproveVerifyHook's contract for VERIFY.md).
+ *   2. Reject `Score.Final verdict !== 'ready'`. A `block` or
+ *      `needs-revision` REVIEW.md must NOT be approvable; that path
+ *      already has its own terminal interventions, and approving it
+ *      would write a misleading GATE_REVIEW_PASSED.json.
+ *   3. Verify a `review_resolved` event for the same (taskId, attempt)
+ *      with matching `reviewReportSha256`. The event is what runReview
+ *      emits when it lands a canonical 'ready' exit; missing or
+ *      sha-mismatched event means the artifact on disk did not come
+ *      from this run's REVIEW orchestrator (rule 1: artifact-based
+ *      gate signals are load-bearing — REVIEW.md must agree with the
+ *      events.jsonl record).
+ *   4. Remove the run worktree via `git worktree remove --force`.
+ *   5. Emit `worktree_destroyed` (phase: review) before approveGate
  *      writes GATE_REVIEW_PASSED.json.
  *
  * Idempotent when the worktree is already gone (manual cleanup or a
- * resume scenario): no event is emitted, no error is thrown. Real
- * removal failures (dirty fs, permission) throw and block gate write.
- * Exported for direct testing.
+ * resume scenario): no event is emitted, no error is thrown — but
+ * artifact validation still runs first, so a corrupted REVIEW.md still
+ * blocks the gate even when the worktree is already destroyed.
+ *
+ * Real removal failures (dirty fs, permission) throw and block gate
+ * write. Exported for direct testing.
  */
 export interface PreApproveReviewHookInput {
   readonly cwd: string
   readonly runId: string
   readonly runPaths: { readonly eventsFile: string; readonly lockDir: string }
+  /** Absolute path to .code-oz/artifacts/REVIEW.md; passed by runApprove
+   *  via canonical-artifacts mapping. */
+  readonly reviewPath: string
   readonly now: () => string
 }
 
 export async function preApproveReviewHook(input: PreApproveReviewHookInput): Promise<void> {
-  // Pre-check: if the worktree directory doesn't exist on disk, exit
-  // idempotently. This covers the FSM regression test path (a synthetic
-  // walk through phases without ever running BUILD) and the resume-
-  // after-manual-cleanup path. No event recorded because there's
-  // nothing to record.
+  // 1. Validate REVIEW.md (mirror preApproveVerifyHook).
+  let reviewText: string
+  try {
+    reviewText = await readFile(input.reviewPath, 'utf8')
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `cannot approve review: ${input.reviewPath} does not exist. Run REVIEW first.`,
+      )
+    }
+    throw err
+  }
+  let reviewData: ReturnType<typeof parseReviewReport>
+  try {
+    reviewData = parseReviewReport(reviewText, input.reviewPath)
+  } catch (err) {
+    if (err instanceof ReviewReportLoadError) {
+      const summary = err.issues
+        .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+        .join('\n')
+      throw new Error(
+        [
+          `cannot approve review: ${input.reviewPath} is not a valid REVIEW.md.`,
+          summary,
+          'Re-run REVIEW or repair the artifact before approving.',
+        ].join('\n'),
+      )
+    }
+    throw err
+  }
+  if (reviewData.score.finalVerdict !== 'ready') {
+    throw new Error(
+      [
+        `cannot approve review: REVIEW.md Final verdict is '${reviewData.score.finalVerdict}'.`,
+        'Only verdict=ready REVIEW.md can be approved (CLAUDE.md non-negotiable rule 6).',
+      ].join('\n'),
+    )
+  }
+
+  // 2. Cross-check against events.jsonl: a review_resolved event must
+  //    exist for the same (runId, taskId, attempt) AND its
+  //    reviewReportSha256 must match the canonical REVIEW.md sha.
+  const reviewSha256 = sha256Of(reviewText)
+  const events = await readEvents({
+    file: input.runPaths.eventsFile,
+    lockDir: input.runPaths.lockDir,
+  })
+  const resolved = findReviewResolvedFor(
+    events,
+    input.runId,
+    reviewData.upstreamRefs.taskId,
+    reviewData.upstreamRefs.attempt,
+  )
+  if (resolved === null) {
+    throw new Error(
+      [
+        `cannot approve review: no review_resolved event for taskId=${reviewData.upstreamRefs.taskId} attempt=${reviewData.upstreamRefs.attempt}.`,
+        'REVIEW must reach a canonical ready exit (and emit review_resolved) before approval.',
+      ].join('\n'),
+    )
+  }
+  if (resolved.reviewReportSha256 !== reviewSha256) {
+    throw new Error(
+      [
+        `cannot approve review: REVIEW.md sha256 (${reviewSha256}) does not match the review_resolved event sha (${resolved.reviewReportSha256}).`,
+        'The artifact on disk diverged from what REVIEW emitted. Re-run REVIEW or restore the canonical artifact.',
+      ].join('\n'),
+    )
+  }
+
+  // 3. Resolve the attempt for the worktree_destroyed event from the
+  //    validated REVIEW.md upstream refs (the artifact is now the
+  //    source of truth; build_provider_recorded is still validated as
+  //    a defense-in-depth check below).
+  const attempt = reviewData.upstreamRefs.attempt
+  const buildProviderEvent = events
+    .filter((e) => e.type === 'build_provider_recorded')
+    .reverse()
+    .find(
+      (e) =>
+        (e as { readonly taskId?: unknown }).taskId === reviewData.upstreamRefs.taskId &&
+        (e as { readonly attempt?: unknown }).attempt === attempt,
+    )
+  if (buildProviderEvent === undefined) {
+    throw new Error(
+      [
+        `cannot approve review: events.jsonl has no build_provider_recorded for taskId=${reviewData.upstreamRefs.taskId} attempt=${attempt}.`,
+        'BUILD must complete and emit build_provider_recorded before REVIEW can be approved.',
+      ].join('\n'),
+    )
+  }
+
+  // 4. Worktree removal (idempotent on missing).
   const worktreeDir = worktreeRunPaths(input.cwd, input.runId).worktree
   let worktreeExists = true
   try {
@@ -364,38 +476,6 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
   if (!worktreeExists) {
     return
   }
-
-  // Worktree exists. Resolve the attempt that REVIEW just approved
-  // BEFORE mutating fs state — if no build_provider_recorded event
-  // exists, the run is corrupted and we throw without removing the
-  // worktree (preserves forensics for inspection). M9 commit 7
-  // (REVIEW orchestrator) will replace this derivation with
-  // REVIEW.md's recorded BUILD ref once the parser ships; the hook
-  // signature stays the same.
-  const events = await readEvents({
-    file: input.runPaths.eventsFile,
-    lockDir: input.runPaths.lockDir,
-  })
-  let attempt: number | null = null
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i]!
-    if (e.type === 'build_provider_recorded') {
-      const candidate = (e as { readonly attempt?: unknown }).attempt
-      if (typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 1) {
-        attempt = candidate
-        break
-      }
-    }
-  }
-  if (attempt === null) {
-    throw new Error(
-      [
-        'cannot approve review: events.jsonl has no build_provider_recorded event for this run.',
-        'BUILD must complete before REVIEW can be approved.',
-      ].join('\n'),
-    )
-  }
-
   const removed = await removeRunWorktree({ cwd: input.cwd, runId: input.runId })
   if (!removed.ok) {
     const reason = removed.reason
@@ -425,6 +505,41 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
       worktreePath: removed.worktreePath,
     },
   )
+}
+
+function sha256Of(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+interface ResolvedReviewEventShape {
+  readonly type: 'review_resolved'
+  readonly runId: string
+  readonly taskId: string
+  readonly attempt: number
+  readonly finalRound: number
+  readonly finalScore: number
+  readonly reviewReportSha256: string
+}
+
+function findReviewResolvedFor(
+  events: readonly { readonly type: string }[],
+  runId: string,
+  taskId: string,
+  attempt: number,
+): ResolvedReviewEventShape | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i] as Record<string, unknown>
+    if (
+      e.type === 'review_resolved' &&
+      e.runId === runId &&
+      e.taskId === taskId &&
+      e.attempt === attempt &&
+      typeof e.reviewReportSha256 === 'string'
+    ) {
+      return e as unknown as ResolvedReviewEventShape
+    }
+  }
+  return null
 }
 
 async function defaultConfirm(message: string): Promise<boolean> {

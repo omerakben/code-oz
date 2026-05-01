@@ -22,6 +22,7 @@ import { describe, test, expect, beforeEach, afterEach, beforeAll } from 'bun:te
 import { mkdtemp, mkdir, rm, writeFile, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 import { preApproveVerifyHook, preApproveReviewHook } from '../src/commands/approve.ts'
 import { initRun, runPathsFor, type RunPaths } from '../src/state/run.ts'
@@ -29,6 +30,7 @@ import { appendEvent, readEvents } from '../src/state/events.ts'
 import { generateUlid } from '../src/state/schemas.ts'
 import { createRunWorktree, runGit } from '../src/worktree/create-run-worktree.ts'
 import { runDoctorGit } from '../src/commands/doctor.ts'
+import { serializeReviewReport, type ReviewReportData } from '../src/artifacts/review-report.ts'
 
 const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
 const FIXED_TS = '2026-04-30T11:00:00.000Z'
@@ -136,6 +138,82 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
+const SHA = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex')
+
+/**
+ * Stage a verdict=ready REVIEW.md + matching review_resolved event for
+ * the given (taskId, attempt). Returns the path. The matching event's
+ * reviewReportSha256 is the canonical sha so preApproveReviewHook's
+ * agreement check passes.
+ */
+async function stageReadyReview(opts: {
+  attempt: number
+  taskId?: string
+  buildFamily?: string
+  reviewerFamily?: string
+}): Promise<string> {
+  const taskId = opts.taskId ?? 'T-001'
+  const buildFamily = opts.buildFamily ?? 'claude'
+  const reviewerFamily = opts.reviewerFamily ?? 'codex'
+  const reviewReportPath = join(paths.artifactRoot, 'REVIEW.md')
+  const data: ReviewReportData = Object.freeze({
+    upstreamRefs: Object.freeze({
+      buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+      buildReportSha256: 'a'.repeat(64),
+      verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+      verifyReportSha256: 'b'.repeat(64),
+      taskId,
+      attempt: opts.attempt,
+      baseCommitSha: '0'.repeat(40),
+      patchSha256: 'c'.repeat(64),
+    }),
+    reviewer: Object.freeze({
+      providerFamily: reviewerFamily,
+      providerId: reviewerFamily,
+      modelPolicy: 'any',
+      crossFamilyCheck: 'passed' as const,
+      buildFamily,
+    }),
+    roundTimeline: Object.freeze([
+      Object.freeze({
+        round: 1,
+        timestamp: FIXED_TS,
+        findingsRaised: 0,
+        score: 8,
+        verdict: 'ready' as const,
+      }),
+    ]),
+    findings: Object.freeze([]),
+    score: Object.freeze({
+      roundCount: 1,
+      finalScore: 8,
+      finalVerdict: 'ready' as const,
+      exitReason: 'score>=6 + verdict=ready (round 1)',
+    }),
+    capStatus: Object.freeze({ cap: 4, roundsUsed: 1, capExhausted: false }),
+  })
+  const text = serializeReviewReport(data)
+  await writeFile(reviewReportPath, text)
+  const reviewReportSha256 = SHA(text)
+  await appendEvent(
+    { file: paths.eventsFile, lockDir: paths.lockDir },
+    {
+      version: 1,
+      type: 'review_resolved',
+      ts: FIXED_TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      attempt: opts.attempt,
+      taskId,
+      finalRound: 1,
+      finalScore: 8,
+      reviewReportSha256,
+    },
+  )
+  return reviewReportPath
+}
+
 beforeEach(async () => {
   cwd = await mkdtemp(join(tmpdir(), 'code-oz-wt-lifetime-'))
   const stateDir = join(cwd, '.code-oz/state')
@@ -182,8 +260,9 @@ describe('preApproveReviewHook (M9 commit 1 substrate): cleanup-on-REVIEW-approv
     const created = await createRunWorktree({ cwd, runId: RUN })
     if (!created.ok) throw new Error('worktree create failed')
     await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    const reviewPath = await stageReadyReview({ attempt: 1 })
 
-    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, now: () => FIXED_TS })
+    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS })
 
     expect(await pathExists(created.worktreePath)).toBe(false)
     const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
@@ -196,17 +275,20 @@ describe('preApproveReviewHook (M9 commit 1 substrate): cleanup-on-REVIEW-approv
     expect(destroyed?.worktreePath).toBe(created.worktreePath)
   })
 
-  test('resolves attempt from the LATEST build_provider_recorded event (multi-attempt run)', async () => {
+  test('resolves attempt from REVIEW.md.upstreamRefs.attempt (M9 commit 13 bp#1)', async () => {
     const created = await createRunWorktree({ cwd, runId: RUN })
     if (!created.ok) throw new Error('worktree create failed')
     // Simulate a run that went through 3 BUILD attempts (e.g., two VERIFY
-    // failures, third pass). The latest attempt is what REVIEW just
-    // approved.
+    // failures, third pass). REVIEW.md authoritatively names the
+    // attempt that REVIEW just approved (3); build_provider_recorded
+    // events for prior attempts are present but no longer authoritative
+    // for the hook's attempt-resolution.
     await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
     await recordBuildProvider({ attempt: 2, taskId: 'T-001', provider: 'claude', family: 'claude' })
     await recordBuildProvider({ attempt: 3, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    const reviewPath = await stageReadyReview({ attempt: 3 })
 
-    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, now: () => FIXED_TS })
+    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS })
 
     const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
     const destroyed = events.find((e) => e.type === 'worktree_destroyed') as
@@ -221,9 +303,10 @@ describe('preApproveReviewHook (M9 commit 1 substrate): cleanup-on-REVIEW-approv
     if (!created.ok) throw new Error('worktree create failed')
     await runGit(cwd, ['worktree', 'remove', '--force', created.worktreePath])
     await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    const reviewPath = await stageReadyReview({ attempt: 1 })
 
     // Should not throw.
-    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, now: () => FIXED_TS })
+    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS })
 
     // No worktree_destroyed event for the no-op idempotent path.
     const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
@@ -235,12 +318,126 @@ describe('preApproveReviewHook (M9 commit 1 substrate): cleanup-on-REVIEW-approv
     const created = await createRunWorktree({ cwd, runId: RUN })
     if (!created.ok) throw new Error('worktree create failed')
     // Note: NO recordBuildProvider() call here.
+    const reviewPath = await stageReadyReview({ attempt: 1 })
 
     await expect(
-      preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, now: () => FIXED_TS }),
-    ).rejects.toThrow(/no build_provider_recorded event/)
+      preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS }),
+    ).rejects.toThrow(/no build_provider_recorded for taskId/)
 
     // Worktree must still exist on the failed path.
+    expect(await pathExists(created.worktreePath)).toBe(true)
+  })
+
+  test('M9 commit 13 bp#1: refuses when REVIEW.md is missing', async () => {
+    const created = await createRunWorktree({ cwd, runId: RUN })
+    if (!created.ok) throw new Error('worktree create failed')
+    await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    const reviewPath = join(paths.artifactRoot, 'REVIEW.md')
+
+    await expect(
+      preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS }),
+    ).rejects.toThrow(/does not exist\. Run REVIEW first/)
+    expect(await pathExists(created.worktreePath)).toBe(true)
+  })
+
+  test('M9 commit 13 bp#1: refuses when REVIEW.md verdict is not ready', async () => {
+    const created = await createRunWorktree({ cwd, runId: RUN })
+    if (!created.ok) throw new Error('worktree create failed')
+    await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    // Hand-craft a needs-revision REVIEW.md.
+    const reviewPath = join(paths.artifactRoot, 'REVIEW.md')
+    const data: ReviewReportData = Object.freeze({
+      upstreamRefs: Object.freeze({
+        buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+        buildReportSha256: 'a'.repeat(64),
+        verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+        verifyReportSha256: 'b'.repeat(64),
+        taskId: 'T-001',
+        attempt: 1,
+        baseCommitSha: '0'.repeat(40),
+        patchSha256: 'c'.repeat(64),
+      }),
+      reviewer: Object.freeze({
+        providerFamily: 'codex', providerId: 'codex', modelPolicy: 'any',
+        crossFamilyCheck: 'passed' as const, buildFamily: 'claude',
+      }),
+      roundTimeline: Object.freeze([
+        Object.freeze({
+          round: 1, timestamp: FIXED_TS, findingsRaised: 0,
+          score: 4, verdict: 'needs-revision' as const,
+        }),
+      ]),
+      findings: Object.freeze([]),
+      score: Object.freeze({
+        roundCount: 1, finalScore: 4,
+        finalVerdict: 'needs-revision' as const,
+        exitReason: 'persona score < 6',
+      }),
+      capStatus: Object.freeze({ cap: 4, roundsUsed: 1, capExhausted: false }),
+    })
+    await writeFile(reviewPath, serializeReviewReport(data))
+
+    await expect(
+      preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS }),
+    ).rejects.toThrow(/REVIEW\.md Final verdict is 'needs-revision'/)
+    expect(await pathExists(created.worktreePath)).toBe(true)
+  })
+
+  test('M9 commit 13 bp#1: refuses when no review_resolved event exists', async () => {
+    const created = await createRunWorktree({ cwd, runId: RUN })
+    if (!created.ok) throw new Error('worktree create failed')
+    await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    // Write a ready REVIEW.md but DO NOT emit review_resolved.
+    const reviewPath = join(paths.artifactRoot, 'REVIEW.md')
+    const data: ReviewReportData = Object.freeze({
+      upstreamRefs: Object.freeze({
+        buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+        buildReportSha256: 'a'.repeat(64),
+        verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+        verifyReportSha256: 'b'.repeat(64),
+        taskId: 'T-001',
+        attempt: 1,
+        baseCommitSha: '0'.repeat(40),
+        patchSha256: 'c'.repeat(64),
+      }),
+      reviewer: Object.freeze({
+        providerFamily: 'codex', providerId: 'codex', modelPolicy: 'any',
+        crossFamilyCheck: 'passed' as const, buildFamily: 'claude',
+      }),
+      roundTimeline: Object.freeze([
+        Object.freeze({
+          round: 1, timestamp: FIXED_TS, findingsRaised: 0,
+          score: 8, verdict: 'ready' as const,
+        }),
+      ]),
+      findings: Object.freeze([]),
+      score: Object.freeze({
+        roundCount: 1, finalScore: 8,
+        finalVerdict: 'ready' as const,
+        exitReason: 'score>=6 + verdict=ready (round 1)',
+      }),
+      capStatus: Object.freeze({ cap: 4, roundsUsed: 1, capExhausted: false }),
+    })
+    await writeFile(reviewPath, serializeReviewReport(data))
+
+    await expect(
+      preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS }),
+    ).rejects.toThrow(/no review_resolved event/)
+    expect(await pathExists(created.worktreePath)).toBe(true)
+  })
+
+  test('M9 commit 13 bp#1: refuses when REVIEW.md sha differs from review_resolved sha', async () => {
+    const created = await createRunWorktree({ cwd, runId: RUN })
+    if (!created.ok) throw new Error('worktree create failed')
+    await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    // Stage canonical REVIEW.md + matching event, then tamper with the
+    // file so the on-disk sha no longer matches the event's sha.
+    const reviewPath = await stageReadyReview({ attempt: 1 })
+    await writeFile(reviewPath, (await Bun.file(reviewPath).text()) + '\n# tampered\n')
+
+    await expect(
+      preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS }),
+    ).rejects.toThrow(/sha256 .* does not match the review_resolved event sha/)
     expect(await pathExists(created.worktreePath)).toBe(true)
   })
 })
@@ -251,13 +448,14 @@ describe('end-to-end: VERIFY then REVIEW lifecycle (M9 commit 1)', () => {
     if (!created.ok) throw new Error('worktree create failed')
     const verifyPath = await writePassVerifyMd()
     await recordBuildProvider({ attempt: 1, taskId: 'T-001', provider: 'claude', family: 'claude' })
+    const reviewPath = await stageReadyReview({ attempt: 1 })
 
     // Step 1: VERIFY-approve hook fires; worktree must still exist.
     await preApproveVerifyHook({ verifyPath })
     expect(await pathExists(created.worktreePath)).toBe(true)
 
     // Step 2: REVIEW-approve hook fires; worktree gone, event recorded.
-    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, now: () => FIXED_TS })
+    await preApproveReviewHook({ cwd, runId: RUN, runPaths: paths, reviewPath, now: () => FIXED_TS })
     expect(await pathExists(created.worktreePath)).toBe(false)
 
     const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })

@@ -24,6 +24,9 @@ import {
 } from '../src/state/run.ts'
 import { generateUlid, type Phase, CANONICAL_ARTIFACTS } from '../src/state/schemas.ts'
 import { writeGate } from '../src/state/gates.ts'
+import { appendEvent } from '../src/state/events.ts'
+import { serializeReviewReport, type ReviewReportData } from '../src/artifacts/review-report.ts'
+import { createHash } from 'node:crypto'
 
 let cwd: string
 const FIXED_TS = '2026-04-29T17:00:00Z'
@@ -123,6 +126,39 @@ const MINIMAL_VALID_VERIFY = `# VERIFY
 - None (verdict pass).
 `
 
+function minimalReadyReviewMd(): string {
+  const data: ReviewReportData = Object.freeze({
+    upstreamRefs: Object.freeze({
+      buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+      buildReportSha256: 'a'.repeat(64),
+      verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+      verifyReportSha256: 'b'.repeat(64),
+      taskId: 'T-001',
+      attempt: 1,
+      baseCommitSha: '0'.repeat(40),
+      patchSha256: 'c'.repeat(64),
+    }),
+    reviewer: Object.freeze({
+      providerFamily: 'codex', providerId: 'codex', modelPolicy: 'any',
+      crossFamilyCheck: 'passed' as const, buildFamily: 'claude',
+    }),
+    roundTimeline: Object.freeze([
+      Object.freeze({
+        round: 1, timestamp: FIXED_TS, findingsRaised: 0,
+        score: 8, verdict: 'ready' as const,
+      }),
+    ]),
+    findings: Object.freeze([]),
+    score: Object.freeze({
+      roundCount: 1, finalScore: 8,
+      finalVerdict: 'ready' as const,
+      exitReason: 'score>=6 + verdict=ready (round 1)',
+    }),
+    capStatus: Object.freeze({ cap: 4, roundsUsed: 1, capExhausted: false }),
+  })
+  return serializeReviewReport(data)
+}
+
 async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Promise<void> {
   const artifactRoot = join(cwd, '.code-oz', 'artifacts')
   await mkdir(artifactRoot, { recursive: true })
@@ -130,10 +166,44 @@ async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Prom
     let body: string
     if (p === 'define') body = MINIMAL_VALID_SPEC
     else if (p === 'verify') body = MINIMAL_VALID_VERIFY
+    else if (p === 'review') body = minimalReadyReviewMd()
     else body = `${p} body`
     await writeFile(join(artifactRoot, CANONICAL_ARTIFACTS[p]), body, 'utf8')
   }
-  void runDir // unused but kept for parity if signatures change
+  void runDir
+}
+
+/**
+ * M9 commit 13 bp#1: review approval requires (a) build_provider_recorded
+ * for the (taskId, attempt) pair AND (b) a review_resolved event whose
+ * reviewReportSha256 matches REVIEW.md. Test fixtures call this AFTER
+ * initRun (since events.jsonl needs run_started present).
+ */
+async function stageReviewApprovalPrereqs(runId: string): Promise<void> {
+  const stateDir = join(cwd, '.code-oz', 'state')
+  const artifactRoot = join(cwd, '.code-oz', 'artifacts')
+  const paths = runPathsFor(stateDir, artifactRoot, runId)
+  const reviewText = await readFile(join(artifactRoot, 'REVIEW.md'), 'utf8')
+  const reviewSha = createHash('sha256').update(reviewText, 'utf8').digest('hex')
+  await appendEvent(
+    { file: paths.eventsFile, lockDir: paths.lockDir },
+    {
+      version: 1, type: 'build_provider_recorded',
+      ts: FIXED_TS, runId, phase: 'build',
+      attempt: 1, taskId: 'T-001',
+      provider: 'claude', family: 'claude',
+    },
+  )
+  await appendEvent(
+    { file: paths.eventsFile, lockDir: paths.lockDir },
+    {
+      version: 1, type: 'review_resolved',
+      ts: FIXED_TS, runId, phase: 'review',
+      agent: 'reviewer', attempt: 1, taskId: 'T-001',
+      finalRound: 1, finalScore: 8,
+      reviewReportSha256: reviewSha,
+    },
+  )
 }
 
 // M5+: runApprove requires a gate_required event for the target phase
@@ -169,6 +239,7 @@ describe('end-to-end greenfield walk (M2-persona-supported phases)', () => {
     const { runId, paths } = await setupProject()
     await writeArtifactsFor(GREENFIELD_APPROVABLE, paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+    await stageReviewApprovalPrereqs(runId)
 
     for (const phase of GREENFIELD_APPROVABLE) {
       await emitGateRequired(phase, runId)
@@ -202,6 +273,7 @@ describe('end-to-end greenfield walk (M2-persona-supported phases)', () => {
     const { runId, paths } = await setupProject()
     await writeArtifactsFor([...GREENFIELD_APPROVABLE, 'ship'], paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+    await stageReviewApprovalPrereqs(runId)
 
     for (const phase of GREENFIELD_APPROVABLE) {
       await emitGateRequired(phase, runId)

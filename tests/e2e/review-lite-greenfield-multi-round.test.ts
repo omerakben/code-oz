@@ -28,7 +28,7 @@
 //     tests/build-phase.test.ts and tests/e2e/build-lite-greenfield).
 
 import { describe, test, expect, beforeEach, afterEach, beforeAll } from 'bun:test'
-import { cp, mkdtemp, mkdir, rm, readFile, access, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, rm, readFile, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,7 +45,6 @@ import type { InvokeContext } from '../../src/providers/invoke.ts'
 import type { AgentDefinition } from '../../src/agents/schema.ts'
 import {
   initRun,
-  loadRun,
   runPathsFor,
   type RunPaths,
   writeActiveRun,

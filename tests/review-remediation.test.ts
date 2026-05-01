@@ -71,23 +71,6 @@ function unresolvedFinding(opts: {
   })
 }
 
-function resolvedFinding(opts: {
-  readonly id: string
-  readonly roundRaised: number
-  readonly roundResolved: number
-  readonly severity?: 'block' | 'fix-first' | 'nit' | 'fyi'
-}): ReviewFinding {
-  return Object.freeze({
-    id: opts.id,
-    title: 'resolved',
-    file: 'src/foo.ts',
-    line: '1',
-    severity: opts.severity ?? 'fix-first',
-    recommendation: 'was fixed',
-    roundRaised: opts.roundRaised,
-    roundResolved: opts.roundResolved,
-  })
-}
 
 describe('decideReviewRemediation — continue path', () => {
   test('round 1 needs-revision after attempt 1 → continue with nextBuildAttempt=2, nextReviewRound=2', () => {
