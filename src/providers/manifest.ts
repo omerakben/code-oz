@@ -116,6 +116,15 @@ export async function buildManifest(
     fieldsRemovedByScope: droppedFieldCount,
   })
 
+  // M12 (Codex Risk #3 in CODEX_RESPONSE_M12.md, thread 019de4bb): default
+  // the resolved model from the agent's bound `model` (frontmatter or
+  // company:block override applied at agent-load time) when the phase
+  // logic doesn't supply `req.model`. Pre-M12, only `req.model` was
+  // forwarded — so a company:block that set `company.<role>.model`
+  // would never reach the adapter because phase calls generally omit
+  // `req.model`. Same fix surfaces the latent bug for personas with
+  // frontmatter-declared `model`.
+  const resolvedModel = req.model ?? req.agent.model
   const prepared: PreparedProviderRequest = Object.freeze({
     agent: req.agent,
     phase: req.phase,
@@ -124,7 +133,7 @@ export async function buildManifest(
     files: Object.freeze(files.map((f) => Object.freeze(f))),
     manifest,
     metrics,
-    ...(req.model !== undefined ? { model: req.model } : {}),
+    ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
     ...(req.maxOutputTokens !== undefined ? { maxOutputTokens: req.maxOutputTokens } : {}),
   })
 
