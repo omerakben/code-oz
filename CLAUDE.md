@@ -65,8 +65,6 @@ The `templates/` collection in `~/Projects/agents/templates/` is the influence l
 | `Auto-claude-code-research-in-sleep` | Cross-family review + Reviewer Memory + 4-round-cap loop + plain-Markdown artifact contracts |
 | `claude-code`                        | Plugin format + hook event names + filesystem discovery                                      |
 
-**Excluded from the influence library (durable rule):** any folder under `~/Projects/agents/templates/` whose source matches the publicly leaked Anthropic Claude Code internals (March 31, 2026 npm `.map` file leak) is excluded regardless of folder name. Pattern borrowing from such a template is prohibited; clean-room separation is required. Current examples: `claude-code-main/` (banned per synthesis-round Codex review, `docs/research/CODEX_RESPONSE_SYNTHESIS.md`, thread `019ddc5f`, 2026-04-30; subsequently removed from `templates/`) and `agentic-coder/` (banned 2026-05-01 per inter-milestone refactor session — same import surface and filename set under a relabel; see `docs/research/REFACTOR_AUDIT_2026-05-01.md` finding F1 + `docs/research/CODEX_RESPONSE_REFACTOR_2026-05-01.md`). Codebase context retrieval and equivalent capabilities are built clean-room from public Anthropic docs + audited templates (`claude-code`, `opencode`, `agent-skills`). The 4–6 working day clean-room cost is the accepted trade for preserving project provenance.
-
 ## Working in this repo
 
 1. **Run all commands from the repo root.** `bun install`, `bun test`, `bun run dev <command>`, `bun run build:binary`.

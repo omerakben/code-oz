@@ -112,7 +112,7 @@ Files (PLAN core):
 - `src/prompts/plan-system.md`, `docs/contracts/{PLAN,SOURCE_CHECK}.md`
 - `tests/{plan-phase,sources}.test.ts`
 
-Files (repo-context MVP, clean-room from public `claude-code`/`opencode`/`agent-skills` patterns; **`claude-code-main` leaked source is excluded** per CLAUDE.md influence library):
+Files (repo-context MVP, patterns borrowed from `claude-code`/`opencode`/`agent-skills`):
 - `src/tools/repo-context/{glob,grep,read,symbol}.ts`, `src/tools/repo-context/permissions.ts`
 - `docs/contracts/REPO_CONTEXT.md`
 - New event type `repo_context_searched` in `src/state/schemas.ts`

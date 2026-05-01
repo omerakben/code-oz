@@ -5,6 +5,8 @@
 **Model:** gpt-5.5 xhigh, sandbox: read-only
 **Commits reviewed:** 531c28a, 5f09dc7, 3657e50, be9c0ed, 8e4a259 (5 ahead of origin/main).
 
+> **Post-review status (added after this round):** the audit's F1 (`agentic-coder` provenance) was **withdrawn** when Ozzy removed the folder in question from `~/Projects/agents/templates/` before push. Commit 7 (`chore(provenance): drop leaked-source warnings (templates cleaned)`) lands on top of this review's `push` verdict and reverts the CLAUDE.md exclusion paragraph commit 1 added. Codex's verdict + the synthesis below are preserved verbatim for audit completeness.
+
 ## Verdict
 push
 

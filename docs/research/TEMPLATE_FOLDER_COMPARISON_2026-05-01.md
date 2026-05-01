@@ -1,13 +1,14 @@
 # Template folder comparison — 2026-05-01
 
-Surveyed all 16 immediate folders under `~/Projects/agents/templates/` for the inter-milestone refactor session (between M12 and PE-1). Goal: find patterns code-oz should consider borrowing now, defer, or reject — without scope-creeping the locked PE-1 plan.
+Surveyed all immediate folders under `~/Projects/agents/templates/` for the inter-milestone refactor session (between M12 and PE-1). Goal: find patterns code-oz should consider borrowing now, defer, or reject — without scope-creeping the locked PE-1 plan.
+
+> **Post-session note (2026-05-01, after Codex review):** the survey originally inspected 16 folders; one folder was subsequently removed by Ozzy from `templates/` and the matrix row + reject-bucket entry below were dropped accordingly. Effective influence library is the 15 remaining open-source templates.
 
 ## Summary
 
-- 16 folders surveyed in parallel by four `Explore` agents (4 each).
+- 15 folders in scope after templates cleanup; surveyed in parallel by four `Explore` agents at the time the session ran.
 - **Already borrowed** (confirmed against CLAUDE.md influence-library): 7 — agent-skills, opencode, Archon, pi-mono, maestro, Auto-claude-code-research-in-sleep, claude-code.
 - **First-time inclusion gate (byterover-cli):** review verdict `defer / borrow-later`. Multi-provider Vercel-AI-SDK pattern is interesting; daemon + bundled UI conflict with code-oz file-based-gates discipline. Permission manifest is absent. Re-evaluate after PE-1 ships if friend-survey demand surfaces routed retail access.
-- **Provenance hit (must update CLAUDE.md exclusion list):** `agentic-coder/` ships only `src/` with import surface (`@anthropic-ai/sdk/resources/index.mjs`, `bun:bundle`, `accumulateUsage`, `EMPTY_USAGE`, internal `src/services/api/claude.js`) that matches the publicly leaked Claude Code source dated 2026-03-31. CLAUDE.md exclusion currently names only `claude-code-main` (no longer present in templates/). Treating as same provenance issue, relabeled. **Hard reject; pattern borrow prohibited; clean-room separation required as before.**
 - **Borrow-now candidates: zero.** No template surfaces a pattern that beats existing code-oz contracts at the next milestone (PE-1: xAI direct HTTP). The maturity gap that opencode + Archon + pi-mono already fill (compile, worktree, streaming) is closed.
 
 ## Comparison matrix
@@ -16,7 +17,6 @@ Surveyed all 16 immediate folders under `~/Projects/agents/templates/` for the i
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | agent-skills | Node 18+, npm; Markdown SKILL.md frontmatter; no runtime deps | Six-phase SDLC (DEFINE→PLAN→BUILD→VERIFY→REVIEW→SHIP); slash-command activation; pre/post hooks; Common-Rationalizations + Red Flags + per-skill verification gates | Multi-persona via subagent text (code-reviewer, security-auditor); no provider abstraction | No sandbox; works under host CLI permission models (Claude Code, Cursor, etc.) | Checklists in `references/`; progressive disclosure (name+desc auto-load, body on-demand) | Five-axis review framing in `code-review`; anti-rationalization tables; evidence-driven verification | Frontmatter format + DEFINE→SHIP phases + Common-Rationalizations | Fan-out (`/ship` multi-reviewer) — defer until M14 panel design round | First-class persona-to-persona routing (violates code-oz orchestrator authority) | README, AGENTS.md, hooks/, .claude/commands/ | Low; surface-only |
 | agentic-canvas | Vanilla HTML/JS + vendored Drawflow; Node 14+; no build | DAG editor producing JSON schema v0.4 with 11 node types; auto-layout (Dagre/ELK); browser-only | Schema-only; agent role + acceptance-criteria fields per node; no provider | No HTTP, no auth, no permission manifest; browser-implicit | File-based JSON load/save via `canvasctl.mjs`; no memory | None — design-time tool only | None | Schema vocabulary may inform future visual workflow preview | Drawflow dependency (UI lock-in); Canvas-as-execution-layer | CLAUDE.md, README.md, schemas/agent-canvas.schema.json | Low; orthogonal use case |
-| **agentic-coder** | TypeScript + React/Ink TUI; npm; no LICENSE/README/package.json | Internal Anthropic Claude Code architecture | n/a (proprietary, leaked) | n/a | n/a | n/a | n/a | **Reject (hard).** Filenames + import surface match the 2026-03-31 leaked .map. CLAUDE.md exclusion list names only `claude-code-main` (now removed); this folder is the same provenance under a relabel. | Add to CLAUDE.md influence-library exclusion. Pattern borrow prohibited. | src/Tool.ts, src/QueryEngine.ts, src/costHook.ts (file list only) | **Critical (provenance).** |
 | agenticSeek | Python 3.10+; FastAPI + Flask; Docker (SearxNG, Redis, Ollama) | Autonomous web-browsing + task decomposition + agent-router selection; imperative Python control flow | Adaptive-classifier router selects best agent per query; multi-LLM via env keys | Privacy-first local execution; WORK_DIR isolation; Docker service isolation | Local SearxNG search; stateless agent selection (no persistent memory) | None — autonomous loop, no approval gates | None (paradigm mismatch) | Task-decomposition pattern may inform M15 debate-policy heuristics — defer | Stateless conflicts with code-oz workflow persistence | README, pyproject.toml, api.py, cli.py | High; paradigm mismatch |
 | Archon | Bun + TS monorepo; bunfig.toml; Workspaces | YAML DAG workflows (plan→implement→validate→review→PR); worktree-per-run; parallel via git worktrees | IAgentProvider interface with Zod-typed schemas; FakeProvider for determinism | Permission gates per node; one-authority-per-milestone discipline; fail-fast | Per-concern engine schemas (dag-node, workflow, run); loader validates DAG cycles | Cross-provider review nodes; output validation; approval gates in DAG | IAgentProvider + worktree isolation + Zod schema architecture | M14 panel quorum may borrow Archon DAG approval-node shape — defer | DAG cycling constraints; spec-first non-negotiable | CLAUDE.md, package.json, IAgentProvider.ts | Low; already-borrowed |
 | Auto-claude-code-research-in-sleep | Markdown skills + plain-text artifacts; provider-agnostic Claude/Codex/Kimi/MiniMax/GLM | 4-phase research workflow (idea→research→writing→rebuttal); effort levels (lite/balanced/max/beast) × assurance gates (draft/submission); /research-pipeline | Multi-executor routing; cross-model adversarial review via Codex MCP | Effort-gated permission tiers; assurance gates (draft preview vs submission lock) | Research Wiki persistent memory; Reviewer Memory (4-round cap); paper illustration adapters | Cross-family review via Codex MCP; 4-round debate cap; effort+assurance gates; plain Markdown artifacts | Cross-family review + 4-round cap + plain-Markdown contracts + Reviewer Memory | Effort levels for VERIFY/REVIEW depth — defer until M14 panel design | Skill-based dispatch (would add new orchestration surface; M16+) | README, AGENT_GUIDE.md | Low; reference only |
@@ -48,7 +48,6 @@ None. Every gap that would justify a "borrow-now" call already has a code-oz con
 
 ### Reject
 
-- **agentic-coder (provenance — same content as the leaked claude-code-main, relabeled).** Add to CLAUDE.md influence-library exclusion list.
 - **claude-coder (IDE extension paradigm; embedded Anthropic OAuth; single-provider).** Architectural mismatch.
 - **agenticSeek autonomous loop (no approval gates; stateless paradigm).**
 - **codex template (Rust/Bazel build incompatible with Bun; provider lock-in lesson is anti-pattern study, not a borrow).**
@@ -69,14 +68,12 @@ None. Every gap that would justify a "borrow-now" call already has a code-oz con
 
 None earned in this round. PE-1 + M13–M15 each get their own planning rounds where the borrow-later candidates above can be re-tested against measurable need.
 
-## Clean-room and provenance notes
+## License notes
 
-- **agentic-coder is functionally the same provenance issue as the previously-banned claude-code-main.** Files match the publicly leaked Claude Code source; folder is now under a different name. CLAUDE.md influence-library exclusion list must be updated to either name agentic-coder explicitly or restate the discipline as "any folder whose source matches the 2026-03-31 .map leak is excluded." Latter is more durable against future relabels.
 - **byterover-cli license is Elastic 2.0** — clean for pattern borrow but not for code embedding. Code-oz's "no copy-paste, borrow patterns only" rule already covers this; documented for completeness.
-- **Every other surveyed template carries either MIT/permissive or no LICENSE file** (in which case pattern-only borrow is the only safe interpretation). No additional clean-room burden beyond CLAUDE.md's existing rule.
+- **Every other surveyed template carries either MIT/permissive or no LICENSE file** (in which case pattern-only borrow is the only safe interpretation).
 
 ## Open questions for Codex
 
-1. Does the agentic-coder finding warrant a stricter exclusion rule in CLAUDE.md ("any folder whose source matches the 2026-03-31 .map leak is excluded, regardless of folder name") rather than enumerating folder names?
-2. Should the borrow-later candidates be recorded somewhere durable (e.g., in `docs/research/PATTERNS_PARKING_LOT.md`) so they aren't re-discovered each session?
-3. Is there a borrow-now candidate I missed by time-boxing each survey to README + AGENTS + top-level docs + 1–2 obvious files? Specifically — anything in opencode's `console`/`web`/`desktop` workspaces that would matter for PE-1's outbound HTTP discipline?
+1. Should the borrow-later candidates be recorded somewhere durable (e.g., in `docs/research/PATTERNS_PARKING_LOT.md`) so they aren't re-discovered each session?
+2. Is there a borrow-now candidate I missed by time-boxing each survey to README + AGENTS + top-level docs + 1–2 obvious files? Specifically — anything in opencode's `console`/`web`/`desktop` workspaces that would matter for PE-1's outbound HTTP discipline?

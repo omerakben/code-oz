@@ -1,5 +1,7 @@
 # Codex planning briefing — code-oz refactor session (2026-05-01)
 
+> **Post-session status (added 2026-05-01, after the round):** Audit Finding F1 (`agentic-coder` provenance) is **withdrawn**. Ozzy removed the folder in question from `~/Projects/agents/templates/` after the Codex implementation review and before push. CLAUDE.md no longer carries a leaked-source exclusion paragraph; the influence library is the 15 remaining open-source templates under the standard "no copy-paste, borrow patterns only" rule. The verbatim briefing below references the original state for audit completeness.
+
 You are reviewing a deliberate inter-milestone refactor session between M12 (closed, `v0.12.0-alpha.0`) and PE-1 (xAI direct HTTP, deferred until this session ships). This is **not** a milestone planning round; it is a bug-hunt + verbosity-cleanup + tech-debt-visibility pass that must close cleanly before PE-1 starts.
 
 You are Codex GPT-5.5 at xhigh effort, sandbox: read-only, full file access. Read the audit (`docs/research/REFACTOR_AUDIT_2026-05-01.md`), the template comparison (`docs/research/TEMPLATE_FOLDER_COMPARISON_2026-05-01.md`), and the contracts you need (`CLAUDE.md`, `docs/design/ROADMAP.md`, `docs/contracts/COMPANY.md`, `docs/contracts/PROVIDERS.md`, `docs/references/provider-contract.md`, `docs/design/SESSION_XAI_EXPANSION_KICKOFF.md`, `docs/research/CODEX_REVIEW_M12.md`). The audit names exact files and line numbers; verify every claim against the live tree before agreeing.

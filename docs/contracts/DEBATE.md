@@ -44,13 +44,13 @@ The historical artifacts under `docs/research/` and `docs/design/` are the sourc
 ```
 
 - One or both `RESPONSE.*.md` files may be present. Asymmetric debate: one proposer, one opponent (one RESPONSE). Symmetric debate: both parties brief and respond (two RESPONSE files; the proposer's `BRIEFING.md` is the canonical brief regardless).
-- Topic slug grammar: lowercase-kebab-case, descriptive, ≤ 48 characters (e.g., `m7-shape`, `repo-context-cap`, `clean-room-vs-leaked-source`). The phase prefix anchors the debate to a gate; cross-phase debates use `meta-` (e.g., `meta-provenance-leaked-source/`).
+- Topic slug grammar: lowercase-kebab-case, descriptive, ≤ 48 characters (e.g., `m7-shape`, `repo-context-cap`, `pe1-trust-boundary`). The phase prefix anchors the debate to a gate; cross-phase debates use `meta-` (e.g., `meta-cost-policy/`).
 
 | Phase prefix | Use |
 |---|---|
 | `define-` / `plan-` / `build-` / `verify-` / `review-` | Phase-scoped debates invoked from a phase persona |
 | `pre-<milestone>-` | Pre-milestone planning debates (e.g., `pre-m7-rules-15-19`) |
-| `meta-` | Cross-phase / cross-milestone (e.g., provenance, governance) |
+| `meta-` | Cross-phase / cross-milestone (e.g., governance, cost-policy) |
 
 ## BRIEFING.md required H2 sections
 

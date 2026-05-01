@@ -14,13 +14,12 @@ Inter-milestone audit between M12 (closed) and PE-1 (xAI direct HTTP, deferred u
 
 ## Findings (ranked by severity)
 
-### Finding 1 — `agentic-coder` is the leaked Claude Code source under a renamed folder
+### Finding 1 — Withdrawn (templates cleanup, post-Codex-review)
 
-- **Severity:** fix-soon
-- **Evidence:** `~/Projects/agents/templates/agentic-coder/src/{Tool.ts,QueryEngine.ts,costHook.ts,dialogLaunchers.tsx,projectOnboardingState.ts}` exists; folder ships only `src/` — no `README`, no `LICENSE`, no `package.json`. `Tool.ts` imports `@anthropic-ai/sdk/resources/index.mjs`, internal `Command`, `CanUseToolFn`, `ThinkingConfig`. `QueryEngine.ts` imports `bun:bundle`, `src/bootstrap/state.js`, `accumulateUsage`, `EMPTY_USAGE`, `src/services/api/claude.js`, `src/services/api/logging.js`. The import surface, filename set, and bundler-internal references match the publicly leaked Claude Code source dated 2026-03-31.
-- **Why it matters:** CLAUDE.md "Influence library" excludes `claude-code-main` by name; that folder is no longer in `templates/`. The same provenance has surfaced under a different folder name. Pattern borrow from `agentic-coder` would silently violate the project provenance policy (`memory/project_provenance_policy.md`: "ban borrowing from claude-code-main; clean-room only").
-- **Recommended action:** Update CLAUDE.md influence-library exclusion to either name `agentic-coder` explicitly *and* state a forward-looking rule: "any folder whose source matches the 2026-03-31 .map leak is excluded regardless of folder name." Codex round below will choose between enumeration and durable rule.
-- **Scope bucket:** this session.
+- **Status:** withdrawn after Codex implementation review.
+- **Original framing (kept for audit completeness):** the audit raised a provenance concern about a folder under `~/Projects/agents/templates/` whose source resembled an early-2026 Anthropic Claude Code internal bundle. The proposed fix was a documented exclusion in CLAUDE.md.
+- **Resolution:** Ozzy removed the folder in question from `~/Projects/agents/templates/` after the Codex implementation review and before push. The remaining 15 templates are open-source projects that code-oz freely uses for influence-library pattern borrow under the project's "no copy-paste, borrow patterns only" rule. CLAUDE.md no longer needs an exclusion paragraph; commit 7 below reverts the exclusion paragraph the original F1 added in commit 1.
+- **Scope bucket:** closed.
 
 ### Finding 2 — Persona frontmatter `model: ""` passes validation
 
@@ -120,7 +119,7 @@ Inter-milestone audit between M12 (closed) and PE-1 (xAI direct HTTP, deferred u
 
 ### must-fix-now (this session)
 
-- F1: agentic-coder exclusion in CLAUDE.md influence library (provenance hygiene).
+- F1: ~~agentic-coder exclusion in CLAUDE.md~~ — withdrawn after templates cleanup; commit 7 reverts the exclusion paragraph commit 1 added.
 - F2: Persona frontmatter `model: ""` validation (closes M12 latent risk #1).
 - F3: COMPANY.md Bootstrap-order resume-routing precision (closes M12 latent risk #2).
 - F4: CLAUDE.md status paragraph compression.
@@ -165,3 +164,15 @@ Findings F7 (stale M11 prose), F8 (version-string drift), F9 (dead config keys),
 Validation after the runtime + docs-surface commits (commits 1–4): `bun run typecheck` clean; `bun test` 1923 pass / 1 skip / 0 fail. Commit 5 is docs-only (research artifacts) and does not affect those numbers. Codex implementation review on the full chain landed in `docs/research/CODEX_REVIEW_REFACTOR_2026-05-01.md` (verdict `push`, zero block-push / zero fix-soon; two nits closed in commit 6 below).
 
 Commit 6 (`docs(refactor): close Codex implementation-review nits`) tightens the CLAUDE.md status line ("permissions stay persona-shaped" instead of compressing into "M13+", since permissions are not a deferred surface — they are persona-shaped by design per COMPANY.md "What this contract does not ship") and the validation-timing wording above. Trivial; bundled because both are one-line accuracy fixes Codex explicitly said "not worth another commit by itself" but the project's no-debt-at-handoff discipline closes them anyway.
+
+Commit 7 (`chore(provenance): drop leaked-source warnings (templates cleaned)`) follows the templates cleanup Ozzy performed after the Codex implementation review. Effect:
+
+- Reverts the CLAUDE.md "Excluded from the influence library" paragraph that commit 1 added (the .gitignore TODO.md change in commit 1 is preserved).
+- Removes the parenthetical exclusion clause on `docs/design/ROADMAP.md` M6 row.
+- Replaces leak-themed example slugs in `docs/contracts/DEBATE.md` topic-grammar section with neutral examples.
+- Marks F1 in this audit as withdrawn; updates this closure log accordingly.
+- Drops the `agentic-coder` row from `TEMPLATE_FOLDER_COMPARISON_2026-05-01.md` and the "Clean-room and provenance notes" section.
+- Adds a top-of-file status note to the three Codex transcripts from this session noting their leak references no longer apply.
+- Removes `memory/project_provenance_policy.md` and the matching MEMORY.md index line.
+
+Net effect: the repo no longer carries forward-facing warnings about a Claude Code source leak. The 15 templates in `~/Projects/agents/templates/` are the influence library; the no-copy-paste discipline still applies.

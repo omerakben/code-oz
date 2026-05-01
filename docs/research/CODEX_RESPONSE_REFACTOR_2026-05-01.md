@@ -6,6 +6,8 @@
 **Brief:** docs/research/CODEX_BRIEFING_REFACTOR_2026-05-01.md
 **Audit:** docs/research/REFACTOR_AUDIT_2026-05-01.md
 
+> **Post-session status (added after the round):** Audit Finding F1 (`agentic-coder` provenance) was **withdrawn** when Ozzy removed the folder in question from `~/Projects/agents/templates/` before push. CLAUDE.md no longer carries a leaked-source exclusion paragraph. The verbatim Codex content below — including the F1-related modifications Codex proposed — is preserved for audit completeness; F1's runtime effect is closed by removal, not by exclusion.
+
 ## Verdict
 accept-with-modifications
 
