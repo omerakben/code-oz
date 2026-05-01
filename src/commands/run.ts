@@ -53,7 +53,13 @@ export async function runCommand(args: string[]): Promise<void> {
   }
 
   const cwd = process.cwd()
-  const ctx = await bootstrap({ cwd })
+  // M12 (rule 20: role-to-provider routing). Load config BEFORE bootstrap
+  // so `config.company` reaches the agent registry. Per Codex Risk #2 in
+  // CODEX_RESPONSE_M12.md (thread 019de4bb): the prior order built the
+  // registry first and the company:block arrived too late to affect
+  // routing.
+  const config = await loadConfig({ cwd })
+  const ctx = await bootstrap({ cwd, config })
 
   if (!existsSync(ctx.paths.root)) {
     process.stderr.write(
@@ -76,8 +82,6 @@ export async function runCommand(args: string[]): Promise<void> {
     )
     return
   }
-
-  const config = await loadConfig({ cwd })
 
   const ba = ctx.registry.getByName('ba')
   if (ba === undefined) {
@@ -497,8 +501,11 @@ async function dispatchPlan(
   providerOverride?: ProviderOverride,
 ): Promise<void> {
   const cwd = process.cwd()
-  const ctx = await bootstrap({ cwd })
+  // M12: same flip as runCommand. Load config BEFORE bootstrap so the
+  // resumed PLAN dispatch sees company:block routing on the registry.
+  // Per Codex Risk #2 in CODEX_RESPONSE_M12.md (thread 019de4bb).
   const config = await loadConfig({ cwd })
+  const ctx = await bootstrap({ cwd, config })
   const lead = ctx.registry.getByName('lead')
   const scientist = ctx.registry.getByName('scientist')
   if (lead === undefined || scientist === undefined) {

@@ -15,6 +15,7 @@
 import { loadBundledDefaults } from '../agents/bundled-defaults.ts'
 import { loadRegistry, type AgentRegistry } from '../agents/loader.ts'
 import { paths, type CodeOzPaths } from '../paths.ts'
+import type { CodeOzConfig } from '../config/schema.ts'
 
 import { capabilityOf } from '../providers/capabilities.ts'
 import { ProviderRegistry } from '../providers/registry.ts'
@@ -38,14 +39,26 @@ export interface CliContext {
 
 export interface BootstrapOptions {
   readonly cwd?: string
+  /**
+   * M12: optional CodeOzConfig threaded into the agent loader so that
+   * `config.company` overrides apply *before* the registry is built.
+   * Per Codex Risk #2 in CODEX_RESPONSE_M12.md (thread 019de4bb), every
+   * caller in `src/commands/run.ts` must `loadConfig` before invoking
+   * `bootstrap` — otherwise the registry is built with frontmatter
+   * routing and the company:block has no effect.
+   */
+  readonly config?: CodeOzConfig
 }
 
 /**
  * Build a CliContext: resolve `.code-oz/` paths against the cwd, load the
  * bundled default personas, merge any project-local overrides at
- * `.code-oz/agents/`, and return the registry as part of the context.
+ * `.code-oz/agents/`, apply any company:block routing overrides from
+ * the supplied config, and return the registry as part of the context.
  *
- * Throws AgentLoadError when project-local overrides fail validation.
+ * Throws AgentLoadError when project-local overrides fail validation
+ * or when a company:block override would violate cross-family REVIEW,
+ * provider eligibility, or the post-override debate-family invariant.
  */
 export async function bootstrap(opts: BootstrapOptions = {}): Promise<CliContext> {
   const cwd = opts.cwd ?? process.cwd()
@@ -55,6 +68,7 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<CliContext
     defaults,
     projectDir: p.agents,
     cwd,
+    ...(opts.config?.company !== undefined ? { company: opts.config.company } : {}),
   })
   return Object.freeze({
     cwd,
