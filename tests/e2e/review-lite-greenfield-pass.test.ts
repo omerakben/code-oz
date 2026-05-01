@@ -39,7 +39,7 @@ import { paths as codeOzPaths } from '../../src/paths.ts'
 import { initProject } from '../../src/commands/init.ts'
 import { createRunWorktree, runGit } from '../../src/worktree/create-run-worktree.ts'
 import { runDoctorGit } from '../../src/commands/doctor.ts'
-import { readEvents, appendEvent } from '../../src/state/events.ts'
+import { readEvents } from '../../src/state/events.ts'
 import type { RevertSeam, RunnerSeam } from '../../src/phases/verify-mutation.ts'
 
 const FIXTURE_SRC = fileURLToPath(new URL('../fixtures/greenfield-baby-name', import.meta.url))
@@ -623,7 +623,3 @@ describe('M9 REVIEW-lite e2e — DEFINE → PLAN → BUILD → VERIFY → REVIEW
     expect(loaded!.state.currentPhase).toBe('ship')
   })
 })
-
-// Suppress unused-import lint for appendEvent (used only for clarity in
-// future commits' multi-round version of this e2e).
-void appendEvent
