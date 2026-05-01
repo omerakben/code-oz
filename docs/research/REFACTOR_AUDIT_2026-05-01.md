@@ -162,4 +162,6 @@ Five landed commits (per `git log`):
 
 Findings F7 (stale M11 prose), F8 (version-string drift), F9 (dead config keys), F10 (byterover-cli inclusion gate) remain in the tech-debt register above per Codex `What to defer`. Race-on-non-atomic-config-write (Codex Bugs missed #3) is added to the safe-to-park bucket — fix is an atomic-save discipline on the writer side, deferred per scope guard.
 
-Validation after commit 4: `bun run typecheck` clean; `bun test` 1923 pass / 1 skip / 0 fail. Codex implementation review queued for the post-commit-5 state in `docs/research/CODEX_REVIEW_REFACTOR_2026-05-01.md`.
+Validation after the runtime + docs-surface commits (commits 1–4): `bun run typecheck` clean; `bun test` 1923 pass / 1 skip / 0 fail. Commit 5 is docs-only (research artifacts) and does not affect those numbers. Codex implementation review on the full chain landed in `docs/research/CODEX_REVIEW_REFACTOR_2026-05-01.md` (verdict `push`, zero block-push / zero fix-soon; two nits closed in commit 6 below).
+
+Commit 6 (`docs(refactor): close Codex implementation-review nits`) tightens the CLAUDE.md status line ("permissions stay persona-shaped" instead of compressing into "M13+", since permissions are not a deferred surface — they are persona-shaped by design per COMPANY.md "What this contract does not ship") and the validation-timing wording above. Trivial; bundled because both are one-line accuracy fixes Codex explicitly said "not worth another commit by itself" but the project's no-debt-at-handoff discipline closes them anyway.
