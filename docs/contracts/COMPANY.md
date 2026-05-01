@@ -143,7 +143,11 @@ Each layer can replace `provider` and `model`. The company row wins when present
 
 ## Bootstrap order (M12 wiring fix)
 
-Before M12, `runCommand()` invoked `bootstrap()` (which built the agent registry) before `loadConfig()` ran. The company config arrived too late to affect routing. M12 flips the order: `loadConfig` runs first, then `bootstrap({ cwd, config })` threads `config.company` through `loadRegistry` and into `buildRegistry`. Both call sites — `src/commands/run.ts` (the entry point) and the active-run plan dispatch — flip together so resume retains the same routing as the initial run.
+Before M12, `runCommand()` invoked `bootstrap()` (which built the agent registry) before `loadConfig()` ran. The company config arrived too late to affect routing. M12 flips the order at both call sites — `src/commands/run.ts:61-62` (the entry point) and `src/commands/run.ts:507-508` (the active-run PLAN dispatch). Each call loads config first, then threads `config.company` through `loadRegistry` and into `buildRegistry`.
+
+Routing is **config-current, not config-snapshotted**. Both call sites read `.code-oz/config.yaml` from disk on every dispatch, so a saved edit between DEFINE-approve and PLAN dispatch is honored on the next phase. Snapshot-on-init (freezing the company:block at run start) is not implemented; if a future milestone needs it, that is M16+ design space.
+
+Concurrent partial writes to the YAML file are out of scope for v0.1: `loadConfig` reads non-atomically and may observe truncated content during a competing write. The fix is an atomic-save discipline on the writer side, not a read-side change here.
 
 ## Model propagation (M12 wiring fix)
 
