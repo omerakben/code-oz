@@ -6,6 +6,11 @@ import { AgentLoadError, type AgentLoadIssue } from './errors.ts'
 import { capabilityOf } from '../providers/capabilities.ts'
 import { familyOf } from '../providers/families.ts'
 import type { ProviderId } from '../providers/types.ts'
+import {
+  M12_COMPANY_ROLES,
+  type CompanyConfig,
+  type CompanyRole,
+} from '../config/schema.ts'
 
 export interface SourceFile {
   readonly file: string
@@ -21,12 +26,21 @@ export interface AgentRegistry {
 export interface BuildRegistryOptions {
   readonly defaults: readonly SourceFile[]
   readonly overrides: readonly SourceFile[]
+  /**
+   * M12: optional company:block routing overrides. When present, every
+   * matching definition has its `provider` and/or `model` replaced before
+   * the cross-family + eligibility + debate-family checks run, so all
+   * three checks see the resolved values. Per Codex Decision D in
+   * CODEX_RESPONSE_M12.md (thread 019de4bb).
+   */
+  readonly company?: CompanyConfig
 }
 
 export interface LoadRegistryOptions {
   readonly defaults: readonly SourceFile[]
   readonly projectDir?: string
   readonly cwd?: string
+  readonly company?: CompanyConfig
 }
 
 function validateOne(source: SourceFile): AgentDefinition {
@@ -76,11 +90,106 @@ export function buildRegistry(opts: BuildRegistryOptions): AgentRegistry {
     map.set(def.name, def)
   }
 
-  const definitions = Array.from(map.values())
-  enforceCrossFamilyReview(definitions)
-  enforceProviderPhaseEligibility(definitions)
+  const merged = Array.from(map.values())
+  // M12: apply company:block overrides between the bundled-vs-override merge
+  // and the resolved-provider checks. Order is load-bearing — cross-family
+  // (rule 2), provider eligibility (M11), and the new post-override
+  // debate-family check must all see the resolved provider.
+  const resolved = applyCompanyOverrides(merged, opts.company)
+  enforceDebateOpposingFamilyAfterOverride(resolved)
+  enforceCrossFamilyReview(resolved)
+  enforceProviderPhaseEligibility(resolved)
 
-  return makeRegistry(definitions)
+  return makeRegistry(resolved)
+}
+
+/**
+ * M12: pure function that overlays the `company:` block on the merged
+ * AgentDefinition list. For each definition whose `name` matches a key
+ * in the company config, return a new frozen AgentDefinition with
+ * `provider` and/or `model` replaced. Definitions without a matching
+ * row pass through unchanged. Defends with a runtime role-roster check
+ * so callers that bypass loadConfig (e.g., tests using TypeScript escape
+ * hatches) still hit `loader_company_role_unknown` for keys outside
+ * `M12_COMPANY_ROLES`. Per Codex Decision D + Risk #1 in
+ * CODEX_RESPONSE_M12.md (thread 019de4bb).
+ */
+function applyCompanyOverrides(
+  definitions: readonly AgentDefinition[],
+  company: CompanyConfig | undefined,
+): readonly AgentDefinition[] {
+  if (company === undefined) return definitions
+
+  const issues: AgentLoadIssue[] = []
+  for (const key of Object.keys(company)) {
+    if (!(M12_COMPANY_ROLES as readonly string[]).includes(key)) {
+      issues.push({
+        file: '.code-oz/config.yaml',
+        code: 'loader_company_role_unknown',
+        rule:
+          `company.<role> must be one of: ${M12_COMPANY_ROLES.join(' | ')} ` +
+          '(M12 locked roster — project-local personas with names outside this list are not ' +
+          'routable as company roles in v0.1; custom role routing is M16+)',
+        detail: `got '${key}'`,
+      })
+    }
+  }
+  if (issues.length > 0) {
+    throw new AgentLoadError(issues)
+  }
+
+  return Object.freeze(
+    definitions.map((def) => {
+      if (!(M12_COMPANY_ROLES as readonly string[]).includes(def.name)) return def
+      const override = company[def.name as CompanyRole]
+      if (override === undefined) return def
+      if (override.provider === undefined && override.model === undefined) return def
+      return Object.freeze({
+        ...def,
+        ...(override.provider !== undefined ? { provider: override.provider } : {}),
+        ...(override.model !== undefined ? { model: override.model } : {}),
+      })
+    }),
+  )
+}
+
+/**
+ * M12: post-override re-check of the schema-time debate-family invariant.
+ * Schema validation in src/agents/schema.ts checks
+ * `tool_use.debate.opposingProviders` against the persona's *frontmatter*
+ * provider, but a company:block override may change the resolved provider.
+ * This pass re-asserts the cross-family invariant against the resolved
+ * provider so a same-family conflict surfaces at load time, not at the
+ * first debate call. Per Codex Risk #4 in CODEX_RESPONSE_M12.md (thread
+ * 019de4bb). Reuses the existing `schema_invalid_permissions` code (the
+ * rule is the same; only the surface — frontmatter vs resolved — differs).
+ */
+function enforceDebateOpposingFamilyAfterOverride(
+  definitions: readonly AgentDefinition[],
+): void {
+  const conflicts: AgentLoadIssue[] = []
+  for (const def of definitions) {
+    const debate = def.permissions.tool_use?.debate
+    if (debate === undefined) continue
+    const resolvedFamily = familyOf(def.provider as ProviderId)
+    if (debate.opposingProviders.includes(resolvedFamily)) {
+      conflicts.push({
+        file: def.file,
+        code: 'schema_invalid_permissions',
+        rule:
+          "'permissions.tool_use.debate.opposingProviders' must not include the persona's resolved family " +
+          '(M12 post-override re-check — schema-time validateDebate uses frontmatter provider; ' +
+          'a company:block override that changes provider can put the resolved family into the ' +
+          "persona's opposingProviders list, which would otherwise surface only at first debate call)",
+        detail:
+          `agent='${def.name}' (file=${def.file}), resolved provider=${def.provider}, ` +
+          `resolved family=${resolvedFamily}, opposingProviders=${JSON.stringify([...debate.opposingProviders])}`,
+      })
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new AgentLoadError(conflicts)
+  }
 }
 
 function enforceProviderPhaseEligibility(definitions: readonly AgentDefinition[]): void {
@@ -285,5 +394,9 @@ export async function loadRegistry(opts: LoadRegistryOptions): Promise<AgentRegi
   const overrides = opts.projectDir
     ? await readProjectLocalSources(opts.projectDir, cwd)
     : []
-  return buildRegistry({ defaults: opts.defaults, overrides })
+  return buildRegistry({
+    defaults: opts.defaults,
+    overrides,
+    ...(opts.company !== undefined ? { company: opts.company } : {}),
+  })
 }

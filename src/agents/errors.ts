@@ -15,6 +15,7 @@ export type AgentLoadErrorCode =
   | 'loader_phase_mismatch_override'
   | 'loader_cross_family_violation'
   | 'loader_provider_phase_not_eligible'
+  | 'loader_company_role_unknown'
 
 export interface AgentLoadIssue {
   readonly file: string
