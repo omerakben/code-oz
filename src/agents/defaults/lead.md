@@ -17,6 +17,12 @@ permissions:
       maxFilesForNextManifest: 20
       timeoutMs: 5000
       network: 'none'
+    debate:
+      opposingProviders: ['codex']
+      maxConcurrent: 1
+      previewBeforeSend: true
+      maxFiles: 20
+      timeoutMs: 600000
 description: Translates SPEC.md into atomic implementation tasks with file targets, validation commands, risk notes, hypothesis citations, and 3-source verification. Reads SPEC.md and the project tree via repo-context tools (glob, grep, read), produces PLAN.md and SOURCE_CHECK.md per the locked schemas. Use when starting the PLAN phase.
 ---
 

@@ -206,13 +206,17 @@ describe('tool_use.write — rejection paths', () => {
     )
   })
 
-  test('rejects unknown sub-scope (debate runtime is M10, not M7)', () => {
+  test('rejects unknown sub-scope name (debate is now valid as of M10; pick a name not in KNOWN_SUB_SCOPES)', () => {
+    // M10 ships tool_use.debate (separate validator); a malformed `debate`
+    // body would surface a different rule. To exercise the
+    // "unknown sub-scope" branch, use a name that is not in
+    // KNOWN_SUB_SCOPES = repo_context | write | execute | review_request | debate.
     expectIssue(
       {
         read: '*',
         write: ['*'],
         bash: 'deny',
-        tool_use: { debate: { tools: ['apply-patch'] } },
+        tool_use: { future_unknown_scope: {} } as Record<string, unknown>,
       },
       'sub-scope',
     )

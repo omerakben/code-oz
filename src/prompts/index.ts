@@ -14,6 +14,8 @@ import planSystemPath from './plan-system.md' with { type: 'file' }
 import buildSystemPath from './build-system.md' with { type: 'file' }
 import verifySystemPath from './verify-system.md' with { type: 'file' }
 import reviewSystemPath from './review-system.md' with { type: 'file' }
+import debateOpponentSystemPath from './debate-opponent-system.md' with { type: 'file' }
+import debateSynthesisSystemPath from './debate-synthesis-system.md' with { type: 'file' }
 
 const ASSET_CACHE = new Map<string, string>()
 
@@ -64,6 +66,14 @@ export async function loadVerifySystemTemplate(): Promise<string> {
 
 export async function loadReviewSystemTemplate(): Promise<string> {
   return loadAsset(reviewSystemPath)
+}
+
+export async function loadDebateOpponentSystemTemplate(): Promise<string> {
+  return loadAsset(debateOpponentSystemPath)
+}
+
+export async function loadDebateSynthesisSystemTemplate(): Promise<string> {
+  return loadAsset(debateSynthesisSystemPath)
 }
 
 // --- conversation rendering ----------------------------------------
@@ -469,5 +479,101 @@ export async function composeReviewPrompt(input: ComposeReviewPromptInput): Prom
     readySignal: input.readySignal,
     availableTools: input.availableTools,
     reviewContext: input.reviewContext,
+  })
+}
+
+// --- M10: debate prompt composers ----------------------------------
+
+const DEBATE_OPPONENT_REQUIRED_TOKENS = [
+  TOKEN_UNIVERSAL_RULES,
+  TOKEN_AVAILABLE_TOOLS,
+  TOKEN_READY_SIGNAL,
+] as const
+
+const DEBATE_SYNTHESIS_REQUIRED_TOKENS = [
+  TOKEN_UNIVERSAL_RULES,
+  TOKEN_AVAILABLE_TOOLS,
+  TOKEN_READY_SIGNAL,
+] as const
+
+export interface ComposeDebateOpponentPromptPureInput {
+  readonly templateBody: string
+  readonly universalRules: string
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export function composeDebateOpponentPromptPure(
+  args: ComposeDebateOpponentPromptPureInput,
+): string {
+  for (const tok of DEBATE_OPPONENT_REQUIRED_TOKENS) {
+    if (!args.templateBody.includes(tok)) {
+      throw new Error(`debate-opponent-system.md is missing required token ${tok}`)
+    }
+  }
+  return args.templateBody
+    .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
+    .replaceAll(TOKEN_AVAILABLE_TOOLS, renderAvailableTools(args.availableTools))
+    .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+}
+
+export interface ComposeDebateOpponentPromptInput {
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export async function composeDebateOpponentPrompt(
+  input: ComposeDebateOpponentPromptInput,
+): Promise<string> {
+  const [templateBody, universalRules] = await Promise.all([
+    loadDebateOpponentSystemTemplate(),
+    loadUniversalRules(),
+  ])
+  return composeDebateOpponentPromptPure({
+    templateBody,
+    universalRules,
+    readySignal: input.readySignal,
+    availableTools: input.availableTools,
+  })
+}
+
+export interface ComposeDebateSynthesisPromptPureInput {
+  readonly templateBody: string
+  readonly universalRules: string
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export function composeDebateSynthesisPromptPure(
+  args: ComposeDebateSynthesisPromptPureInput,
+): string {
+  for (const tok of DEBATE_SYNTHESIS_REQUIRED_TOKENS) {
+    if (!args.templateBody.includes(tok)) {
+      throw new Error(`debate-synthesis-system.md is missing required token ${tok}`)
+    }
+  }
+  return args.templateBody
+    .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
+    .replaceAll(TOKEN_AVAILABLE_TOOLS, renderAvailableTools(args.availableTools))
+    .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+}
+
+export interface ComposeDebateSynthesisPromptInput {
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export async function composeDebateSynthesisPrompt(
+  input: ComposeDebateSynthesisPromptInput,
+): Promise<string> {
+  const [templateBody, universalRules] = await Promise.all([
+    loadDebateSynthesisSystemTemplate(),
+    loadUniversalRules(),
+  ])
+  return composeDebateSynthesisPromptPure({
+    templateBody,
+    universalRules,
+    readySignal: input.readySignal,
+    availableTools: input.availableTools,
   })
 }

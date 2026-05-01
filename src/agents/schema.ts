@@ -164,11 +164,63 @@ export interface ReviewRequestPermissions {
   readonly network: 'provider-only'
 }
 
+// `tool_use.debate` is the M10 sub-scope for any phase persona that may
+// invoke the M10 requestDebate primitive (per docs/contracts/DEBATE.md
+// § "Permission sub-scope" — pinned in M7 commit 2 process contract,
+// implemented in M10 runtime). Cross-family debate is the rule-2 + rule-7
+// generalization to any phase: a phase persona declares which opposing
+// provider families it may debate against, and the runtime enforces
+// load-time + invocation-time cross-family invariants exactly like
+// review_request. M10 default for src/agents/defaults/lead.md is
+// opposingProviders=['codex'], maxConcurrent=1.
+//
+// Load-time validation:
+// - opposingProviders is a non-empty subset of PROVIDER_FAMILIES; cannot
+//   include the persona's own family (load-time cross-family — fails the
+//   run before any debate is invoked).
+// - maxConcurrent in [1, 4] inclusive (DEBATE.md DEBATE_HARD_CAPS).
+// - maxFiles in [0, 50] inclusive (mirrors REPO_CONTEXT_HARD_CAPS.maxResults).
+// - timeoutMs in [1, 600_000] (10-minute ceiling, mirrors review_request).
+// - previewBeforeSend MUST be literally `true` — no other value accepted
+//   (DEBATE.md pins it as a fixed invariant per CLAUDE.md rule 13).
+//
+// Network is implicit (debate is a provider call). M10's runtime additions
+// (manifest preview, ignore-policy, terminal-directive extraction) live in
+// src/tools/debate-{request,permissions}.ts and src/tools/ignore-policy.ts.
+export const DEBATE_HARD_CAPS = Object.freeze({
+  /** Strict per-phase-invocation cap on open debates. M10 default is 1. */
+  maxConcurrent: 4,
+  /** Mirrors REPO_CONTEXT_HARD_CAPS.maxResults. */
+  maxFiles: 50,
+  /** Hard cap on per-debate-turn wall-time (10 minutes; mirrors review_request). */
+  timeoutMs: 600_000,
+} as const)
+
+export interface DebatePermissions {
+  /** Provider families this persona may debate against. Must be a non-empty
+   *  subset of PROVIDER_FAMILIES that does NOT include the persona's own
+   *  family. Cross-family invariant enforced at load time. The runtime
+   *  cross-family invocation-time check in src/tools/debate-request.ts
+   *  re-validates against the live ProviderRegistry. */
+  readonly opposingProviders: readonly ProviderFamily[]
+  /** Max concurrent open debates per phase invocation. M10 defaults to 1
+   *  for bundled personas; runtime per-phase event-log scan enforces. */
+  readonly maxConcurrent: number
+  /** Manifest preview gate: paths matching .code-ozignore are blocked.
+   *  Fixed at true per DEBATE.md invariant (cannot be configured false). */
+  readonly previewBeforeSend: true
+  /** Max files surfaced into BRIEFING.md. */
+  readonly maxFiles: number
+  /** Per-debate-turn wall-time cap (one round-trip). */
+  readonly timeoutMs: number
+}
+
 export interface ToolUsePermissions {
   readonly repo_context?: RepoContextPermissions
   readonly write?: WriteToolPermissions
   readonly execute?: ExecuteToolPermissions
   readonly review_request?: ReviewRequestPermissions
+  readonly debate?: DebatePermissions
 }
 
 export interface AgentPermissions {
@@ -220,7 +272,11 @@ function validateEnum<T extends readonly string[]>(
   return null
 }
 
-function validatePermissions(perms: unknown, file: string): AgentLoadIssue | null {
+function validatePermissions(
+  perms: unknown,
+  file: string,
+  ownProvider: unknown,
+): AgentLoadIssue | null {
   if (perms === null || typeof perms !== 'object' || Array.isArray(perms)) {
     return {
       file,
@@ -262,13 +318,23 @@ function validatePermissions(perms: unknown, file: string): AgentLoadIssue | nul
     }
   }
   if ('tool_use' in p && p.tool_use !== undefined) {
-    const issue = validateToolUse(p.tool_use, file)
+    // The persona's own provider id is needed for the load-time cross-family
+    // check in tool_use.debate (CLAUDE.md rule 2 + DEBATE.md § Permission
+    // sub-scope: opposingProviders cannot include the persona's own family).
+    // validateAgent's validateEnum pass on `provider` runs before this and
+    // surfaces a separate error if the value isn't in AGENT_PROVIDERS, so
+    // we defend with a null-guard in validateDebate rather than re-checking.
+    const issue = validateToolUse(p.tool_use, file, ownProvider)
     if (issue !== null) return issue
   }
   return null
 }
 
-function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
+function validateToolUse(
+  value: unknown,
+  file: string,
+  ownProvider: unknown,
+): AgentLoadIssue | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return {
       file,
@@ -277,7 +343,13 @@ function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
     }
   }
   const tu = value as Record<string, unknown>
-  const KNOWN_SUB_SCOPES = ['repo_context', 'write', 'execute', 'review_request'] as const
+  const KNOWN_SUB_SCOPES = [
+    'repo_context',
+    'write',
+    'execute',
+    'review_request',
+    'debate',
+  ] as const
   for (const k of Object.keys(tu)) {
     if (!(KNOWN_SUB_SCOPES as readonly string[]).includes(k)) {
       return {
@@ -303,6 +375,124 @@ function validateToolUse(value: unknown, file: string): AgentLoadIssue | null {
   if ('review_request' in tu && tu.review_request !== undefined) {
     const issue = validateReviewRequest(tu.review_request, file)
     if (issue) return issue
+  }
+  if ('debate' in tu && tu.debate !== undefined) {
+    const issue = validateDebate(tu.debate, file, ownProvider)
+    if (issue) return issue
+  }
+  return null
+}
+
+function validateDebate(
+  value: unknown,
+  file: string,
+  ownProvider: unknown,
+): AgentLoadIssue | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.debate' must be an object",
+    }
+  }
+  const d = value as Record<string, unknown>
+  // opposingProviders — non-empty subset of PROVIDER_FAMILIES that does
+  // NOT include the persona's own family (load-time cross-family invariant
+  // per CLAUDE.md rule 2 + DEBATE.md § Permission sub-scope).
+  if (!isStringArray(d.opposingProviders)) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.debate.opposingProviders' must be an array of strings",
+    }
+  }
+  if (d.opposingProviders.length === 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.debate.opposingProviders' must list at least one provider family",
+    }
+  }
+  for (const p of d.opposingProviders) {
+    if (!(PROVIDER_FAMILIES as readonly string[]).includes(p)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.debate.opposingProviders' entries must be one of: ${PROVIDER_FAMILIES.join(', ')}`,
+        detail: JSON.stringify(p),
+      }
+    }
+  }
+  // Load-time cross-family invariant: opposingProviders cannot include the
+  // persona's own family. validateEnum on `provider` runs before this in
+  // validateAgent's issue collection, so by the time we get here the
+  // provider value should be valid; we still defend with a null-guard so
+  // bad provider values surface their own error rather than masking as a
+  // confusing cross-family violation.
+  if (typeof ownProvider === 'string') {
+    const ownFamilyId = (PROVIDER_FAMILIES as readonly string[]).includes(ownProvider)
+      ? (ownProvider as ProviderFamily)
+      : null
+    if (ownFamilyId !== null && d.opposingProviders.includes(ownFamilyId)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule:
+          "'permissions.tool_use.debate.opposingProviders' must not include the persona's own family " +
+          '(cross-family invariant — CLAUDE.md rule 2 + DEBATE.md § Permission sub-scope)',
+        detail: `persona provider=${ownProvider}, opposingProviders=${JSON.stringify(d.opposingProviders)}`,
+      }
+    }
+  }
+  // numeric caps
+  const numericFields = [
+    ['maxConcurrent', DEBATE_HARD_CAPS.maxConcurrent],
+    ['timeoutMs', DEBATE_HARD_CAPS.timeoutMs],
+  ] as const
+  for (const [field, cap] of numericFields) {
+    const v = d[field]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.debate.${field}' must be a positive integer`,
+      }
+    }
+    if (v > cap) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule: `'permissions.tool_use.debate.${field}' must be ≤ ${cap} (M10 hard cap)`,
+        detail: `got ${v}`,
+      }
+    }
+  }
+  // maxFiles may be 0 (purely-design debates with no codebase context).
+  const maxFiles = d.maxFiles
+  if (typeof maxFiles !== 'number' || !Number.isInteger(maxFiles) || maxFiles < 0) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.debate.maxFiles' must be a non-negative integer",
+    }
+  }
+  if (maxFiles > DEBATE_HARD_CAPS.maxFiles) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: `'permissions.tool_use.debate.maxFiles' must be ≤ ${DEBATE_HARD_CAPS.maxFiles} (M10 hard cap)`,
+      detail: `got ${maxFiles}`,
+    }
+  }
+  // previewBeforeSend MUST be literally `true` — DEBATE.md pins it as a
+  // fixed invariant. Any other value (false, undefined, "true", 1) fails.
+  if (d.previewBeforeSend !== true) {
+    return {
+      file,
+      code: 'schema_invalid_permissions',
+      rule: "'permissions.tool_use.debate.previewBeforeSend' must be the literal `true` (CLAUDE.md rule 13 invariant)",
+      detail: JSON.stringify(d.previewBeforeSend),
+    }
   }
   return null
 }
@@ -735,6 +925,7 @@ function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
     write?: WriteToolPermissions
     execute?: ExecuteToolPermissions
     review_request?: ReviewRequestPermissions
+    debate?: DebatePermissions
   } = {}
   if (tu.repo_context !== undefined) {
     const rc = tu.repo_context as Record<string, unknown>
@@ -776,6 +967,16 @@ function freezeToolUse(tu: Record<string, unknown>): ToolUsePermissions {
       maxRounds: r.maxRounds as number,
       timeoutMsPerRound: r.timeoutMsPerRound as number,
       network: 'provider-only' as const,
+    })
+  }
+  if (tu.debate !== undefined) {
+    const d = tu.debate as Record<string, unknown>
+    out.debate = Object.freeze({
+      opposingProviders: Object.freeze([...(d.opposingProviders as ProviderFamily[])]),
+      maxConcurrent: d.maxConcurrent as number,
+      previewBeforeSend: true as const,
+      maxFiles: d.maxFiles as number,
+      timeoutMs: d.timeoutMs as number,
     })
   }
   return Object.freeze(out)
@@ -870,7 +1071,7 @@ export function validateAgent(parsed: ParsedFrontmatter, file: string): AgentDef
   }
 
   if ('permissions' in data) {
-    const issue = validatePermissions(data.permissions, file)
+    const issue = validatePermissions(data.permissions, file, data.provider)
     if (issue) issues.push(issue)
   }
 

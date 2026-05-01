@@ -1,8 +1,8 @@
-# DEBATE (v0.1, process-only)
+# DEBATE (v0.1)
 
-User-facing summary of the cross-family debate-during-design pattern: the artifact layout, event names, permission sub-scope, and mandatory DECISION.md rationale that the M10 runtime will implement against. Authoritative for v0.1.
+User-facing contract for the cross-family debate-during-design pattern: the artifact layout, event names, permission sub-scope, and mandatory DECISION.md rationale. Authoritative for v0.1.
 
-**No runtime in M7.** This file is a *process contract*. It codifies seven milestones of empirical practice (M2-M6 + synthesis + M7-M10 shape, all under `docs/research/CODEX_BRIEFING_*.md` + `CODEX_RESPONSE_*.md` pairs) and pins the format that M10's `requestDebate()` primitive will read and write.
+**Status:** runtime shipped in M10 (`v0.10.0-alpha.0`). The contract was authored as a *process contract* in M7 commit 2 (no runtime); M10 commit 7 (`src/tools/debate-request.ts`) implements the runtime primitive `requestDebate()` against this contract. Empirical practice from seven milestones (M2-M6 + synthesis + M7-M10 shape, all under `docs/research/CODEX_BRIEFING_*.md` + `CODEX_RESPONSE_*.md` pairs) shaped the format.
 
 ## Why this exists
 
@@ -101,6 +101,18 @@ The locked-vs-open split is load-bearing: it prevents debates from rebottoming t
 ## Recommended next step
 ```
 
+### Locked first-line `Overall verdict:` grammar (M10)
+
+Per `CODEX_RESPONSE_M10.md` D10 lock: the **first non-empty line under `## Verdict on the decisions`** in every RESPONSE.{codex,claude}.md MUST match:
+
+```
+Overall verdict: <enum>
+```
+
+Where `<enum>` is one of the planning-debate verdict values (below). Per-decision verdicts may follow on subsequent lines without parser interference. M10 commit 4 (`src/artifacts/debate.ts`) `parseResponse` enforces this; a RESPONSE missing the `Overall verdict:` line or with an enum value outside the allowed set raises `debate_response_verdict_invalid`.
+
+The `debate-opponent-system.md` prompt template (commit 6) instructs the opposing party to emit this line as the first content under the H2.
+
 ### Verdict enum (locked)
 
 For design / planning debates (rule 7 — debate at planning convergence):
@@ -193,7 +205,7 @@ interface AgentPermissions {
 }
 ```
 
-- `previewBeforeSend` is fixed at `true`. The runtime (M10) shows the file manifest to the user before BRIEFING.md is sent to the opposing provider, blocking on `.code-ozignore` matches (per CLAUDE.md rule 13). This addresses Codex's "Debate can violate privacy and budgets faster than REVIEW" risk.
+- `previewBeforeSend` is fixed at `true`. The runtime (M10 commit 5, `src/tools/debate-permissions.ts`) writes a non-interactive `MANIFEST.preview.md` audit artifact before BRIEFING.md is sent to the opposing provider; the artifact's sha256 is bound to `debate_started.manifestPreviewSha256`. The runtime blocks on `.code-ozignore` matches (per CLAUDE.md rule 13) and on lexical path-safety violations (absolute, `..`, backslash). Operator review is post-hoc via `events.jsonl` and `code-oz doctor --bundle`. **Interactive operator approval (e.g., a `code-oz approve debate` command) is deferred to W2 / TUI work.** This addresses Codex's "Debate can violate privacy and budgets faster than REVIEW" risk.
 - `opposingProviders` enforces cross-family at the permission layer (rule 2). A `claude` persona's debate sub-scope cannot include `claude`. The runtime rejects with `debate_opposing_provider_same_family` at load time (M2-style validation).
 - The schema lands in `src/agents/schema.ts` during M10. M7 references this contract by name only.
 
@@ -203,20 +215,21 @@ Per CLAUDE.md rule 19: run-level budget enforcement is mandatory and lives under
 
 | Budget axis | Increment per debate |
 |---|---|
-| `maxProviderCalls` | +1 per opposing-party turn (1 for asymmetric, 2 for symmetric) |
-| `maxTokensEstimate` | BRIEFING.md body + each RESPONSE.*.md body + opposing-party reasoning (estimated via `src/providers/cost.ts`) |
-| `maxTurns` | 0 — a debate is one turn of the calling phase, not a separate turn budget |
-| `maxWallTimeMinutes` | opposing-party wall time contributes to run total |
+| `maxProviderCalls` | **+1 per provider invocation inside the debate.** Asymmetric debate fires opposing + synthesis = +2 minimum; if the calling phase invokes a continuation turn after DECISION.md, that's +3 per debate. There is no "+0 synthesis" carve-out. (CODEX_RESPONSE_M10.md D11 lock; risk #2.) |
+| `maxTokensEstimate` | BRIEFING.md body + RESPONSE body + DECISION authoring tokens, all estimated via existing `src/providers/cost.ts` `estimateTokens` (each `agent_invoked` event contributes its `tokensEstimate`). |
+| `maxTurns` | 0 — a debate does not increment `phase_entered`; it is multiple provider calls under the calling phase, not a separate phase. |
+| `maxWallTimeMinutes` | every provider invocation's wall time contributes to the run total. |
 
-No parallel `budgets.debate` namespace. M10 implements the accounting; M7 pins the surface.
+No parallel `budgets.debate` namespace (CLAUDE.md rule 19). M10 commit 7 ships the accounting via the existing `assertWithinBudget` chokepoint that every `invokeAgent` call goes through.
 
-## What M10 will not change
+## What M10 did not change (and won't)
 
-- DECISION.md remains mandatory. The runtime cannot bypass it.
-- Cross-family enforcement remains at the permission layer (rule 2).
+- DECISION.md remains mandatory. The runtime cannot bypass it; missing DECISION → `debate_decision_missing` intervention.
+- Cross-family enforcement remains layered: load-time permission check + invocation-time runtime check + recorded post-condition (`debate_started.callerFamily` and `debate_started.opposingFamily` cite the family pair).
 - Markdown remains canonical (rule 7); `events.jsonl` is audit-only, never the source-of-truth artifact.
-- Codex remains a peer, not an authority (rule 9). The runtime does not auto-merge Codex verdicts.
+- Codex remains a peer, not an authority (rule 9). The runtime does NOT auto-merge Codex verdicts. DECISION.md authority belongs to the calling persona; per D5 lock, exact-copy rationale text from the opposing RESPONSE raises `debate_decision_no_rationale`.
 - Manual debates remain valid even after M10 ships. The runtime is convenience, not replacement.
+- M10 ships single-opponent asymmetric only. Symmetric debate (both parties brief) and multi-opponent debate are deferred until measurable need (CLAUDE.md rule 21).
 
 ## Common errors (M10 will surface; documented now)
 
@@ -229,6 +242,39 @@ No parallel `budgets.debate` namespace. M10 implements the accounting; M7 pins t
 | `debate_opposing_provider_same_family` | `tool_use.debate.opposingProviders` includes the persona's own family | Permission validation; persona repair |
 | `debate_manifest_blocked` | Manifest preview hit a `.code-ozignore` match | User reviews; either edits manifest or extends ignore policy |
 | `debate_concurrent_limit_exceeded` | More than `maxConcurrent` debates open per phase invocation | Resolve open debates first |
+
+## Ignore-policy subset (M10)
+
+Per `CODEX_RESPONSE_M10.md` D6 lock: M10 ships a debate-only `.code-ozignore` parser at `src/tools/ignore-policy.ts`. The parser **fails closed** on unsupported syntax (no silent literal-fallback). Other phases (BUILD/VERIFY/REVIEW/PLAN-non-debate) ignore `.code-ozignore` until W4 hardening.
+
+### Supported syntax
+
+| Pattern shape | Example | Matches |
+|---|---|---|
+| Comment line (skipped) | `# comment` | (no match; line ignored) |
+| Blank line (skipped) | (empty) | (no match; line ignored) |
+| Plain literal | `.env` | exact project-root-relative path |
+| Trailing-slash directory | `config/credentials/` | every file under `config/credentials/` |
+| Single-segment glob | `config/*.yaml` | files in `config/` ending in `.yaml` (does not cross `/`) |
+| Recursive prefix | `**/secrets.json` | matches `secrets.json` at any depth |
+| Recursive prefix + glob | `**/*.key` | matches files ending in `.key` at any depth |
+
+### Unsupported syntax (fails closed)
+
+| Pattern shape | Example | Why rejected |
+|---|---|---|
+| Negation | `!exception.env` | gitignore re-include semantics; complex interaction with order |
+| Rooted-absolute | `/pattern` | gitignore "anchored to root" — current parser uses project-root-relative |
+| Bracket character class | `foo[abc].txt` | regex metacharacter ambiguity |
+| Backslash escape | `foo\ bar.txt` | escape ambiguity |
+| Trailing `**` | `vendor/**` | overlapping with directory-prefix; use `vendor/` instead |
+| Mid-pattern `**` | `foo/**/bar` | only leading `**/` is supported |
+
+Each unsupported line raises `ignore_policy_unsupported_syntax` with the offending text + line number; the IgnorePolicyError aggregates all issues across the file. The runtime in `src/tools/debate-permissions.ts` propagates the error to `requestDebate`, which emits a `debate_manifest_blocked` intervention before BRIEFING.md is sent.
+
+### Manifest preview shape
+
+Per D9 lock, the runtime atomically writes `MANIFEST.preview.md` to `.code-oz/artifacts/debates/<phase>-<topic>/MANIFEST.preview.md` BEFORE BRIEFING.md is sent and BEFORE any provider call. The preview includes the topic header, caller + opposing identification, ignore-policy status (`absent` or `present (N patterns)`), counts of allowed + blocked files, the structured allowed-files list, the structured blocked-files list with reason + matching pattern + line, and a Notes section pointing operators at `events.jsonl` + `code-oz doctor --bundle`. The preview's sha256 is bound to `debate_started.manifestPreviewSha256`.
 
 ## Reference
 
