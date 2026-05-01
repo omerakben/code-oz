@@ -1604,6 +1604,17 @@ async function validateFindingPaths(
         detail: `Finding ${f.id} cites Line ${f.line} (start=${range.start}); line numbers must start at 1`,
       }
     }
+    // M9 commit 23 (QA 5.2): reject reversed line ranges. Without this
+    // check, "Line: 10-5" would silently pass (start=10≥1, end=5≤lineCount).
+    if (range.end < range.start) {
+      return {
+        code: 'review_finding_line_out_of_range',
+        id: f.id,
+        file: f.file,
+        line: `- Line: ${f.line} (finding ${f.id}; range end < start)`,
+        detail: `Finding ${f.id} cites reversed Line range ${f.line} (start=${range.start} > end=${range.end})`,
+      }
+    }
     if (range.end > lineCount) {
       return {
         code: 'review_finding_line_out_of_range',

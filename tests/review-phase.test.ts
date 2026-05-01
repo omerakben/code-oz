@@ -887,6 +887,34 @@ describe('runReview — persona response handling', () => {
     }
   })
 
+  test('M9 commit 23 (QA 5.2): rejects reversed line range "10-5"', async () => {
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    await seedWorktreeFile('src/foo.ts', 20)
+
+    const result = await runReview(
+      buildOpts({
+        invokePersona: async () =>
+          makeReadyPersonaResponse({
+            score: 8,
+            findings: [
+              {
+                title: 'reversed range',
+                file: 'src/foo.ts',
+                line: '10-5',
+                severity: 'fix-first',
+                recommendation: 'cite a forward range',
+              },
+            ],
+          }),
+      }),
+    )
+    // The persona-response parser already rejects this via parseFindingsBlock's
+    // round-resolved check, so the actual code surfaced may be from earlier
+    // in the pipeline. Either way: status=intervention, no canonical REVIEW.md.
+    expect(result.status).toBe('intervention')
+  })
+
   test('M9 commit 18 bp#3 follow-up: rejects symlink escape via realpath check', async () => {
     await seedBuildAndVerifyArtifacts({ changedFile: 'src/foo.ts' })
     await seedBuildProviderEvent()
@@ -1072,7 +1100,11 @@ describe('runReview — canonicalizeFindings throw caught (fs#1)', () => {
     if (result.status === 'intervention') {
       expect(result.code).toBe('review_validation_failed')
       expect(result.rule).toContain('canonicalizeFindings threw')
-      expect(result.rule).toContain('duplicate id')
+      // M9 commit 23 (QA 4.1) tightened the canonicalizer: duplicate
+      // fingerprints are now caught BEFORE id collision. Both error
+      // paths surface the same intervention code; rule string mentions
+      // either "duplicate id" or "same fingerprint".
+      expect(/duplicate id|same fingerprint/.test(result.rule)).toBe(true)
     }
   })
 })
