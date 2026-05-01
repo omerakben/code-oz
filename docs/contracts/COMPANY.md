@@ -93,6 +93,7 @@ The `company:` block is validated at two layers — config-load and agent-load �
 | Failure | Code | When it fires |
 |---|---|---|
 | `company` is not a YAML mapping | `config_invalid_shape` | top-level type is array or scalar |
+| `company:` declares a key not in `M12_COMPANY_ROLES` | `loader_company_role_unknown` | the locked roster is the authority — e.g. `company.agile-coach: ...` is rejected even when a same-named project-local persona file loads |
 | a row is not a YAML mapping | `config_invalid_shape` | e.g. `company.ba: "codex"` (scalar instead of mapping) |
 | a row contains a key other than `provider` or `model` | `config_invalid_value` | fail-closed; e.g. `company.builder.permissions`, `company.builder.budgets`, `company.builder.bash` |
 | `provider` is not in `AGENT_PROVIDERS` | `config_invalid_value` | typo or unknown provider |
@@ -100,7 +101,7 @@ The `company:` block is validated at two layers — config-load and agent-load �
 
 `company` missing or `null` resolves to `undefined` (no override) — the same default-on-absence pattern `mergeBudgets` and `mergePermissions` already use.
 
-The fail-closed rule on unsupported row keys is load-bearing: silently dropping `company.builder.permissions` would give the user false authority over a surface M12 deliberately defers (permissions stay persona-shaped; per-role budgets are M13).
+The fail-closed rule on unsupported row keys is load-bearing: silently dropping `company.builder.permissions` would give the user false authority over a surface M12 deliberately defers (permissions stay persona-shaped; per-role budgets are M13). The error code `loader_company_role_unknown` carries the conceptual layer name (role roster is a loader-of-personas concern) but fires here at config-load to fail fast — `applyCompanyOverrides` repeats the check defensively for callers that bypass `loadConfig`.
 
 ### Agent-load (`src/agents/loader.ts`)
 
@@ -123,7 +124,7 @@ buildRegistry(opts):
 
 | Failure | Code | When it fires |
 |---|---|---|
-| `company:` declares a key not in `M12_COMPANY_ROLES` | `loader_company_role_unknown` | fires even when a project-local persona of that name loads — the locked roster is the authority, not the loaded persona set |
+| `company:` declares a key not in `M12_COMPANY_ROLES` | `loader_company_role_unknown` | defensive backstop in `applyCompanyOverrides` for callers that bypass `loadConfig` (e.g., tests that construct `CompanyConfig` via TypeScript escape hatch) — the primary site is `mergeCompany` at config-load |
 | resolved provider's family appears in the persona's frontmatter `tool_use.debate.opposingProviders` | `schema_invalid_permissions` | post-override re-check; the schema-time check at `validateDebate` ran against the frontmatter provider |
 | BUILD and REVIEW resolve to the same provider family | `loader_cross_family_violation` | reuses M9's existing check; `detail` names both the persona's frontmatter provider and the resolved provider |
 | resolved (provider, phase) is not in `capabilityOf(provider).eligiblePhases` | `loader_provider_phase_not_eligible` | reuses M11's existing check; debate-opposing-provider walk also runs against the resolved phase |

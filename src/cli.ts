@@ -4,7 +4,7 @@ import { runCommand } from './commands/run.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { approveCommand } from './commands/approve.ts'
 
-export const PKG_VERSION = '0.10.0-alpha.0'
+export const PKG_VERSION = '0.12.0-alpha.0'
 
 function printHelp(): void {
   process.stdout.write(`code-oz v${PKG_VERSION}
