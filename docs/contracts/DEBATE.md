@@ -193,7 +193,9 @@ interface AgentPermissions {
       // Maximum concurrent open debates per phase invocation.
       maxConcurrent: number
       // Manifest preview gate: paths matching .code-ozignore are blocked at preview.
-      // Fixed at true; the runtime presents the manifest to the user before send.
+      // Fixed at true; the runtime writes a pre-send manifest preview artifact and
+      // blocks on policy violations before any provider call. Interactive operator
+      // approval is deferred to W2 / TUI work.
       previewBeforeSend: true
       // Maximum files surfaced into BRIEFING.md.
       maxFiles: number

@@ -638,7 +638,21 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
       }
     }
 
-    // extract.kind === 'one' — run the debate.
+    // extract.kind === 'one' — persist trailing prose first (D1 forensics
+    // are needed even on permission/runtime rejection paths; Codex
+    // CODEX_REVIEW_M10.md fs#3), then check round cap, then run debate.
+    if (extract.block.trailingDraft.length > 0) {
+      const discardedDir = join(opts.runPaths.runDir, 'discarded-drafts')
+      await mkdir(discardedDir, { recursive: true })
+      const discardedPath = join(
+        discardedDir,
+        `plan-${extract.block.topic}.draft.md`,
+      )
+      await atomicWriteFile(discardedPath, extract.block.trailingDraft, {
+        fsyncDir: opts.fsyncDir,
+      })
+    }
+
     if (debateRound >= MAX_DEBATE_ROUNDS) {
       await recordIntervention({
         paths: opts.runPaths,
@@ -668,21 +682,6 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
       return debateOutcome.result
     }
 
-    // D1 lock: persist trailing pre-decision PLAN prose to discarded-drafts
-    // for forensics. The persona authored it BEFORE seeing the DECISION;
-    // it is structurally stale.
-    if (extract.block.trailingDraft.length > 0) {
-      const discardedDir = join(opts.runPaths.runDir, 'discarded-drafts')
-      await mkdir(discardedDir, { recursive: true })
-      const discardedPath = join(
-        discardedDir,
-        `plan-${extract.block.topic}.draft.md`,
-      )
-      await atomicWriteFile(discardedPath, extract.block.trailingDraft, {
-        fsyncDir: opts.fsyncDir,
-      })
-    }
-
     // Set up continuation: DECISION.md added to manifest; new userTurn
     // prompts the persona to author final PLAN+SOURCE_CHECK with the
     // decision in hand. Reset dispatch state for the next round.
@@ -692,7 +691,8 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
       `Continue PLAN authoring after the cross-family debate resolved (topic: ${extract.block.topic}). ` +
       `DECISION.md is attached at \`${decisionRel}\`. ` +
       `Re-author PLAN.md + SOURCE_CHECK.md per the locked schemas, integrating the decision. ` +
-      `The orchestrator discarded any pre-decision PLAN content the prior turn emitted.`
+      `The orchestrator discarded any pre-decision PLAN content the prior turn emitted. ` +
+      `Do NOT emit another <debate-request> in this turn — at most one debate per PLAN invocation in v0.1.`
     debateContext =
       `DECISION.md sha256=${debateOutcome.decisionSha256}; ` +
       `caller verdict=${debateOutcome.callerVerdict}, opposing verdict=${debateOutcome.responseVerdict}.`

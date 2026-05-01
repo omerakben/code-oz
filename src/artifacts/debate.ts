@@ -430,6 +430,23 @@ export function parseDecision(
       })
     }
   }
+  // Cross-check decision's opposing_verdict against the parsed RESPONSE's
+  // overallVerdict (Codex CODEX_REVIEW_M10.md fs#2 closure). The audit
+  // artifact must not lie about what the opposing party actually said;
+  // `debate_resolved.responseVerdict` already uses the parsed RESPONSE,
+  // so a mismatch in DECISION.md would create artifact/event divergence.
+  if (
+    opposingResponse !== null &&
+    typeof fm.data.opposing_verdict === 'string' &&
+    (DEBATE_VERDICTS as readonly string[]).includes(fm.data.opposing_verdict) &&
+    fm.data.opposing_verdict !== opposingResponse.overallVerdict
+  ) {
+    issues.push({
+      code: 'debate_decision_invalid_frontmatter',
+      artifact: 'decision',
+      rule: `DECISION.md frontmatter \`opposing_verdict\` (${JSON.stringify(fm.data.opposing_verdict)}) must match the parsed RESPONSE's overall verdict (${JSON.stringify(opposingResponse.overallVerdict)})`,
+    })
+  }
   // Rationale non-empty (>= DECISION_RATIONALE_MIN_CHARS after trim).
   const rationaleRaw = sections.get('Rationale') ?? ''
   const rationaleStripped = stripMarkdownNoise(rationaleRaw)

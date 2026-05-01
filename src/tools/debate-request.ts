@@ -36,7 +36,7 @@
 // the user/operator (or test harness).
 
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { isAbsolute, join, relative } from 'node:path'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import {
@@ -64,7 +64,9 @@ import type {
 } from '../providers/types.ts'
 import type { AgentDefinition, AgentPhase } from '../agents/schema.ts'
 import { buildDebateManifestPreview } from './debate-permissions.ts'
+import { IgnorePolicyError } from './ignore-policy.ts'
 import { appendEvent, readEvents } from '../state/events.ts'
+import { withLock } from '../state/lock.ts'
 import type { LoggedEvent } from '../state/schemas.ts'
 
 export interface DebateRequestInput {
@@ -184,168 +186,392 @@ async function* run(
     )
   }
 
-  // 2. Topic uniqueness check (D7 lock): events.jsonl AND artifact dir.
-  const events = await readEvents({
-    file: ctx.runPaths.eventsFile,
-    lockDir: ctx.runPaths.lockDir,
-  })
-  for (const e of events) {
-    if (e.type === 'debate_started' && (e as { topic?: string }).topic === req.topic) {
-      throw providerError(
-        'debate_topic_collision',
-        `debate topic '${req.topic}' already started in this run`,
-        ['pick a more specific topic slug; topics are run-scoped unique'],
-        `runId=${req.runId}`,
-      )
-    }
-  }
-  const debateDirPath = join(ctx.runPaths.runDir, 'artifacts', 'debates', req.topic)
-  if (existsSync(debateDirPath)) {
+  // 2. Generic permission check (Codex CODEX_REVIEW_M10.md bp#1):
+  //    requestDebate is phase-agnostic per D12 lock, so the primitive
+  //    enforces tool_use.debate scope itself rather than relying on
+  //    PLAN-side clamping. Caller must have tool_use.debate; the YAML's
+  //    opposingProvider must be in the declared list; the file count
+  //    must not exceed maxFiles.
+  const debatePerm = req.caller.permissions.tool_use?.debate
+  if (debatePerm === undefined) {
     throw providerError(
-      'debate_topic_collision',
-      `debate artifact directory already exists at ${debateDirPath}`,
-      ['pick a more specific topic slug; artifact directories are run-scoped unique'],
+      'provider_permissions_violation',
+      `caller persona ${req.caller.name} does not declare tool_use.debate; cannot invoke requestDebate`,
+      [
+        'add tool_use.debate to the persona definition before re-running',
+        'or invoke debate from a persona that already declares the scope',
+      ],
     )
   }
-
-  // 3. Concurrent-limit check (D3 lock): scan for open debates in this
-  //    phase invocation (debate_started without matching debate_resolved).
-  //    M10 default maxConcurrent=1 in lead.md; runtime enforces 1.
-  const openDebates = countOpenDebates(events, req.phase)
-  const maxConcurrent = getMaxConcurrent(req.caller)
-  if (openDebates >= maxConcurrent) {
+  if (!debatePerm.opposingProviders.includes(req.opposingProvider)) {
     throw providerError(
-      'debate_concurrent_limit_exceeded',
-      `phase ${req.phase} already has ${openDebates} open debate(s); max ${maxConcurrent}`,
-      ['resolve open debates before starting a new one'],
+      'provider_permissions_violation',
+      `opposingProvider '${req.opposingProvider}' is not in caller's tool_use.debate.opposingProviders`,
+      [
+        `pick an opposingProvider from the persona's declared list (allowed=[${debatePerm.opposingProviders.join(', ')}])`,
+        'or extend the persona declaration before re-running',
+      ],
+      `caller=${req.caller.name}, allowed=[${debatePerm.opposingProviders.join(', ')}]`,
     )
   }
-
-  // 4. Build manifest preview (D9 lock; D6 ignore-policy filter).
-  const filePaths = req.files.map((f) => f.path)
-  const preview = await buildDebateManifestPreview({
-    topic: req.topic,
-    callerProvider,
-    callerFamily,
-    opposingProvider: req.opposingProvider,
-    opposingFamily,
-    files: filePaths,
-    projectRoot: req.projectRoot,
-    date: req.date,
-  })
-  if (preview.blockedFiles.length > 0) {
-    const reasons = preview.blockedFiles
-      .map((b) => `  - ${b.relPath}: ${b.rule}`)
-      .join('\n')
+  if (req.files.length > debatePerm.maxFiles) {
     throw providerError(
       'debate_manifest_blocked',
-      `${preview.blockedFiles.length} file(s) blocked by ignore-policy or path-safety`,
+      `request files length ${req.files.length} exceeds caller maxFiles=${debatePerm.maxFiles}`,
       [
-        'edit the calling persona\'s `<debate-request>` block to remove blocked files',
-        'or extend .code-ozignore exclusions only after explicit operator approval',
+        'reduce the file manifest in the <debate-request> block',
+        'or raise maxFiles on the persona declaration only after explicit operator approval',
       ],
-      reasons,
     )
   }
 
-  // 5. Atomically write MANIFEST.preview.md + BRIEFING.md (D9 lock:
-  //    preview is written before BRIEFING.md is sent and before any
-  //    provider call).
-  await mkdir(debateDirPath, { recursive: true })
-  const previewPath = join(debateDirPath, 'MANIFEST.preview.md')
-  await atomicWriteFile(previewPath, preview.content)
-
-  const briefingContent = serializeBriefing({
-    topic: req.topic,
-    opposingProvider: req.opposingProvider,
-    date: req.date,
-    status: req.status,
-    caller: req.callerLabel,
-    target: req.targetLabel,
-    cycle: req.cycle,
-    question: req.question,
-    files: preview.allowedFiles,
-    sections: req.briefingSections,
-  })
+  // 3. Lock-wrapped state setup (Codex bp#3 closure): event read +
+  //    uniqueness check + resume detection + dir create + briefing/preview
+  //    write + debate_started append all happen inside the run lock so
+  //    two concurrent requestDebate calls cannot both pass the check
+  //    before either appends debate_started. Provider invocations happen
+  //    AFTER the lock is released — those are long-running and the
+  //    serial-uniqueness invariant is preserved by debate_started's
+  //    durability.
+  const debateDirPath = join(ctx.runPaths.runDir, 'artifacts', 'debates', req.topic)
   const briefingPath = join(debateDirPath, 'BRIEFING.md')
-  await atomicWriteFile(briefingPath, briefingContent)
-  const briefingSha256 = debateArtifactSha256(briefingContent)
+  const previewPath = join(debateDirPath, 'MANIFEST.preview.md')
+  const opposingSide: DebateSide = familyToSide(opposingFamily)
+  const responsePath = join(debateDirPath, `RESPONSE.${opposingSide}.md`)
+  const decisionPath = join(debateDirPath, 'DECISION.md')
 
-  // 6. Emit debate_started event.
-  await appendEvent(
-    { file: ctx.runPaths.eventsFile, lockDir: ctx.runPaths.lockDir },
-    {
-      version: 1,
-      type: 'debate_started',
-      ts: (ctx.now ?? (() => new Date().toISOString()))(),
-      runId: req.runId,
-      phase: req.phase,
-      agent: req.caller.name,
-      topic: req.topic,
-      debateDirPath,
-      briefingSha256,
-      manifestPreviewSha256: preview.sha256,
-      callerFamily,
-      opposingProvider: req.opposingProvider,
-      opposingFamily,
-    },
-  )
+  type PrepResult =
+    | { kind: 'fresh'; allowedFiles: readonly string[]; previewSha256: string; briefingSha256: string }
+    | { kind: 'resume-opposing'; allowedFiles: readonly string[]; briefingSha256: string; previewSha256: string }
+    | {
+        kind: 'resume-synthesis'
+        allowedFiles: readonly string[]
+        briefingSha256: string
+        previewSha256: string
+        existingResponse: ResponseDoc
+        existingResponseRaw: string
+      }
 
-  // 7. Synthetic opposing AgentDefinition (D4 lock). Read scope includes
-  //    BRIEFING.md path (project-root-relative) PLUS the manifest paths.
-  //    Without BRIEFING.md in read scope the manifest builder would
-  //    reject the opposing-party invocation's primary input.
+  const prep: PrepResult = await withLock(ctx.runPaths.lockDir, async () => {
+      const events = await readEvents({
+        file: ctx.runPaths.eventsFile,
+        lockDir: ctx.runPaths.lockDir,
+      })
+
+      const priorStarted = events.find(
+        (e) => e.type === 'debate_started' && (e as { topic?: string }).topic === req.topic,
+      ) as (LoggedEvent & { topic: string; briefingSha256: string; opposingProvider: ProviderId }) | undefined
+      const priorResolved = events.find(
+        (e) => e.type === 'debate_resolved' && (e as { topic?: string }).topic === req.topic,
+      ) as (LoggedEvent & { topic: string }) | undefined
+
+      // D7 collision: same topic already resolved in this run.
+      if (priorResolved !== undefined) {
+        throw providerError(
+          'debate_topic_collision',
+          `debate topic '${req.topic}' already resolved in this run`,
+          ['pick a more specific topic slug; topics are run-scoped unique'],
+          `runId=${req.runId}`,
+        )
+      }
+
+      // D8 resume path: same topic has prior debate_started but no
+      // debate_resolved. Validate briefing-sha + provider-suffix; detect
+      // RESPONSE presence; resume from synthesis if RESPONSE is valid.
+      if (priorStarted !== undefined) {
+        if (priorStarted.opposingProvider !== req.opposingProvider) {
+          throw providerError(
+            'debate_topic_collision',
+            `debate '${req.topic}' previously started against opposingProvider='${priorStarted.opposingProvider}', cannot resume against '${req.opposingProvider}'`,
+            [
+              'use the original opposingProvider, or pick a new topic slug',
+            ],
+          )
+        }
+        if (!existsSync(briefingPath)) {
+          throw providerError(
+            'debate_topic_collision',
+            `debate '${req.topic}' has prior debate_started but BRIEFING.md is missing at ${briefingPath}`,
+            [
+              'restore BRIEFING.md from backup or pick a new topic slug',
+              'this state should not occur with atomic-write semantics; investigate state corruption',
+            ],
+          )
+        }
+        const onDiskBriefing = await readFile(briefingPath, 'utf8')
+        const onDiskBriefingSha = debateArtifactSha256(onDiskBriefing)
+        if (onDiskBriefingSha !== priorStarted.briefingSha256) {
+          throw providerError(
+            'debate_topic_collision',
+            `debate '${req.topic}' BRIEFING.md sha mismatch on resume: on-disk=${onDiskBriefingSha.slice(0, 16)}..., debate_started=${priorStarted.briefingSha256.slice(0, 16)}...`,
+            [
+              'do not edit BRIEFING.md after debate_started fires; this would invalidate the audit trail',
+              'restore the original BRIEFING.md or pick a new topic slug',
+            ],
+          )
+        }
+
+        // Surface "what files were on the BRIEFING.md manifest" for the
+        // synthesis turn. Re-build the preview deterministically from
+        // req.files so the read scope of the synthesis turn matches what
+        // the original session would have surfaced. The preview is
+        // re-written in case it was lost; sha-binding uses the rewritten
+        // value (post-resume preview is informational only).
+        let previewOnResume
+        try {
+          previewOnResume = await buildDebateManifestPreview({
+            topic: req.topic,
+            callerProvider,
+            callerFamily,
+            opposingProvider: req.opposingProvider,
+            opposingFamily,
+            files: req.files.map((f) => f.path),
+            projectRoot: req.projectRoot,
+            date: req.date,
+          })
+        } catch (err) {
+          if (err instanceof IgnorePolicyError) {
+            throw providerError(
+              'debate_manifest_blocked',
+              `ignore-policy fail-closed on resume: ${err.message}`,
+              [
+                'fix .code-ozignore syntax issues before resuming',
+                'unsupported gitignore syntax fails closed; only the documented subset is allowed',
+              ],
+            )
+          }
+          throw err
+        }
+        if (previewOnResume.blockedFiles.length > 0) {
+          throw providerError(
+            'debate_manifest_blocked',
+            `${previewOnResume.blockedFiles.length} file(s) now blocked by ignore-policy on resume`,
+            [
+              'manifest changed since original briefing; reconcile .code-ozignore or pick a new topic',
+            ],
+          )
+        }
+
+        // RESPONSE present? If so, validate before declaring resume.
+        if (existsSync(responsePath)) {
+          const existingResponseRaw = await readFile(responsePath, 'utf8')
+          let existingResponse: ResponseDoc
+          try {
+            existingResponse = parseResponse(existingResponseRaw, opposingSide)
+          } catch (err: unknown) {
+            throw providerError(
+              'debate_response_invalid',
+              `RESPONSE.${opposingSide}.md failed parse on resume`,
+              [
+                'the persisted RESPONSE.md is corrupt; restore from backup or pick a new topic',
+                'intervention beats replay (D8 lock)',
+              ],
+              err instanceof Error ? err.message : String(err),
+            )
+          }
+          // DECISION present? If so, this is a "previously completed but
+          // debate_resolved was never appended" state — extremely rare,
+          // and we treat it as collision because the next caller cannot
+          // reason about it (no audit trail confirming completion).
+          if (existsSync(decisionPath)) {
+            throw providerError(
+              'debate_topic_collision',
+              `debate '${req.topic}' has DECISION.md on disk but no debate_resolved event; orphaned terminal state`,
+              [
+                'investigate state corruption: DECISION should always be paired with debate_resolved',
+                'pick a new topic slug to make forward progress',
+              ],
+            )
+          }
+          return {
+            kind: 'resume-synthesis' as const,
+            allowedFiles: previewOnResume.allowedFiles,
+            briefingSha256: onDiskBriefingSha,
+            previewSha256: previewOnResume.sha256,
+            existingResponse,
+            existingResponseRaw,
+          }
+        }
+
+        // RESPONSE absent → resume from opposing turn.
+        return {
+          kind: 'resume-opposing' as const,
+          allowedFiles: previewOnResume.allowedFiles,
+          briefingSha256: onDiskBriefingSha,
+          previewSha256: previewOnResume.sha256,
+        }
+      }
+
+      // Fresh start path. Topic-collision check: artifact dir exists
+      // without a debate_started event → orphan; treat as collision
+      // (preserves D7 invariant).
+      if (existsSync(debateDirPath)) {
+        throw providerError(
+          'debate_topic_collision',
+          `debate artifact directory already exists at ${debateDirPath} without a debate_started event`,
+          [
+            'pick a more specific topic slug; artifact directories are run-scoped unique',
+            'or remove the orphan directory if state corruption is confirmed',
+          ],
+        )
+      }
+
+      // D3 concurrent-limit check.
+      const openDebates = countOpenDebates(events, req.phase)
+      const maxConcurrent = getMaxConcurrent(req.caller)
+      if (openDebates >= maxConcurrent) {
+        throw providerError(
+          'debate_concurrent_limit_exceeded',
+          `phase ${req.phase} already has ${openDebates} open debate(s); max ${maxConcurrent}`,
+          ['resolve open debates before starting a new one'],
+        )
+      }
+
+      // D6 + D9 manifest preview. fs#1 closure: catch IgnorePolicyError
+      // and wrap as ProviderError with debate_manifest_blocked code.
+      const filePaths = req.files.map((f) => f.path)
+      let preview
+      try {
+        preview = await buildDebateManifestPreview({
+          topic: req.topic,
+          callerProvider,
+          callerFamily,
+          opposingProvider: req.opposingProvider,
+          opposingFamily,
+          files: filePaths,
+          projectRoot: req.projectRoot,
+          date: req.date,
+        })
+      } catch (err) {
+        if (err instanceof IgnorePolicyError) {
+          throw providerError(
+            'debate_manifest_blocked',
+            `.code-ozignore parse failed (fail-closed): ${err.message}`,
+            [
+              'fix .code-ozignore syntax issues before re-running',
+              'only the documented subset is supported; unsupported gitignore syntax fails closed',
+            ],
+          )
+        }
+        throw err
+      }
+      if (preview.blockedFiles.length > 0) {
+        const reasons = preview.blockedFiles
+          .map((b) => `  - ${b.relPath}: ${b.rule}`)
+          .join('\n')
+        throw providerError(
+          'debate_manifest_blocked',
+          `${preview.blockedFiles.length} file(s) blocked by ignore-policy or path-safety`,
+          [
+            'edit the calling persona\'s `<debate-request>` block to remove blocked files',
+            'or extend .code-ozignore exclusions only after explicit operator approval',
+          ],
+          reasons,
+        )
+      }
+
+      // Atomic writes + debate_started. mkdir is recursive because the
+      // parent `artifacts/debates/` may not exist; the topic dir itself
+      // is the unit we serialize. The lock prevents concurrent
+      // requestDebate calls from racing on the same topic dir.
+      await mkdir(debateDirPath, { recursive: true })
+      await atomicWriteFile(previewPath, preview.content)
+
+      const briefingContent = serializeBriefing({
+        topic: req.topic,
+        opposingProvider: req.opposingProvider,
+        date: req.date,
+        status: req.status,
+        caller: req.callerLabel,
+        target: req.targetLabel,
+        cycle: req.cycle,
+        question: req.question,
+        files: preview.allowedFiles,
+        sections: req.briefingSections,
+      })
+      await atomicWriteFile(briefingPath, briefingContent)
+      const briefingSha256 = debateArtifactSha256(briefingContent)
+
+      await appendEvent(
+        { file: ctx.runPaths.eventsFile, lockDir: ctx.runPaths.lockDir },
+        {
+          version: 1,
+          type: 'debate_started',
+          ts: (ctx.now ?? (() => new Date().toISOString()))(),
+          runId: req.runId,
+          phase: req.phase,
+          agent: req.caller.name,
+          topic: req.topic,
+          debateDirPath,
+          briefingSha256,
+          manifestPreviewSha256: preview.sha256,
+          callerFamily,
+          opposingProvider: req.opposingProvider,
+          opposingFamily,
+        },
+        { skipLock: true },
+      )
+
+      return {
+        kind: 'fresh' as const,
+        allowedFiles: preview.allowedFiles,
+        previewSha256: preview.sha256,
+        briefingSha256,
+      }
+  })
+
   const briefingRelPath = relativeToRoot(briefingPath, req.projectRoot)
   const opposingAgent = buildOpposingAgent({
     opposingProvider: req.opposingProvider,
     callerPhase: req.phase,
-    allowedReadPaths: [briefingRelPath, ...preview.allowedFiles],
-  })
-  const opposingPrompt = await composeDebateOpponentPrompt({
-    readySignal: req.readySignal ?? '<<DEBATE_OPPONENT_DONE>>',
-    availableTools: [],
+    allowedReadPaths: [briefingRelPath, ...prep.allowedFiles],
   })
 
-  // 8. Opposing-party invocation (Turn A). Files include BRIEFING.md so
-  //    the opponent can read the framing; the manifest's allowed files
-  //    are also surfaced (read-scope constrained at the synthetic agent
-  //    permission layer).
-  const opposingFiles: readonly ProviderFileRef[] = [
-    { path: briefingRelPath },
-    ...preview.allowedFiles.map((p) => ({ path: p })),
-  ]
-  const opposingReq: ProviderRequest = {
-    agent: opposingAgent,
-    phase: req.phase,
-    runId: req.runId,
-    prompt: `${opposingPrompt}\n\n## BRIEFING.md\n\nSee the file manifest. Author your RESPONSE.${familyToSide(opposingFamily)}.md per the schema above.`,
-    files: opposingFiles,
-  }
-  let opposingContent = ''
-  for await (const ev of invokeAgent(ctx, opposingReq)) {
-    if (ev.type === 'content_chunk') opposingContent += ev.text
-    if (ev.type === 'turn_completed') {
-      // Adapter returned a single non-streaming response.
-      opposingContent = (ev.response as ProviderResponse).content
-    }
-    yield ev
-  }
-
-  // 9. Parse and validate the opposing RESPONSE.
-  const opposingSide: DebateSide = familyToSide(opposingFamily)
+  // 4. Opposing-party invocation (Turn A). Skipped on resume-synthesis
+  //    (the prior session already wrote RESPONSE.{side}.md).
   let response: ResponseDoc
-  try {
-    response = parseResponse(opposingContent, opposingSide)
-  } catch (err: unknown) {
-    throw providerError(
-      'debate_response_invalid',
-      'opposing party RESPONSE.md failed parse',
-      ['the opposing provider returned malformed RESPONSE; re-run debate or operator-edit'],
-      err instanceof Error ? err.message : String(err),
-    )
+  let opposingContent: string
+  if (prep.kind === 'resume-synthesis') {
+    response = prep.existingResponse
+    opposingContent = prep.existingResponseRaw
+  } else {
+    const opposingPrompt = await composeDebateOpponentPrompt({
+      readySignal: req.readySignal ?? '<<DEBATE_OPPONENT_DONE>>',
+      availableTools: [],
+    })
+    const opposingFiles: readonly ProviderFileRef[] = [
+      { path: briefingRelPath },
+      ...prep.allowedFiles.map((p) => ({ path: p })),
+    ]
+    const opposingReq: ProviderRequest = {
+      agent: opposingAgent,
+      phase: req.phase,
+      runId: req.runId,
+      prompt: `${opposingPrompt}\n\n## BRIEFING.md\n\nSee the file manifest. Author your RESPONSE.${familyToSide(opposingFamily)}.md per the schema above.`,
+      files: opposingFiles,
+    }
+    let collected = ''
+    for await (const ev of invokeAgent(ctx, opposingReq)) {
+      if (ev.type === 'content_chunk') collected += ev.text
+      if (ev.type === 'turn_completed') {
+        // Adapter returned a single non-streaming response.
+        collected = (ev.response as ProviderResponse).content
+      }
+      yield ev
+    }
+    opposingContent = collected
+    try {
+      response = parseResponse(opposingContent, opposingSide)
+    } catch (err: unknown) {
+      throw providerError(
+        'debate_response_invalid',
+        'opposing party RESPONSE.md failed parse',
+        ['the opposing provider returned malformed RESPONSE; re-run debate or operator-edit'],
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+    await atomicWriteFile(responsePath, opposingContent)
   }
-  const responsePath = join(debateDirPath, `RESPONSE.${opposingSide}.md`)
-  await atomicWriteFile(responsePath, opposingContent)
 
   // 10. Synthesis turn (Turn B). Caller persona authors DECISION.md
   //     given BRIEFING.md + RESPONSE.{side}.md. PLAN orchestrator
@@ -378,7 +604,8 @@ async function* run(
   }
 
   // 11. Parse and validate DECISION.md (D5 lock: dual-verdict + exact-
-  //     copy rationale check vs opposing RESPONSE).
+  //     copy rationale check vs opposing RESPONSE; fs#2 closure: also
+  //     enforces frontmatter.opposing_verdict matches RESPONSE.overallVerdict).
   let decision: DecisionDoc
   try {
     decision = parseDecision(synthesisContent, response)
@@ -390,7 +617,6 @@ async function* run(
       err instanceof Error ? err.message : String(err),
     )
   }
-  const decisionPath = join(debateDirPath, 'DECISION.md')
   await atomicWriteFile(decisionPath, synthesisContent)
   const decisionSha256 = debateArtifactSha256(synthesisContent)
 
@@ -421,9 +647,9 @@ async function* run(
       previewPath,
       callerVerdict: decision.frontmatter.callerVerdict,
       responseVerdict: response.overallVerdict,
-      briefingSha256,
+      briefingSha256: prep.briefingSha256,
       decisionSha256,
-      manifestPreviewSha256: preview.sha256,
+      manifestPreviewSha256: prep.previewSha256,
     }),
   )
 }
