@@ -1,10 +1,10 @@
-// REVIEW phase orchestration (M9 commit 7).
+// REVIEW phase orchestration.
 //
 // Mirrors src/phases/verify.ts ordering:
 //
 //   1. Read BUILD_REPORT.md (changed-file manifest + base/patch refs)
 //   2. Read VERIFY.md (verdict.verdict must be 'pass' to enter REVIEW)
-//   3. Read prior REVIEW.md when round > 1 (commit 10 path)
+//   3. Read prior REVIEW.md when round > 1
 //   4. Cross-family invocation-time check: events.jsonl latest
 //      build_provider_recorded.family vs familyOf(reviewerAgent.provider).
 //      Equal → intervention 'review_cross_family_violation'.
@@ -29,10 +29,11 @@
 //        ready          → review_resolved (sha256 + finalScore + finalRound),
 //                         run Scientist phase-tail, requireGate('review'),
 //                         return { status: 'resolved' }.
-//        needs-revision → return { status: 'needs_revision' }. Multi-round
-//                         remediation is M9 commit 10's job; this orchestrator
-//                         must NOT call scheduleAttemptNPlus1 (that function
-//                         is VERIFY-specific, kickoff Decision 1).
+//        needs-revision → run the REVIEW remediation coordinator and either
+//                         return carry-forward for BUILD attempt N+1 or surface
+//                         the owning cap intervention. This orchestrator must
+//                         NOT call scheduleAttemptNPlus1 (that function is
+//                         VERIFY-specific, kickoff Decision 1).
 //        block          → review_blocked (reason='block') + NEEDS_INTERVENTION
 //                         'review_block_terminal' + Scientist phase-tail,
 //                         return { status: 'blocked' }.
@@ -46,9 +47,9 @@
 // dir.
 //
 // Worktree cleanup is NOT runReview's job. The cleanup-on-REVIEW-approve
-// hook (preApproveReviewHook, commit 1) removes the worktree when the
+// hook (preApproveReviewHook) removes the worktree when the
 // operator runs `code-oz approve review`. runReview keeps the worktree
-// alive so REVIEW (and a remediating BUILD attempt N+1 in commit 10)
+// alive so REVIEW and any remediating BUILD attempt N+1
 // can read changed files.
 //
 // Tested in tests/review-phase.test.ts.
@@ -87,9 +88,11 @@ import {
   REVIEW_REPAIR_OFFENDING_LINES_MAX,
   REVIEW_ROUND_CAP,
   REVIEW_SCORE_MIN,
+  REVIEW_SCORE_MAX,
   REVIEW_SEVERITIES,
   REVIEW_TITLE_MAX_CHARS,
   REVIEW_RECOMMENDATION_MAX_CHARS,
+  isReviewSeverity,
   type ReviewFinding,
   type ReviewReportData,
   type ReviewSeverity,
@@ -104,7 +107,6 @@ import {
   type ReviewRemediationDecision,
 } from './review-remediation.ts'
 import type { BuildReportCarryForward } from '../artifacts/build-report.ts'
-import type { ProviderId } from '../providers/types.ts'
 import {
   appendEvent,
   readEvents,
@@ -136,11 +138,9 @@ export interface RunReviewOptions {
    */
   readonly invokePersona: (composedPrompt: string) => Promise<string>
   readonly now?: () => string
-  /** REVIEW round being driven (1 in commit 7; 2..4 will arrive via
-   *  review-remediation.ts in commit 10). Validated against REVIEW_ROUND_CAP. */
+  /** REVIEW round being driven. Validated against REVIEW_ROUND_CAP. */
   readonly round: number
-  /** Prior canonical REVIEW.md content when round > 1. `null` for round 1.
-   *  Commit 7 always passes null; commit 10 wires the carry. */
+  /** Prior canonical REVIEW.md content when round > 1. `null` for round 1. */
   readonly priorReviewMd?: string | null
 }
 
@@ -164,7 +164,7 @@ export interface ReviewNeedsRevision {
   readonly score: number
   readonly findings: readonly ReviewFinding[]
   readonly round: number
-  /** Remediation decision from review-remediation.ts (M9 commit 10).
+  /** Remediation decision from review-remediation.ts.
    *  When `action === 'continue'`, the caller schedules BUILD attempt
    *  N+1 with `carryForward` and then drives REVIEW round
    *  `nextReviewRound`. */
@@ -199,6 +199,25 @@ export type ReviewResult =
 // --- helpers -------------------------------------------------------
 
 const SHA = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex')
+const INTERVENTION_DETAIL_MAX_CHARS = 200
+const FILE_READ_DETAIL_MAX_CHARS = 100
+
+interface LoadIssueSummary {
+  readonly code: string
+  readonly rule: string
+}
+
+function clipDetail(text: string, max = INTERVENTION_DETAIL_MAX_CHARS): string {
+  return text.slice(0, max)
+}
+
+function errorDetail(err: unknown, max = INTERVENTION_DETAIL_MAX_CHARS): string {
+  return clipDetail(err instanceof Error ? err.message : String(err), max)
+}
+
+function loadIssuesDetail(issues: readonly LoadIssueSummary[]): string {
+  return clipDetail(issues.map((i) => `${i.code}: ${i.rule}`).join('; '))
+}
 
 function eventPathsFor(paths: RunPaths): EventLogPaths {
   return { file: paths.eventsFile, lockDir: paths.lockDir }
@@ -405,7 +424,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     return recordReviewIntervention(
       interventionCtx,
       'review_build_report_missing',
-      `BUILD_REPORT.md not readable: ${(err as Error).message.slice(0, 200)}`,
+      `BUILD_REPORT.md not readable: ${errorDetail(err)}`,
     )
   }
   const buildReportSha256 = SHA(buildReportText)
@@ -415,8 +434,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   } catch (err) {
     const reason =
       err instanceof BuildReportLoadError
-        ? err.issues.map((i) => `${i.code}: ${i.rule}`).join('; ').slice(0, 200)
-        : (err as Error).message.slice(0, 200)
+        ? loadIssuesDetail(err.issues)
+        : errorDetail(err)
     return recordReviewIntervention(interventionCtx, 'review_build_report_invalid', reason)
   }
   if (buildReport.task.taskId !== opts.taskId) {
@@ -439,7 +458,7 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     return recordReviewIntervention(
       ictx,
       'review_verify_report_missing',
-      `VERIFY.md not readable: ${(err as Error).message.slice(0, 200)}`,
+      `VERIFY.md not readable: ${errorDetail(err)}`,
     )
   }
   const verifyReportSha256 = SHA(verifyReportText)
@@ -449,8 +468,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   } catch (err) {
     const reason =
       err instanceof VerifyReportLoadError
-        ? err.issues.map((i) => `${i.code}: ${i.rule}`).join('; ').slice(0, 200)
-        : (err as Error).message.slice(0, 200)
+        ? loadIssuesDetail(err.issues)
+        : errorDetail(err)
     return recordReviewIntervention(ictx, 'review_verify_report_invalid', reason)
   }
   if (
@@ -463,10 +482,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
       `VERIFY.md buildRef=(${verifyReport.buildRef.taskId}, ${verifyReport.buildRef.attempt}) != BUILD_REPORT.md=(${opts.taskId}, ${attempt})`,
     )
   }
-  // M9 commit 13 bp#2 (Codex review): VERIFY.md and BUILD_REPORT.md must
-  // also agree on the upstream commit + patch refs. Same task/attempt
-  // does not prove same patch — a misrouted VERIFY pass against a
-  // different patch would otherwise be blessed by REVIEW.
+  // VERIFY.md and BUILD_REPORT.md must also agree on the upstream commit
+  // and patch refs. Same task/attempt does not prove same patch.
   if (verifyReport.buildRef.baseCommitSha !== buildReport.base.baseCommitSha) {
     return recordReviewIntervention(
       ictx,
@@ -489,9 +506,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     )
   }
 
-  // 3. Read prior REVIEW.md when round > 1. Commit 7 only sees round=1.
-  // Resume mismatch (kickoff Decision 10) is checked against the
-  // review-drafts directory below.
+  // 3. Read prior REVIEW.md when round > 1. Resume mismatch (kickoff
+  // Decision 10) is checked against the review-drafts directory below.
   let priorReport: ReviewReportData | null = null
   if (opts.round > 1 && opts.priorReviewMd != null) {
     try {
@@ -500,8 +516,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
       // Prior REVIEW.md should already be canonical; corruption is a routing bug.
       const reason =
         err instanceof ReviewReportLoadError
-          ? err.issues.map((i) => `${i.code}: ${i.rule}`).join('; ').slice(0, 200)
-          : (err as Error).message.slice(0, 200)
+          ? loadIssuesDetail(err.issues)
+          : errorDetail(err)
       return recordReviewIntervention(ictx, 'review_validation_failed', reason)
     }
   }
@@ -517,13 +533,11 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     taskId: opts.taskId,
     attempt,
     round: opts.round,
-    // M9 commit 13 fs#2: verify event/artifact agreement on resume.
     reviewReportPath: join(opts.runPaths.artifactRoot, 'REVIEW.md'),
   })
   if (probe.mismatched) {
-    // M9 commit 18 (Codex re-review fs#2 follow-up): differentiate the
-    // intervention message based on probe.reason — sha_mismatch and
-    // no_completed_event are different recovery paths.
+    // Differentiate recovery paths: sha_mismatch means the event exists
+    // but the canonical artifact no longer matches it.
     const reasonText =
       probe.reason === 'sha_mismatch'
         ? `review_round_completed event exists for round=${opts.round} but its reviewReportSha256 does not match the on-disk REVIEW.md`
@@ -559,13 +573,11 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
       `events.jsonl has no build_provider_recorded for taskId=${opts.taskId} attempt=${attempt}`,
     )
   }
-  // M9 commit 13 bp#4 (Codex review): use the runtime ProviderRegistry's
-  // family lookup (which validates adapter.family vs familyOf(adapter.id)
-  // at registration), not the static familyOf(). This closes the
-  // misregistered-adapter laundering hole — both BUILD and REVIEW now
-  // compare registry-resolved families.
+  // Use the runtime ProviderRegistry's family lookup, which validates
+  // adapter.family vs familyOf(adapter.id) at registration. This keeps
+  // BUILD and REVIEW on the same registry-resolved authority.
   const reviewerFamily = opts.invokeCtx.registry.familyOf(
-    opts.reviewerAgent.provider as ProviderId,
+    opts.reviewerAgent.provider,
   )
   if (buildFamily === reviewerFamily) {
     return recordReviewIntervention(
@@ -643,11 +655,9 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   }
 
   // 9. Canonicalize findings (fingerprint reuse + ping-pong reopen).
-  // M9 commit 13 fs#1 (Codex review): wrap canonicalizeFindings in
-  // try/catch so a draft that produces a duplicate-id collision after
-  // fingerprint canonicalization surfaces an actionable
-  // review_validation_failed intervention instead of crashing the
-  // phase.
+  // Wrap canonicalizeFindings so a duplicate-id collision after
+  // fingerprint canonicalization surfaces an actionable intervention
+  // instead of crashing the phase.
   let canonical: ReturnType<typeof canonicalizeFindings>
   try {
     canonical = canonicalizeFindings({
@@ -659,16 +669,16 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     return recordReviewIntervention(
       ictx,
       'review_validation_failed',
-      `canonicalizeFindings threw: ${(err as Error).message.slice(0, 200)}`,
+      `canonicalizeFindings threw: ${errorDetail(err)}`,
       undefined,
       reviewDraftPath(opts.runPaths.runDir, opts.round, 1),
     )
   }
 
-  // M9 commit 13 bp#3 (Codex review): finalize-time path validation per
-  // kickoff Decision 7 — reject deleted-file findings and verify cited
-  // line ranges are within the worktree files. Runs AFTER canonicalize
-  // so the canonical findings (with stable ids) are what gets validated.
+  // Finalize-time path validation per kickoff Decision 7: reject
+  // deleted-file findings and verify cited line ranges are within the
+  // worktree files. Runs after canonicalization so stable ids are what
+  // gets validated.
   const worktreeRoot = worktreePathsFor(opts.cwd, opts.runId).worktree
   const pathIssue = await validateFindingPaths({
     findings: canonical.findings,
@@ -744,8 +754,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   } catch (err) {
     const reason =
       err instanceof ReviewReportLoadError
-        ? err.issues.map((i) => `${i.code}: ${i.rule}`).join('; ').slice(0, 200)
-        : (err as Error).message.slice(0, 200)
+        ? loadIssuesDetail(err.issues)
+        : errorDetail(err)
     return recordReviewIntervention(ictx, 'review_validation_failed', reason)
   }
 
@@ -774,8 +784,8 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
     verdict,
     findingsRaised: canonical.newIds.length,
     findingsResolved: findingsResolvedCount,
-    // M9 commit 13 fs#2: bind the event to the canonical artifact via
-    // sha256 so resume probes can verify event/artifact agreement.
+    // Bind the event to the canonical artifact via sha256 so resume
+    // probes can verify event/artifact agreement.
     reviewReportSha256,
   })
 
@@ -894,10 +904,10 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
 
   // verdict === 'needs-revision'. Per kickoff Decision 1, the BUILD
   // attempt N+1 trigger is delegated to the review-remediation
-  // coordinator (M9 commit 10): runReview hands it the canonical
-  // findings + REVIEW.md ref + the prior validation command and
-  // receives a ReviewRemediationDecision. Two outcomes alter
-  // runReview's terminal status:
+  // coordinator: runReview hands it the canonical findings + REVIEW.md
+  // ref + the prior validation command and receives a
+  // ReviewRemediationDecision. Two outcomes alter runReview's terminal
+  // status:
   //   - 'review_cap_exhausted' (round 4 needs-revision): emit
   //     review_blocked(reason='cap_exhausted') + NEEDS_INTERVENTION
   //     review_cap_exhausted_terminal; return blocked.
@@ -1079,10 +1089,10 @@ export function parseReviewPersonaResponse(
       offendingLines: clipFirstLines(scoreLines, REVIEW_REPAIR_OFFENDING_LINES_MAX),
     }
   }
-  if (!Number.isInteger(finalScore) || finalScore < 0 || finalScore > 10) {
+  if (!Number.isInteger(finalScore) || finalScore < 0 || finalScore > REVIEW_SCORE_MAX) {
     return {
       ok: false,
-      violation: '`## Score.Final score` must be an integer in [0, 10]',
+      violation: `\`## Score.Final score\` must be an integer in [0, ${REVIEW_SCORE_MAX}]`,
       offendingLines: [`- Final score: ${finalScore}`],
     }
   }
@@ -1177,7 +1187,7 @@ function parseFindingsBlock(lines: readonly string[], round: number): ParseFindi
         offendingLines: bullets.length > 0 ? bullets : [line],
       }
     }
-    if (!(REVIEW_SEVERITIES as readonly string[]).includes(severity)) {
+    if (!isReviewSeverity(severity)) {
       return {
         ok: false,
         violation: `Severity must be one of: ${REVIEW_SEVERITIES.join(', ')}`,
@@ -1237,7 +1247,7 @@ function parseFindingsBlock(lines: readonly string[], round: number): ParseFindi
         title,
         file: filePath,
         line: lineCite,
-        severity: severity as ReviewSeverity,
+        severity,
         recommendation,
         roundRaised: roundRaisedParsed,
         roundResolved,
@@ -1289,7 +1299,7 @@ async function invokeWithRepair(input: InvokeWithRepairInput): Promise<InvokeWit
     return {
       ok: false,
       code: 'review_persona_invoke_failed',
-      reason: (err as Error).message.slice(0, 200),
+      reason: errorDetail(err),
     }
   }
   await persistDraft(input.runDir, input.round, 1, draft1)
@@ -1356,7 +1366,7 @@ async function runRepair(input: RunRepairInput): Promise<InvokeWithRepairResult>
     return {
       ok: false,
       code: 'review_persona_invoke_failed',
-      reason: `repair turn threw: ${(err as Error).message.slice(0, 200)}`,
+      reason: `repair turn threw: ${errorDetail(err)}`,
       firstDraftPath: input.firstDraftPath,
     }
   }
@@ -1424,16 +1434,14 @@ interface ValidateFindingPathsInput {
 }
 
 /**
- * M9 commit 13 bp#3 (Codex review): finalize-time path validation per
- * kickoff Decision 7:
+ * Finalize-time path validation per kickoff Decision 7:
  *
  *   - Reject `change: deleted` findings (deleted-file findings are not
  *     a locked M9 convention; they go to operator intervention).
  *   - For `added` | `modified`, read the file under the run worktree
  *     and verify the cited Line / Line range is within the current
  *     file's line count.
- *   - Path-not-in-manifest produces review_finding_path_unknown
- *     (unchanged from the M9 commit 7 behavior).
+ *   - Path-not-in-manifest produces review_finding_path_unknown.
  *
  * Returns `null` if all findings pass; the first violating finding's
  * issue otherwise. The orchestrator surfaces the issue via the bounded
@@ -1497,12 +1505,11 @@ async function validateFindingPaths(
         detail: `Finding ${f.id} cites a path that escapes the run worktree`,
       }
     }
-    // M9 commit 18 bp#3 follow-up (Codex re-review): realpath-based
-    // symlink-escape check. A symlink inside the worktree pointing
-    // outside the worktree would lexically pass the prefix check
-    // above; realpath dereferences it so we can verify the canonical
-    // target is still under the canonical worktree root. Done BEFORE
-    // readFile (which would otherwise follow the symlink).
+    // Realpath-based symlink-escape check. A symlink inside the worktree
+    // pointing outside the worktree would lexically pass the prefix
+    // check above; realpath dereferences it so we can verify the
+    // canonical target is still under the canonical worktree root.
+    // Done before readFile, which would otherwise follow the symlink.
     let absResolvedReal: string | null = null
     try {
       absResolvedReal = await realpath(absResolved)
@@ -1534,15 +1541,15 @@ async function validateFindingPaths(
         id: f.id,
         file: f.file,
         line: `- File: ${f.file} (finding ${f.id}; not readable under worktree)`,
-        detail: `Finding ${f.id} cited file ${absResolved} is not readable: ${(err as Error).message.slice(0, 100)}`,
+        detail: `Finding ${f.id} cited file ${absResolved} is not readable: ${errorDetail(err, FILE_READ_DETAIL_MAX_CHARS)}`,
       }
     }
     const lineCount = countLines(text)
     const range = parseLineRange(f.line)
-    // M9 commit 18 bp#3 follow-up: reject impossible line citations.
-    // The persona-response parser accepts any digits (`/^\d+(?:-\d+)?$/`),
-    // so `Line: 0` would survive without this lower-bound guard. Lines
-    // are 1-indexed in REVIEW.md citations.
+    // Reject impossible line citations. The persona-response parser
+    // accepts any digits (`/^\d+(?:-\d+)?$/`), so `Line: 0` would
+    // survive without this lower-bound guard. Lines are 1-indexed in
+    // REVIEW.md citations.
     if (!Number.isInteger(range.start) || range.start < 1) {
       return {
         code: 'review_finding_line_out_of_range',
@@ -1705,10 +1712,5 @@ function collectToolNames(agent: AgentDefinition): readonly string[] {
 
 // --- intentionally exported for tests + future commits ------------
 
-export {
-  // The fingerprint helper is re-exported so commit 10's remediation
-  // coordinator can compute fingerprints over carry-forward findings
-  // without re-importing review-report.ts directly.
-  fingerprintFinding,
-}
+export { fingerprintFinding }
 export type { ReviewFinding, ReviewReportData, ReviewVerdict, ReviewSeverity }

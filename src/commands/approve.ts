@@ -35,7 +35,9 @@ import {
   isPhase,
   PHASES,
   type GateFile,
+  type LoggedEvent,
   type Phase,
+  type PhaseEvent,
 } from '../state/schemas.ts'
 import { GateLoadError } from '../state/errors.ts'
 import { _validateArtifactSyncPath } from '../state/gates.ts'
@@ -85,7 +87,7 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   const runId = await readActiveRun(ctx.paths.activeRun)
   if (runId === null) {
     throw new Error(
-      'no active run found. Initialize a run first (M5 will provide `code-oz run`; for now use `initRun()` from src/state/run.ts in your code).',
+      'no active run found. Start a run first with `code-oz run`, then approve the current phase.',
     )
   }
 
@@ -218,9 +220,8 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     }
   }
 
-  // VERIFY-specific approval (M8 decision 7 + fix 4, narrowed by M9
-  // commit 1): validate VERIFY.md and confirm verdict=pass BEFORE
-  // approveGate writes GATE_VERIFY_PASSED.json. Worktree removal moved
+  // VERIFY-specific approval: validate VERIFY.md and confirm verdict=pass
+  // BEFORE approveGate writes GATE_VERIFY_PASSED.json. Worktree removal moved
   // to REVIEW-approve (preApproveReviewHook) per CODEX_RESPONSE_M9.md
   // decision 5 + risk #1: REVIEW needs the worktree alive to read
   // changed files, so cleanup-on-VERIFY-approve would leave nothing
@@ -231,8 +232,7 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     })
   }
 
-  // REVIEW-specific approval (M9 commit 1 substrate + M9 commit 13
-  // bp#1 hardening): validate REVIEW.md + verdict=ready, confirm the
+  // REVIEW-specific approval: validate REVIEW.md + verdict=ready, confirm the
   // matching review_resolved event exists, then remove the worktree.
   // The hook fails the gate write on artifact validation failure or
   // removal failure; the user can repair the artifact / fs state and
@@ -277,15 +277,14 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
 }
 
 /**
- * VERIFY-specific pre-approval hook (M8 + M9 commit 1 narrowing):
+ * VERIFY-specific pre-approval hook:
  *   1. Read VERIFY.md from disk
  *   2. Parse it; reject malformed
  *   3. Confirm verdict=pass; reject otherwise (a failed VERIFY does not
  *      get approved — the orchestrator schedules attempt N+1)
  *
- * Worktree removal moved to preApproveReviewHook (M9 commit 1 substrate)
- * — REVIEW needs the worktree alive to read changed files. SHIP cleanup
- * beyond REVIEW is W4.
+ * Worktree removal moved to preApproveReviewHook because REVIEW needs the
+ * worktree alive to read changed files. SHIP cleanup beyond REVIEW is W4.
  *
  * Exported for direct testing.
  */
@@ -334,8 +333,7 @@ export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Pr
 }
 
 /**
- * REVIEW-specific pre-approval hook (M9 commit 1 substrate + M9 commit 13
- * bp#1 hardening):
+ * REVIEW-specific pre-approval hook:
  *
  *   1. Read REVIEW.md from disk; reject malformed (mirrors
  *      preApproveVerifyHook's contract for VERIFY.md).
@@ -449,13 +447,15 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
   //    a defense-in-depth check below).
   const attempt = reviewData.upstreamRefs.attempt
   const buildProviderEvent = events
-    .filter((e) => e.type === 'build_provider_recorded')
-    .reverse()
-    .find(
-      (e) =>
-        (e as { readonly taskId?: unknown }).taskId === reviewData.upstreamRefs.taskId &&
-        (e as { readonly attempt?: unknown }).attempt === attempt,
+    .filter((e) =>
+      isBuildProviderRecordedEventFor(
+        e,
+        reviewData.upstreamRefs.taskId,
+        attempt,
+      ),
     )
+    .reverse()
+    .at(0)
   if (buildProviderEvent === undefined) {
     throw new Error(
       [
@@ -511,35 +511,48 @@ function sha256Of(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
-interface ResolvedReviewEventShape {
-  readonly type: 'review_resolved'
-  readonly runId: string
-  readonly taskId: string
-  readonly attempt: number
-  readonly finalRound: number
-  readonly finalScore: number
-  readonly reviewReportSha256: string
-}
+type ResolvedReviewEventShape = Extract<PhaseEvent, { readonly type: 'review_resolved' }>
 
 function findReviewResolvedFor(
-  events: readonly { readonly type: string }[],
+  events: readonly LoggedEvent[],
   runId: string,
   taskId: string,
   attempt: number,
 ): ResolvedReviewEventShape | null {
   for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i] as Record<string, unknown>
-    if (
-      e.type === 'review_resolved' &&
-      e.runId === runId &&
-      e.taskId === taskId &&
-      e.attempt === attempt &&
-      typeof e.reviewReportSha256 === 'string'
-    ) {
-      return e as unknown as ResolvedReviewEventShape
-    }
+    const e = events[i]!
+    if (isReviewResolvedEventFor(e, runId, taskId, attempt)) return e
   }
   return null
+}
+
+function isReviewResolvedEventFor(
+  event: LoggedEvent,
+  runId: string,
+  taskId: string,
+  attempt: number,
+): event is ResolvedReviewEventShape {
+  return (
+    isKnownPhaseEvent(event) &&
+    event.type === 'review_resolved' &&
+    event.runId === runId &&
+    event.taskId === taskId &&
+    event.attempt === attempt &&
+    typeof event.reviewReportSha256 === 'string'
+  )
+}
+
+function isBuildProviderRecordedEventFor(
+  event: LoggedEvent,
+  taskId: string,
+  attempt: number,
+): event is Extract<PhaseEvent, { readonly type: 'build_provider_recorded' }> {
+  return (
+    isKnownPhaseEvent(event) &&
+    event.type === 'build_provider_recorded' &&
+    event.taskId === taskId &&
+    event.attempt === attempt
+  )
 }
 
 async function defaultConfirm(message: string): Promise<boolean> {

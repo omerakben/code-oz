@@ -446,8 +446,8 @@ export type PhaseEvent =
     }
   // M9 substrate: durable BUILD provider/family/model record. Emitted
   // immediately after build_completed. REVIEW's invocation-time check
-  // (M9 commit 7) reads the latest build_provider_recorded for the
-  // (runId, taskId) pair and compares its `family` to the reviewer
+  // reads the latest build_provider_recorded for the (runId, taskId)
+  // pair and compares its `family` to the reviewer
   // adapter's family. provider is the AgentProvider id from the BUILD
   // agent's frontmatter; family is the resolved ProviderFamily via
   // src/providers/families.ts familyOf(); model is the agent's optional
@@ -590,11 +590,10 @@ export type PhaseEvent =
        *  exceed findingsRaised when prior-round findings are resolved. */
       readonly findingsResolved: number
       /** 64-char lower-case hex of the canonical REVIEW.md content
-       *  written for this round. M9 commit 13 fs#1: kickoff Decision 10
-       *  says a round is complete only when canonical REVIEW.md AND
-       *  the round-completed event agree. The sha lets resume probes
-       *  verify that agreement instead of trusting event presence
-       *  alone. */
+       *  written for this round. Kickoff Decision 10 says a round is
+       *  complete only when canonical REVIEW.md AND the round-completed
+       *  event agree. The sha lets resume probes verify that agreement
+       *  instead of trusting event presence alone. */
       readonly reviewReportSha256: string
     }
   | {

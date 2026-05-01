@@ -1,8 +1,8 @@
-// Per-round atomic resume primitives for runReview (M9 commit 7).
+// Per-round atomic resume primitives for runReview.
 //
 // Three concerns live here, each scoped to a single (round, attempt-within-
-// round) coordinate so commit 10's multi-round orchestrator can reuse them
-// without re-deriving paths:
+// round) coordinate so the multi-round orchestrator can reuse them without
+// re-deriving paths:
 //
 //   1. Path naming. Drafts are persisted under
 //      `.code-oz/runs/<runId>/review-drafts/round-<N>-attempt-<M>.md`.
@@ -32,7 +32,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
-import type { LoggedEvent } from '../state/schemas.ts'
+import type { LoggedEvent, PhaseEvent } from '../state/schemas.ts'
 import { isKnownPhaseEvent } from '../state/schemas.ts'
 
 // --- canonical paths -----------------------------------------------
@@ -109,8 +109,8 @@ export interface ResumeProbeInput {
   readonly attempt: number
   readonly round: number
   /** Optional path to the canonical REVIEW.md the orchestrator is about
-   *  to check. M9 commit 13 fs#2: when a review_round_completed event
-   *  is present for the active round, the probe verifies its
+   *  to check. When a review_round_completed event is present for the
+   *  active round, the probe verifies its
    *  reviewReportSha256 matches the on-disk artifact. Without this
    *  verification, an orphan event whose canonical artifact was
    *  overwritten or never written would falsely suppress the
@@ -123,7 +123,7 @@ export interface ResumeProbeResult {
   /** True iff a partial draft from a prior session exists for the round
    *  WITHOUT a matching review_round_completed event, OR a matching
    *  event exists but its reviewReportSha256 does not match the
-   *  on-disk REVIEW.md (M9 commit 13 fs#2). */
+   *  on-disk REVIEW.md. */
   readonly mismatched: boolean
   /** When mismatched, the path of the partial draft for the operator to
    *  inspect. Undefined when the round is fresh. */
@@ -153,33 +153,50 @@ export async function probeReviewResume(input: ResumeProbeInput): Promise<Resume
   if (draftText === null) {
     return { mismatched: false }
   }
-  const known = input.events.filter(isKnownPhaseEvent)
-  const completed = known.find(
-    (e) =>
-      e.type === 'review_round_completed' &&
-      e.taskId === input.taskId &&
-      e.attempt === input.attempt &&
-      e.round === input.round,
+  const completed = input.events.find((event) =>
+    isReviewRoundCompletedEventFor(
+      event,
+      input.taskId,
+      input.attempt,
+      input.round,
+    ),
   )
   if (completed === undefined) {
     return { mismatched: true, draftPath, reason: 'no_completed_event' }
   }
-  // M9 commit 13 fs#2: verify the event's reviewReportSha256 matches
-  // the on-disk canonical REVIEW.md. If not, the artifact was
-  // overwritten or never written — treat as mismatch.
+  // Verify the event's reviewReportSha256 matches the on-disk canonical
+  // REVIEW.md. If not, the artifact was overwritten or never written.
   if (input.reviewReportPath !== undefined) {
     const onDisk = await readIfExists(input.reviewReportPath)
     if (onDisk === null) {
       return { mismatched: true, draftPath, reason: 'sha_mismatch' }
     }
-    const eventSha = (completed as { readonly reviewReportSha256?: unknown })
-      .reviewReportSha256
     const onDiskSha = sha256Of(onDisk)
-    if (typeof eventSha !== 'string' || eventSha !== onDiskSha) {
+    if (completed.reviewReportSha256 !== onDiskSha) {
       return { mismatched: true, draftPath, reason: 'sha_mismatch' }
     }
   }
   return { mismatched: false }
+}
+
+type ReviewRoundCompletedEvent = Extract<
+  PhaseEvent,
+  { readonly type: 'review_round_completed' }
+>
+
+function isReviewRoundCompletedEventFor(
+  event: LoggedEvent,
+  taskId: string,
+  attempt: number,
+  round: number,
+): event is ReviewRoundCompletedEvent {
+  return (
+    isKnownPhaseEvent(event) &&
+    event.type === 'review_round_completed' &&
+    event.taskId === taskId &&
+    event.attempt === attempt &&
+    event.round === round
+  )
 }
 
 async function readIfExists(path: string): Promise<string | null> {

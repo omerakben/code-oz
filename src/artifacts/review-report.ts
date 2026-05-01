@@ -13,8 +13,7 @@
 //     ## Cap status (round count + cap-exhausted flag), F-NNN id
 //     assignment (fingerprint-based; ping-pong reopen).
 //
-// Canonical verdict rule (locked, decision 3 + the M9 commit 1 strict
-// fix-first lock):
+// Canonical verdict rule (locked, decision 3 + strict fix-first rule):
 //   1. Any current finding with severity=block → verdict='block'.
 //   2. Otherwise, any current finding with severity in {block, fix-first}
 //      whose roundResolved === 'unresolved', OR the persona's score < 6
@@ -25,7 +24,7 @@
 // rounds + max 4 BUILD attempts as TWO MONOTONIC GLOBAL COUNTERS scoped
 // to (runId, taskId). This module records cap-exhaustion at the REVIEW
 // level (round 4 reached without ready exit). VERIFY-cap-during-review
-// is the orchestrator's concern (M9 commit 10).
+// is the orchestrator's concern.
 //
 // Deleted-file findings rejected in M9 (no locked path-relativity
 // convention yet); reviewer must cite added/modified files only.
@@ -67,9 +66,19 @@ export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number]
 /** CLAUDE.md non-negotiable rule 6: max 4 rounds, exit on score≥6 + verdict=ready. */
 export const REVIEW_ROUND_CAP = 4
 export const REVIEW_SCORE_MIN = 6
+export const REVIEW_SCORE_MAX = 10
 export const REVIEW_TITLE_MAX_CHARS = 120
 export const REVIEW_RECOMMENDATION_MAX_CHARS = 500
 export const REVIEW_REPAIR_OFFENDING_LINES_MAX = 5
+export const REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS = 200
+
+export function isReviewSeverity(value: string): value is ReviewSeverity {
+  return (REVIEW_SEVERITIES as readonly string[]).includes(value)
+}
+
+export function isReviewVerdict(value: string): value is ReviewVerdict {
+  return (REVIEW_VERDICTS as readonly string[]).includes(value)
+}
 
 export interface ReviewUpstreamRefs {
   readonly buildReportPath: string
@@ -345,8 +354,8 @@ export function parseReviewReport(
   }
 
   // fix-first / block lock: if Final verdict=ready, no finding may carry
-  // severity in {block, fix-first} with roundResolved=unresolved (M9 commit
-  // 1 strict rule, locked in REVIEW.md).
+  // severity in {block, fix-first} with roundResolved=unresolved
+  // (strict rule locked in REVIEW.md).
   if (findings && score && score.finalVerdict === 'ready') {
     for (const f of findings) {
       if (
@@ -721,7 +730,17 @@ function parseRoundTimeline(
     const timestamp = match[2]!
     const findingsRaised = Number.parseInt(match[3]!, 10)
     const score = Number.parseInt(match[4]!, 10)
-    const verdict = match[5]! as ReviewVerdict
+    const verdict = match[5]!
+    if (!isReviewVerdict(verdict)) {
+      issues.push({
+        file,
+        code: 'review_round_grammar',
+        rule:
+          'Round timeline verdict must be one of: ready, needs-revision, block',
+        detail: `got ${verdict}`,
+      })
+      return null
+    }
     if (round !== i + 1) {
       issues.push({
         file,
@@ -741,11 +760,11 @@ function parseRoundTimeline(
       })
       return null
     }
-    if (score < 0 || score > 10) {
+    if (score < 0 || score > REVIEW_SCORE_MAX) {
       issues.push({
         file,
         code: 'review_round_grammar',
-        rule: 'Round timeline.score must be an integer in [0, 10]',
+        rule: `Round timeline.score must be an integer in [0, ${REVIEW_SCORE_MAX}]`,
         detail: `got ${score}`,
       })
       return null
@@ -843,7 +862,7 @@ function parseFindings(
       })
       return null
     }
-    if (!(REVIEW_SEVERITIES as readonly string[]).includes(severity)) {
+    if (!isReviewSeverity(severity)) {
       issues.push({
         file,
         code: 'review_severity_invalid',
@@ -923,10 +942,10 @@ function parseFindings(
       }
       roundResolved = r
     }
-    // unresolved + severity ∈ {block, fix-first} is the strict rule
-    // M9 commit 1 locked. The cross-section invariant in parseReviewReport
-    // catches this at exit; we record the finding shape here and let the
-    // caller's exit check raise review_unresolved_blocker.
+    // unresolved + severity in {block, fix-first} is the strict rule.
+    // The cross-section invariant in parseReviewReport catches this at
+    // exit; we record the finding shape here and let the caller's exit
+    // check raise review_unresolved_blocker.
     if (changedFilePaths !== undefined && !changedFilePaths.includes(filePath)) {
       issues.push({
         file,
@@ -944,7 +963,7 @@ function parseFindings(
         title,
         file: filePath,
         line,
-        severity: severity as ReviewSeverity,
+        severity,
         recommendation,
         roundRaised,
         roundResolved,
@@ -983,16 +1002,16 @@ function parseScore(
     return null
   }
   const finalScore = Number.parseInt(finalScoreStr, 10)
-  if (!Number.isInteger(finalScore) || finalScore < 0 || finalScore > 10) {
+  if (!Number.isInteger(finalScore) || finalScore < 0 || finalScore > REVIEW_SCORE_MAX) {
     issues.push({
       file,
       code: 'review_score_grammar',
-      rule: 'Score.Final score must be an integer in [0, 10]',
+      rule: `Score.Final score must be an integer in [0, ${REVIEW_SCORE_MAX}]`,
       detail: finalScoreStr,
     })
     return null
   }
-  if (!(REVIEW_VERDICTS as readonly string[]).includes(finalVerdictStr)) {
+  if (!isReviewVerdict(finalVerdictStr)) {
     issues.push({
       file,
       code: 'review_verdict_invalid',
@@ -1004,7 +1023,7 @@ function parseScore(
   return Object.freeze({
     roundCount,
     finalScore,
-    finalVerdict: finalVerdictStr as ReviewVerdict,
+    finalVerdict: finalVerdictStr,
     exitReason,
   })
 }
@@ -1222,7 +1241,7 @@ export function canonicalizeFindings(
 
 /**
  * Computes the orchestrator-owned verdict per CODEX_RESPONSE_M9.md
- * decision 3 + the M9 commit 1 strict fix-first lock.
+ * decision 3 + the strict fix-first rule.
  *
  * Priority order:
  *   1. Any current finding with severity=block AND roundResolved=unresolved
@@ -1287,8 +1306,8 @@ export interface BuildReviewCarryForwardInput {
 
 /**
  * Build a typed `Source: review-needs-revision` carry-forward block
- * suitable for feeding into BUILD attempt N+1 (M9 commit 10's
- * remediation coordinator). Mirror of restart-policy.prepareCarryForward
+ * suitable for feeding into BUILD attempt N+1. Mirror of
+ * restart-policy.prepareCarryForward
  * for REVIEW exits — produces the same BuildReportCarryForward shape so
  * BUILD's existing `attempt > 1` validation accepts either source.
  *
@@ -1323,14 +1342,14 @@ export function serializeReviewCarryForward(
       `serializeReviewCarryForward: priorAttempt must be ≥ 1; got ${input.priorAttempt}`,
     )
   }
-  if (input.summary.length > 200) {
+  if (input.summary.length > REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS) {
     throw new Error(
-      `serializeReviewCarryForward: summary exceeds 200 characters (got ${input.summary.length})`,
+      `serializeReviewCarryForward: summary exceeds ${REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS} characters (got ${input.summary.length})`,
     )
   }
-  if (input.constraint.length > 200) {
+  if (input.constraint.length > REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS) {
     throw new Error(
-      `serializeReviewCarryForward: constraint exceeds 200 characters (got ${input.constraint.length})`,
+      `serializeReviewCarryForward: constraint exceeds ${REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS} characters (got ${input.constraint.length})`,
     )
   }
   if (!/^[0-9a-f]{64}$/.test(input.reviewReportSha256)) {

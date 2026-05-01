@@ -41,6 +41,13 @@ export interface EventLogPaths {
 }
 
 const SHA256_REGEX = /^[0-9a-f]{64}$/
+const REVIEW_ROUND_MIN = 1
+const REVIEW_ROUND_CAP = 4
+const REVIEW_SCORE_MIN = 0
+const REVIEW_SCORE_READY_MIN = 6
+const REVIEW_SCORE_MAX = 10
+const REVIEW_VERDICTS = ['ready', 'needs-revision', 'block'] as const
+const REVIEW_BLOCK_REASONS = ['block', 'cap_exhausted'] as const
 
 /**
  * Validate an in-memory event object against the v1 schema. Returns null when
@@ -819,28 +826,37 @@ export function validateEvent(
       const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_round_completed.taskId', line)
       if (tIssue) return tIssue
       // round must be 1..4 (CLAUDE.md rule 6).
-      if (typeof e.round !== 'number' || !Number.isInteger(e.round) || e.round < 1 || e.round > 4) {
+      if (
+        typeof e.round !== 'number' ||
+        !Number.isInteger(e.round) ||
+        e.round < REVIEW_ROUND_MIN ||
+        e.round > REVIEW_ROUND_CAP
+      ) {
         return {
           file,
           code: 'event_invalid_value',
-          rule: 'review_round_completed.round must be an integer in [1, 4]',
+          rule: `review_round_completed.round must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
           detail: `got ${JSON.stringify(e.round)}`,
           line,
         }
       }
       // score must be 0..10 inclusive.
-      if (typeof e.score !== 'number' || !Number.isInteger(e.score) || e.score < 0 || e.score > 10) {
+      if (
+        typeof e.score !== 'number' ||
+        !Number.isInteger(e.score) ||
+        e.score < REVIEW_SCORE_MIN ||
+        e.score > REVIEW_SCORE_MAX
+      ) {
         return {
           file,
           code: 'event_invalid_value',
-          rule: 'review_round_completed.score must be an integer in [0, 10]',
+          rule: `review_round_completed.score must be an integer in [${REVIEW_SCORE_MIN}, ${REVIEW_SCORE_MAX}]`,
           detail: `got ${JSON.stringify(e.score)}`,
           line,
         }
       }
-      const allowedVerdicts = ['ready', 'needs-revision', 'block'] as const
-      if (typeof e.verdict !== 'string' || !(allowedVerdicts as readonly string[]).includes(e.verdict)) {
-        return enumInvalid(file, 'review_round_completed.verdict', allowedVerdicts, e.verdict, line)
+      if (typeof e.verdict !== 'string' || !(REVIEW_VERDICTS as readonly string[]).includes(e.verdict)) {
+        return enumInvalid(file, 'review_round_completed.verdict', REVIEW_VERDICTS, e.verdict, line)
       }
       const raisedIssue = nonNegativeInteger(
         file, e.findingsRaised, 'review_round_completed.findingsRaised', line,
@@ -850,8 +866,8 @@ export function validateEvent(
         file, e.findingsResolved, 'review_round_completed.findingsResolved', line,
       )
       if (resolvedIssue) return resolvedIssue
-      // M9 commit 13 fs#2: reviewReportSha256 is required so resume
-      // probes can verify event/artifact agreement.
+      // reviewReportSha256 is required so resume probes can verify
+      // event/artifact agreement.
       const reportIssue = idMatches(
         file, e.reviewReportSha256, SHA256_REGEX, 'review_round_completed.reviewReportSha256', line,
       )
@@ -867,22 +883,32 @@ export function validateEvent(
       if (aIssue) return aIssue
       const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_resolved.taskId', line)
       if (tIssue) return tIssue
-      if (typeof e.finalRound !== 'number' || !Number.isInteger(e.finalRound) || e.finalRound < 1 || e.finalRound > 4) {
+      if (
+        typeof e.finalRound !== 'number' ||
+        !Number.isInteger(e.finalRound) ||
+        e.finalRound < REVIEW_ROUND_MIN ||
+        e.finalRound > REVIEW_ROUND_CAP
+      ) {
         return {
           file,
           code: 'event_invalid_value',
-          rule: 'review_resolved.finalRound must be an integer in [1, 4]',
+          rule: `review_resolved.finalRound must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
           detail: `got ${JSON.stringify(e.finalRound)}`,
           line,
         }
       }
       // finalScore must be >= 6 for review_resolved (CLAUDE.md rule 6
       // exit condition: score≥6 AND verdict=ready).
-      if (typeof e.finalScore !== 'number' || !Number.isInteger(e.finalScore) || e.finalScore < 6 || e.finalScore > 10) {
+      if (
+        typeof e.finalScore !== 'number' ||
+        !Number.isInteger(e.finalScore) ||
+        e.finalScore < REVIEW_SCORE_READY_MIN ||
+        e.finalScore > REVIEW_SCORE_MAX
+      ) {
         return {
           file,
           code: 'event_invalid_value',
-          rule: 'review_resolved.finalScore must be an integer in [6, 10] (rule 6 exit condition)',
+          rule: `review_resolved.finalScore must be an integer in [${REVIEW_SCORE_READY_MIN}, ${REVIEW_SCORE_MAX}] (rule 6 exit condition)`,
           detail: `got ${JSON.stringify(e.finalScore)}`,
           line,
         }
@@ -902,15 +928,19 @@ export function validateEvent(
       if (aIssue) return aIssue
       const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_blocked.taskId', line)
       if (tIssue) return tIssue
-      const allowedReasons = ['block', 'cap_exhausted'] as const
-      if (typeof e.reason !== 'string' || !(allowedReasons as readonly string[]).includes(e.reason)) {
-        return enumInvalid(file, 'review_blocked.reason', allowedReasons, e.reason, line)
+      if (typeof e.reason !== 'string' || !(REVIEW_BLOCK_REASONS as readonly string[]).includes(e.reason)) {
+        return enumInvalid(file, 'review_blocked.reason', REVIEW_BLOCK_REASONS, e.reason, line)
       }
-      if (typeof e.finalRound !== 'number' || !Number.isInteger(e.finalRound) || e.finalRound < 1 || e.finalRound > 4) {
+      if (
+        typeof e.finalRound !== 'number' ||
+        !Number.isInteger(e.finalRound) ||
+        e.finalRound < REVIEW_ROUND_MIN ||
+        e.finalRound > REVIEW_ROUND_CAP
+      ) {
         return {
           file,
           code: 'event_invalid_value',
-          rule: 'review_blocked.finalRound must be an integer in [1, 4]',
+          rule: `review_blocked.finalRound must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
           detail: `got ${JSON.stringify(e.finalRound)}`,
           line,
         }

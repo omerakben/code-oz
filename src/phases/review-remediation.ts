@@ -1,4 +1,4 @@
-// REVIEW remediation coordinator (M9 commit 10).
+// REVIEW remediation coordinator.
 //
 // Decides what happens after a REVIEW round N exits with verdict
 // `needs-revision`. NOT scheduleAttemptNPlus1 (kickoff Decision 1):
@@ -35,6 +35,7 @@ import type { LoggedEvent } from '../state/schemas.ts'
 import { isKnownPhaseEvent } from '../state/schemas.ts'
 import {
   serializeReviewCarryForward,
+  REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS,
   REVIEW_ROUND_CAP,
   type ReviewFinding,
 } from '../artifacts/review-report.ts'
@@ -42,8 +43,7 @@ import type { BuildReportCarryForward } from '../artifacts/build-report.ts'
 import { MAX_BUILD_ATTEMPTS } from './restart-policy.ts'
 
 /** Locked at MAX_BUILD_ATTEMPTS (4) per restart-policy.ts. Re-exported
- *  so the test module + commit 11 e2e can import without pulling
- *  restart-policy.ts directly. */
+ *  so tests can import without pulling restart-policy.ts directly. */
 export const BUILD_ATTEMPT_CAP = MAX_BUILD_ATTEMPTS
 
 /** Locked at REVIEW_ROUND_CAP (4) per CLAUDE.md non-negotiable rule 6.
@@ -181,11 +181,11 @@ export function decideReviewRemediation(
 }
 
 /**
- * Synthesizes a 200-char-bounded summary + constraint pair from a set
+ * Synthesizes a bounded summary + constraint pair from a set
  * of findings. Selects unresolved block / fix-first findings (the ones
  * that gate ready), formats them into a compact summary listing ids
- * and a constraint joining recommendations. Both fields are clipped at
- * 200 chars per BUILD_REPORT.md grammar.
+ * and a constraint joining recommendations. Both fields are clipped to
+ * REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS per BUILD_REPORT.md grammar.
  *
  * The orchestrator owns this synthesis (kickoff Decision 6: timeline +
  * orchestrator-shaped fields belong to the orchestrator). The persona's
@@ -212,11 +212,11 @@ export function synthesizeRemediationDirective(
   const ids = blocking.map((f) => f.id).join(', ')
   const summary = clip(
     `${blocking.length} unresolved finding(s): ${ids}; see REVIEW.md`,
-    200,
+    REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS,
   )
   const constraint = clip(
     blocking.map((f) => `${f.id}: ${f.recommendation}`).join('; '),
-    200,
+    REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS,
   )
   return { summary, constraint }
 }
