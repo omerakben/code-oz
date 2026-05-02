@@ -165,11 +165,19 @@ shape and design rationale live in
 | `codex`  | `chatgpt-cli-oauth`        | every phase                                                                  |
 | `gemini` | `gemini-stub`              | none — stub provider; running it surfaces `provider_gemini_not_yet_supported` at runtime today, and `loader_provider_phase_not_eligible` at agent-load time as of M11 |
 | `fake`   | `in-process-fake`          | every phase (test runtime supports all)                                      |
+| `xai`    | `xai-api-key`              | every phase (`XAI_API_KEY` required at invoke; explicit model binding required via persona frontmatter or `company.<role>.model`)                                  |
 
 "Eligible for phase X" means *the provider may run an agent declared with
 `phase: X`*. It does not mean phase X's runtime exists — SHIP and AUDIT
 remain stubbed in v0.1, and exercising them surfaces those stubs as the
 actionable error.
+
+For `xai`, "eligible" also assumes the upstream API has not changed shape
+since PE-1 shipped. Adapter-level failure modes (missing key, missing
+model, network / 4xx / 5xx, malformed JSON) flow through the standard
+`ProviderError` plumbing; see § "Auth model (v0.1)" above and
+[`docs/references/provider-contract.md`](../references/provider-contract.md)
+§ "Auth model — subprocess delegation + API-key transmission (v0.1)".
 
 ### What M11 does
 
