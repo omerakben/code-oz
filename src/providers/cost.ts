@@ -22,7 +22,6 @@
 import { providerError } from './errors.ts'
 import { isKnownPhaseEvent, type LoggedEvent, type Phase } from '../state/schemas.ts'
 import type { CodeOzConfig } from '../config/schema.ts'
-import { canonicalRoleFromAgent } from '../agents/role.ts'
 import type { PreparedProviderRequest, ProviderFile, ProviderRequest } from './types.ts'
 
 const CHARS_PER_TOKEN_UPPER_BOUND = 4
@@ -123,16 +122,18 @@ export function summarizeBudgetUse(
   let perPhaseProviderCalls = 0
   let globalProviderCalls = 0
 
-  // FIFO per-phase queue of pending tokensEstimate values. agent_completed
-  // for the same phase shifts the head and replaces the estimate with
-  // tokensUsed (when present) or keeps the estimate (when absent).
-  const pendingByPhase = new Map<Phase, number[]>()
-  // M13 (commit 4): mirror per-phase FIFO discipline at the role
-  // dimension. The wrapper holds a per-run lock across invoke+complete,
-  // so the order in which roles enter pendingByRole matches the order
-  // in which their completions arrive — the head of the queue is the
-  // earliest in-flight call for that role.
-  const pendingByRole = new Map<string, number[]>()
+  // FIFO per-phase queue. Each entry stores the recorded
+  // `tokensEstimate` AND the explicit `agent_invoked.role` (if any) so
+  // that the matching `agent_completed` shift recovers the same role
+  // identity without re-deriving via `canonicalRoleFromAgent`. Codex
+  // M13 review block-push #2 closure (CODEX_REVIEW_M13.md): the cost
+  // reducer should not re-canonicalize a name that the writer already
+  // recorded explicitly.
+  interface PendingEntry {
+    readonly estimate: number
+    readonly role: string | undefined
+  }
+  const pendingByPhase = new Map<Phase, PendingEntry[]>()
   const byRoleTokens: Record<string, number> = {}
   const byRoleProviderCalls: Record<string, number> = {}
 
@@ -145,42 +146,29 @@ export function summarizeBudgetUse(
     }
     if (e.type === 'agent_invoked') {
       const queue = pendingByPhase.get(e.phase) ?? []
-      queue.push(e.tokensEstimate)
+      const role = typeof e.role === 'string' && e.role.length > 0 ? e.role : undefined
+      queue.push(Object.freeze({ estimate: e.tokensEstimate, role }))
       pendingByPhase.set(e.phase, queue)
       globalProviderCalls++
       if (e.phase === phase) perPhaseProviderCalls++
-      // M13: role pairing — push when role is present (recorded by the
-      // wrapper at invoke-time from `req.role`).
-      if (typeof e.role === 'string' && e.role.length > 0) {
-        const rq = pendingByRole.get(e.role) ?? []
-        rq.push(e.tokensEstimate)
-        pendingByRole.set(e.role, rq)
-        byRoleProviderCalls[e.role] = (byRoleProviderCalls[e.role] ?? 0) + 1
+      if (role !== undefined) {
+        byRoleProviderCalls[role] = (byRoleProviderCalls[role] ?? 0) + 1
       }
       continue
     }
     if (e.type === 'agent_completed') {
       const queue = pendingByPhase.get(e.phase) ?? []
-      const estimate = queue.shift() ?? 0
-      const cost = e.tokensUsed ?? estimate
+      const head = queue.shift() ?? Object.freeze({ estimate: 0, role: undefined as string | undefined })
+      const cost = e.tokensUsed ?? head.estimate
       globalTokens += cost
       if (e.phase === phase) perPhaseTokens += cost
-      // M13: role pairing — derive role from agent name via the
-      // canonicalizer (Q6 lock kept role off agent_completed). Only
-      // contribute to byRoleTokens when there is a matching pending
-      // entry from a role-tagged invoke; this keeps the role accumulator
-      // symmetric with the invoke side. A completion whose name
-      // canonicalizes to a role but whose invoke did NOT tag a role
-      // (project-local persona, debate opposing turn, etc.) is correctly
-      // excluded from per-role accounting.
-      const role = canonicalRoleFromAgent({ name: e.agent })
-      if (role !== undefined) {
-        const rq = pendingByRole.get(role)
-        if (rq !== undefined && rq.length > 0) {
-          const rEst = rq.shift()!
-          const rCost = e.tokensUsed ?? rEst
-          byRoleTokens[role] = (byRoleTokens[role] ?? 0) + rCost
-        }
+      // The role on the head entry was recorded at invoke time from
+      // `agent_invoked.role` — explicit pairing, not a name lookup.
+      // Project-local personas + synthetic debate opponents have
+      // role=undefined here and contribute only to global / per-phase
+      // accounting (rule 19).
+      if (head.role !== undefined) {
+        byRoleTokens[head.role] = (byRoleTokens[head.role] ?? 0) + cost
       }
       continue
     }
@@ -189,14 +177,12 @@ export function summarizeBudgetUse(
   // Unmatched agent_invoked entries (no agent_completed yet) — count their
   // recorded estimate so a crashed turn still consumes its reserved budget.
   for (const [phaseKey, queue] of pendingByPhase) {
-    for (const est of queue) {
-      globalTokens += est
-      if (phaseKey === phase) perPhaseTokens += est
-    }
-  }
-  for (const [role, queue] of pendingByRole) {
-    for (const est of queue) {
-      byRoleTokens[role] = (byRoleTokens[role] ?? 0) + est
+    for (const entry of queue) {
+      globalTokens += entry.estimate
+      if (phaseKey === phase) perPhaseTokens += entry.estimate
+      if (entry.role !== undefined) {
+        byRoleTokens[entry.role] = (byRoleTokens[entry.role] ?? 0) + entry.estimate
+      }
     }
   }
 

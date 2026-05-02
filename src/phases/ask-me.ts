@@ -425,18 +425,18 @@ async function invokePersona(
     history,
     readySignal: opts.config.readySignal,
   })
+  // M13 (Codex Q9): bundled-role identity for per-role gating. BA is
+  // the canonical DEFINE persona; project-local overrides keep the
+  // name `ba` and continue to gate as `ba`. Computed once per the
+  // M13 review nit #1 closure (CODEX_REVIEW_M13.md).
+  const role = canonicalRoleFromAgent(opts.agent)
   const req: ProviderRequest = {
     agent: opts.agent,
     phase: 'define',
     runId: opts.runId,
     prompt,
     files: [],
-    // M13 (Codex Q9): bundled-role identity for per-role gating. BA is
-    // the canonical DEFINE persona; project-local overrides keep the
-    // name `ba` and continue to gate as `ba`.
-    ...(canonicalRoleFromAgent(opts.agent) !== undefined
-      ? { role: canonicalRoleFromAgent(opts.agent) }
-      : {}),
+    ...(role !== undefined ? { role } : {}),
   }
   const response = await collectProviderResponse(invokeAgent(opts.invokeCtx, req))
   const text = response.content

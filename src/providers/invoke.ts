@@ -165,6 +165,14 @@ export async function* invokeAgent(
             ratio: w.ratio,
             current: w.metric === 'maxWallTimeMinutes' ? Math.floor(w.current) : w.current,
             limit: w.limit,
+            // M13 (Codex review block-push #1, CODEX_REVIEW_M13.md):
+            // persist the role discriminator so per-role warnings
+            // round-trip correctly. The detector returns it; the writer
+            // must propagate it. Without this, per-role warnings are
+            // logged as global warnings and the
+            // `(metric, role ?? "global")` duplicate guard reads the
+            // wrong key on a subsequent run, double-emitting.
+            ...(w.role !== undefined ? { role: w.role } : {}),
           },
           { skipLock: true },
         )

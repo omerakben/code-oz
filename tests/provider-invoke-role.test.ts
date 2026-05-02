@@ -149,3 +149,76 @@ describe('invokeAgent — ProviderRequest.role threading', () => {
     ).rejects.toThrow(/agent_invoked\.role/)
   })
 })
+
+// M13 review block-push #1 + fix-soon #2 closure (CODEX_REVIEW_M13.md):
+// the detector returns SoftBudgetWarning.role, but the writer in
+// invoke.ts must propagate it to the appended budget_warning event.
+// Without this regression test, the writer could silently drop the role
+// (which is what shipped in commit 6 before this closure).
+describe('invokeAgent — budget_warning.role persists round-trip', () => {
+  test('per-role soft warning lands on events.jsonl with role field set', async () => {
+    fake.expect({}).respondWith({ content: 'ok', tokensUsed: 10 })
+
+    // Configure a byRole cap small enough that the next call hits 75%.
+    // tokensEstimate for prompt 'do the thing' is ceil(12/4) = 3.
+    // With cap = 4 and current = 0, next call = 3 -> 3/4 = 0.75 = ratio.
+    const c: InvokeContext = {
+      registry,
+      runPaths: paths,
+      projectRoot,
+      config: {
+        ...DEFAULT_CONFIG,
+        budgets: {
+          ...DEFAULT_CONFIG.budgets,
+          global: {
+            ...DEFAULT_CONFIG.budgets.global,
+            byRole: { builder: { maxTokensEstimate: 4 } },
+          },
+        },
+      } as CodeOzConfig,
+      now: () => '2026-05-01T18:00:00Z',
+    }
+
+    await consumeAll(invokeAgent(c, request({ role: 'builder' })))
+
+    const logged = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const warnings = logged.filter(
+      (e): e is Extract<LoggedEvent, { type: 'budget_warning' }> => e.type === 'budget_warning',
+    )
+    const roleWarning = warnings.find((w) => w.role === 'builder')
+    expect(roleWarning).toBeDefined()
+    expect(roleWarning!.metric).toBe('maxTokensEstimate')
+    expect(roleWarning!.limit).toBe(4)
+  })
+
+  test('global soft warning still omits role (back-compat)', async () => {
+    fake.expect({}).respondWith({ content: 'ok' })
+
+    // Configure a tight global maxTokensEstimate so the global warning
+    // fires at 75%. No byRole cap, so no per-role warning.
+    const c: InvokeContext = {
+      registry,
+      runPaths: paths,
+      projectRoot,
+      config: {
+        ...DEFAULT_CONFIG,
+        budgets: {
+          ...DEFAULT_CONFIG.budgets,
+          global: { ...DEFAULT_CONFIG.budgets.global, maxTokensEstimate: 4 },
+        },
+      } as CodeOzConfig,
+      now: () => '2026-05-01T18:00:00Z',
+    }
+
+    await consumeAll(invokeAgent(c, request({ role: 'builder' })))
+
+    const logged = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const warnings = logged.filter(
+      (e): e is Extract<LoggedEvent, { type: 'budget_warning' }> => e.type === 'budget_warning',
+    )
+    const globalWarning = warnings.find((w) => w.role === undefined)
+    expect(globalWarning).toBeDefined()
+    expect(globalWarning!.metric).toBe('maxTokensEstimate')
+    expect(globalWarning!.role).toBeUndefined()
+  })
+})
