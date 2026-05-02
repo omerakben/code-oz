@@ -31,6 +31,7 @@ import { parseSpec } from '../artifacts/spec.ts'
 import { SpecLoadError, type SpecLoadIssue } from '../artifacts/errors.ts'
 import { composeDefinePrompt, type AskMeTurn } from '../prompts/index.ts'
 import type { ProviderRequest } from '../providers/types.ts'
+import { canonicalRoleFromAgent } from '../agents/role.ts'
 import type { AgentDefinition } from '../agents/schema.ts'
 import type { AskMeConfig } from '../config/schema.ts'
 import type { SpecArtifact } from '../artifacts/spec.ts'
@@ -424,12 +425,18 @@ async function invokePersona(
     history,
     readySignal: opts.config.readySignal,
   })
+  // M13 (Codex Q9): bundled-role identity for per-role gating. BA is
+  // the canonical DEFINE persona; project-local overrides keep the
+  // name `ba` and continue to gate as `ba`. Computed once per the
+  // M13 review nit #1 closure (CODEX_REVIEW_M13.md).
+  const role = canonicalRoleFromAgent(opts.agent)
   const req: ProviderRequest = {
     agent: opts.agent,
     phase: 'define',
     runId: opts.runId,
     prompt,
     files: [],
+    ...(role !== undefined ? { role } : {}),
   }
   const response = await collectProviderResponse(invokeAgent(opts.invokeCtx, req))
   const text = response.content

@@ -226,6 +226,23 @@ export type PhaseEvent =
        *  and earlier readers parse new events identically. M13's
        *  role-cost policy reads this against `budgets.global.priceTable`. */
       readonly model?: string
+      /** M13 (Codex Q9 lock, CODEX_RESPONSE_M13.md, thread 019de672):
+       *  optional CompanyRole identity the wrapper bound from
+       *  `ProviderRequest.role`. Present only when phase logic explicitly
+       *  passed a role (the six bundled-persona invocation sites);
+       *  project-local personas + synthetic debate opponents omit it.
+       *  Validator restricts the value to `M12_COMPANY_ROLES`. Per-role
+       *  budget enforcement and `byRole` soft warnings key off this
+       *  field. */
+      readonly role?: string
+      /** M13 (Codex Q2 + Q4 lock): advisory dollar estimate for the
+       *  upcoming call. Present when `priceTable` (operator-specific) or
+       *  `capabilityOf(provider).costPerMTok` (registry fallback) yields
+       *  a value for the resolved (provider, model). Stored as a finite
+       *  non-negative number — never used to gate calls in M13
+       *  (tokensEstimate stays authoritative); USD enforcement is M14+
+       *  with measurable demand. Display layers may format. */
+      readonly costEstimateUSD?: number
       /** M10 forward-compat correlation. Present only when the call is
        *  inside a debate; the runtime sets it from the debate context.
        *  Consumers ignore unknown fields, so M9 readers are unaffected.
@@ -245,6 +262,16 @@ export type PhaseEvent =
       readonly phase: Phase
       readonly agent: string
       readonly tokensUsed?: number
+      /** M13 (Codex Q2 + scope correction): advisory dollar cost from the
+       *  reported tokensUsed value. **Output-tokens-only semantics** — the
+       *  current Claude adapter reads `usage.output_tokens` and the xAI
+       *  adapter reads `usage.completion_tokens`; neither is full request
+       *  cost. Operators reading this field as full invoice will
+       *  understate spend. Documented in COMPANY.md and the per-role
+       *  budgets contract. Present only when both `tokensUsed` is
+       *  reported AND a price source resolves; missing either yields no
+       *  field. */
+      readonly costActualUSD?: number
       /** M10 forward-compat correlation; mirrors agent_invoked. */
       readonly debateTopic?: string
       readonly debateTurn?: 'opposing' | 'synthesis' | 'continuation'
@@ -361,6 +388,16 @@ export type PhaseEvent =
       readonly ratio: number
       readonly current: number
       readonly limit: number
+      /** M13 (Codex Q8 lock): optional `CompanyRole` discriminator.
+       *  Present when the warning is for a per-role cap under
+       *  `budgets.global.byRole.<role>`; absent when the warning is for
+       *  the existing global cap (back-compat). The duplicate-emit guard
+       *  in `detectBudgetSoftWarnings` becomes
+       *  `(metric, role ?? "global")`. Validator restricts to
+       *  `M12_COMPANY_ROLES`. Note: `maxTurns` and `maxWallTimeMinutes`
+       *  are global-only metrics (no per-role dimension); a `role` value
+       *  paired with either is rejected. */
+      readonly role?: string
     }
   // M7 worktree events (orchestrator-owned).
   | {

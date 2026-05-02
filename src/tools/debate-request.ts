@@ -64,6 +64,7 @@ import type {
   ProviderResponse,
 } from '../providers/types.ts'
 import type { AgentDefinition, AgentPhase } from '../agents/schema.ts'
+import { canonicalRoleFromAgent } from '../agents/role.ts'
 import { buildDebateManifestPreview } from './debate-permissions.ts'
 import { IgnorePolicyError } from './ignore-policy.ts'
 import { appendEvent, readEvents } from '../state/events.ts'
@@ -573,12 +574,22 @@ async function* run(
     { path: briefingRelPath },
     { path: relativeToRoot(responsePath, req.projectRoot) },
   ]
+  // M13 (Codex Q9): the synthesis turn carries the caller's role for
+  // per-role budget accounting. Synthetic opposing turns DO NOT carry
+  // a role (their `opposingReq` above is intentionally role-less, per
+  // Codex risk: "Synthetic opposing turns should carry no role unless
+  // a future milestone creates a real role surface for them"). Caller
+  // resolves through `canonicalRoleFromAgent`, so a project-local
+  // caller outside `M12_COMPANY_ROLES` falls back to no role gating.
+  // Computed once per the M13 review nit #1 closure.
+  const callerRole = canonicalRoleFromAgent(req.caller)
   const synthesisReq: ProviderRequest = {
     agent: req.caller,
     phase: req.phase,
     runId: req.runId,
     prompt: `${synthesisPrompt}\n\n## You wrote BRIEFING.md and received RESPONSE.${opposingSide}.md\n\nAuthor DECISION.md per the schema. The orchestrator will validate dual-verdict frontmatter, the five required H2 sections, rationale length (>= 50 chars substantive), and reject exact-copy rationale.`,
     files: synthesisFiles,
+    ...(callerRole !== undefined ? { role: callerRole } : {}),
   }
   let synthesisContent = ''
   for await (const ev of invokeAgent(ctx, synthesisReq)) {

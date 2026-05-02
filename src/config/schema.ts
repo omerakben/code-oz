@@ -4,22 +4,16 @@ export type Profile = 'greenfield' | 'brownfield'
 
 export type Phase = 'define' | 'plan' | 'build' | 'verify' | 'review' | 'ship' | 'audit'
 
-// M12 (rule 20: role-to-provider routing authority). The shipped roster of
-// company roles. Project-local personas with names outside this constant
-// are NOT routable as company roles in v0.1; the locked list is the single
-// authority. Custom role routing is M16+ only when measurable need is
-// evidenced. Per Codex Decision A flip in CODEX_RESPONSE_M12.md (thread
-// 019de4bb): without the constant, M12 quietly becomes "custom role
-// routing" — a feature the project does not yet earn.
-export const M12_COMPANY_ROLES = [
-  'ba',
-  'lead',
-  'builder',
-  'verifier',
-  'reviewer',
-  'scientist',
-] as const
-export type CompanyRole = (typeof M12_COMPANY_ROLES)[number]
+// M12 (rule 20: role-to-provider routing authority). The shipped roster
+// of company roles is defined in `src/agents/role.ts` (the leaf module
+// that owns role-identity vocabulary, per the M13 review fix-soon #1
+// closure in CODEX_REVIEW_M13.md). Re-exported here for back-compat
+// with every existing consumer (loader, validator, tests). Project-local
+// personas with names outside this constant are NOT routable as company
+// roles in v0.1; the locked list is the single authority. Custom role
+// routing is M16+ only when measurable need is evidenced.
+export { M12_COMPANY_ROLES, type CompanyRole } from '../agents/role.ts'
+import type { CompanyRole } from '../agents/role.ts'
 
 // v0.1 ships `{ provider?, model? }` only. Per Codex Decision B, budgets
 // are M13 and permissions stay persona-shaped; unsupported row keys
@@ -36,6 +30,21 @@ export interface PhaseBudget {
   maxTurns: number
   maxProviderCalls: number
   maxTokensEstimate: number
+}
+
+// M13 (rule 20: per-role budget gating + preflight cost estimates).
+// Per-role overrides under `budgets.global.byRole.<role>`. Layered between
+// per-phase and global checks: a call running on role X consumes the
+// `byRole[X]` cap when present in addition to the existing global / per-phase
+// caps. Codex Q9 lock (CODEX_RESPONSE_M13.md): role identity is bound
+// explicitly via `ProviderRequest.role`; absent role omits per-role gating
+// (project-local personas + synthetic debate opponents fall back to
+// global + per-phase). Codex Blocker 2 lock: `maxTurns` is intentionally
+// absent — the existing `maxTurns` reducer counts `phase_entered`, not
+// agent calls, so a role dimension on it has no event-model meaning.
+export interface ByRoleBudget {
+  maxProviderCalls?: number
+  maxTokensEstimate?: number
 }
 
 export interface GlobalBudget extends PhaseBudget {
@@ -73,8 +82,24 @@ export interface GlobalBudget extends PhaseBudget {
    * are `<provider>:<model>` (e.g. `claude:claude-opus-4-7`). Values are the
    * per-MTok prices from platform.claude.com. Telemetry only — never used
    * for budget enforcement.
+   *
+   * M13 (Codex Q4 lock): the priceTable is the primary authority for
+   * `costEstimateUSD` / `costActualUSD`; the runtime fallback is
+   * `ProviderRegistry.capabilityOf(provider).costPerMTok`. Per Codex
+   * Blocker 3, model-level Claude defaults live here in `priceTable`,
+   * not on provider-level `capabilityOf`.
    */
   priceTable?: Readonly<Record<string, { readonly inputPerMTok: number; readonly outputPerMTok: number }>>
+  /**
+   * M13 (rule 20: per-role budget gating). Optional per-role overrides
+   * keyed by `M12_COMPANY_ROLES`. Absent rows inherit the global caps;
+   * missing field on a present row also inherits. Project-local personas
+   * outside the roster do not gate per-role — global + per-phase still
+   * enforce. Validation rejects non-canonical role keys with
+   * `loader_company_role_unknown` (symmetric with M12 `mergeCompany`
+   * fail-closed).
+   */
+  byRole?: Readonly<Partial<Record<CompanyRole, ByRoleBudget>>>
 }
 
 export interface Budgets {
@@ -151,7 +176,7 @@ export interface CodeOzConfig {
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {
-  version: '0.13.0-alpha.0',
+  version: '0.14.0-alpha.0',
   profile: 'greenfield',
   defaultProvider: 'claude',
   models: {
@@ -168,6 +193,24 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
       toolCallBudgetMultiplier: 1.5,
       maxWallTimeMinutes: 240,
       softWarnAtRatio: 0.75,
+      // M13 (Codex Q4-bis lock + Blocker 3): out-of-box USD telemetry
+      // for the three Claude shipped models. Per-model rates live here
+      // (priceTable is keyed by `<provider>:<model>`); the M11 capability
+      // record has no model dimension and stays without `costPerMTok`.
+      // xAI / Codex / Gemini / Fake stay omitted — Grok prices rotate
+      // fast, Codex is a ChatGPT-CLI subscription rather than API spend,
+      // Gemini is a stub, Fake is the offline test runtime. Operator
+      // overrides via `.code-oz/config.yaml budgets.global.priceTable`.
+      // Source: https://platform.claude.com/docs/en/about-claude/pricing
+      // Lookup date: 2026-05-01
+      priceTable: Object.freeze({
+        'claude:claude-opus-4-7': Object.freeze({ inputPerMTok: 5, outputPerMTok: 25 }),
+        'claude:claude-sonnet-4-6': Object.freeze({ inputPerMTok: 3, outputPerMTok: 15 }),
+        'claude:claude-haiku-4-5-20251001': Object.freeze({
+          inputPerMTok: 1,
+          outputPerMTok: 5,
+        }),
+      }),
     },
     perPhase: {
       define: { maxTurns: 30, maxProviderCalls: 15, maxTokensEstimate: 300_000 },

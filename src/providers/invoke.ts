@@ -37,7 +37,13 @@
 
 import { ProviderError, providerError } from './errors.ts'
 import { buildManifest } from './manifest.ts'
-import { assertWithinBudget, detectBudgetSoftWarnings } from './cost.ts'
+import {
+  actualCostUSD,
+  assertWithinBudget,
+  detectBudgetSoftWarnings,
+  estimateCostUSD,
+  type CostEstimateContext,
+} from './cost.ts'
 import {
   appendEvent,
   readEvents,
@@ -88,6 +94,23 @@ export async function* invokeAgent(
   // perturbs run state.
   const prepared = await buildManifest(req, { projectRoot: ctx.projectRoot })
 
+  // M13 (Codex Q4 lock): build the cost-source resolver once. priceTable
+  // wins (operator, model-level); registry capability is the per-provider
+  // fallback. The registry throws when asked about an unregistered
+  // provider id; we tolerate that by returning undefined, which the
+  // helpers map to "no USD field" (Q3 token-only fallback).
+  const costContext: CostEstimateContext = {
+    priceTable: ctx.config.budgets.global.priceTable,
+    capabilityOf: (provider: string) => {
+      try {
+        return ctx.registry.capabilityOf(provider as ProviderId)
+      } catch {
+        return undefined
+      }
+    },
+  }
+  const costEstimate = estimateCostUSD(req, prepared, costContext)
+
   // 2. Short-lock pre-call: read events, assert budget, append agent_invoked.
   // A ProviderError from the budget check is caught after lock release and
   // turned into NEEDS_INTERVENTION + intervention.
@@ -111,11 +134,22 @@ export async function* invokeAgent(
           // events.jsonl carries durable provenance for cost/audit
           // tooling. `prepared.model` is `req.model ?? req.agent.model`.
           ...(prepared.model !== undefined ? { model: prepared.model } : {}),
+          // M13 (Codex Q9 lock): record the explicit CompanyRole
+          // identity when phase logic supplied one. The six bundled-role
+          // call sites populate this from `canonicalRoleFromAgent`;
+          // synthetic debate opponents and project-local personas omit
+          // it (their invocations still count against global / per-phase
+          // budgets, just not per-role).
+          ...(req.role !== undefined ? { role: req.role } : {}),
           manifest: prepared.manifest,
           filesSent: prepared.metrics.filesSent,
           bytesSent: prepared.metrics.bytesSent,
           tokensEstimate: prepared.metrics.tokensEstimate,
           fieldsRemovedByScope: prepared.metrics.fieldsRemovedByScope,
+          // M13 (Codex Q2 + Q4 lock): advisory pre-call USD estimate.
+          // Omitted when no price source resolves — Q3 token-only
+          // fallback ensures missing cost data never blocks a call.
+          ...(costEstimate !== undefined ? { costEstimateUSD: costEstimate } : {}),
         },
         { skipLock: true },
       )
@@ -131,6 +165,14 @@ export async function* invokeAgent(
             ratio: w.ratio,
             current: w.metric === 'maxWallTimeMinutes' ? Math.floor(w.current) : w.current,
             limit: w.limit,
+            // M13 (Codex review block-push #1, CODEX_REVIEW_M13.md):
+            // persist the role discriminator so per-role warnings
+            // round-trip correctly. The detector returns it; the writer
+            // must propagate it. Without this, per-role warnings are
+            // logged as global warnings and the
+            // `(metric, role ?? "global")` duplicate guard reads the
+            // wrong key on a subsequent run, double-emitting.
+            ...(w.role !== undefined ? { role: w.role } : {}),
           },
           { skipLock: true },
         )
@@ -213,6 +255,13 @@ export async function* invokeAgent(
   // 4. Short-lock post-call success: append agent_completed. tokensUsed is
   // omitted entirely when the adapter didn't report it (M3 schema accepts
   // the absence; the budget summarizer falls back to the recorded estimate).
+  // M13 (Codex Q2 + scope-correction): costActualUSD lands when BOTH
+  // tokensUsed is reported AND a price source resolves (output rate
+  // applied to output-only token count — documented in commit 7).
+  const costActual =
+    tokensUsed !== undefined
+      ? actualCostUSD(req.agent.provider as string, prepared.model, costContext, tokensUsed)
+      : undefined
   await withLock(ctx.runPaths.lockDir, async () => {
     await appendEvent(
       eventPaths,
@@ -224,6 +273,7 @@ export async function* invokeAgent(
         phase: req.phase,
         agent: req.agent.name,
         ...(tokensUsed !== undefined ? { tokensUsed } : {}),
+        ...(costActual !== undefined ? { costActualUSD: costActual } : {}),
       },
       { skipLock: true },
     )

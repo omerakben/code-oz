@@ -28,6 +28,7 @@ import {
   type GatePaths,
 } from '../state/gates.ts'
 import type { AgentDefinition } from '../agents/schema.ts'
+import { canonicalRoleFromAgent } from '../agents/role.ts'
 import {
   parsePlan,
   serializePlan,
@@ -493,12 +494,18 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
         const toolCalls: ProviderToolCall[] = []
         let turnStop = 'end' as string
         const filesForTurn: ProviderFileRef[] = [{ path: specRel }, ...extraFiles]
+        // M13 (Codex Q9): bundled-role identity for per-role gating.
+        // Lead is the canonical PLAN persona; absent on project-local
+        // overrides outside `M12_COMPANY_ROLES`. Computed once per the
+        // M13 review nit #1 closure.
+        const planRole = canonicalRoleFromAgent(opts.leadAgent)
         for await (const event of invokeAgent(opts.invokeCtx, {
           runId: opts.runId,
           phase: 'plan',
           agent: opts.leadAgent,
           files: filesForTurn,
           prompt: turnPrompt,
+          ...(planRole !== undefined ? { role: planRole } : {}),
         })) {
           if (event.type === 'content_chunk') turnText += event.text
           else if (event.type === 'tool_call') toolCalls.push(event.call)

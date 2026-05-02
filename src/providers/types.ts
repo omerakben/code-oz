@@ -13,6 +13,7 @@
 // 13 (privacy by default; explicit file manifests) by construction.
 
 import type { AgentDefinition } from '../agents/schema.ts'
+import type { CompanyRole } from '../agents/role.ts'
 import type { Phase } from '../state/schemas.ts'
 import type { AgentManifest } from '../state/schemas.ts'
 import type { ProviderCapability } from './capabilities.ts'
@@ -65,6 +66,24 @@ export interface ProviderRequest {
   readonly files: readonly ProviderFileRef[]
   readonly model?: string
   readonly maxOutputTokens?: number
+  /**
+   * M13 (Codex Q9 lock, CODEX_RESPONSE_M13.md, thread 019de672): explicit
+   * `CompanyRole` identity for per-role budget gating + per-role soft
+   * warnings. The six bundled-role invocation sites populate this from
+   * `canonicalRoleFromAgent` (`src/agents/role.ts`). Synthetic debate
+   * opponents and project-local personas omit it; their invocations are
+   * still counted against global + per-phase budgets (rule 19), just not
+   * against a per-role cap.
+   *
+   * Tightened from `string` to `CompanyRole | undefined` after the M13
+   * implementation review (CODEX_REVIEW_M13.md fix-soon #1 closure):
+   * `M12_COMPANY_ROLES` + `CompanyRole` were moved to `src/agents/role.ts`
+   * (leaf module, no upstream imports), letting this file import the
+   * type directly without re-introducing the cycle. The runtime event
+   * validator at `src/state/events.ts` still enforces the same set —
+   * type tightening is a compile-time guard, not a runtime change.
+   */
+  readonly role?: CompanyRole
 }
 
 /**

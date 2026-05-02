@@ -32,6 +32,14 @@ import {
 } from './schemas.ts'
 import { EventLogError, type EventLogIssue } from './errors.ts'
 import { LockBusyError, withLock } from './lock.ts'
+import { M12_COMPANY_ROLES } from '../config/schema.ts'
+
+// M13 (Codex Q8 lock, CODEX_RESPONSE_M13.md, thread 019de672): role
+// discriminator on `budget_warning` is only meaningful for metrics that
+// have a per-role dimension under `budgets.global.byRole`. `maxTurns`
+// and `maxWallTimeMinutes` remain global-only; pairing them with a role
+// produces a malformed event and is rejected.
+const BUDGET_WARNING_PER_ROLE_METRICS = ['maxProviderCalls', 'maxTokensEstimate'] as const
 
 export interface EventLogPaths {
   /** Absolute path to the events.jsonl file (events.jsonl in the run subdir). */
@@ -253,6 +261,19 @@ export function validateEvent(
           }
         }
       }
+      // M13 (Codex Q9 lock): role identity is bound from
+      // `ProviderRequest.role` at the wrapper layer. When present it must
+      // match the locked `M12_COMPANY_ROLES` constant; non-canonical
+      // values are corruption and should never have been written.
+      const roleIssue = companyRoleOrInvalid(file, e.role, 'agent_invoked.role', line)
+      if (roleIssue) return roleIssue
+      // M13 (Codex Q2 + Q4 lock): advisory USD estimate. Finite +
+      // non-negative invariant lets the cost-summarization layer reduce
+      // without isFinite checks at every accumulator.
+      const costEstimateIssue = finiteNonNegativeNumberOrInvalid(
+        file, e.costEstimateUSD, 'agent_invoked.costEstimateUSD', line,
+      )
+      if (costEstimateIssue) return costEstimateIssue
       const debateCorrelationIssue = validateDebateCorrelation(
         file, e.debateTopic, e.debateTurn, 'agent_invoked', line,
       )
@@ -275,6 +296,15 @@ export function validateEvent(
           }
         }
       }
+      // M13 (Codex Q2 + scope-correction lock): advisory USD actual,
+      // computed from output-tokens-only `tokensUsed` and the resolved
+      // price source. Documented as not-full-invoice in
+      // docs/contracts/COMPANY.md cross-reference; validator only enforces
+      // the finite + non-negative invariant.
+      const costActualIssue = finiteNonNegativeNumberOrInvalid(
+        file, e.costActualUSD, 'agent_completed.costActualUSD', line,
+      )
+      if (costActualIssue) return costActualIssue
       const debateCorrelationIssue = validateDebateCorrelation(
         file, e.debateTopic, e.debateTurn, 'agent_completed', line,
       )
@@ -529,6 +559,25 @@ export function validateEvent(
       if (cIssue) return cIssue
       const lIssue = nonNegativeInteger(file, e.limit, 'budget_warning.limit', line)
       if (lIssue) return lIssue
+      // M13 (Codex Q8 lock): role discriminator on per-role caps under
+      // `budgets.global.byRole.<role>`. Absent = global cap (back-compat).
+      // The role/metric pairing is constrained: `maxTurns` and
+      // `maxWallTimeMinutes` have no per-role dimension (Codex Blocker 2),
+      // so pairing them with a role is rejected.
+      const roleIssue = companyRoleOrInvalid(file, e.role, 'budget_warning.role', line)
+      if (roleIssue) return roleIssue
+      if (
+        e.role !== undefined &&
+        !(BUDGET_WARNING_PER_ROLE_METRICS as readonly string[]).includes(e.metric as string)
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `budget_warning.role may pair only with ${BUDGET_WARNING_PER_ROLE_METRICS.join(' / ')} (per-role dimension)`,
+          detail: `metric=${JSON.stringify(e.metric)}, role=${JSON.stringify(e.role)}`,
+          line,
+        }
+      }
       break
     }
 
@@ -1277,6 +1326,50 @@ function nonNegativeInteger(
       file,
       code: 'event_invalid_value',
       rule: `${field} must be a non-negative integer`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
+  return null
+}
+
+// M13: optional CompanyRole field validator. Returns null when absent
+// (optional) or canonical; rejects every other shape (non-string,
+// non-canonical) with `event_invalid_value`.
+function companyRoleOrInvalid(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (value === undefined) return null
+  if (typeof value !== 'string' || !(M12_COMPANY_ROLES as readonly string[]).includes(value)) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be one of: ${M12_COMPANY_ROLES.join(' | ')}`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
+  return null
+}
+
+// M13: optional finite non-negative number validator (USD telemetry).
+// Returns null when absent or finite >= 0; rejects NaN, Infinity,
+// -Infinity, negatives, and non-numbers.
+function finiteNonNegativeNumberOrInvalid(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (value === undefined) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be a finite non-negative number when present`,
       detail: `got ${JSON.stringify(value)}`,
       line,
     }
