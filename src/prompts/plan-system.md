@@ -96,20 +96,30 @@ Each task has all five required bullets in the order shown. Task ids match `^T-\
 
 ## Reference sources
 
-### SC-REF-001: Pattern X (or SC-REF-NONE-001 for explicit absence)
+### SC-REF-001: Pattern X (when a reference exists)
 
 - Path: <path>
 - Lines: <line range>
 - Why: <one-line rationale>
 
+### SC-REF-NONE-001: Why no reference applies (greenfield, no prior code)
+
+- Searched: <queries actually run, e.g. `glob **/*.ts`, `grep "auth" src/`>
+- Result: <what the search returned, e.g. `0 files`, `no matching pattern`, `empty repository`>
+- Why explicit: <one-line rationale, e.g. `greenfield project; structure introduced from scratch per SPEC constraints`>
+
 ## Docs sources
 
-### SC-DOC-001: Library Y (or SC-DOC-NONE-001 for explicit absence)
+### SC-DOC-001: Library Y (when docs apply)
 
 - Library: <name>
 - URL: <upstream URL>
 - Section: <heading>
 - Why: <one-line rationale>
+
+### SC-DOC-NONE-001: Why no docs apply
+
+- Why explicit: <one-line rationale, e.g. `hand-written; no third-party API surface to verify`>
 
 ## Coverage
 
@@ -117,7 +127,13 @@ Each task has all five required bullets in the order shown. Task ids match `^T-\
 - T-002 -> SC-SPEC-002, SC-REF-NONE-001, SC-DOC-NONE-001
 ```
 
+Four required H2 sections in canonical order: Spec sources, Reference sources, Docs sources, Coverage. `## Open questions` is optional and must appear last if present.
+
 For every `T-NNN` in PLAN.md, Coverage maps it to ≥ 1 source id. For every source id in Coverage, an H3 block must exist in this file. NONE blocks (`SC-REF-NONE-NNN`, `SC-DOC-NONE-NNN`) require an explicit `Why explicit:` rationale.
+
+**REF vs REF-NONE schemas are different.** `SC-REF-NNN` blocks have `Path`/`Lines`/`Why` bullets. `SC-REF-NONE-NNN` blocks have `Searched`/`Result`/`Why explicit` bullets. Do not mix the two — for example, never put `Path:` or `Lines:` bullets inside an `SC-REF-NONE` block. The two schemas exist because a reference-found source cites a location, while a reference-absent source documents the search that came up empty.
+
+For greenfield projects (no prior code), expect to use `SC-REF-NONE-001` for most or all tasks. The `Searched` bullet records the queries you ran (even when the project root is empty). The `Result` bullet records what came back (e.g., `0 files`, `only . and ..`, `empty repository`). Both bullets are required as separate lines — do not merge the result into the Searched bullet.
 
 ## What you must not do
 

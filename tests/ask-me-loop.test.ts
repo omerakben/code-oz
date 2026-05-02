@@ -250,6 +250,67 @@ describe('runAskMe — multi-turn conversation', () => {
     expect(userInputEvents.length).toBe(3) // turn 0, 1, 2
     expect(personaReplies.length).toBe(3)
   })
+
+  // Bug fix: the CLI orchestrator needs a hook to surface BA replies on stdout
+  // before prompting the user for the next input. Without it the elicitation
+  // loop is invisible — the user sees only "Your reply:" prompts with no
+  // intervening question text. Verifies the optional onPersonaReply callback
+  // fires once per turn with (turnIndex, fullText).
+  test('onPersonaReply fires once per persona turn with the full reply text', async () => {
+    fake.expect({ phase: 'define', agent: 'ba' }).respondWith({
+      content: 'What age range?',
+      model: 'fake-1',
+    })
+    fake.expect({ phase: 'define', agent: 'ba' }).respondWith({
+      content: 'Which platform?',
+      model: 'fake-1',
+    })
+    fake.expect({ phase: 'define', agent: 'ba' }).respondWith({
+      content: readyContent(),
+      model: 'fake-1',
+    })
+
+    const userInputs = ['toddlers', 'iOS']
+    let inputIdx = 0
+    const captured: Array<{ turn: number; text: string }> = []
+
+    const result = await runAskMe({
+      invokeCtx: invokeCtx(),
+      eventPaths: eventPaths(),
+      runId: RUN,
+      agent: baAgent(),
+      config: askMeConfig(),
+      initialUserInput: 'I want a baby game',
+      readNextUserInput: async () => userInputs[inputIdx++] ?? null,
+      onPersonaReply: (turn, text) => {
+        captured.push({ turn, text })
+      },
+    })
+
+    expect(result.status).toBe('success')
+    expect(captured.length).toBe(3)
+    expect(captured[0]).toEqual({ turn: 0, text: 'What age range?' })
+    expect(captured[1]).toEqual({ turn: 1, text: 'Which platform?' })
+    expect(captured[2]?.turn).toBe(2)
+    expect(captured[2]?.text).toContain('<spec-ready/>')
+  })
+
+  test('onPersonaReply omitted: runAskMe still succeeds without the callback', async () => {
+    fake.expect({ phase: 'define', agent: 'ba' }).respondWith({
+      content: readyContent(),
+      model: 'fake-1',
+    })
+    const result = await runAskMe({
+      invokeCtx: invokeCtx(),
+      eventPaths: eventPaths(),
+      runId: RUN,
+      agent: baAgent(),
+      config: askMeConfig(),
+      initialUserInput: 'go',
+      readNextUserInput: async () => null,
+    })
+    expect(result.status).toBe('success')
+  })
 })
 
 // --- runAskMe — repair turn --------------------------------------

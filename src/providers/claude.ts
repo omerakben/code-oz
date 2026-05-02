@@ -79,9 +79,9 @@ export class ClaudeProvider implements IAgentProvider {
       throw nonZeroExit(result, 'claude')
     }
 
-    const parsed = tryParseJson(result.stdout)
-    const content = parsed?.result ?? result.stdout.trimEnd()
-    const tokensUsed = parsed?.usage?.output_tokens
+    const parsed = parseClaudeOutput(result.stdout)
+    const content = parsed?.content ?? result.stdout.trimEnd()
+    const tokensUsed = parsed?.tokensUsed
     const model = parsed?.model ?? req.model ?? 'claude-default'
 
     yield { type: 'turn_started', model }
@@ -148,14 +148,110 @@ interface ClaudeJsonResult {
   readonly usage?: { readonly output_tokens?: number }
 }
 
-function tryParseJson(raw: string): ClaudeJsonResult | null {
+interface ParsedClaudeOutput {
+  readonly content: string
+  readonly model?: string
+  readonly tokensUsed?: number
+}
+
+/**
+ * Parse `claude --print --output-format json` stdout. Two formats observed:
+ *
+ * 1. Single object (older CLI versions, ~2025): `{result, model, usage}`.
+ * 2. Stream array (Claude Code 2.1+, late 2025 and current): an array of
+ *    stream events including `{type:'system'/'init'}`, `{type:'assistant'}`,
+ *    `{type:'rate_limit_event'}`, and a final `{type:'result', subtype, result, usage, modelUsage}`.
+ *
+ * Returns null when the raw text is not parseable JSON of either shape, so
+ * the caller can fall back to the raw stdout for diagnostic visibility.
+ */
+export function parseClaudeOutput(raw: string): ParsedClaudeOutput | null {
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as ClaudeJsonResult
+    parsed = JSON.parse(raw)
   } catch {
     return null
   }
+  if (parsed === null) return null
+
+  if (Array.isArray(parsed)) return extractFromStreamArray(parsed)
+
+  if (typeof parsed === 'object') {
+    const obj = parsed as ClaudeJsonResult
+    if (typeof obj.result !== 'string') return null
+    const out: ParsedClaudeOutput = {
+      content: obj.result,
+      ...(obj.model !== undefined ? { model: obj.model } : {}),
+      ...(obj.usage?.output_tokens !== undefined
+        ? { tokensUsed: obj.usage.output_tokens }
+        : {}),
+    }
+    return out
+  }
+
+  return null
+}
+
+/** Extract assistant text + usage from a stream-array stdout shape. */
+function extractFromStreamArray(events: readonly unknown[]): ParsedClaudeOutput | null {
+  let resultEvent: { result?: string; usage?: { output_tokens?: number }; modelUsage?: Record<string, { outputTokens?: number }> } | null = null
+  let initModel: string | undefined
+  const assistantTexts: string[] = []
+
+  for (const ev of events) {
+    if (ev === null || typeof ev !== 'object') continue
+    const e = ev as { type?: string; subtype?: string; model?: string; message?: { content?: unknown[] }; result?: string; usage?: { output_tokens?: number }; modelUsage?: Record<string, { outputTokens?: number }> }
+    if (e.type === 'system' && e.subtype === 'init' && typeof e.model === 'string') {
+      initModel = e.model
+    }
+    if (e.type === 'assistant' && Array.isArray(e.message?.content)) {
+      for (const block of e.message.content) {
+        if (block !== null && typeof block === 'object') {
+          const b = block as { type?: string; text?: string }
+          if (b.type === 'text' && typeof b.text === 'string') {
+            assistantTexts.push(b.text)
+          }
+        }
+      }
+    }
+    if (e.type === 'result' && typeof e.result === 'string') {
+      resultEvent = e
+    }
+  }
+
+  // Prefer the result event's `result` string (canonical end-of-turn text).
+  // Fall back to concatenated assistant text blocks if no result event present
+  // (e.g., truncated stream, error path).
+  let content: string
+  if (resultEvent !== null) {
+    content = resultEvent.result ?? ''
+  } else if (assistantTexts.length > 0) {
+    content = assistantTexts.join('\n')
+  } else {
+    return null
+  }
+
+  let tokensUsed: number | undefined
+  if (resultEvent?.usage?.output_tokens !== undefined) {
+    tokensUsed = resultEvent.usage.output_tokens
+  } else if (resultEvent?.modelUsage !== undefined) {
+    let total = 0
+    let any = false
+    for (const v of Object.values(resultEvent.modelUsage)) {
+      if (v?.outputTokens !== undefined) {
+        total += v.outputTokens
+        any = true
+      }
+    }
+    if (any) tokensUsed = total
+  }
+
+  const out: ParsedClaudeOutput = {
+    content,
+    ...(initModel !== undefined ? { model: initModel } : {}),
+    ...(tokensUsed !== undefined ? { tokensUsed } : {}),
+  }
+  return out
 }
 
 function renderStdin(req: PreparedProviderRequest): string {

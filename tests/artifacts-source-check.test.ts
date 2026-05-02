@@ -231,3 +231,178 @@ describe('SOURCE_CHECK_SECTION_KEYS', () => {
     ])
   })
 })
+
+// Issue #3 regression: greenfield REF-NONE schema-drift tolerance.
+// LLMs (especially on greenfield projects) emit REF-NONE blocks with
+// REF-schema fields (Path, Lines) mixed in, and merge the search action and
+// result into one Searched bullet. The parser tolerates extra fields and
+// synthesizes a Result when the Searched bullet embeds a clear empty-result
+// indicator. Without these tolerances the PLAN phase failed 3/3 retries on
+// every greenfield project.
+describe('parseSourceCheck — REF-NONE greenfield tolerance (issue #3)', () => {
+  const baseFor = (refNoneBody: string) => `# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: Acceptance criterion 1
+
+- Spec: SPEC.md ## Acceptance criteria, bullet 1
+- Quote: x
+
+## Reference sources
+
+### SC-REF-NONE-001: Greenfield — no prior implementation
+
+${refNoneBody}
+
+## Docs sources
+
+### SC-DOC-NONE-001: no library
+
+- Why explicit: hand-written.
+
+## Coverage
+
+- T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-NONE-001
+`
+
+  test('(a) clean REF-NONE block with three required fields parses cleanly', () => {
+    const sc = parseSourceCheck(
+      baseFor(
+        `- Searched: glob **/*.ts
+- Result: 0 files
+- Why explicit: greenfield project; structure introduced from scratch`,
+      ),
+      FILE,
+    )
+    const ref = sc.referenceSources[0]!
+    expect(ref.kind).toBe('REF-NONE')
+    if (ref.kind === 'REF-NONE') {
+      expect(ref.searched).toBe('glob **/*.ts')
+      expect(ref.result).toBe('0 files')
+      expect(ref.whyExplicit).toContain('greenfield')
+    }
+  })
+
+  test('(b) REF-NONE block with extra Path/Lines fields parses (extras ignored)', () => {
+    const sc = parseSourceCheck(
+      baseFor(
+        `- Searched: glob **/*.ts
+- Path: N/A
+- Lines: N/A
+- Result: 0 files
+- Why explicit: greenfield project; nothing to reference`,
+      ),
+      FILE,
+    )
+    const ref = sc.referenceSources[0]!
+    expect(ref.kind).toBe('REF-NONE')
+    if (ref.kind === 'REF-NONE') {
+      expect(ref.searched).toBe('glob **/*.ts')
+      expect(ref.result).toBe('0 files')
+      // Round-trip: serializer drops the extras — canonical form has 3 bullets only.
+      const out = serializeSourceCheck(sc)
+      expect(out).not.toContain('- Path: N/A')
+      expect(out).not.toContain('- Lines: N/A')
+    }
+  })
+
+  const synthesisCases: ReadonlyArray<{ searched: string; matchToken: string }> = [
+    { searched: 'glob **/*.ts (no files)', matchToken: 'no files' },
+    { searched: 'ls -la (only . and ..)', matchToken: 'only . and ..' },
+    { searched: 'find src -type f (empty)', matchToken: 'empty' },
+    { searched: 'glob ** returned 0 results', matchToken: 'returned 0' },
+    { searched: 'grep "auth" src/ — no matching files', matchToken: 'no matching files' },
+    { searched: 'tree . shows empty repository', matchToken: 'empty repository' },
+    // Bare (unparenthesized) forms added in PR #4 review pass.
+    { searched: 'glob **/*.ts found 0 files', matchToken: '0 files (bare)' },
+    { searched: 'ls -la shows only . and .. entries', matchToken: 'only . and .. (bare)' },
+    { searched: 'grep "auth" src/ no matching pattern', matchToken: 'no matching pattern' },
+  ]
+
+  for (const { searched, matchToken } of synthesisCases) {
+    test(`(c) Searched embedding "${matchToken}" but missing Result auto-synthesizes`, () => {
+      const sc = parseSourceCheck(
+        baseFor(
+          `- Searched: ${searched}
+- Why explicit: greenfield project; nothing to reference`,
+        ),
+        FILE,
+      )
+      const ref = sc.referenceSources[0]!
+      expect(ref.kind).toBe('REF-NONE')
+      if (ref.kind === 'REF-NONE') {
+        expect(ref.result.length).toBeGreaterThan(0)
+        expect(ref.result).toContain('auto-extracted')
+      }
+    })
+  }
+
+  test('(c2) extra Path/Lines + missing Result with embedded indicator still synthesizes', () => {
+    // The exact pattern observed in the wild on greenfield runs (issue #3).
+    const sc = parseSourceCheck(
+      baseFor(
+        `- Searched: glob ** (no files)
+- Path: N/A
+- Lines: N/A
+- Why explicit: greenfield project; structure introduced from scratch per SPEC`,
+      ),
+      FILE,
+    )
+    const ref = sc.referenceSources[0]!
+    expect(ref.kind).toBe('REF-NONE')
+    if (ref.kind === 'REF-NONE') {
+      expect(ref.searched).toContain('(no files)')
+      expect(ref.result).toContain('auto-extracted')
+    }
+  })
+
+  test('(d) REF-NONE block with no Searched and no Result still fails', () => {
+    const err = expectScLoadError(() =>
+      parseSourceCheck(
+        baseFor(`- Why explicit: greenfield project; nothing to reference`),
+        FILE,
+      ),
+    )
+    const codes = err.issues.map((i) => i.code)
+    // Both Searched and Result are missing — the synthesis cannot fire without
+    // a Searched value to extract from, so the strict missing-field error
+    // must still surface.
+    expect(codes).toContain('source_check_block_missing_field')
+  })
+
+  test('(d2) REF-NONE block with neutral Searched but missing Result still fails (no embedded pattern to synthesize from)', () => {
+    const err = expectScLoadError(() =>
+      parseSourceCheck(
+        baseFor(
+          `- Searched: ran some queries but did not record outcome
+- Why explicit: greenfield project; nothing to reference`,
+        ),
+        FILE,
+      ),
+    )
+    const codes = err.issues.map((i) => i.code)
+    expect(codes).toContain('source_check_block_missing_field')
+  })
+
+  test('synthesized Result round-trips through serializer cleanly', () => {
+    const sc = parseSourceCheck(
+      baseFor(
+        `- Searched: glob ** (no files)
+- Why explicit: greenfield project; nothing to reference`,
+      ),
+      FILE,
+    )
+    const out = serializeSourceCheck(sc)
+    // The serialized form contains a real Result bullet now.
+    expect(out).toContain('- Result:')
+    expect(out).toContain('auto-extracted')
+    // And reparsing the canonical form succeeds with the same Result.
+    const reparsed = parseSourceCheck(out, FILE)
+    const ref = reparsed.referenceSources[0]!
+    expect(ref.kind).toBe('REF-NONE')
+    if (ref.kind === 'REF-NONE') {
+      expect(ref.result).toContain('auto-extracted')
+    }
+  })
+})
