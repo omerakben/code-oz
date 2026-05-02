@@ -111,6 +111,13 @@ export async function* invokeAgent(
           // events.jsonl carries durable provenance for cost/audit
           // tooling. `prepared.model` is `req.model ?? req.agent.model`.
           ...(prepared.model !== undefined ? { model: prepared.model } : {}),
+          // M13 (Codex Q9 lock): record the explicit CompanyRole
+          // identity when phase logic supplied one. The six bundled-role
+          // call sites populate this from `canonicalRoleFromAgent`;
+          // synthetic debate opponents and project-local personas omit
+          // it (their invocations still count against global / per-phase
+          // budgets, just not per-role).
+          ...(req.role !== undefined ? { role: req.role } : {}),
           manifest: prepared.manifest,
           filesSent: prepared.metrics.filesSent,
           bytesSent: prepared.metrics.bytesSent,

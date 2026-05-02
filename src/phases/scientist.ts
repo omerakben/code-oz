@@ -22,6 +22,7 @@ import {
 } from '../state/events.ts'
 import type { Phase } from '../state/schemas.ts'
 import type { AgentDefinition } from '../agents/schema.ts'
+import { canonicalRoleFromAgent } from '../agents/role.ts'
 import type { RunPaths } from '../state/run.ts'
 import {
   parseHypotheses,
@@ -321,6 +322,12 @@ export async function runScientistPhaseTail(
       agent: opts.agent,
       files: manifestFiles,
       prompt,
+      // M13 (Codex Q9): bundled-role identity for per-role gating. The
+      // Scientist phase-tail runs the Scientist persona; absent on
+      // project-local overrides outside `M12_COMPANY_ROLES`.
+      ...(canonicalRoleFromAgent(opts.agent) !== undefined
+        ? { role: canonicalRoleFromAgent(opts.agent) }
+        : {}),
     })) {
       if (event.type === 'content_chunk') responseText += event.text
       else if (event.type === 'turn_completed') {

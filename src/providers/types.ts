@@ -65,6 +65,21 @@ export interface ProviderRequest {
   readonly files: readonly ProviderFileRef[]
   readonly model?: string
   readonly maxOutputTokens?: number
+  /**
+   * M13 (Codex Q9 lock, CODEX_RESPONSE_M13.md, thread 019de672): explicit
+   * `CompanyRole` identity for per-role budget gating + per-role soft
+   * warnings. The six bundled-role invocation sites populate this from
+   * `canonicalRoleFromAgent` (`src/agents/role.ts`). Synthetic debate
+   * opponents and project-local personas omit it; their invocations are
+   * still counted against global + per-phase budgets (rule 19), just not
+   * against a per-role cap.
+   *
+   * Loose-typed (`string`, not `CompanyRole`) to avoid a cycle through
+   * `config/schema.ts → agents/schema.ts → providers/types.ts`. The
+   * `agent_invoked.role` event validator restricts the value to
+   * `M12_COMPANY_ROLES` at write time (`src/state/events.ts`).
+   */
+  readonly role?: string
 }
 
 /**

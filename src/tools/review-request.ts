@@ -26,6 +26,7 @@ import type {
   ProviderRequest,
 } from '../providers/types.ts'
 import type { AgentDefinition } from '../agents/schema.ts'
+import { canonicalRoleFromAgent } from '../agents/role.ts'
 
 export interface ReviewRequest {
   /** The provider that produced the artifact under review. Passed explicitly
@@ -79,6 +80,12 @@ export async function* requestReview(
     runId: req.runId,
     prompt: req.question,
     files: req.files,
+    // M13 (Codex Q9): bundled-role identity for per-role gating. Reviewer
+    // is the canonical REVIEW persona; absent on project-local overrides
+    // outside `M12_COMPANY_ROLES`.
+    ...(canonicalRoleFromAgent(req.reviewer) !== undefined
+      ? { role: canonicalRoleFromAgent(req.reviewer) }
+      : {}),
   }
 
   yield* invokeAgent(ctx, providerRequest)
