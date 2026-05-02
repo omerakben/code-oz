@@ -13,6 +13,7 @@
     "test:watch": "bun test --watch",
     "dev": "bun run src/cli.ts",
     "build:binary": "bun build --compile --target=bun src/cli.ts --outfile dist/code-oz",
+    "build:binaries": "bun run scripts/build-binaries.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
