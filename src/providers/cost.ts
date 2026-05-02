@@ -14,6 +14,7 @@
 import { providerError } from './errors.ts'
 import { isKnownPhaseEvent, type LoggedEvent, type Phase } from '../state/schemas.ts'
 import type { CodeOzConfig } from '../config/schema.ts'
+import { canonicalRoleFromAgent } from '../agents/role.ts'
 import type { PreparedProviderRequest, ProviderFile, ProviderRequest } from './types.ts'
 
 const CHARS_PER_TOKEN_UPPER_BOUND = 4
@@ -56,6 +57,18 @@ export interface BudgetCounts {
   readonly globalProviderCalls: number
   /** Wall-time minutes since `run_started.ts` (null when no run_started yet). */
   readonly wallTimeMinutes: number | null
+  /**
+   * M13 (Codex Q9 + commit-4 lock): paired tokens (tokensUsed or
+   * fallback estimate) keyed by CompanyRole. Populated from
+   * `agent_invoked.role` on the invoke side and the
+   * `canonicalRoleFromAgent({name: agent})` derivation on the complete
+   * side (since Q6 locked agent_completed without a role field). Roles
+   * outside `M12_COMPANY_ROLES` and role-less invocations contribute
+   * nothing here — they remain accountable to global / per-phase only.
+   */
+  readonly byRoleTokens: Readonly<Record<string, number>>
+  /** Count of `agent_invoked` events with `role` present, keyed by role. */
+  readonly byRoleProviderCalls: Readonly<Record<string, number>>
 }
 
 /**
@@ -106,6 +119,14 @@ export function summarizeBudgetUse(
   // for the same phase shifts the head and replaces the estimate with
   // tokensUsed (when present) or keeps the estimate (when absent).
   const pendingByPhase = new Map<Phase, number[]>()
+  // M13 (commit 4): mirror per-phase FIFO discipline at the role
+  // dimension. The wrapper holds a per-run lock across invoke+complete,
+  // so the order in which roles enter pendingByRole matches the order
+  // in which their completions arrive — the head of the queue is the
+  // earliest in-flight call for that role.
+  const pendingByRole = new Map<string, number[]>()
+  const byRoleTokens: Record<string, number> = {}
+  const byRoleProviderCalls: Record<string, number> = {}
 
   for (const e of events) {
     if (!isKnownPhaseEvent(e)) continue
@@ -120,6 +141,14 @@ export function summarizeBudgetUse(
       pendingByPhase.set(e.phase, queue)
       globalProviderCalls++
       if (e.phase === phase) perPhaseProviderCalls++
+      // M13: role pairing — push when role is present (recorded by the
+      // wrapper at invoke-time from `req.role`).
+      if (typeof e.role === 'string' && e.role.length > 0) {
+        const rq = pendingByRole.get(e.role) ?? []
+        rq.push(e.tokensEstimate)
+        pendingByRole.set(e.role, rq)
+        byRoleProviderCalls[e.role] = (byRoleProviderCalls[e.role] ?? 0) + 1
+      }
       continue
     }
     if (e.type === 'agent_completed') {
@@ -128,6 +157,23 @@ export function summarizeBudgetUse(
       const cost = e.tokensUsed ?? estimate
       globalTokens += cost
       if (e.phase === phase) perPhaseTokens += cost
+      // M13: role pairing — derive role from agent name via the
+      // canonicalizer (Q6 lock kept role off agent_completed). Only
+      // contribute to byRoleTokens when there is a matching pending
+      // entry from a role-tagged invoke; this keeps the role accumulator
+      // symmetric with the invoke side. A completion whose name
+      // canonicalizes to a role but whose invoke did NOT tag a role
+      // (project-local persona, debate opposing turn, etc.) is correctly
+      // excluded from per-role accounting.
+      const role = canonicalRoleFromAgent({ name: e.agent })
+      if (role !== undefined) {
+        const rq = pendingByRole.get(role)
+        if (rq !== undefined && rq.length > 0) {
+          const rEst = rq.shift()!
+          const rCost = e.tokensUsed ?? rEst
+          byRoleTokens[role] = (byRoleTokens[role] ?? 0) + rCost
+        }
+      }
       continue
     }
   }
@@ -140,6 +186,11 @@ export function summarizeBudgetUse(
       if (phaseKey === phase) perPhaseTokens += est
     }
   }
+  for (const [role, queue] of pendingByRole) {
+    for (const est of queue) {
+      byRoleTokens[role] = (byRoleTokens[role] ?? 0) + est
+    }
+  }
 
   return Object.freeze({
     perPhaseTokens,
@@ -149,6 +200,8 @@ export function summarizeBudgetUse(
     perPhaseProviderCalls,
     globalProviderCalls,
     wallTimeMinutes: computeWallTimeMinutes(events, now),
+    byRoleTokens: Object.freeze(byRoleTokens),
+    byRoleProviderCalls: Object.freeze(byRoleProviderCalls),
   })
 }
 
@@ -174,12 +227,34 @@ export function assertWithinBudget(
   const global = config.budgets.global
   const next = prepared.metrics.tokensEstimate
 
+  // M13 (commit 4): per-role caps under `budgets.global.byRole.<role>`.
+  // Per-role checks fire only when (a) req.role was set by the call site
+  // and (b) the operator configured a cap for that role. Order per Codex:
+  // per-phase -> per-role -> global, so that the most-specific scope
+  // raises the typed error first and names the most actionable config
+  // key. Codex Blocker 2: maxTurns is intentionally absent on byRole.
+  const role = req.role
+  const byRoleRow =
+    role !== undefined ? global.byRole?.[role as keyof typeof global.byRole] : undefined
+
   if (counts.perPhaseTokens + next > perPhase.maxTokensEstimate) {
     throw providerError(
       'provider_budget_exceeded',
       `phase ${req.phase} would exceed maxTokensEstimate`,
       [`raise budgets.perPhase.${req.phase}.maxTokensEstimate in .code-oz/config.yaml`],
       `running=${counts.perPhaseTokens}, next=${next}, cap=${perPhase.maxTokensEstimate}`,
+    )
+  }
+  if (
+    role !== undefined &&
+    byRoleRow?.maxTokensEstimate !== undefined &&
+    (counts.byRoleTokens[role] ?? 0) + next > byRoleRow.maxTokensEstimate
+  ) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `role ${role} would exceed maxTokensEstimate`,
+      [`raise budgets.global.byRole.${role}.maxTokensEstimate in .code-oz/config.yaml`],
+      `running=${counts.byRoleTokens[role] ?? 0}, next=${next}, cap=${byRoleRow.maxTokensEstimate}`,
     )
   }
   if (counts.globalTokens + next > global.maxTokensEstimate) {
@@ -212,6 +287,18 @@ export function assertWithinBudget(
       `phase ${req.phase} would exceed maxProviderCalls`,
       [`raise budgets.perPhase.${req.phase}.maxProviderCalls in .code-oz/config.yaml`],
       `running=${counts.perPhaseProviderCalls}, next=1, cap=${perPhase.maxProviderCalls}`,
+    )
+  }
+  if (
+    role !== undefined &&
+    byRoleRow?.maxProviderCalls !== undefined &&
+    (counts.byRoleProviderCalls[role] ?? 0) + 1 > byRoleRow.maxProviderCalls
+  ) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `role ${role} would exceed maxProviderCalls`,
+      [`raise budgets.global.byRole.${role}.maxProviderCalls in .code-oz/config.yaml`],
+      `running=${counts.byRoleProviderCalls[role] ?? 0}, next=1, cap=${byRoleRow.maxProviderCalls}`,
     )
   }
   if (counts.globalProviderCalls + 1 > global.maxProviderCalls) {
@@ -247,7 +334,15 @@ export interface SoftBudgetWarning {
   readonly metric: SoftBudgetMetric
   readonly ratio: number     // current / cap, in [softWarnAtRatio, 1.0)
   readonly current: number   // current cumulative spend (post-this-call)
-  readonly limit: number     // global cap
+  readonly limit: number     // cap (global or per-role)
+  /**
+   * M13 (Codex Q8 lock): optional CompanyRole. Present when the warning
+   * is for a per-role cap under `budgets.global.byRole.<role>`; absent
+   * when the warning is for the existing global cap. Only meaningful
+   * for `maxProviderCalls` and `maxTokensEstimate` (Codex Blocker 2:
+   * `maxTurns` and `maxWallTimeMinutes` have no per-role dimension).
+   */
+  readonly role?: string
 }
 
 /**
@@ -267,28 +362,68 @@ export function detectBudgetSoftWarnings(
   const global = config.budgets.global
   const ratio = global.softWarnAtRatio
   const out: SoftBudgetWarning[] = []
-  const alreadyWarned = new Set<SoftBudgetMetric>()
+  // M13 (Codex Q8 lock): duplicate-emit guard becomes
+  // `(metric, role ?? "global")` so per-role warnings deduplicate
+  // independently from global warnings.
+  const alreadyWarned = new Set<string>()
+  const guardKey = (metric: SoftBudgetMetric, role?: string): string =>
+    `${metric}|${role ?? 'global'}`
   for (const e of events) {
     if (isKnownPhaseEvent(e) && e.type === 'budget_warning') {
-      alreadyWarned.add(e.metric as SoftBudgetMetric)
+      alreadyWarned.add(guardKey(e.metric as SoftBudgetMetric, e.role))
     }
   }
   const consider = (
     metric: SoftBudgetMetric,
     nextValue: number,
     cap: number,
+    role?: string,
   ): void => {
-    if (cap <= 0 || alreadyWarned.has(metric)) return
+    if (cap <= 0 || alreadyWarned.has(guardKey(metric, role))) return
     const r = nextValue / cap
     if (r >= ratio && r < 1) {
-      out.push(Object.freeze({ metric, ratio: r, current: nextValue, limit: cap }))
+      out.push(
+        Object.freeze({
+          metric,
+          ratio: r,
+          current: nextValue,
+          limit: cap,
+          ...(role !== undefined ? { role } : {}),
+        }),
+      )
     }
   }
+  // Global warnings (existing).
   consider('maxTokensEstimate', counts.globalTokens + prepared.metrics.tokensEstimate, global.maxTokensEstimate)
   consider('maxTurns', counts.globalTurns, global.maxTurns)
   consider('maxProviderCalls', counts.globalProviderCalls + 1, global.maxProviderCalls)
   if (counts.wallTimeMinutes !== null) {
     consider('maxWallTimeMinutes', counts.wallTimeMinutes, global.maxWallTimeMinutes)
+  }
+  // M13: per-role warnings. Fire only for the active role (req.role)
+  // and only when the operator configured a cap for it. The two
+  // metrics that have a per-role dimension are maxTokensEstimate and
+  // maxProviderCalls (Codex Blocker 2 lock).
+  const role = req.role
+  const byRoleRow =
+    role !== undefined ? global.byRole?.[role as keyof typeof global.byRole] : undefined
+  if (role !== undefined && byRoleRow !== undefined) {
+    if (byRoleRow.maxTokensEstimate !== undefined) {
+      consider(
+        'maxTokensEstimate',
+        (counts.byRoleTokens[role] ?? 0) + prepared.metrics.tokensEstimate,
+        byRoleRow.maxTokensEstimate,
+        role,
+      )
+    }
+    if (byRoleRow.maxProviderCalls !== undefined) {
+      consider(
+        'maxProviderCalls',
+        (counts.byRoleProviderCalls[role] ?? 0) + 1,
+        byRoleRow.maxProviderCalls,
+        role,
+      )
+    }
   }
   return Object.freeze(out)
 }

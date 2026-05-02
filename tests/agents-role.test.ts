@@ -11,7 +11,7 @@ import { canonicalRoleFromAgent } from '../src/agents/role.ts'
 import { M12_COMPANY_ROLES } from '../src/config/schema.ts'
 
 describe('canonicalRoleFromAgent — happy paths', () => {
-  test.each(M12_COMPANY_ROLES.map((r) => [r as string]))(
+  test.each(M12_COMPANY_ROLES.map((r) => [r]))(
     'maps bundled role name "%s" to itself',
     (role) => {
       expect(canonicalRoleFromAgent({ name: role })).toBe(role)

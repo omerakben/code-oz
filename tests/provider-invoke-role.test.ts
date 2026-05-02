@@ -83,7 +83,7 @@ function ctx(): InvokeContext {
   }
 }
 
-async function consumeAll(stream: AsyncIterable<ProviderEvent>): Promise<ProviderEvent[]> {
+async function consumeAll(stream: AsyncIterable<ProviderEvent>): Promise<void> {
   for await (const _ of stream) void _
 }
 
