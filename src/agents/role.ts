@@ -12,9 +12,31 @@
 //   undefined. The opposing turn is a real provider call counted against
 //   global + per-phase, never against a role budget.
 //
-// Authority: `M12_COMPANY_ROLES` is the single source of truth (rule 20).
+// Authority: this file is the leaf module that owns the role identity
+// vocabulary. `src/config/schema.ts` re-exports `M12_COMPANY_ROLES` and
+// `CompanyRole` for back-compat with existing consumers, but the
+// definitions live here so the type can flow into `ProviderRequest.role`
+// (`src/providers/types.ts`) without re-introducing the
+// providers → agents → providers cycle. M13 review fix-soon #1 closure
+// (CODEX_REVIEW_M13.md).
+//
+// This module imports nothing — it is the leaf. Changing that property
+// would re-introduce the cycle the move was designed to break.
 
-import { M12_COMPANY_ROLES, type CompanyRole } from '../config/schema.ts'
+/**
+ * Locked six-role roster shipped by M12. Project-local personas with
+ * names outside this list are not routable as company roles in v0.1
+ * (custom-role routing is M16+ work, gated on measurable need).
+ */
+export const M12_COMPANY_ROLES = [
+  'ba',
+  'lead',
+  'builder',
+  'verifier',
+  'reviewer',
+  'scientist',
+] as const
+export type CompanyRole = (typeof M12_COMPANY_ROLES)[number]
 
 /**
  * Map an agent definition (or anything with a `name` property) to its

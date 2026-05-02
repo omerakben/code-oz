@@ -144,8 +144,16 @@ describe('invokeAgent — ProviderRequest.role threading', () => {
     // role: 'agile-coach' is not in M12_COMPANY_ROLES — the event-log
     // validator rejects on append. The wrapper turns this into a
     // throwing event-log error rather than silently dropping the field.
+    // After the M13 review fix-soon #1 closure, ProviderRequest.role is
+    // typed as CompanyRole | undefined, so the compiler catches the
+    // malformed role at call sites. This test pierces the compile-time
+    // guard with `as CompanyRole` to exercise the runtime defense (a
+    // forged event written via a TypeScript escape hatch, the same shape
+    // the validator must catch on real corrupted log lines).
     await expect(
-      consumeAll(invokeAgent(ctx(), request({ role: 'agile-coach' }))),
+      consumeAll(
+        invokeAgent(ctx(), request({ role: 'agile-coach' as 'ba' })),
+      ),
     ).rejects.toThrow(/agent_invoked\.role/)
   })
 })

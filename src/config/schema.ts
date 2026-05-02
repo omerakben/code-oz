@@ -4,22 +4,16 @@ export type Profile = 'greenfield' | 'brownfield'
 
 export type Phase = 'define' | 'plan' | 'build' | 'verify' | 'review' | 'ship' | 'audit'
 
-// M12 (rule 20: role-to-provider routing authority). The shipped roster of
-// company roles. Project-local personas with names outside this constant
-// are NOT routable as company roles in v0.1; the locked list is the single
-// authority. Custom role routing is M16+ only when measurable need is
-// evidenced. Per Codex Decision A flip in CODEX_RESPONSE_M12.md (thread
-// 019de4bb): without the constant, M12 quietly becomes "custom role
-// routing" — a feature the project does not yet earn.
-export const M12_COMPANY_ROLES = [
-  'ba',
-  'lead',
-  'builder',
-  'verifier',
-  'reviewer',
-  'scientist',
-] as const
-export type CompanyRole = (typeof M12_COMPANY_ROLES)[number]
+// M12 (rule 20: role-to-provider routing authority). The shipped roster
+// of company roles is defined in `src/agents/role.ts` (the leaf module
+// that owns role-identity vocabulary, per the M13 review fix-soon #1
+// closure in CODEX_REVIEW_M13.md). Re-exported here for back-compat
+// with every existing consumer (loader, validator, tests). Project-local
+// personas with names outside this constant are NOT routable as company
+// roles in v0.1; the locked list is the single authority. Custom role
+// routing is M16+ only when measurable need is evidenced.
+export { M12_COMPANY_ROLES, type CompanyRole } from '../agents/role.ts'
+import type { CompanyRole } from '../agents/role.ts'
 
 // v0.1 ships `{ provider?, model? }` only. Per Codex Decision B, budgets
 // are M13 and permissions stay persona-shaped; unsupported row keys

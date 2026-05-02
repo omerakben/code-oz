@@ -13,6 +13,7 @@
 // 13 (privacy by default; explicit file manifests) by construction.
 
 import type { AgentDefinition } from '../agents/schema.ts'
+import type { CompanyRole } from '../agents/role.ts'
 import type { Phase } from '../state/schemas.ts'
 import type { AgentManifest } from '../state/schemas.ts'
 import type { ProviderCapability } from './capabilities.ts'
@@ -74,12 +75,15 @@ export interface ProviderRequest {
    * still counted against global + per-phase budgets (rule 19), just not
    * against a per-role cap.
    *
-   * Loose-typed (`string`, not `CompanyRole`) to avoid a cycle through
-   * `config/schema.ts → agents/schema.ts → providers/types.ts`. The
-   * `agent_invoked.role` event validator restricts the value to
-   * `M12_COMPANY_ROLES` at write time (`src/state/events.ts`).
+   * Tightened from `string` to `CompanyRole | undefined` after the M13
+   * implementation review (CODEX_REVIEW_M13.md fix-soon #1 closure):
+   * `M12_COMPANY_ROLES` + `CompanyRole` were moved to `src/agents/role.ts`
+   * (leaf module, no upstream imports), letting this file import the
+   * type directly without re-introducing the cycle. The runtime event
+   * validator at `src/state/events.ts` still enforces the same set —
+   * type tightening is a compile-time guard, not a runtime change.
    */
-  readonly role?: string
+  readonly role?: CompanyRole
 }
 
 /**
