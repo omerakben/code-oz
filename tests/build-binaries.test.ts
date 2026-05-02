@@ -196,9 +196,38 @@ describe('buildAll', () => {
     expect(await fs.exists(join(cwd, 'dist/handoff/manifest.json'))).toBe(false)
   })
 
+  test('fails closed when scripts/install.sh is missing after successful builds', async () => {
+    const fs = new MemoryFs()
+    const cwd = '/tmp/code-oz-missing-installer'
+    const runner = runnerWritingOutputs(
+      fs,
+      new Map([
+        ['bun-darwin-arm64', bytes('arm64-binary')],
+        ['bun-darwin-x64', bytes('x64-binary')],
+      ]),
+    )
+
+    const result = await buildAll({
+      runner,
+      version: VERSION,
+      cwd,
+      mode: 'force',
+      fs,
+      now: () => new Date(BUILT_AT),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.manifest).toBeNull()
+    expect(result.errors).toEqual([
+      'build-binaries: missing scripts/install.sh; cannot write dist/handoff/install.sh',
+    ])
+    expect(await fs.exists(join(cwd, 'dist/handoff/manifest.json'))).toBe(false)
+  })
+
   test('writes a manifest for successful mock builds', async () => {
     const fs = new MemoryFs()
     const cwd = '/tmp/code-oz-success'
+    await writeInstallScript(fs, cwd)
     const bytesByTarget = new Map([
       ['bun-darwin-arm64', bytes('arm64-binary')],
       ['bun-darwin-x64', bytes('x64-binary')],
@@ -257,6 +286,7 @@ describe('buildAll', () => {
   test('--ensure rebuilds a target when manifest sha256 does not match bytes', async () => {
     const fs = new MemoryFs()
     const cwd = '/tmp/code-oz-ensure'
+    await writeInstallScript(fs, cwd)
     const armLocal = join(cwd, 'dist/darwin-arm64/code-oz')
     const armHandoff = join(cwd, 'dist/handoff/darwin-arm64/code-oz')
     const x64Local = join(cwd, 'dist/darwin-x64/code-oz')
@@ -330,6 +360,44 @@ describe('buildAll', () => {
     })
     expect(await fs.readTextFile(armHandoff)).toBe('new-arm64')
     expect(await fs.readTextFile(x64Handoff)).toBe('stable-x64')
+  })
+
+  test('copies scripts/install.sh into handoff with executable bit', async () => {
+    const installSource = await readFile(join(process.cwd(), 'scripts/install.sh'))
+    await mkdir(join(tmp, 'scripts'), { recursive: true })
+    await writeFile(join(tmp, 'scripts/install.sh'), installSource)
+
+    const bytesByTarget = new Map([
+      ['bun-darwin-arm64', bytes('arm64-binary')],
+      ['bun-darwin-x64', bytes('x64-binary')],
+    ])
+    const runner: CommandRunner = async (_cmd, args) => {
+      const targetArg = args.find((arg) => arg.startsWith('--target='))
+      const outfileIndex = args.indexOf('--outfile')
+      const target = targetArg?.slice('--target='.length)
+      const outfile = args[outfileIndex + 1]
+      const binary = target === undefined ? undefined : bytesByTarget.get(target)
+      if (outfile === undefined || binary === undefined) {
+        throw new Error('mock runner received malformed build args')
+      }
+      await mkdir(dirname(outfile), { recursive: true })
+      await writeFile(outfile, binary)
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    const result = await buildAll({
+      runner,
+      version: VERSION,
+      cwd: tmp,
+      mode: 'force',
+      fs: nodeFs,
+      now: () => new Date(BUILT_AT),
+    })
+
+    expect(result.ok).toBe(true)
+    const handoffInstallPath = join(tmp, 'dist/handoff/install.sh')
+    expect(await readFile(handoffInstallPath, 'utf8')).toBe(installSource.toString())
+    expect((await stat(handoffInstallPath)).mode & 0o111).not.toBe(0)
   })
 })
 
@@ -425,6 +493,10 @@ function runnerWritingOutputs(
 
 function bytes(value: string): Uint8Array {
   return encoder.encode(value)
+}
+
+async function writeInstallScript(fs: MemoryFs, cwd: string): Promise<void> {
+  await fs.writeFile(join(cwd, 'scripts/install.sh'), '#!/bin/sh\necho installer\n')
 }
 
 function fileKey(path: string): string {

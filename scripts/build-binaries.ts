@@ -173,6 +173,11 @@ export async function buildAll(opts: {
     rows.push(manifestRow(target, await sha256OfBuffer(bytes), fileStat.size, opts.version))
   }
 
+  const installerError = await copyHandoffInstaller(opts.fs, opts.cwd, handoffRoot)
+  if (installerError !== null) {
+    return { ok: false, manifest: null, errors: [installerError] }
+  }
+
   if (existingManifest !== null && !rebuiltAny) {
     return { ok: true, manifest: existingManifest, errors: [] }
   }
@@ -254,6 +259,25 @@ async function binaryMatches(
   if (fileStat.size !== row.sizeBytes) return false
   const bytes = await fs.readFile(path)
   return (await sha256OfBuffer(bytes)) === row.sha256
+}
+
+async function copyHandoffInstaller(
+  fs: BuildFs,
+  cwd: string,
+  handoffRoot: string,
+): Promise<string | null> {
+  const srcInstallPath = join(cwd, 'scripts/install.sh')
+  const handoffInstallPath = join(handoffRoot, 'install.sh')
+  if (!(await fs.exists(srcInstallPath))) {
+    return 'build-binaries: missing scripts/install.sh; cannot write dist/handoff/install.sh'
+  }
+  try {
+    await fs.copyFile(srcInstallPath, handoffInstallPath)
+    await fs.chmod(handoffInstallPath, 0o755)
+    return null
+  } catch (err) {
+    return `build-binaries: failed to copy scripts/install.sh to dist/handoff/install.sh: ${formatUnknownError(err)}`
+  }
 }
 
 async function runBuild(
@@ -393,6 +417,10 @@ function isNodeErrorCode(err: unknown, code: string): boolean {
     'code' in err &&
     (err as { code?: unknown }).code === code
   )
+}
+
+function formatUnknownError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 if (import.meta.main) {
