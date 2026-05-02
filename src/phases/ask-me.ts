@@ -104,6 +104,13 @@ export interface RunAskMeOptions {
    * signal EOF — runner treats EOF as max_rounds_exhausted.
    */
   readonly readNextUserInput: (turn: number) => Promise<string | null>
+  /**
+   * Optional callback fired after each persona reply text is collected. The
+   * CLI orchestrator uses this to surface BA replies on stdout so the user
+   * can see questions before being prompted to reply. Tests that drive
+   * runAskMe with FakeProvider can omit it.
+   */
+  readonly onPersonaReply?: (turn: number, text: string) => void
   readonly now?: () => string
 }
 
@@ -460,6 +467,7 @@ async function invokePersona(
     )
   })
   history.push({ role: 'ba', text })
+  opts.onPersonaReply?.(personaTurn, text)
   return { text, stopReason: response.stopReason }
 }
 

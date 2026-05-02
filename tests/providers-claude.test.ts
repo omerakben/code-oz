@@ -235,6 +235,96 @@ describe('ClaudeProvider — invoke', () => {
     expect(caught?.issues[0]?.code).toBe('provider_io_error')
     expect(caught?.issues[0]?.rule).toContain('not found in PATH')
   })
+
+  // Bug fix: Claude Code 2.1+ returns a stream-array under --output-format=json
+  // instead of a single object. Without array handling, `tryParseJson` rejected
+  // arrays and the wrapper fell back to raw stdout — assigning the entire
+  // stream JSON (system init, tool list, rate-limit events) as content.
+  // ask_me_persona_reply.response carried this raw stream string into the event
+  // log, and any stdout print of `text` would surface unreadable JSON instead of
+  // the assistant's actual reply.
+  test('stream-array format: extracts assistant text from result event', async () => {
+    const streamArray = [
+      { type: 'system', subtype: 'init', cwd: '/tmp', session_id: 'abc', model: 'claude-opus-4-7' },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'hello world' }] },
+      },
+      { type: 'result', subtype: 'success', result: 'hello world', usage: { output_tokens: 5 } },
+    ]
+    const { runner } = makeRecordingRunner({
+      stdout: JSON.stringify(streamArray),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe('hello world')
+    expect(response.tokensUsed).toBe(5)
+    expect(response.model).toBe('claude-opus-4-7')
+  })
+
+  test('stream-array without result event: falls back to assistant text concatenation', async () => {
+    const streamArray = [
+      { type: 'system', subtype: 'init', model: 'claude-opus-4-7' },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'first chunk' }] },
+      },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'second chunk' }] },
+      },
+    ]
+    const { runner } = makeRecordingRunner({
+      stdout: JSON.stringify(streamArray),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe('first chunk\nsecond chunk')
+  })
+
+  test('stream-array with modelUsage but no usage.output_tokens sums per-model output tokens', async () => {
+    const streamArray = [
+      { type: 'system', subtype: 'init', model: 'claude-opus-4-7' },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'reply' }] },
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        result: 'reply',
+        modelUsage: {
+          'claude-opus-4-7': { outputTokens: 12 },
+          'claude-haiku-4-5': { outputTokens: 3 },
+        },
+      },
+    ]
+    const { runner } = makeRecordingRunner({
+      stdout: JSON.stringify(streamArray),
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new ClaudeProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe('reply')
+    expect(response.tokensUsed).toBe(15)
+  })
+
+  test('stream-array with no result event AND no assistant text falls back to raw stdout', async () => {
+    const streamArray = [
+      { type: 'system', subtype: 'init' },
+      { type: 'rate_limit_event', tier: '5h' },
+    ]
+    const stdout = JSON.stringify(streamArray)
+    const { runner } = makeRecordingRunner({ stdout, stderr: '', exitCode: 0 })
+    const c = new ClaudeProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe(stdout)
+  })
 })
 
 describe('ClaudeProvider — privacy guards (M4 Codex review block-push fix)', () => {

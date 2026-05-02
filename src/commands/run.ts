@@ -149,6 +149,9 @@ export async function runCommand(args: string[]): Promise<void> {
     config: askMeConfig,
     initialUserInput: initial,
     readNextUserInput: inputSource.readNext,
+    onPersonaReply: (turn, text) => {
+      process.stdout.write(`\n--- ${ba.name} reply (turn ${turn}) ---\n${text}\n\n`)
+    },
     fsyncDir: true,
   })
 

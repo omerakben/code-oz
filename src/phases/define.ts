@@ -78,6 +78,12 @@ export interface RunDefineOptions {
   readonly config: AskMeConfig
   readonly initialUserInput: string
   readonly readNextUserInput: (turn: number) => Promise<string | null>
+  /**
+   * Optional callback fired after each persona reply text is collected.
+   * Forwarded to runAskMe; the CLI orchestrator uses it to surface BA
+   * replies on stdout. Tests omit it when driving FakeProvider.
+   */
+  readonly onPersonaReply?: (turn: number, text: string) => void
   readonly now?: () => string
   /** When false, skips dir-fsync after artifact rename (test ergonomics). */
   readonly fsyncDir?: boolean
@@ -159,6 +165,7 @@ export async function runDefine(opts: RunDefineOptions): Promise<DefineResult> {
     config: opts.config,
     initialUserInput: opts.initialUserInput,
     readNextUserInput: opts.readNextUserInput,
+    ...(opts.onPersonaReply !== undefined ? { onPersonaReply: opts.onPersonaReply } : {}),
     now,
   })
 
