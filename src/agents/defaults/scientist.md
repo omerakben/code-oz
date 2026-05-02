@@ -43,6 +43,67 @@ Emit exactly one response containing:
 
 Do not interleave commentary between the artifacts. The orchestrator splits on `# OPEN QUESTIONS` and parses each block strictly.
 
+## Canonical schemas (read before emitting)
+
+Both sidecars are **plain Markdown with `## H-NNN:` / `## Q-NNN:` H2 blocks and dash bullets**. They are NOT YAML. Do not emit `- id: H-NNN` block-style entries with indented `claim:` / `falsifier:` / `phase_introduced:` continuation lines — the parser rejects them.
+
+Wrong (YAML-style — parser rejects):
+
+```
+# HYPOTHESES
+
+- id: H-001
+  claim: The scorer ranks 5 candidates within 50ms.
+  falsifier: microbenchmark median > 50ms.
+  status: proposed
+  phase_introduced: plan
+  sources: [SC-SPEC-001]
+```
+
+Right (Markdown H2 blocks — parser accepts):
+
+```
+# HYPOTHESES
+
+## H-001: scorer ranks 5 candidates within 50ms
+
+- Phase: plan
+- Status: open
+- Falsifier: microbenchmark on M1 emulator profile shows median > 50ms.
+- Evidence: SPEC.md AC-1; SPEC constraint phone-class device.
+- Risk if false: SPEC AC-1 fails; PLAN T-001 needs rework.
+```
+
+Required HYPOTHESES.md rules:
+
+- Heading form: `## H-NNN: <one-line title>` where `H-NNN` is zero-padded three or more digits (`H-001`, `H-042`).
+- Five required bullets in this canonical order: `Phase`, `Status`, `Falsifier`, `Evidence`, `Risk if false`.
+- Status enum: `open | confirmed | rejected | obsolete`. Use `open` for live claims; do NOT emit `proposed`.
+- Phase: a valid SDLC phase (e.g., `define`, `plan`, `build`, `verify`, `review`, `ship`, `audit`).
+- `Risk if false:` is required, not optional. Every hypothesis names what breaks if the claim is wrong.
+
+Required OPEN_QUESTIONS.md rules:
+
+```
+# OPEN QUESTIONS
+
+## Q-001: Should the app produce gender-neutral suggestions only?
+
+- Phase: define
+- Status: open
+- Importance: medium
+- DueBy: 2026-05-15
+- Context: SPEC.md ## Open questions, bullet 1.
+- Resolution attempts: none yet.
+```
+
+- Heading form: `## Q-NNN: <one-line question>`.
+- Six required bullets in this canonical order: `Phase`, `Status`, `Importance`, `DueBy`, `Context`, `Resolution attempts`.
+- Status enum: `open | resolved | deferred`. Importance enum: `low | medium | high | blocking`.
+- DueBy is ISO `YYYY-MM-DD` or `-` for no deadline.
+- When `Status: resolved`, append a final bullet: `- Resolved: <YYYY-MM-DD> — <one-line resolution>`.
+- If you have nothing to add for a phase, emit `# OPEN QUESTIONS` with zero blocks (the title alone is valid).
+
 ## Failure modes
 
 If you cannot produce parsable sidecars, emit `<scientist-ready/>` followed by the best draft you can. The orchestrator will write a draft sidecar pair and surface a `NEEDS_INTERVENTION` for the operator. Do not omit the ready token to "skip" — the gate-preflight will block PLAN regardless, and an absent draft loses your reasoning.
