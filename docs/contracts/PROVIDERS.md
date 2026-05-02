@@ -1,7 +1,8 @@
 # Providers (v0.1)
 
-User-facing summary of the four IAgentProvider adapters that ship in
-v0.1-alpha. The canonical contract — interface shape, error codes, doctor
+User-facing summary of the five IAgentProvider adapters that ship in
+v0.1-alpha (Claude, Codex, Gemini stub, Fake, and the PE-1 xAI HTTP
+adapter). The canonical contract — interface shape, error codes, doctor
 exit semantics — lives in [`docs/references/provider-contract.md`](../references/provider-contract.md).
 
 ## Auth model (v0.1)

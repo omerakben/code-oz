@@ -4,10 +4,11 @@
 // loose thread.
 //
 // Two registries live here: AgentRegistry (loaded personas + project-local
-// overrides) and ProviderRegistry (the four IAgentProvider adapters). Both
-// keepalives matter — without the explicit imports below, the compiled
-// binary's tree-shaker would drop unused adapter modules and the registry
-// would be empty in production.
+// overrides) and ProviderRegistry (the five IAgentProvider adapters: Claude,
+// Codex, Gemini stub, Fake, and the PE-1 xAI HTTP adapter). Both keepalives
+// matter — without the explicit imports below, the compiled binary's tree-
+// shaker would drop unused adapter modules and the registry would be empty
+// in production.
 //
 // The bootstrap is also where commands resolve their CodeOzPaths once. M5+
 // commands (`run`, `status`, `resume`) will share this same shape.

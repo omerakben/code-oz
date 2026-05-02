@@ -105,7 +105,7 @@ M11 (closed) ── M12 ── PE-1 ── (demand checkpoint) ── M13 ──
 
 ### Demand checkpoint (between PE-1 ship and PE-2 commit)
 
-After PE-1 tags as `v0.12.0-alpha.0` (or whatever the milestone tag is — naming TBD; see "Open follow-ups" below), Ozzy surveys friends:
+After PE-1 tags as `v0.13.0-alpha.0` (resolved in `docs/research/CODEX_RESPONSE_PE1.md` Q1; M13 shifts to `v0.14.0-alpha.0`. The `v0.12.0-alpha.0` placeholder in earlier drafts of this kickoff was pre-M12 and is superseded), Ozzy surveys friends:
 
 > Which route are you actually using to access xAI?
 > - xAI API key directly

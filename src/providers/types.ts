@@ -19,7 +19,7 @@ import type { ProviderCapability } from './capabilities.ts'
 
 // --- identity ------------------------------------------------------
 
-export const PROVIDER_IDS = ['claude', 'codex', 'gemini', 'fake'] as const
+export const PROVIDER_IDS = ['claude', 'codex', 'gemini', 'fake', 'xai'] as const
 export type ProviderId = (typeof PROVIDER_IDS)[number]
 
 // ProviderFamily groups adapters that count as the same family for
@@ -32,7 +32,7 @@ export type ProviderId = (typeof PROVIDER_IDS)[number]
 // src/providers/families.ts so that load-time code (src/agents/loader.ts,
 // which runs before any registry exists) and runtime code (the registry's
 // instance method) share a single source of truth.
-export const PROVIDER_FAMILIES = ['claude', 'codex', 'gemini', 'fake'] as const
+export const PROVIDER_FAMILIES = ['claude', 'codex', 'gemini', 'fake', 'xai'] as const
 export type ProviderFamily = (typeof PROVIDER_FAMILIES)[number]
 
 // --- request DTOs --------------------------------------------------

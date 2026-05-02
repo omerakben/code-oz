@@ -130,7 +130,7 @@ export interface PhasesConfig {
 export interface CodeOzConfig {
   version: string
   profile: Profile
-  defaultProvider: 'claude' | 'codex' | 'gemini' | 'fake'
+  defaultProvider: 'claude' | 'codex' | 'gemini' | 'fake' | 'xai'
   models: {
     primary: string
     reviewer: string

@@ -11,7 +11,7 @@ The upstream templates are influence; this file is the authority for `code-oz`. 
   - `~/Projects/agents/templates/Archon` — function-like provider shape (stateless, each call self-contained)
   - `~/Projects/agents/templates/Auto-claude-code-research-in-sleep` — narrow cross-family REVIEW primitive (`requestReview`); broad `consult()` deliberately deferred to v0.3
 - **No code dependency, no submodule, no copy-paste.** Patterns are borrowed; the implementation is `code-oz`.
-- **Sync policy (subscription-first auth, locked in M4 commit 8 per [`docs/design/CODEX_RESPONSE_M4_ADAPTERS.md`](../design/CODEX_RESPONSE_M4_ADAPTERS.md)):** v0.1 adapters delegate auth entirely to the upstream CLIs (`claude login`, `codex login`). code-oz NEVER reads or transmits OAuth tokens directly — `~/.claude/auth.json` and `~/.codex/auth.json` are not in our trust boundary. Health probes use the CLIs' own status surfaces (`claude --version`, `codex login status`). If upstream CLIs change their auth file format or token storage backend (some platforms use the OS credential store), `code-oz` is unaffected. The W3 milestone may add HTTP-based adapters with their own OAuth flows; until then, every provider call goes through the upstream CLI as a subprocess.
+- **Sync policy (auth model, v0.1):** the v0.1 contract supports two auth shapes — subscription-first delegation to upstream CLIs (Claude, Codex; locked in M4 commit 8 per [`docs/design/CODEX_RESPONSE_M4_ADAPTERS.md`](../design/CODEX_RESPONSE_M4_ADAPTERS.md)), and direct API-key transmission for HTTP adapters that have no upstream-CLI option (xAI; landed in PE-1 per [`docs/design/SESSION_XAI_EXPANSION_KICKOFF.md`](../design/SESSION_XAI_EXPANSION_KICKOFF.md), Codex thread `019de497`). For subscription-first adapters: code-oz never reads or transmits OAuth tokens directly — `~/.claude/auth.json` and `~/.codex/auth.json` are not in our trust boundary; health probes use the CLIs' own status surfaces (`claude --version`, `codex login status`). For API-key adapters: code-oz reads `<PROVIDER>_API_KEY` from env at invoke time and transmits it as Bearer auth over HTTPS; the trust-boundary discipline (redaction, never-log-Authorization, sanitized error detail) is pinned in § "Auth model — subprocess delegation + API-key transmission (v0.1)" below. The W3 milestone may add additional HTTP-based adapters that swap subprocess auth for direct OAuth+PKCE; the `IAgentProvider` contract stays unchanged.
 
 ## Why this exists
 
@@ -25,8 +25,8 @@ M4 lands four surfaces that need a stable contract before M5+ depends on them:
 ## The interface
 
 ```ts
-type ProviderId = 'claude' | 'codex' | 'gemini' | 'fake'
-type ProviderFamily = 'claude' | 'codex' | 'gemini' | 'fake'   // == ProviderId in v0.1
+type ProviderId = 'claude' | 'codex' | 'gemini' | 'fake' | 'xai'
+type ProviderFamily = 'claude' | 'codex' | 'gemini' | 'fake' | 'xai'   // == ProviderId in v0.1
 
 interface IAgentProvider {
   readonly id: ProviderId
@@ -37,7 +37,7 @@ interface IAgentProvider {
 }
 ```
 
-Adapters are stateless. Every `invoke()` call spawns the upstream CLI fresh (subscription-first via `claude login` / `codex login`) or, for `FakeProvider`, walks its scripted expectation queue. No shared mutable state across calls; no in-memory token caching. The Archon discipline.
+Adapters are stateless. Every `invoke()` call spawns the upstream CLI fresh (subscription-first via `claude login` / `codex login`), makes an outbound HTTPS request reading `<PROVIDER>_API_KEY` from env (PE-1: xAI), or, for `FakeProvider`, walks its scripted expectation queue. No shared mutable state across calls; no in-memory token caching. The Archon discipline.
 
 ## Request DTO split
 

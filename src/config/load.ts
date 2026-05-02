@@ -52,7 +52,7 @@ export class ConfigLoadError extends Error {
 
 const PHASES: readonly Phase[] = ['define', 'plan', 'build', 'verify', 'review', 'ship', 'audit']
 const PROFILES: readonly Profile[] = ['greenfield', 'brownfield']
-const PROVIDERS = ['claude', 'codex', 'gemini', 'fake'] as const
+const PROVIDERS = ['claude', 'codex', 'gemini', 'fake', 'xai'] as const
 const ON_MAX_ROUNDS: readonly OnMaxRoundsBehavior[] = ['finalize', 'fail']
 
 /**

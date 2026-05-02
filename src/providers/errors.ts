@@ -18,6 +18,14 @@ export type ProviderErrorCode =
   | 'provider_tool_call_cap_exceeded'
   | 'provider_gemini_not_yet_supported'
   | 'provider_io_error'
+  // PE-1: HTTP adapters that require an explicit model in the request
+  // (xAI's chat-completions endpoint mandates `model`). The wrapper's
+  // `buildManifest` only forwards `req.model ?? req.agent.model`, so a
+  // persona without frontmatter `model` AND no company.<role>.model
+  // override produces an undefined `req.model`. Adapters that need an
+  // explicit model surface this typed error rather than letting the
+  // upstream HTTP call return a 400 with leaky body content.
+  | 'provider_model_missing'
   // M10 Debate runtime error codes (per docs/contracts/DEBATE.md
   // § Common errors + CODEX_RESPONSE_M10.md). All flow through the
   // wrapper's existing intervention plumbing; no new event-type drift
