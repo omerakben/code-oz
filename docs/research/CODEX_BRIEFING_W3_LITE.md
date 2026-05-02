@@ -4,7 +4,7 @@
 
 W3-lite is **NOT a milestone close-out**. It is a scaffold / pre-planning artifact. The formal W3.1 cycle (full discipline per `docs/design/SESSION_W3_KICKOFF.md`) runs in the morning with W3-lite's artifacts as evaluable input. This branch will not tag, will not merge to `main`, will not push without explicit operator approval.
 
-The forcing function is operational: Ozzy is meeting friends tomorrow and wants a working `code-oz` binary in their hands. The full W3.1 surface (npm + Homebrew + Scoop + GH Actions + curl|sh) cannot land overnight without violating cross-family review discipline (rule 7) or claiming authority W3.1 has not earned (rule 20). W3-lite is the strict subset that makes the demo work without violating either rule.
+The forcing function is operational: Ozzy is meeting friends tomorrow and wants a working `code-oz` binary in their hands. The full W3.1 surface (npm + Homebrew + Scoop + GH Actions + curl|sh) cannot land overnight without violating cross-family REVIEW discipline (CLAUDE.md rule 2 at line 24) or claiming authority W3.1 has not earned (CLAUDE.md rule 20, one authority boundary, at line 42). W3-lite is the strict subset that makes the demo work without violating either rule.
 
 Codex's job in this briefing is to pressure-test the W3-lite design before any implementation commits land. After this round closes (`CODEX_RESPONSE_W3_LITE.md` written), the Ralph loop's overnight iterations execute against the synthesized plan.
 
@@ -45,8 +45,8 @@ Out of scope (locked):
 These five questions are pinned by the ask-me decision record + the W3 kickoff doc. Codex MAY note disagreement but must not block on them — they are operational decisions Ozzy made:
 
 1. **Targets:** `bun-darwin-arm64` + `bun-darwin-x64` only. No Linux, no Windows. Pinned by ask-me Q3.
-2. **Install location:** `~/.local/bin/code-oz`. Pinned by W3 kickoff § "Open questions" Q3 lean (also matches operator-authority discipline rule 13).
-3. **Shell modification:** install script does NOT modify `~/.zshrc` / `~/.bashrc` / `~/.profile`. It prints PATH instructions. Pinned by W3 kickoff Q3 lean + rule 13.
+2. **Install location:** `~/.local/bin/code-oz`. Pinned by W3 kickoff § "Open questions" Q3 lean (also matches CLAUDE.md rule 13, privacy by default, at line 35).
+3. **Shell modification:** install script does NOT modify `~/.zshrc` / `~/.bashrc` / `~/.profile`. It prints PATH instructions. Pinned by W3 kickoff Q3 lean + CLAUDE.md rule 13, privacy by default, at line 35.
 4. **Quarantine handling:** `xattr -d com.apple.quarantine` if attribute present. No code signing, no notarization. Pinned by ask-me Q3 reasoning.
 5. **Source of binary for the install script:** local `dist/handoff/<os>-<arch>/code-oz`. NOT GitHub Releases (curl|sh-from-network is W3.1). Pinned by ask-me Q2.
 
@@ -138,7 +138,7 @@ Codex writes this file with sections:
 
 ## Codex invocation parameters
 
-- Model: `gpt-5.5` (per CLAUDE.md cross-model peer review rule 4 fallback).
+- Model: `gpt-5.5` (per CLAUDE.md cross-model peer review item 4 at line 87).
 - Reasoning effort: `xhigh`.
 - Sandbox: `read-only` (this is a planning round; no file edits).
 - Approval policy: `never`.
@@ -146,4 +146,4 @@ Codex writes this file with sections:
 
 ## Operational note
 
-The Ralph loop's iteration 1 dispatches this briefing. Codex's response gets read by the orchestrator's next iteration; it locks the synthesis decisions for all subsequent iterations. **Codex's verdict is data, not authority** (CLAUDE.md cross-model peer review rule 3). If Codex pushes back on a pinned answer, the orchestrator notes the disagreement in `.code-oz/state/ralph-state.md` for morning review and proceeds with the pinned answer.
+The Ralph loop's iteration 1 dispatches this briefing. Codex's response gets read by the orchestrator's next iteration; it locks the synthesis decisions for all subsequent iterations. **Codex's verdict is data, not authority** (CLAUDE.md cross-model peer review item 3 at line 85). If Codex pushes back on a pinned answer, the orchestrator notes the disagreement in `.code-oz/state/ralph-state.md` for morning review and proceeds with the pinned answer.

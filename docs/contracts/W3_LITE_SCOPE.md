@@ -7,15 +7,17 @@
 
 ## Why W3-lite exists
 
-Friends-tomorrow demo forces a working `code-oz` binary in their hands by morning. The full W3.1 surface (npm + Homebrew + Scoop + GH Actions + curl|sh + 6-7 commits + planning round) cannot land overnight without inverting the cross-family review discipline (rule 7) or claiming authority W3.1 has not earned (rule 20). W3-lite produces the strict subset that makes the demo work without violating either rule.
+Friends-tomorrow demo forces a working `code-oz` binary in their hands by morning. The full W3.1 surface (npm + Homebrew + Scoop + GH Actions + curl|sh + 6-7 commits + planning round) cannot land overnight without inverting cross-family REVIEW discipline (CLAUDE.md rule 2 at line 24) or claiming authority W3.1 has not earned (CLAUDE.md rule 20, one authority boundary, at line 42). W3-lite produces the strict subset that makes the demo work without violating either rule.
 
 ## In scope
 
 1. **Multi-target binary build script.** `scripts/build-binaries.ts` invokes `bun build --compile --target=<target>` for `bun-darwin-arm64` and `bun-darwin-x64`, writing to `dist/<os>-<arch>/code-oz`. Tests cover target-resolution + path layout + non-zero exit on toolchain failure.
 2. **Local install script.** `scripts/install.sh` (POSIX, no bash-isms): detects `uname -s` + `uname -m`, copies the matching binary from `dist/handoff/<os>-<arch>/code-oz` to `~/.local/bin/code-oz`, strips the macOS quarantine attribute (`xattr -d com.apple.quarantine` if present), prints PATH instructions if `~/.local/bin` is not in `$PATH`. Idempotent: re-running upgrades the binary, doesn't duplicate state.
-3. **Handoff bundle.** `dist/handoff/` directory contains `darwin-arm64/code-oz`, `darwin-x64/code-oz`, `install.sh`, and `README.md` with one-page operator-friendly instructions. Friends receive this directory as a tarball.
+3. **Handoff bundle.** `dist/handoff/` directory contains `darwin-arm64/code-oz`, `darwin-x64/code-oz`, `install.sh`, and `README.md` with one-page operator-friendly instructions. The locked layout is `dist/handoff/{darwin-arm64,darwin-x64}/code-oz`, not `dist/handoff/bin/<arch>/code-oz`. The tarball at `dist/code-oz-v0.14.0-alpha.0-darwin.tar.gz` contains a root directory `code-oz-v0.14.0-alpha.0-darwin/` that mirrors the handoff layout. Friends receive this directory as a tarball.
 4. **Smoke test.** `scripts/smoke-test.sh` (or `.ts`) installs the darwin-arm64 binary into a tempdir, runs `code-oz --version`, runs `code-oz init` against a tempdir, asserts both succeed and the version matches `package.json.version`.
 5. **Tests.** All new TypeScript code has tests where mockable (target resolution, version-trio invariant, install-script POSIX validation via shellcheck if available, smoke-test result parsing). The 2086 baseline test count must not regress.
+
+Codex planning round R1 (`docs/research/CODEX_RESPONSE_W3_LITE.md`, thread `019de6db`) returned accept-with-modifications on Q1-Q8; mods integrated via this update + `W3_LITE_DISPATCH.md`.
 
 ## Out of scope (anti-scope-creep, locked)
 
@@ -60,13 +62,13 @@ Friends-tomorrow demo forces a working `code-oz` binary in their hands by mornin
 
 Each iteration, the orchestrator dispatches **one** bounded Codex task via `mcp__plugin_agent-codex_codex-native__codex`:
 
-- **Model:** `gpt-5.5` (per CLAUDE.md cross-model peer review rule 4 fallback; do NOT use `gpt-5.5-codex` or `gpt-5.1-codex-max`).
+- **Model:** `gpt-5.5` (per CLAUDE.md cross-model peer review item 4 at line 87; do NOT use `gpt-5.5-codex` or `gpt-5.1-codex-max`).
 - **Reasoning effort:** `xhigh` (default for code work).
 - **Sandbox:** `workspace-write` (Codex needs to edit files and run `bun test`).
 - **Approval policy:** `never` (no interactive approvals; the orchestrator IS the approval).
 - **CWD:** `/Users/ozzy-mac/Projects/code-oz`.
-- **Task contract template:** see `docs/contracts/W3_LITE_DISPATCH.md` (written by Ralph iteration 1 if absent).
-- **Permissions Codex MAY use:** read repo, write files matching `scripts/**`, `dist/**`, `tests/**`, and the W3-lite docs paths; run `bun test`, `bun run typecheck`, `bun run build:binary`, `git status`, `git diff`, `git add`, `git commit`. Codex MAY NOT push, tag, merge, fetch, pull, or run `gh` commands.
+- **Task contract template:** use `docs/contracts/W3_LITE_DISPATCH.md`, the execution-template contract for Codex sub-agent permissions, implementation dispatch prompts, R1/R2 review lenses, and halt triage. It defers to this scope contract and `CLAUDE.md`.
+- **Permissions Codex MAY use:** read repo, write files matching `scripts/**`, `dist/**`, `tests/**`, and the W3-lite docs paths; run `bun test`, `bun run typecheck`, `bun run build:binaries`, `bun build --compile`, `git status`, `git diff`, `git add`, `git commit`. Codex MAY NOT push, tag, merge, fetch, pull, or run `gh` commands.
 - **Per-iteration deliverable:** Codex appends a one-section summary to `.code-oz/state/ralph-state.md` describing what changed, what tests ran, and the resulting commit SHA (if any).
 
 ## Per-iteration loop shape (Opus orchestrator)
@@ -126,5 +128,5 @@ When the loop halts (success or cap), the orchestrator writes `.code-oz/state/ra
 
 - Whether `feat/w3-lite-demo` cherry-picks into the formal W3.1 branch, rebases, or stays as a forward-compat artifact.
 - Whether `dist/handoff/` ships to friends as-is or needs polish.
-- Push grant for `feat/w3-lite-demo` (default no, per CLAUDE.md rule 5; M13's grant was milestone-scoped).
+- Push grant for `feat/w3-lite-demo` (default no, per CLAUDE.md working item 5 at line 74; M13's grant was milestone-scoped).
 - Whether the formal W3.1 planning round adopts any W3-lite design choices or revisits them.
