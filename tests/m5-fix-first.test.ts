@@ -32,7 +32,9 @@ describe('finding #1: versions report consistently across all surfaces', () => {
   // pins the current version so every milestone close that bumps must
   // update all three together. M11 missed the bump (left at
   // `0.10.0-alpha.0`); M12 commit 6 catches up to `0.12.0-alpha.0`.
-  const CURRENT = '0.12.0-alpha.0'
+  // PE-1 (xAI direct HTTP adapter) bumps to `0.13.0-alpha.0`; M13
+  // shifts to `0.14.0-alpha.0` per CODEX_RESPONSE_PE1.md Q1 lock.
+  const CURRENT = '0.13.0-alpha.0'
 
   test('PKG_VERSION', () => {
     expect(PKG_VERSION).toBe(CURRENT)
