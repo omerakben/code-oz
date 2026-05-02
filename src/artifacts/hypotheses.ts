@@ -43,6 +43,116 @@ export interface HypothesesArtifact {
   readonly hypotheses: readonly Hypothesis[]
 }
 
+// --- YAML-style tolerance (issue #5) -------------------------------
+
+// LLMs occasionally emit HYPOTHESES.md as YAML-style block entries (`- id: H-NNN`
+// with indented `claim:` / `falsifier:` / `phase_introduced:` continuation
+// lines) instead of the canonical `## H-NNN:` H2-block schema. Tolerance scope:
+// GitHub issue #5 — the Scientist persona has been observed defaulting to the
+// YAML form in long contexts. We pre-rewrite YAML blocks into the canonical
+// form before strict parsing so the artifact validates instead of failing the
+// PLAN gate.
+//
+// Discipline boundary: the adapter fires ONLY on lines that match the
+// `- id: H-NNN` shape. Canonical `## H-NNN:` blocks pass through untouched, so
+// mixed-format input (some YAML, some canonical) works. Synthesized fields are
+// tagged `(auto-synthesized — Scientist did not specify; investigate before
+// depending on this hypothesis)` so the round-tripped artifact is honest about
+// what was inferred. The strict parser still owns final validation; an
+// unconvertible YAML block (e.g., missing `falsifier:`) fails just as a missing
+// `- Falsifier:` bullet does.
+
+const YAML_HYP_ID_PROBE = /^-\s+id:\s*H-\d+\s*$/m
+const YAML_HYP_ID_LINE = /^-\s+id:\s*(H-\d+)\s*$/
+const YAML_HYP_CONTINUATION = /^[ \t]+([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.*)$/
+
+const YAML_STATUS_MAP: Record<string, string> = Object.freeze({
+  proposed: 'open',
+  draft: 'open',
+  pending: 'open',
+})
+
+function normalizeInlineList(value: string): string {
+  const m = value.match(/^\[(.*)\]$/)
+  if (m === null) return value
+  return m[1]!
+    .split(',')
+    .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+    .filter((s) => s.length > 0)
+    .join(', ')
+}
+
+function firstNonEmptyLine(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return ''
+  const nl = trimmed.indexOf('\n')
+  return nl === -1 ? trimmed : trimmed.slice(0, nl).trim()
+}
+
+function renderHypothesisYamlBlock(id: string, fields: Map<string, string>): string[] {
+  const claim = fields.get('claim') ?? fields.get('title') ?? ''
+  const title = firstNonEmptyLine(claim) || '(claim not provided)'
+  const phase = fields.get('phase_introduced') ?? fields.get('phase') ?? 'plan'
+  const rawStatus = fields.get('status') ?? 'open'
+  const status = YAML_STATUS_MAP[rawStatus] ?? rawStatus
+  const falsifier =
+    fields.get('falsifier') ??
+    '(auto-synthesized — Scientist did not specify; investigate before depending on this hypothesis)'
+  const evidenceRaw = fields.get('sources') ?? fields.get('evidence') ?? '(no sources provided)'
+  const evidence = normalizeInlineList(evidenceRaw)
+  const risk =
+    fields.get('risk_if_false') ??
+    fields.get('risk') ??
+    '(auto-synthesized — Scientist did not specify; investigate before depending on this hypothesis)'
+  return [
+    `## ${id}: ${title}`,
+    '',
+    `- Phase: ${phase}`,
+    `- Status: ${status}`,
+    `- Falsifier: ${falsifier}`,
+    `- Evidence: ${evidence}`,
+    `- Risk if false: ${risk}`,
+  ]
+}
+
+/**
+ * Pre-parse adapter: rewrite YAML-style hypothesis blocks (`- id: H-NNN`
+ * with indented `key:` continuations) into the canonical `## H-NNN:` H2-block
+ * schema. Returns the input unchanged if no YAML markers are present.
+ *
+ * Issue #5 tolerance. Mixed-format input is supported — canonical H2 blocks
+ * are passed through verbatim; only YAML blocks are rewritten.
+ */
+export function adaptYamlStyleHypotheses(raw: string): string {
+  if (!YAML_HYP_ID_PROBE.test(raw)) return raw
+  const lines = raw.split(/\r?\n/)
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    const idMatch = line.match(YAML_HYP_ID_LINE)
+    if (idMatch === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    const id = idMatch[1]!
+    const fields = new Map<string, string>()
+    i++
+    while (i < lines.length) {
+      const cont = lines[i]!
+      const contMatch = cont.match(YAML_HYP_CONTINUATION)
+      if (contMatch === null) break
+      const key = contMatch[1]!.toLowerCase()
+      const value = contMatch[2]!.trim()
+      if (!fields.has(key)) fields.set(key, value)
+      i++
+    }
+    out.push(...renderHypothesisYamlBlock(id, fields))
+  }
+  return out.join('\n')
+}
+
 // --- parser --------------------------------------------------------
 
 const BOM = '﻿'
@@ -56,7 +166,8 @@ interface HypothesisBuf {
 
 export function parseHypotheses(raw: string, file = 'HYPOTHESES.md'): HypothesesArtifact {
   const issues: HypothesesLoadIssue[] = []
-  const text = raw.startsWith(BOM) ? raw.slice(BOM.length) : raw
+  const adapted = adaptYamlStyleHypotheses(raw)
+  const text = adapted.startsWith(BOM) ? adapted.slice(BOM.length) : adapted
 
   if (text.trim().length === 0) {
     throw new HypothesesLoadError([

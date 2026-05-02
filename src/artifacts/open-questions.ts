@@ -60,6 +60,115 @@ export interface OpenQuestionsArtifact {
   readonly questions: readonly OpenQuestion[]
 }
 
+// --- YAML-style tolerance (issue #5) -------------------------------
+
+// Mirror of the HYPOTHESES.md adapter. The Scientist persona has been observed
+// emitting OPEN_QUESTIONS.md as YAML-style block entries (`- id: Q-NNN` with
+// indented `question:` / `phase_introduced:` / `due_by:` continuation lines)
+// instead of the canonical `## Q-NNN:` H2-block schema. We pre-rewrite YAML
+// blocks before strict parsing so the artifact validates instead of failing
+// the PLAN gate.
+//
+// Discipline boundary: the adapter fires ONLY on `- id: Q-NNN` lines.
+// Canonical `## Q-NNN:` blocks pass through untouched (mixed-format input
+// works). Synthesized fields (DueBy default `-`, Resolution attempts default
+// `none yet.`, missing context) are conservative defaults that the contract
+// already permits — they do not invent semantics. The strict parser still owns
+// final validation.
+//
+// Issue #5 closes here in concert with the HYPOTHESES.md tolerance.
+
+const YAML_Q_ID_PROBE = /^-\s+id:\s*Q-\d+\s*$/m
+const YAML_Q_ID_LINE = /^-\s+id:\s*(Q-\d+)\s*$/
+const YAML_Q_CONTINUATION = /^[ \t]+([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.*)$/
+
+const YAML_Q_STATUS_MAP: Record<string, string> = Object.freeze({
+  proposed: 'open',
+  draft: 'open',
+  pending: 'open',
+})
+
+function firstNonEmptyLineQ(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return ''
+  const nl = trimmed.indexOf('\n')
+  return nl === -1 ? trimmed : trimmed.slice(0, nl).trim()
+}
+
+function renderQuestionYamlBlock(id: string, fields: Map<string, string>): string[] {
+  const questionRaw = fields.get('question') ?? fields.get('text') ?? fields.get('title') ?? ''
+  const question = firstNonEmptyLineQ(questionRaw) || '(question not provided)'
+  const phase = fields.get('phase_introduced') ?? fields.get('phase') ?? 'plan'
+  const rawStatus = fields.get('status') ?? 'open'
+  const status = YAML_Q_STATUS_MAP[rawStatus] ?? rawStatus
+  const importance = fields.get('importance') ?? 'medium'
+  const dueByRaw = fields.get('due_by') ?? fields.get('dueby') ?? '-'
+  const dueBy = dueByRaw.length === 0 ? '-' : dueByRaw
+  const context = fields.get('context') ?? '(context not provided by Scientist)'
+  const resolutionAttempts =
+    fields.get('resolution_attempts') ?? fields.get('attempts') ?? 'none yet.'
+  const out = [
+    `## ${id}: ${question}`,
+    '',
+    `- Phase: ${phase}`,
+    `- Status: ${status}`,
+    `- Importance: ${importance}`,
+    `- DueBy: ${dueBy}`,
+    `- Context: ${context}`,
+    `- Resolution attempts: ${resolutionAttempts}`,
+  ]
+  if (status === 'resolved') {
+    const resolved = fields.get('resolved') ?? ''
+    if (resolved.length > 0) {
+      out.push(`- Resolved: ${resolved}`)
+    } else {
+      const today = new Date().toISOString().slice(0, 10)
+      out.push(
+        `- Resolved: ${today} — (auto-synthesized — Scientist did not specify resolution; investigate)`,
+      )
+    }
+  }
+  return out
+}
+
+/**
+ * Pre-parse adapter: rewrite YAML-style question blocks (`- id: Q-NNN` with
+ * indented `key:` continuations) into the canonical `## Q-NNN:` H2-block
+ * schema. Returns the input unchanged if no YAML markers are present.
+ *
+ * Issue #5 tolerance. Mixed-format input is supported — canonical H2 blocks
+ * are passed through verbatim; only YAML blocks are rewritten.
+ */
+export function adaptYamlStyleOpenQuestions(raw: string): string {
+  if (!YAML_Q_ID_PROBE.test(raw)) return raw
+  const lines = raw.split(/\r?\n/)
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    const idMatch = line.match(YAML_Q_ID_LINE)
+    if (idMatch === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    const id = idMatch[1]!
+    const fields = new Map<string, string>()
+    i++
+    while (i < lines.length) {
+      const cont = lines[i]!
+      const contMatch = cont.match(YAML_Q_CONTINUATION)
+      if (contMatch === null) break
+      const key = contMatch[1]!.toLowerCase()
+      const value = contMatch[2]!.trim()
+      if (!fields.has(key)) fields.set(key, value)
+      i++
+    }
+    out.push(...renderQuestionYamlBlock(id, fields))
+  }
+  return out.join('\n')
+}
+
 // --- parser --------------------------------------------------------
 
 const BOM = '﻿'
@@ -76,7 +185,8 @@ export function parseOpenQuestions(
   file = 'OPEN_QUESTIONS.md',
 ): OpenQuestionsArtifact {
   const issues: OpenQuestionsLoadIssue[] = []
-  const text = raw.startsWith(BOM) ? raw.slice(BOM.length) : raw
+  const adapted = adaptYamlStyleOpenQuestions(raw)
+  const text = adapted.startsWith(BOM) ? adapted.slice(BOM.length) : adapted
 
   if (text.trim().length === 0) {
     throw new OpenQuestionsLoadError([

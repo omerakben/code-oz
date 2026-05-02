@@ -8,6 +8,7 @@ import {
   allocateQuestionId,
   findGateBlockingQuestions,
   writeOpenQuestions,
+  adaptYamlStyleOpenQuestions,
   QUESTION_STATUSES,
   QUESTION_IMPORTANCES,
 } from '../src/artifacts/open-questions.ts'
@@ -223,5 +224,111 @@ describe('QUESTION_STATUSES + QUESTION_IMPORTANCES', () => {
   test('match contract', () => {
     expect(QUESTION_STATUSES).toEqual(['open', 'resolved', 'deferred'])
     expect(QUESTION_IMPORTANCES).toEqual(['low', 'medium', 'high', 'blocking'])
+  })
+})
+
+// Issue #5: YAML-style tolerance regression tests.
+
+const YAML_OQ = `# OPEN QUESTIONS
+
+- id: Q-001
+  question: Should the app produce gender-neutral suggestions only?
+  status: proposed
+  importance: medium
+  phase_introduced: define
+  due_by: 2026-05-15
+  context: SPEC.md ## Open questions, bullet 1.
+
+- id: Q-002
+  question: What is the device performance baseline for the 50ms acceptance criterion?
+  status: open
+  importance: high
+  phase_introduced: plan
+`
+
+describe('adaptYamlStyleOpenQuestions (issue #5)', () => {
+  test('returns input unchanged when no YAML markers are present', () => {
+    expect(adaptYamlStyleOpenQuestions(VALID)).toBe(VALID)
+  })
+
+  test('rewrites YAML blocks to canonical H2 blocks', () => {
+    const out = adaptYamlStyleOpenQuestions(YAML_OQ)
+    expect(out).toContain('## Q-001:')
+    expect(out).toContain('## Q-002:')
+    expect(out).toContain('- Phase: define')
+    expect(out).toContain('- Importance: medium')
+    expect(out).toContain('- Resolution attempts: none yet.')
+    expect(out).not.toContain('- id: Q-')
+    expect(out).not.toContain('phase_introduced:')
+    expect(out).not.toContain('due_by:')
+  })
+
+  test('maps status: proposed to open', () => {
+    const out = adaptYamlStyleOpenQuestions(YAML_OQ)
+    const q1 = out.slice(out.indexOf('## Q-001:'), out.indexOf('## Q-002:'))
+    expect(q1).toContain('- Status: open')
+  })
+
+  test('defaults DueBy to `-` when missing', () => {
+    const out = adaptYamlStyleOpenQuestions(YAML_OQ)
+    const q2 = out.slice(out.indexOf('## Q-002:'))
+    expect(q2).toContain('- DueBy: -')
+  })
+
+  test('synthesizes Resolution attempts when missing', () => {
+    const out = adaptYamlStyleOpenQuestions(YAML_OQ)
+    const q1 = out.slice(out.indexOf('## Q-001:'), out.indexOf('## Q-002:'))
+    expect(q1).toContain('- Resolution attempts: none yet.')
+  })
+
+  test('handles mixed format (canonical + YAML blocks)', () => {
+    const mixed = `# OPEN QUESTIONS
+
+## Q-001: canonical question survives intact
+
+- Phase: plan
+- Status: open
+- Importance: medium
+- DueBy: 2026-05-15
+- Context: existing.
+- Resolution attempts: none yet.
+
+- id: Q-002
+  question: yaml question gets rewritten.
+  status: proposed
+  importance: high
+  phase_introduced: plan
+`
+    const art = parseOpenQuestions(mixed)
+    expect(art.questions.length).toBe(2)
+    expect(art.questions[0]!.question).toContain('canonical')
+    expect(art.questions[1]!.question).toContain('yaml')
+    expect(art.questions[1]!.status).toBe('open') // proposed mapped
+    expect(art.questions[1]!.dueBy).toBeNull() // synthesized as `-`
+  })
+})
+
+describe('parseOpenQuestions — issue #5 YAML tolerance', () => {
+  test('parses pure-YAML input end-to-end', () => {
+    const art = parseOpenQuestions(YAML_OQ)
+    expect(art.questions.length).toBe(2)
+    expect(art.questions[0]!.id).toBe('Q-001')
+    expect(art.questions[0]!.status).toBe('open') // proposed → open
+    expect(art.questions[0]!.phase).toBe('define')
+    expect(art.questions[0]!.importance).toBe('medium')
+    expect(art.questions[0]!.dueBy).toBe('2026-05-15')
+    expect(art.questions[1]!.dueBy).toBeNull() // missing → `-` → null
+    expect(art.questions[1]!.resolutionAttempts).toBe('none yet.')
+  })
+
+  test('round-trips YAML through serialize → reparse to canonical', () => {
+    const art = parseOpenQuestions(YAML_OQ)
+    const serialized = serializeOpenQuestions(art)
+    expect(serialized).toContain('## Q-001:')
+    expect(serialized).not.toContain('- id: Q-')
+    const reparsed = parseOpenQuestions(serialized)
+    expect(reparsed.questions.length).toBe(art.questions.length)
+    expect(reparsed.questions[0]!.question).toBe(art.questions[0]!.question)
+    expect(reparsed.questions[0]!.context).toBe(art.questions[0]!.context)
   })
 })
