@@ -51,6 +51,13 @@ interface ProviderRequest {
   readonly files: readonly ProviderFileRef[]   // paths only, never content
   readonly model?: string                  // overrides agent.model
   readonly maxOutputTokens?: number        // adapter-specific cap
+  // M13 (Codex Q9 lock): explicit CompanyRole identity for per-role
+  // budget gating + per-role soft warnings. The six bundled-role
+  // invocation sites populate this from `canonicalRoleFromAgent`
+  // (src/agents/role.ts). Synthetic debate opponents and project-local
+  // personas omit it; their invocations still count against global +
+  // per-phase budgets (rule 19), just not against a per-role cap.
+  readonly role?: CompanyRole              // from src/agents/role.ts
 }
 
 interface ProviderFileRef {
@@ -190,11 +197,33 @@ Wrapper, before invoking the adapter, under a short pre-call per-run lock:
    - `phaseTurns = count(phase_entered events for this phase)` vs `config.budgets.perPhase[phase].maxTurns`
    - `phaseProviderCalls = count(agent_invoked events for this phase)` vs `config.budgets.perPhase[phase].maxProviderCalls`
    - `phaseTokens = sum(agent_completed.tokensUsed for this phase) + sum(agent_invoked.tokensEstimate for in-flight)` vs `config.budgets.perPhase[phase].maxTokensEstimate`
-3. Global tallies use the same shape against `config.budgets.global.{maxTurns, maxProviderCalls, maxTokensEstimate}`.
-4. Conservative token estimator (`src/providers/cost.ts`): rough heuristic upper bound on the next call's token cost (~4 chars/token English upper bound; per-provider safety multiplier later). No tokenizer dependency in v0.1 — bound is "refuse before catastrophic spend," not "predict to within 5%."
-5. If next-call estimate would breach any global or per-phase budget, throw `ProviderError(provider_budget_exceeded)` with `actionableSuggestions` naming the specific budget and the config key to raise.
+3. **Per-role tallies (M13, Codex Q9 lock)** — fired only when `req.role` is set AND `config.budgets.global.byRole?.[role]` defines a cap. The reducer pairs `agent_invoked.role` with the matching `agent_completed` via per-phase FIFO (the queue stores `{estimate, role}` records — explicit pairing, not name-canonicalization):
+   - `roleTokens = sum(paired tokensUsed-or-estimate for this role) + sum(in-flight estimate for this role)` vs `config.budgets.global.byRole.<role>.maxTokensEstimate`
+   - `roleProviderCalls = count(agent_invoked.role events for this role)` vs `config.budgets.global.byRole.<role>.maxProviderCalls`
+   - **`maxTurns` is intentionally absent on `byRole`** (Codex Blocker 2 lock): the existing reducer counts `phase_entered`, not agent calls, so the role dimension has no event-model meaning.
+4. Global tallies use the same shape against `config.budgets.global.{maxTurns, maxProviderCalls, maxTokensEstimate, maxWallTimeMinutes}`.
+5. Conservative token estimator (`src/providers/cost.ts`): rough heuristic upper bound on the next call's token cost (~4 chars/token English upper bound; per-provider safety multiplier later). No tokenizer dependency in v0.1 — bound is "refuse before catastrophic spend," not "predict to within 5%."
+6. **Order of checks (most-specific first):** per-phase tokens → per-role tokens → global tokens → per-phase turns → global turns → per-phase calls → per-role calls → global calls → wall-time. The first breach wins; the typed `ProviderError(provider_budget_exceeded)` names the violated layer in its `rule` and the exact config key to raise in `actionableSuggestions` (e.g., `"raise budgets.global.byRole.builder.maxTokensEstimate in .code-oz/config.yaml"`).
 
 The check, the budget refusal, and (on success) the `agent_invoked` event append all happen under the same short lock. Lock released before the network call.
+
+## Cost telemetry — costEstimateUSD + costActualUSD (M13)
+
+Two optional advisory dollar fields land on the wrapper-emitted events when a price source resolves. **Tokens stay authoritative** in M13 (Codex Q2 lock — USD is advisory; M14+ may flip the authoritative metric on measurable demand).
+
+The price cascade (Codex Q4 lock):
+
+1. **`config.budgets.global.priceTable["<provider>:<model>"]`** — operator-configured, per-model. Wins when present.
+2. **`ctx.registry.capabilityOf(provider).costPerMTok`** — registry-resolved, per-provider. Falls back when the table misses; honors test/W3 capability overrides.
+
+When neither resolves, the field is omitted on the event. The wrapper never emits a placeholder zero (Q3 token-only fallback).
+
+- **`agent_invoked.costEstimateUSD?`** — pre-call upper-bound. Combines input from `prepared.metrics.tokensEstimate` (4-chars/token bound) with output from `req.maxOutputTokens ?? 0`. The output default is a known underestimate when `maxOutputTokens` is unset; advisory only.
+- **`agent_completed.costActualUSD?`** — post-call dollar actual with **output-tokens-only semantics** (Codex scope correction): today's Claude adapter reads `usage.output_tokens` and the xAI adapter reads `usage.completion_tokens`. Neither is full request cost. Operators reading this field as full invoice will understate spend.
+
+`config.budgets.global.priceTable` ships Claude shipped-model defaults (Opus 4.7 = $5/$25, Sonnet 4.6 = $3/$15, Haiku 4.5 = $1/$5; dated source comment). xAI / Codex / Gemini / Fake stay omitted per the rotting-data discipline (Codex Q4-bis lock). Operator overrides via `.code-oz/config.yaml budgets.global.priceTable`.
+
+See [`docs/references/budgets.md`](./budgets.md) for the user-facing surface and the cap-layer cascade.
 
 ## Tool-call cap streaming enforcement
 

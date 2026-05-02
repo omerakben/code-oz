@@ -65,13 +65,14 @@ export interface BudgetCounts {
   /** Wall-time minutes since `run_started.ts` (null when no run_started yet). */
   readonly wallTimeMinutes: number | null
   /**
-   * M13 (Codex Q9 + commit-4 lock): paired tokens (tokensUsed or
-   * fallback estimate) keyed by CompanyRole. Populated from
-   * `agent_invoked.role` on the invoke side and the
-   * `canonicalRoleFromAgent({name: agent})` derivation on the complete
-   * side (since Q6 locked agent_completed without a role field). Roles
-   * outside `M12_COMPANY_ROLES` and role-less invocations contribute
-   * nothing here — they remain accountable to global / per-phase only.
+   * M13 (Codex Q9 + commit-4 lock; review-fix block-push #2 closure):
+   * paired tokens (tokensUsed or fallback estimate) keyed by
+   * CompanyRole. Populated from `agent_invoked.role` on the invoke
+   * side and the explicit `{estimate, role}` pending-queue record on
+   * the complete side — pairing is symmetric and direct, not
+   * name-canonicalization. Roles outside `M12_COMPANY_ROLES` and
+   * role-less invocations contribute nothing here — they remain
+   * accountable to global / per-phase only (rule 19).
    */
   readonly byRoleTokens: Readonly<Record<string, number>>
   /** Count of `agent_invoked` events with `role` present, keyed by role. */
