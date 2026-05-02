@@ -573,8 +573,21 @@ function sourceIdKind(id: string): SourceKind | null {
 // Discipline boundary: the tolerance fires ONLY when the missing Result is
 // strongly implied by the Searched value. A REF-NONE block with no Searched
 // pattern AND no Result still fails — we do not silently invent evidence.
-// Extra fields (Path, Lines) on REF-NONE blocks were already silently
-// tolerated by the field-map walk above; this comment makes that explicit.
+// Extra fields (Path, Lines) on REF-NONE blocks are silently tolerated in
+// the buildSource function below (unknown keys are dropped from the field
+// map); this comment makes that intentional drop explicit.
+//
+// Design choice — restrictive patterns by construction. A few patterns
+// (`\bno results?\b`, `\bno matching files?\b`) can in principle match
+// query text the user is literally searching for (e.g. someone grepping
+// for the phrase "no results" in their own codebase). The patterns here
+// are deliberately narrow: parenthetical forms `(no files)`, `(empty)`,
+// `(0 files)` are preferred because they unambiguously mark a result
+// annotation rather than query text. Bare forms are kept only for the
+// most common empty-search idioms LLMs emit on greenfield runs. The
+// downstream defense is the `(auto-extracted from Searched)` marker —
+// when the synthesized Result reaches AUDIT, the marker tells the
+// reviewer the Result was inferred, not stated.
 const REF_NONE_EMPTY_RESULT_PATTERNS: readonly RegExp[] = Object.freeze([
   /\(\s*no files?\s*\)/i,
   /\(\s*only \. and \.\.\s*\)/i,
@@ -585,6 +598,9 @@ const REF_NONE_EMPTY_RESULT_PATTERNS: readonly RegExp[] = Object.freeze([
   /\bno matching files?\b/i,
   /\bno results?\b/i,
   /\bempty repository\b/i,
+  /\b0 files?\b/i,
+  /only \. and \.\./i,
+  /\bno matching pattern\b/i,
 ])
 
 /**

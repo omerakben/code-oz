@@ -127,7 +127,7 @@ Each task has all five required bullets in the order shown. Task ids match `^T-\
 - T-002 -> SC-SPEC-002, SC-REF-NONE-001, SC-DOC-NONE-001
 ```
 
-Five required H2 sections in canonical order: Spec sources, Reference sources, Docs sources, Coverage, Open questions (last is optional).
+Four required H2 sections in canonical order: Spec sources, Reference sources, Docs sources, Coverage. `## Open questions` is optional and must appear last if present.
 
 For every `T-NNN` in PLAN.md, Coverage maps it to ≥ 1 source id. For every source id in Coverage, an H3 block must exist in this file. NONE blocks (`SC-REF-NONE-NNN`, `SC-DOC-NONE-NNN`) require an explicit `Why explicit:` rationale.
 

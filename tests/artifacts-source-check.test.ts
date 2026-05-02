@@ -314,6 +314,10 @@ ${refNoneBody}
     { searched: 'glob ** returned 0 results', matchToken: 'returned 0' },
     { searched: 'grep "auth" src/ — no matching files', matchToken: 'no matching files' },
     { searched: 'tree . shows empty repository', matchToken: 'empty repository' },
+    // Bare (unparenthesized) forms added in PR #4 review pass.
+    { searched: 'glob **/*.ts found 0 files', matchToken: '0 files (bare)' },
+    { searched: 'ls -la shows only . and .. entries', matchToken: 'only . and .. (bare)' },
+    { searched: 'grep "auth" src/ no matching pattern', matchToken: 'no matching pattern' },
   ]
 
   for (const { searched, matchToken } of synthesisCases) {
