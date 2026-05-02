@@ -18,6 +18,7 @@ import {
   formatTargetTriple,
   manifestForTargets,
   manifestRow,
+  renderHandoffReadme,
   sha256OfBuffer,
   targetForHost,
   TARGETS,
@@ -281,6 +282,55 @@ describe('buildAll', () => {
     expect(await fs.readTextFile(join(cwd, 'dist/handoff/darwin-x64/code-oz'))).toBe(
       'x64-binary',
     )
+    expect(await fs.readTextFile(join(cwd, 'dist/handoff/README.md'))).toBe(
+      renderHandoffReadme(VERSION),
+    )
+    expect(result.tarballPath).toBe(join(cwd, 'dist/code-oz-v0.14.0-alpha.0-darwin.tar.gz'))
+  })
+
+  test('stages the Darwin tarball root and invokes tar with the expected args', async () => {
+    const fs = new MemoryFs()
+    const cwd = '/tmp/code-oz-tarball'
+    await writeInstallScript(fs, cwd)
+    const tarCalls: string[][] = []
+    const runner = runnerWritingOutputs(
+      fs,
+      new Map([
+        ['bun-darwin-arm64', bytes('arm64-binary')],
+        ['bun-darwin-x64', bytes('x64-binary')],
+      ]),
+      [],
+      tarCalls,
+    )
+
+    const result = await buildAll({
+      runner,
+      version: VERSION,
+      cwd,
+      mode: 'force',
+      fs,
+      now: () => new Date(BUILT_AT),
+    })
+
+    const root = join(cwd, 'dist/code-oz-v0.14.0-alpha.0-darwin')
+    expect(result.ok).toBe(true)
+    expect(result.tarballPath).toBe(join(cwd, 'dist/code-oz-v0.14.0-alpha.0-darwin.tar.gz'))
+    expect(tarCalls).toEqual([
+      [
+        '-czf',
+        join(cwd, 'dist/code-oz-v0.14.0-alpha.0-darwin.tar.gz'),
+        '-C',
+        join(cwd, 'dist'),
+        'code-oz-v0.14.0-alpha.0-darwin',
+      ],
+    ])
+    expect(await fs.readTextFile(join(root, 'install.sh'))).toBe('#!/bin/sh\necho installer\n')
+    expect(await fs.readTextFile(join(root, 'README.md'))).toBe(renderHandoffReadme(VERSION))
+    expect(await fs.readTextFile(join(root, 'manifest.json'))).toBe(
+      await fs.readTextFile(join(cwd, 'dist/handoff/manifest.json')),
+    )
+    expect(await fs.readTextFile(join(root, 'darwin-arm64/code-oz'))).toBe('arm64-binary')
+    expect(await fs.readTextFile(join(root, 'darwin-x64/code-oz'))).toBe('x64-binary')
   })
 
   test('--ensure rebuilds a target when manifest sha256 does not match bytes', async () => {
@@ -372,6 +422,7 @@ describe('buildAll', () => {
       ['bun-darwin-x64', bytes('x64-binary')],
     ])
     const runner: CommandRunner = async (_cmd, args) => {
+      if (_cmd === 'tar') return { exitCode: 0, stdout: '', stderr: '' }
       const targetArg = args.find((arg) => arg.startsWith('--target='))
       const outfileIndex = args.indexOf('--outfile')
       const target = targetArg?.slice('--target='.length)
@@ -470,8 +521,13 @@ function runnerWritingOutputs(
   fs: MemoryFs,
   bytesByTarget: Map<string, Uint8Array>,
   builtTargets: string[] = [],
+  tarCalls: string[][] = [],
 ): CommandRunner {
   return async (cmd, args) => {
+    if (cmd === 'tar') {
+      tarCalls.push(args)
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
     expect(cmd).toBe('bun')
     expect(args.slice(0, 2)).toEqual(['build', '--compile'])
     const targetArg = args.find((arg) => arg.startsWith('--target='))

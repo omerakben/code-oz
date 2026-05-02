@@ -22,6 +22,66 @@ export const TARGETS = [
   { os: 'darwin', arch: 'x64', bunTarget: 'bun-darwin-x64', binaryRelativePath: 'darwin-x64/code-oz' },
 ] as const satisfies ReadonlyArray<Target>
 
+const HANDOFF_README_TEMPLATE = `# code-oz <version>
+
+A multi-target binary distribution of code-oz for macOS (arm64 + x64).
+
+## Install
+
+\`\`\`sh
+sh ./install.sh
+\`\`\`
+
+The script:
+- Detects your CPU architecture (\`uname -m\`).
+- Copies the matching binary to \`~/.local/bin/code-oz\`.
+- Strips the macOS quarantine attribute.
+- Prints a \`PATH\` hint if \`~/.local/bin\` is not on your \`$PATH\`.
+
+It does NOT modify your shell startup files. If you need to add \`~/.local/bin\` to your \`PATH\`, add this line to the rc file you actually use (\`~/.zshrc\` or \`~/.bashrc\`):
+
+\`\`\`sh
+export PATH="$HOME/.local/bin:$PATH"
+\`\`\`
+
+## Verify
+
+\`\`\`sh
+code-oz --version
+\`\`\`
+
+Should print: \`<version>\`.
+
+## Custom install location
+
+Set \`CODE_OZ_INSTALL_DIR\` before running install.sh:
+
+\`\`\`sh
+CODE_OZ_INSTALL_DIR="$HOME/bin" sh ./install.sh
+\`\`\`
+
+## Manifest
+
+\`manifest.json\` records the schemaVersion, version, builtAt timestamp, and per-target sha256 + size. The installer reads it explicitly - no derivation from filenames.
+
+## Bundle contents
+
+\`\`\`text
+.
+|-- install.sh
+|-- manifest.json
+|-- README.md
+|-- darwin-arm64/
+|   \`-- code-oz
+\`-- darwin-x64/
+    \`-- code-oz
+\`\`\`
+
+## Status
+
+This is a W3-lite scaffold release for friends-tomorrow demo. Formal W3.1 (npm + Homebrew + Scoop + curl|sh-from-network + GitHub Actions) lands in a separate cycle.
+`
+
 export interface ManifestRow {
   readonly os: string
   readonly arch: string
@@ -43,6 +103,13 @@ export type CommandRunner = (
   cmd: string,
   args: string[],
 ) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+
+export interface BuildResult {
+  readonly ok: boolean
+  readonly manifest: Manifest | null
+  readonly errors: string[]
+  readonly tarballPath: string | null
+}
 
 export interface BuildFs {
   mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>
@@ -103,6 +170,10 @@ export function formatTargetTriple(target: Target): string {
   return `${target.os}-${target.arch}`
 }
 
+export function renderHandoffReadme(version: string): string {
+  return HANDOFF_README_TEMPLATE.replaceAll('<version>', version)
+}
+
 export async function buildAll(opts: {
   runner: CommandRunner
   version: string
@@ -110,7 +181,7 @@ export async function buildAll(opts: {
   mode: 'force' | 'ensure'
   fs: BuildFs
   now: () => Date
-}): Promise<{ ok: boolean; manifest: Manifest | null; errors: string[] }> {
+}): Promise<BuildResult> {
   const distRoot = join(opts.cwd, 'dist')
   const handoffRoot = join(distRoot, 'handoff')
   const manifestPath = join(handoffRoot, 'manifest.json')
@@ -161,6 +232,7 @@ export async function buildAll(opts: {
         ok: false,
         manifest: null,
         errors: [formatBuildError(target, result)],
+        tarballPath: null,
       }
     }
 
@@ -175,16 +247,36 @@ export async function buildAll(opts: {
 
   const installerError = await copyHandoffInstaller(opts.fs, opts.cwd, handoffRoot)
   if (installerError !== null) {
-    return { ok: false, manifest: null, errors: [installerError] }
+    return { ok: false, manifest: null, errors: [installerError], tarballPath: null }
   }
 
-  if (existingManifest !== null && !rebuiltAny) {
-    return { ok: true, manifest: existingManifest, errors: [] }
+  const readmeError = await writeHandoffReadme(opts.fs, handoffRoot, opts.version)
+  if (readmeError !== null) {
+    return { ok: false, manifest: null, errors: [readmeError], tarballPath: null }
   }
 
-  const manifest = manifestForTargets(opts.version, opts.now().toISOString(), rows)
-  await opts.fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
-  return { ok: true, manifest, errors: [] }
+  const manifest =
+    existingManifest !== null && !rebuiltAny
+      ? existingManifest
+      : manifestForTargets(opts.version, opts.now().toISOString(), rows)
+
+  if (existingManifest === null || rebuiltAny) {
+    await opts.fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
+  }
+
+  const tarball = await createDarwinTarball({
+    fs: opts.fs,
+    runner: opts.runner,
+    distRoot,
+    handoffRoot,
+    version: opts.version,
+    manifest,
+  })
+  if (!tarball.ok) {
+    return { ok: false, manifest: null, errors: tarball.errors, tarballPath: null }
+  }
+
+  return { ok: true, manifest, errors: [], tarballPath: tarball.tarballPath }
 }
 
 const realFs: BuildFs = {
@@ -280,6 +372,73 @@ async function copyHandoffInstaller(
   }
 }
 
+async function writeHandoffReadme(
+  fs: BuildFs,
+  handoffRoot: string,
+  version: string,
+): Promise<string | null> {
+  try {
+    await fs.writeFile(join(handoffRoot, 'README.md'), renderHandoffReadme(version))
+    return null
+  } catch (err) {
+    return `build-binaries: failed to write dist/handoff/README.md: ${formatUnknownError(err)}`
+  }
+}
+
+async function createDarwinTarball(opts: {
+  fs: BuildFs
+  runner: CommandRunner
+  distRoot: string
+  handoffRoot: string
+  version: string
+  manifest: Manifest
+}): Promise<{ ok: true; tarballPath: string } | { ok: false; errors: string[] }> {
+  const rootName = `code-oz-v${opts.version}-darwin`
+  const stagingRoot = join(opts.distRoot, rootName)
+  const tarballPath = join(opts.distRoot, `${rootName}.tar.gz`)
+
+  try {
+    await opts.fs.rm(stagingRoot, { recursive: true, force: true })
+    await opts.fs.rm(tarballPath, { force: true })
+    await opts.fs.mkdir(stagingRoot, { recursive: true })
+    await opts.fs.copyFile(join(opts.handoffRoot, 'install.sh'), join(stagingRoot, 'install.sh'))
+    await opts.fs.copyFile(join(opts.handoffRoot, 'manifest.json'), join(stagingRoot, 'manifest.json'))
+    await opts.fs.copyFile(join(opts.handoffRoot, 'README.md'), join(stagingRoot, 'README.md'))
+    await opts.fs.chmod(join(stagingRoot, 'install.sh'), 0o755)
+
+    for (const row of opts.manifest.targets) {
+      const stagedBinary = join(stagingRoot, row.binaryRelativePath)
+      await opts.fs.mkdir(dirname(stagedBinary), { recursive: true })
+      await opts.fs.copyFile(join(opts.handoffRoot, row.binaryRelativePath), stagedBinary)
+      await opts.fs.chmod(stagedBinary, 0o755)
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      errors: [`build-binaries: failed to stage Darwin tarball layout: ${formatUnknownError(err)}`],
+    }
+  }
+
+  let result: { exitCode: number; stdout: string; stderr: string }
+  try {
+    result = await opts.runner('tar', ['-czf', tarballPath, '-C', opts.distRoot, rootName])
+  } catch (err) {
+    return {
+      ok: false,
+      errors: [`build-binaries: failed to run tar: ${formatUnknownError(err)}`],
+    }
+  }
+
+  if (result.exitCode !== 0) {
+    return {
+      ok: false,
+      errors: [formatTarError(result)],
+    }
+  }
+
+  return { ok: true, tarballPath }
+}
+
 async function runBuild(
   runner: CommandRunner,
   target: Target,
@@ -314,6 +473,11 @@ function formatBuildError(
     return `TOOLCHAIN_FAIL: ${base}\n${tail}`
   }
   return `${base}\n${tail}`
+}
+
+function formatTarError(result: { exitCode: number; stdout: string; stderr: string }): string {
+  const tail = lastLines(result.stderr || result.stdout, 30)
+  return `build-binaries: tarball creation failed with exit code ${result.exitCode}\n${tail}`
 }
 
 function isToolchainFailure(target: Target, stderr: string): boolean {
@@ -408,6 +572,11 @@ function printManifest(manifest: Manifest): void {
     )
   }
   process.stdout.write('manifest: dist/handoff/manifest.json\n')
+  process.stdout.write(`tarball: ${manifestTarballPath(manifest.version)}\n`)
+}
+
+function manifestTarballPath(version: string): string {
+  return `dist/code-oz-v${version}-darwin.tar.gz`
 }
 
 function isNodeErrorCode(err: unknown, code: string): boolean {
