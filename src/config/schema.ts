@@ -38,6 +38,21 @@ export interface PhaseBudget {
   maxTokensEstimate: number
 }
 
+// M13 (rule 20: per-role budget gating + preflight cost estimates).
+// Per-role overrides under `budgets.global.byRole.<role>`. Layered between
+// per-phase and global checks: a call running on role X consumes the
+// `byRole[X]` cap when present in addition to the existing global / per-phase
+// caps. Codex Q9 lock (CODEX_RESPONSE_M13.md): role identity is bound
+// explicitly via `ProviderRequest.role`; absent role omits per-role gating
+// (project-local personas + synthetic debate opponents fall back to
+// global + per-phase). Codex Blocker 2 lock: `maxTurns` is intentionally
+// absent — the existing `maxTurns` reducer counts `phase_entered`, not
+// agent calls, so a role dimension on it has no event-model meaning.
+export interface ByRoleBudget {
+  maxProviderCalls?: number
+  maxTokensEstimate?: number
+}
+
 export interface GlobalBudget extends PhaseBudget {
   maxReviewRounds: number
   /**
@@ -73,8 +88,24 @@ export interface GlobalBudget extends PhaseBudget {
    * are `<provider>:<model>` (e.g. `claude:claude-opus-4-7`). Values are the
    * per-MTok prices from platform.claude.com. Telemetry only — never used
    * for budget enforcement.
+   *
+   * M13 (Codex Q4 lock): the priceTable is the primary authority for
+   * `costEstimateUSD` / `costActualUSD`; the runtime fallback is
+   * `ProviderRegistry.capabilityOf(provider).costPerMTok`. Per Codex
+   * Blocker 3, model-level Claude defaults live here in `priceTable`,
+   * not on provider-level `capabilityOf`.
    */
   priceTable?: Readonly<Record<string, { readonly inputPerMTok: number; readonly outputPerMTok: number }>>
+  /**
+   * M13 (rule 20: per-role budget gating). Optional per-role overrides
+   * keyed by `M12_COMPANY_ROLES`. Absent rows inherit the global caps;
+   * missing field on a present row also inherits. Project-local personas
+   * outside the roster do not gate per-role — global + per-phase still
+   * enforce. Validation rejects non-canonical role keys with
+   * `loader_company_role_unknown` (symmetric with M12 `mergeCompany`
+   * fail-closed).
+   */
+  byRole?: Readonly<Partial<Record<CompanyRole, ByRoleBudget>>>
 }
 
 export interface Budgets {

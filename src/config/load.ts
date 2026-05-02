@@ -11,6 +11,7 @@ import { paths as codeOzPaths } from '../paths.ts'
 import {
   DEFAULT_CONFIG,
   M12_COMPANY_ROLES,
+  type ByRoleBudget,
   type CodeOzConfig,
   type CompanyConfig,
   type CompanyRole,
@@ -372,7 +373,113 @@ function mergeGlobalBudget(
       : def.priceTable !== undefined
         ? { priceTable: def.priceTable }
         : {}),
+    ...(g.byRole !== undefined
+      ? (() => {
+          const merged = mergeByRole(g.byRole, file, issues)
+          return merged !== undefined ? { byRole: merged } : {}
+        })()
+      : def.byRole !== undefined
+        ? { byRole: def.byRole }
+        : {}),
   }
+}
+
+// M13: byRole validation. Rejects non-canonical role keys with
+// `loader_company_role_unknown` (symmetric with M12 `mergeCompany`
+// fail-closed). Each row may carry `maxProviderCalls?` and
+// `maxTokensEstimate?` only; unsupported row keys (`maxTurns`,
+// `permissions`, etc.) raise typed config issues so users do not get
+// false authority over deferred surfaces (Codex Blocker 2: maxTurns is
+// undefined against the current event model).
+const BYROLE_ROW_FIELDS = ['maxProviderCalls', 'maxTokensEstimate'] as const
+
+function mergeByRole(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): Readonly<Partial<Record<CompanyRole, ByRoleBudget>>> | undefined {
+  if (raw === null || raw === undefined) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'budgets.global.byRole must be a mapping',
+    })
+    return undefined
+  }
+  const r = raw as Record<string, unknown>
+  const out: Partial<Record<CompanyRole, ByRoleBudget>> = {}
+  for (const [key, rowRaw] of Object.entries(r)) {
+    if (!(M12_COMPANY_ROLES as readonly string[]).includes(key)) {
+      issues.push({
+        file,
+        code: 'loader_company_role_unknown',
+        rule: `budgets.global.byRole.<role> must be one of: ${M12_COMPANY_ROLES.join(' | ')}`,
+        detail: `got '${key}' (project-local personas with names outside this list do not gate per-role; global + per-phase budgets still enforce)`,
+      })
+      continue
+    }
+    const role = key as CompanyRole
+    const row = mergeByRoleRow(rowRaw, role, file, issues)
+    if (row !== undefined) {
+      out[role] = row
+    }
+  }
+  if (Object.keys(out).length === 0) return undefined
+  return Object.freeze(out)
+}
+
+function mergeByRoleRow(
+  raw: unknown,
+  role: CompanyRole,
+  file: string,
+  issues: ConfigLoadIssue[],
+): ByRoleBudget | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: `budgets.global.byRole.${role} must be a mapping`,
+    })
+    return undefined
+  }
+  const r = raw as Record<string, unknown>
+  for (const k of Object.keys(r)) {
+    if (!(BYROLE_ROW_FIELDS as readonly string[]).includes(k)) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `budgets.global.byRole.${role} may contain only ${BYROLE_ROW_FIELDS.join(' / ')} in v0.1`,
+        detail: `unsupported key: '${k}' (maxTurns is intentionally absent — the existing reducer counts phase_entered, not agent calls; per-role permissions are persona-shaped, not config-shaped)`,
+      })
+    }
+  }
+  const row: { maxProviderCalls?: number; maxTokensEstimate?: number } = {}
+  if (r.maxProviderCalls !== undefined) {
+    if (typeof r.maxProviderCalls !== 'number' || !Number.isInteger(r.maxProviderCalls) || r.maxProviderCalls < 0) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `budgets.global.byRole.${role}.maxProviderCalls must be a non-negative integer`,
+        detail: `got ${JSON.stringify(r.maxProviderCalls)}`,
+      })
+    } else {
+      row.maxProviderCalls = r.maxProviderCalls
+    }
+  }
+  if (r.maxTokensEstimate !== undefined) {
+    if (typeof r.maxTokensEstimate !== 'number' || !Number.isInteger(r.maxTokensEstimate) || r.maxTokensEstimate < 0) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `budgets.global.byRole.${role}.maxTokensEstimate must be a non-negative integer`,
+        detail: `got ${JSON.stringify(r.maxTokensEstimate)}`,
+      })
+    } else {
+      row.maxTokensEstimate = r.maxTokensEstimate
+    }
+  }
+  return Object.freeze(row)
 }
 
 function ratioOrDefault(
@@ -410,23 +517,41 @@ function parsePriceTable(
   }
   const out: Record<string, { inputPerMTok: number; outputPerMTok: number }> = {}
   for (const [k, v] of Object.entries(raw)) {
-    if (
-      v === null ||
-      typeof v !== 'object' ||
-      Array.isArray(v) ||
-      typeof (v as { inputPerMTok?: unknown }).inputPerMTok !== 'number' ||
-      typeof (v as { outputPerMTok?: unknown }).outputPerMTok !== 'number'
-    ) {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) {
       issues.push({
         file,
         code: 'config_invalid_shape',
-        rule: `budgets.global.priceTable.${k} must have numeric inputPerMTok and outputPerMTok`,
+        rule: `budgets.global.priceTable.${k} must be a mapping with inputPerMTok and outputPerMTok`,
+      })
+      continue
+    }
+    const row = v as { inputPerMTok?: unknown; outputPerMTok?: unknown }
+    // M13 Codex Risk #3 + Bug #5 (CODEX_RESPONSE_M13.md): the prior
+    // validator only checked `typeof === 'number'` and accepted NaN,
+    // Infinity, -Infinity, and negative values silently. The cost-math
+    // helper would then produce NaN / Infinity USD figures and propagate
+    // them into events.jsonl. Harden to finite + non-negative here, so
+    // every downstream consumer can rely on the invariant.
+    const inputOk =
+      typeof row.inputPerMTok === 'number' &&
+      Number.isFinite(row.inputPerMTok) &&
+      row.inputPerMTok >= 0
+    const outputOk =
+      typeof row.outputPerMTok === 'number' &&
+      Number.isFinite(row.outputPerMTok) &&
+      row.outputPerMTok >= 0
+    if (!inputOk || !outputOk) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `budgets.global.priceTable.${k} must have finite non-negative inputPerMTok and outputPerMTok (rejects NaN, Infinity, negatives)`,
+        detail: `inputPerMTok=${JSON.stringify(row.inputPerMTok)}, outputPerMTok=${JSON.stringify(row.outputPerMTok)}`,
       })
       continue
     }
     out[k] = {
-      inputPerMTok: (v as { inputPerMTok: number }).inputPerMTok,
-      outputPerMTok: (v as { outputPerMTok: number }).outputPerMTok,
+      inputPerMTok: row.inputPerMTok as number,
+      outputPerMTok: row.outputPerMTok as number,
     }
   }
   return Object.freeze(out)

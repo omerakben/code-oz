@@ -79,4 +79,68 @@ budgets:
       })
     })
   })
+
+  // M13 Codex Risk #3 + Bug #5: priceTable validator must reject non-finite
+  // and negative values so cost-math helpers can rely on the invariant.
+  // Prior validator only checked typeof === 'number' and accepted NaN,
+  // Infinity, -Infinity, and negatives silently.
+  test('loadConfig rejects negative priceTable values', async () => {
+    const yaml = `
+budgets:
+  global:
+    priceTable:
+      claude:claude-opus-4-7:
+        inputPerMTok: -5
+        outputPerMTok: 25
+`
+    await withConfig(yaml, async (cwd) => {
+      await expect(loadConfig({ cwd })).rejects.toThrow(/finite non-negative/)
+    })
+  })
+
+  test('loadConfig rejects .inf priceTable values', async () => {
+    const yaml = `
+budgets:
+  global:
+    priceTable:
+      claude:claude-opus-4-7:
+        inputPerMTok: 5
+        outputPerMTok: .inf
+`
+    await withConfig(yaml, async (cwd) => {
+      await expect(loadConfig({ cwd })).rejects.toThrow(/finite non-negative/)
+    })
+  })
+
+  test('loadConfig rejects .nan priceTable values', async () => {
+    const yaml = `
+budgets:
+  global:
+    priceTable:
+      claude:claude-opus-4-7:
+        inputPerMTok: .nan
+        outputPerMTok: 25
+`
+    await withConfig(yaml, async (cwd) => {
+      await expect(loadConfig({ cwd })).rejects.toThrow(/finite non-negative/)
+    })
+  })
+
+  test('loadConfig accepts zero priceTable values (free-tier model)', async () => {
+    const yaml = `
+budgets:
+  global:
+    priceTable:
+      fake:test-model:
+        inputPerMTok: 0
+        outputPerMTok: 0
+`
+    await withConfig(yaml, async (cwd) => {
+      const cfg = await loadConfig({ cwd })
+      expect(cfg.budgets.global.priceTable!['fake:test-model']).toEqual({
+        inputPerMTok: 0,
+        outputPerMTok: 0,
+      })
+    })
+  })
 })
