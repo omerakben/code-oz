@@ -49,9 +49,9 @@ import type {
 const DEFAULT_BASE_URL = 'https://api.x.ai/v1'
 
 /**
- * Fetch-like runner. Default uses globalThis fetch (Bun.fetch). Tests
- * inject a mock that returns canned Response objects, so the offline
- * suite never makes a real HTTP request (rule 8).
+ * Fetch-like runner. Default uses Bun's global `fetch`. Tests inject a
+ * mock that returns canned Response objects, so the offline suite never
+ * makes a real HTTP request (rule 8).
  */
 export type FetchRunner = (input: string, init: RequestInit) => Promise<Response>
 
@@ -360,10 +360,36 @@ function networkFailure(err: unknown): Error {
 function sanitizeFetchError(err: unknown): string {
   if (err instanceof Error) {
     const name = err.name || 'Error'
-    const message = (err.message || '').slice(0, 200)
-    return `${name}: ${message}`
+    const redacted = redactSecrets(err.message || '')
+    return `${name}: ${redacted.slice(0, 200)}`
   }
   return 'fetch failed'
+}
+
+/**
+ * Redact known secret patterns from a string. Belt-and-braces: even
+ * though Bun.fetch errors today do not embed Authorization headers or
+ * the API key in their messages, a future fetch-layer message shape
+ * could. Replacement runs in three passes:
+ *
+ *   1. The literal `XAI_API_KEY` value (when it is at least 8 chars
+ *      after trim — short tokens would risk replacing common substrings).
+ *   2. `Bearer <token>` patterns, case-insensitive.
+ *   3. `Authorization: <value>` and `x-api-key: <value>` header forms.
+ *
+ * Codex review block-push #2 (thread 019de60e) requires this to be
+ * pattern-aware redaction, not just length truncation.
+ */
+function redactSecrets(input: string): string {
+  let output = input
+  const key = (process.env.XAI_API_KEY ?? '').trim()
+  if (key.length >= 8) {
+    output = output.split(key).join('[REDACTED-API-KEY]')
+  }
+  output = output.replace(/(Bearer)\s+[A-Za-z0-9._\-+/=]+/gi, '$1 [REDACTED]')
+  output = output.replace(/(Authorization\s*:\s*)\S+/gi, '$1[REDACTED]')
+  output = output.replace(/(x-api-key\s*:\s*)\S+/gi, '$1[REDACTED]')
+  return output
 }
 
 interface ParsedFields {

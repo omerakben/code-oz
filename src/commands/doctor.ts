@@ -16,6 +16,7 @@
 // healthy; exit 1 otherwise.
 
 import { bootstrap, getProviderRegistry } from '../cli/bootstrap.ts'
+import type { FetchRunner } from '../providers/xai.ts'
 import type {
   IAgentProvider,
   ProviderHealth,
@@ -24,6 +25,14 @@ import type {
 
 export interface RunDoctorProvidersOptions {
   readonly cwd?: string
+  /**
+   * Test-only seam: inject a fetch-like runner so HTTP-backed adapters
+   * (xai) can be exercised offline. Production callers omit this so the
+   * adapters use the Bun global fetch. PE-1 review-round closure
+   * (Codex thread 019de60e block-push #2) — required to test the
+   * doctor's redaction discipline with `XAI_API_KEY` set.
+   */
+  readonly fetchRunner?: FetchRunner
 }
 
 export interface DoctorProvidersReport {
@@ -69,7 +78,10 @@ export async function runDoctorProviders(
     bootstrapError = (err as Error).message
   }
 
-  const providerRegistry = getProviderRegistry()
+  const providerRegistry =
+    opts.fetchRunner !== undefined
+      ? getProviderRegistry({ fetchRunner: opts.fetchRunner })
+      : getProviderRegistry()
   const probes: ProviderHealth[] = []
   for (const provider of providerRegistry.all()) {
     probes.push(await probeOne(provider))

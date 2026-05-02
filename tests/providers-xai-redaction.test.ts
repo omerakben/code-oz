@@ -211,14 +211,52 @@ describe('XaiProvider — adapter never embeds the API key in any error surface'
       const surfaces = errorSurfaces(err as ProviderError)
       // The KEY sentinel must never leak.
       expectNoSentinel(surfaces, KEY_SENTINEL, 'API key sentinel')
-      // The fetch-error message DOES propagate (truncated to 200 chars) so
-      // we don't assert BODY_SENTINEL absence here — Bun.fetch's real error
-      // messages do not contain headers or response body, but for full
-      // generality a future change might. The 200-char cap is the
-      // defense-in-depth.
       const issue = (err as ProviderError).issues[0]!
       expect(issue.detail).toBeDefined()
       expect((issue.detail ?? '').length).toBeLessThanOrEqual(220)
+    }
+  })
+
+  test('network failure with literal API key in fetch-error message: key is redacted', async () => {
+    // Codex review round-1 block-push #2 (thread 019de60e): the
+    // sanitization helper must redact secret patterns, not just truncate.
+    // Bun.fetch errors today do not embed the API key in their messages,
+    // but a future fetch-layer change could — defense-in-depth.
+    const runner: FetchRunner = async () => {
+      const e = new Error(`fetch failed at api.x.ai (key=${KEY_SENTINEL})`)
+      e.name = 'TypeError'
+      throw e
+    }
+    const p = new XaiProvider({ runner })
+    try {
+      await collectProviderResponse(p.invoke(preparedRequest()))
+      throw new Error('expected ProviderError')
+    } catch (err) {
+      const surfaces = errorSurfaces(err as ProviderError)
+      expectNoSentinel(surfaces, KEY_SENTINEL, 'API key sentinel')
+      const issue = (err as ProviderError).issues[0]!
+      // Defense-in-depth: redaction marker should appear, proving the
+      // pattern-replace path executed (not just length truncation).
+      expect(issue.detail).toContain('[REDACTED-API-KEY]')
+    }
+  })
+
+  test('network failure with Bearer token in fetch-error message: token is redacted', async () => {
+    const tokenLike = 'sk-bearer-token-pattern-LMNO-PQRS'
+    const runner: FetchRunner = async () => {
+      const e = new Error(`fetch failed; sent Authorization: Bearer ${tokenLike}`)
+      e.name = 'TypeError'
+      throw e
+    }
+    const p = new XaiProvider({ runner })
+    try {
+      await collectProviderResponse(p.invoke(preparedRequest()))
+      throw new Error('expected ProviderError')
+    } catch (err) {
+      const surfaces = errorSurfaces(err as ProviderError)
+      expectNoSentinel(surfaces, tokenLike, 'bearer-token-like value')
+      const issue = (err as ProviderError).issues[0]!
+      expect(issue.detail).toContain('[REDACTED]')
     }
   })
 

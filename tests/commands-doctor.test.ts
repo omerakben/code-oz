@@ -146,3 +146,78 @@ describe('doctorHelp', () => {
     expect(help).toContain('Exit codes:')
   })
 })
+
+// PE-1 review-round closure (Codex thread 019de60e block-push #2):
+// the doctor's xAI health path with XAI_API_KEY set must not leak the
+// key into table output, JSON output, or the structured report. The
+// fetchRunner injection seam (added in the same review-round commit)
+// lets these tests run the production code path with a sentinel-bearing
+// FetchRunner mock. The earlier doctor tests above clear XAI_API_KEY
+// for offline-discipline; these tests do the opposite — set the key,
+// inject a runner that throws an error containing it, and verify
+// nothing leaks.
+describe('runDoctorProviders — xAI redaction discipline (PE-1 fetchRunner seam)', () => {
+  const KEY_SENTINEL_DOCTOR = 'sk-xai-DOCTOR-LEAK-CANARY-NEVER-IN-OUTPUT-A1B2'
+  let savedXaiKeyDoctor: string | undefined
+
+  beforeEach(() => {
+    savedXaiKeyDoctor = process.env.XAI_API_KEY
+    process.env.XAI_API_KEY = KEY_SENTINEL_DOCTOR
+  })
+
+  afterEach(() => {
+    if (savedXaiKeyDoctor === undefined) {
+      delete process.env.XAI_API_KEY
+    } else {
+      process.env.XAI_API_KEY = savedXaiKeyDoctor
+    }
+  })
+
+  test('table output never contains the API-key sentinel even when fetch error embeds it', async () => {
+    await initProject({ cwd: tmp })
+    const fetchRunner = async (): Promise<Response> => {
+      const e = new Error(
+        `xai network error embedding key=${KEY_SENTINEL_DOCTOR} and Authorization: Bearer ${KEY_SENTINEL_DOCTOR}`,
+      )
+      e.name = 'TypeError'
+      throw e
+    }
+    const report = await runDoctorProviders({ cwd: tmp, fetchRunner })
+
+    const xaiHealth = report.providers.find((h) => h.provider === 'xai')
+    expect(xaiHealth).toBeDefined()
+    // The xai probe ran (status unknown because the runner threw) — proving
+    // the seam works AND that the sentinel passed through redaction.
+    expect(xaiHealth!.authStatus).toBe('unknown')
+
+    const table = formatProvidersTable(report)
+    expect(table.includes(KEY_SENTINEL_DOCTOR)).toBe(false)
+
+    const json = formatProvidersJson(report)
+    expect(json.includes(KEY_SENTINEL_DOCTOR)).toBe(false)
+
+    // The structured report (not just its serialized forms) must also be
+    // redacted — the JSON form is just `JSON.stringify(report, null, 2)`,
+    // so leaks would show up there too, but assert directly on the report
+    // for clarity if a future format function rotates output.
+    const rawDetail = xaiHealth?.lastError?.detail ?? ''
+    expect(rawDetail.includes(KEY_SENTINEL_DOCTOR)).toBe(false)
+    // Defense-in-depth: the sanitized detail SHOULD contain the redaction
+    // marker, proving the redactSecrets path actually executed.
+    expect(rawDetail).toContain('[REDACTED-API-KEY]')
+  })
+
+  test('table output never contains a Bearer token pattern when fetch error embeds one', async () => {
+    await initProject({ cwd: tmp })
+    const tokenLike = 'sk-some-other-bearer-token-shape-CDEF'
+    const fetchRunner = async (): Promise<Response> => {
+      const e = new Error(`fetch failed; sent Authorization: Bearer ${tokenLike}`)
+      e.name = 'TypeError'
+      throw e
+    }
+    const report = await runDoctorProviders({ cwd: tmp, fetchRunner })
+    const json = formatProvidersJson(report)
+    expect(json.includes(tokenLike)).toBe(false)
+    expect(json).toContain('[REDACTED]')
+  })
+})
