@@ -48,7 +48,7 @@ export type CompanyConfig = Readonly<
 
 Both fields are optional. Absence means "use the persona's frontmatter value." `CodeOzConfig` extends with `company?: CompanyConfig`; `DEFAULT_CONFIG.company` is undefined.
 
-`AgentProvider` is the shared enum (`src/agents/schema.ts` `AGENT_PROVIDERS = ['claude', 'codex', 'gemini', 'fake']`). `mergeCompany` validates `provider` against this exact enum, so PE-1's xAI expansion will extend `AGENT_PROVIDERS` and automatically flow into M12's accepted values without a schema migration.
+`AgentProvider` is the shared enum (`src/agents/schema.ts` `AGENT_PROVIDERS = ['claude', 'codex', 'gemini', 'fake', 'xai']` as of PE-1). `mergeCompany` validates `provider` against this exact enum, so future PE-N expansions extend `AGENT_PROVIDERS` and automatically flow into M12's accepted values without a schema migration.
 
 ## Default behavior
 

@@ -144,6 +144,17 @@ type ProviderErrorCode =
   | 'provider_tool_call_cap_exceeded'
   | 'provider_gemini_not_yet_supported'
   | 'provider_io_error'
+  // PE-1: HTTP adapters that mandate `model` in the request (xAI's
+  // chat-completions endpoint) surface this typed error at invoke time
+  // before any network call when `req.model` is undefined. Wrapper-
+  // emitted at the adapter layer, not the loader.
+  | 'provider_model_missing'
+  // M10 Debate runtime error codes — see docs/contracts/DEBATE.md.
+  | 'debate_topic_collision'
+  | 'debate_concurrent_limit_exceeded'
+  | 'debate_manifest_blocked'
+  | 'debate_response_invalid'
+  | 'debate_decision_invalid'
 
 interface ProviderErrorIssue {
   readonly code: ProviderErrorCode
@@ -287,11 +298,19 @@ Adapters that record the HTTP request for debugging strip these headers before s
 | 401 | `provider_auth_missing` | export the per-provider env var (`XAI_API_KEY=...`) and rerun |
 | 403 | `provider_permissions_violation` | check API-key scopes / enabled models on the upstream account |
 | 429 | `provider_rate_limit` | wait and retry; or raise `budgets.global.maxProviderCalls` if the cap is the cause |
+| 4xx-other (incl. 400) | `provider_io_error` | verify configured model name; inspect request shape |
 | 5xx | `provider_io_error` | upstream transient error; retry, then file an issue if persistent |
 | network / DNS / abort | `provider_io_error` | check connectivity; verify the configured base URL |
 | malformed JSON body | `provider_malformed_response` | rerun; if persistent, the upstream API has likely changed shape |
 
-Adapters never bypass the `ProviderError` model on HTTP failures — every failure path maps to a typed code with at least one actionable suggestion.
+Pre-network failure modes (failures detected before any HTTP request leaves code-oz):
+
+| Pre-network condition | `ProviderErrorCode` | `actionableSuggestions` |
+|---|---|---|
+| `XAI_API_KEY` missing or blank-after-trim | `provider_auth_missing` | `export XAI_API_KEY=<value>` and rerun |
+| `req.model` undefined for an adapter that requires it | `provider_model_missing` | set persona frontmatter `model` or `company.<role>.model` |
+
+Adapters never bypass the `ProviderError` model on HTTP failures — every failure path maps to a typed code with at least one actionable suggestion. Pre-network errors fire before any byte leaves code-oz, so an upstream 400 with a leaky body content cannot be the failure surface for a missing model or a missing key.
 
 **Test-injection seam.** Mirroring the subprocess `runner` seam, HTTP adapters take an injectable fetch-like function as a constructor option (`runner` for symmetry, or a more specific name per the adapter). Default is `Bun.fetch`; tests inject mocks that return canned `Response` objects, keeping the offline-test discipline (rule 8) intact. Live tests against the real upstream endpoint are gated behind an opt-in env flag.
 
@@ -337,7 +356,7 @@ Any validation failure is reported as a typed `ProviderError` with `{ code, rule
 - **`health()` writing to `events.jsonl` or any gate file.** Doctor runs outside any active run.
 - **Logging `Authorization`, `x-api-key`, or any provider-specific auth header in any artifact.** Includes `events.jsonl`, gate files, doctor output, error messages, and request / response logs. Strip these headers before any serialization. Mirrors the OAuth-token rule for subprocess adapters; same trust boundary, different substrate.
 - **Embedding API keys in `ProviderRequest` / `PreparedProviderRequest` / persona prompt bodies.** Auth lives at the adapter layer; the request DTO never carries credentials. Phase logic constructs `ProviderRequest` without ever touching env-resolved secrets, and the wrapper's `buildManifest` only loads file content (the request body's `prompt` and the persona's body), never auth material.
-- **Enabling provider-native server-side tools (e.g., xAI built-in `web_search`, `x_search`, `code_interpreter`) without an explicit `tool_use` permission scope authorizing them.** v0.1 HTTP adapters disable these by default. For OpenAI-compatible chat-completions endpoints that take an opt-in `tools` field, "disable" means **never sending the field** — sending an empty array `tools: []` is also acceptable but the omission form is preferred so a misuse adding `tools.push(...)` mid-request can't accidentally arm them. A future permission scope (`tool_use.upstream_native_tools`) may authorize specific tools when measurable demand surfaces.
+- **Enabling provider-native server-side tools (e.g., xAI built-in `web_search`, `x_search`, `code_interpreter`) without an explicit `tool_use` permission scope authorizing them.** v0.1 HTTP adapters disable these by **field omission** — the request body is a strict allowlist (`model`, `messages`, optional `max_tokens`) and never sets `tools`, `tool_choice`, `parallel_tool_calls`, `search_parameters`, `background`, `store`, or `stream`. Sending `tools: []` is rejected as a fallback because a stray `tools.push(...)` mid-request can mutate an existing array but cannot create a non-existent key. A future permission scope (`tool_use.upstream_native_tools`) may authorize specific tools when measurable demand surfaces. Pinned in PE-1 (Codex Q3 + scope correction, thread `019de5df`).
 
 ## Capability and eligibility (M11)
 
@@ -349,6 +368,7 @@ type AuthSource =
   | 'chatgpt-cli-oauth'
   | 'gemini-stub'
   | 'in-process-fake'
+  | 'xai-api-key'         // PE-1: first per-mechanism API-key auth source
 
 interface ProviderCostPerMTok {
   readonly input: number      // USD per 1M input tokens
@@ -383,6 +403,7 @@ The shape is **strict-minimal**. Four traits the M11 ROADMAP row originally name
 | `codex` | `'chatgpt-cli-oauth'` | every value in `AGENT_PHASES` | live adapter |
 | `gemini` | `'gemini-stub'` | `[]` (empty) | stub; runtime throws `provider_gemini_not_yet_supported` |
 | `fake` | `'in-process-fake'` | every value in `AGENT_PHASES` | test runtime supports all |
+| `xai` | `'xai-api-key'` | every value in `AGENT_PHASES` | PE-1 live HTTP adapter (requires `XAI_API_KEY` + explicit `model`) |
 
 "Eligible" means *the provider may run an agent for this phase*, not *the phase runtime exists*. SHIP and AUDIT are stubbed today; eligibility for them is a forward-compat statement, not a claim about implementation status. Per CLAUDE.md rule 9, the runtime stub is itself the actionable error if a stubbed phase is exercised — eligibility is the load-time gate, not a phase-runtime probe.
 
