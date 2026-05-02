@@ -175,7 +175,7 @@ The fix is independent of the company override — the latent bug was present fr
 
 | Future milestone | What it adds | How M12's surface accommodates |
 |---|---|---|
-| **M13 — role-cost policy** | `budgets.global.priceTable[provider:model]`, per-role spend caps under `budgets.global` | Reads role identity from `M12_COMPANY_ROLES`; the `company:` row supplies the `(provider, model)` pair the price table keys against. No M12 schema change. |
+| **M13 — role-cost policy (CLOSED 2026-05-01, `v0.14.0-alpha.0`)** | `budgets.global.byRole.<role>` per-role spend caps; `priceTable[provider:model]` (operator-configured, model-level) feeds advisory `costEstimateUSD` / `costActualUSD` telemetry; registry `capabilityOf` per-provider fallback. Reads role identity from `M12_COMPANY_ROLES` via `canonicalRoleFromAgent`. No M12 schema change. See [`docs/references/budgets.md`](../references/budgets.md). |
 | **M14 — reviewer panel v1** | First simultaneous-provider surface; multiple reviewers run in parallel under one role | Adds an explicit `panels:` block alongside `company:`. Does not extend `company.reviewer` into a list. |
 | **M15 — debate-policy scheduler** | Single-opponent debate scheduling rules | Reads from per-persona `tool_use.debate.opposingProviders`, not from `company:`. |
 | **PE-1 — xAI direct provider** | `AGENT_PROVIDERS` gains `'xai'`; new `authSource` mechanism | `company.<role>.provider: xai` works automatically once PE-1 lands. No COMPANY.md migration. |
