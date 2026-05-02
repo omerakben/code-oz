@@ -12,13 +12,25 @@ import {
 import { initProject } from '../src/commands/init.ts'
 
 let tmp: string
+// PE-1 commit 4 + Codex Risk: XaiProvider.health() makes a real HTTPS GET
+// to /v1/models when XAI_API_KEY is set. Tests in this file go through
+// the production registry (no FetchRunner injection seam in the doctor
+// command surface today), so we clear XAI_API_KEY for the duration of
+// each test to keep the suite offline. The xai adapter then short-
+// circuits to authStatus: 'missing' without any network call.
+let savedXaiKey: string | undefined
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'code-oz-doctor-'))
+  savedXaiKey = process.env.XAI_API_KEY
+  delete process.env.XAI_API_KEY
 })
 
 afterEach(async () => {
   await rm(tmp, { recursive: true, force: true })
+  if (savedXaiKey !== undefined) {
+    process.env.XAI_API_KEY = savedXaiKey
+  }
 })
 
 describe('runDoctorProviders — bootstrap success', () => {
@@ -38,7 +50,7 @@ describe('runDoctorProviders — bootstrap success', () => {
     await initProject({ cwd: tmp })
     const report = await runDoctorProviders({ cwd: tmp })
     const ids = report.providers.map((h) => h.provider).sort()
-    expect(ids).toEqual(['claude', 'codex', 'fake', 'gemini'])
+    expect(ids).toEqual(['claude', 'codex', 'fake', 'gemini', 'xai'])
   })
 
   test('fake provider is always healthy', async () => {

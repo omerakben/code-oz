@@ -10,23 +10,13 @@ const REPO_ROOT = process.cwd()
 const CLI_ENTRY = join(REPO_ROOT, 'src/cli.ts')
 
 describe('buildProviderRegistry', () => {
-  // PE-1 commit 1 added 'xai' to PROVIDER_IDS but does not yet register the
-  // adapter — that ships in commit 4 when src/cli/bootstrap.ts grows the
-  // `new XaiProvider(...)` call. Until then, the production registry
-  // contains only these four adapters. familyOf() still answers correctly
-  // for `xai` because it reads from DEFAULT_FAMILY_BY_ID, which the
-  // substrate already populated.
-  const REGISTERED_IDS: readonly ProviderId[] = ['claude', 'codex', 'gemini', 'fake']
-
-  test('without override, returns the registry of bootstrap-registered adapters', () => {
+  test('without override, registers every PROVIDER_ID adapter', () => {
     const { registry, fakeProvider } = buildProviderRegistry()
     expect(fakeProvider).toBeUndefined()
-    for (const id of REGISTERED_IDS) {
+    for (const id of PROVIDER_IDS) {
       expect(registry.has(id)).toBe(true)
     }
-    // Family lookups still answer correctly for every PROVIDER_ID, including
-    // ids whose adapter has not landed yet — familyOf() reads the family
-    // table directly.
+    // Family lookups answer correctly for every PROVIDER_ID.
     for (const id of PROVIDER_IDS) {
       expect(registry.familyOf(id)).toBe(id)
     }

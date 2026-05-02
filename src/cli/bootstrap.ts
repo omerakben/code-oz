@@ -24,6 +24,7 @@ import { FakeProvider } from '../providers/fake.ts'
 import { ClaudeProvider } from '../providers/claude.ts'
 import { CodexProvider } from '../providers/codex.ts'
 import { GeminiProvider } from '../providers/gemini.ts'
+import { XaiProvider } from '../providers/xai.ts'
 import type { Runner } from '../providers/runner.ts'
 import {
   PROVIDER_IDS,
@@ -103,6 +104,13 @@ export function getProviderRegistry(opts: ProviderRegistryOptions = {}): Provide
       new ClaudeProvider(opts.runner !== undefined ? { runner: opts.runner } : {}),
       new CodexProvider(opts.runner !== undefined ? { runner: opts.runner } : {}),
       new GeminiProvider(),
+      // PE-1: HTTP adapter. Reads XAI_API_KEY at invoke time. Shares no
+      // runner with the subprocess adapters above — opts.runner is a
+      // subprocess Runner; XaiProvider takes a FetchRunner. Tests that
+      // need to mock the HTTP path construct a fresh `new XaiProvider({
+      // runner: fetchMock })` directly rather than going through
+      // getProviderRegistry.
+      new XaiProvider(),
     ],
   })
 }

@@ -12,6 +12,7 @@ import { Buffer } from 'node:buffer'
 import { XaiProvider, type FetchRunner, _buildRequestBody } from '../src/providers/xai.ts'
 import { ProviderError } from '../src/providers/errors.ts'
 import { collectProviderResponse } from '../src/providers/fake.ts'
+import { getProviderRegistry } from '../src/cli/bootstrap.ts'
 import type { PreparedProviderRequest } from '../src/providers/types.ts'
 import type { AgentDefinition } from '../src/agents/schema.ts'
 
@@ -111,6 +112,19 @@ describe('XaiProvider — identity', () => {
     expect(p.family).toBe('xai')
     expect(p.capability.authSource).toBe('xai-api-key')
     expect(p.capability.eligiblePhases.length).toBeGreaterThan(0)
+  })
+
+  test('production bootstrap registers an XaiProvider under id "xai"', () => {
+    // Closes PE-1 commit 4 wiring: getProviderRegistry() resolves xai
+    // through the standard registry constructor (which structurally
+    // cross-checks adapter.family + adapter.capability against the
+    // registry-resolved values, preventing capability laundering).
+    const registry = getProviderRegistry()
+    expect(registry.has('xai')).toBe(true)
+    const adapter = registry.get('xai')
+    expect(adapter).toBeInstanceOf(XaiProvider)
+    expect(adapter.id).toBe('xai')
+    expect(adapter.family).toBe('xai')
   })
 })
 
