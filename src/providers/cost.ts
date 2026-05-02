@@ -10,6 +10,14 @@
 // `agent_completed.tokensUsed` (when present) to avoid double-counting; an
 // in-flight `agent_invoked` without a paired `agent_completed` falls back to
 // the recorded estimate so a crashed turn still counts toward the budget.
+//
+// estimateCostUSD + actualCostUSD (M13, Codex Q4 lock,
+// CODEX_RESPONSE_M13.md, thread 019de672): advisory dollar telemetry.
+// Resolves prices via a two-step cascade — operator-configured
+// `priceTable["<provider>:<model>"]` first; registry-resolved
+// `capabilityOf(provider).costPerMTok` second. Both helpers return
+// undefined when neither source has a value (Q3 lock — token-only
+// fallback); never enforce, never refuse.
 
 import { providerError } from './errors.ts'
 import { isKnownPhaseEvent, type LoggedEvent, type Phase } from '../state/schemas.ts'
@@ -320,6 +328,95 @@ export function assertWithinBudget(
       `running=${counts.wallTimeMinutes.toFixed(2)}, cap=${global.maxWallTimeMinutes}`,
     )
   }
+}
+
+// --- USD cost telemetry (M13) -------------------------------------
+
+/**
+ * Cost-source resolver dependency. The wrapper passes `priceTable` from
+ * `config.budgets.global.priceTable` (operator-configured, model-level)
+ * and `capabilityOf` bound to the runtime `ProviderRegistry` (so test
+ * + W3 capability overrides are honored — Codex Risk #6 lock). Pure;
+ * never reads disk.
+ */
+export interface CostEstimateContext {
+  readonly priceTable: ReadonlyMap<string, { inputPerMTok: number; outputPerMTok: number }> | Readonly<Record<string, { inputPerMTok: number; outputPerMTok: number }>> | undefined
+  readonly capabilityOf: (provider: string) => { readonly costPerMTok?: { input: number; output: number } } | undefined
+}
+
+interface ResolvedRates {
+  readonly inputPerMTok: number
+  readonly outputPerMTok: number
+}
+
+/**
+ * Resolve per-MTok rates for a (provider, model) pair via the M13
+ * cascade. Used by both `estimateCostUSD` and `actualCostUSD` so the
+ * cascade lives in one place.
+ */
+function resolveRates(
+  provider: string,
+  model: string | undefined,
+  cost: CostEstimateContext,
+): ResolvedRates | undefined {
+  if (model === undefined || model.length === 0) return undefined
+  const key = `${provider}:${model}`
+  const tableEntry =
+    cost.priceTable === undefined
+      ? undefined
+      : cost.priceTable instanceof Map
+        ? cost.priceTable.get(key)
+        : (cost.priceTable as Readonly<Record<string, { inputPerMTok: number; outputPerMTok: number }>>)[key]
+  if (tableEntry !== undefined) {
+    return Object.freeze({
+      inputPerMTok: tableEntry.inputPerMTok,
+      outputPerMTok: tableEntry.outputPerMTok,
+    })
+  }
+  const cap = cost.capabilityOf(provider)?.costPerMTok
+  if (cap !== undefined) {
+    return Object.freeze({ inputPerMTok: cap.input, outputPerMTok: cap.output })
+  }
+  return undefined
+}
+
+/**
+ * Pre-call advisory USD estimate. Combines the conservative token
+ * estimator (input) with the operator-supplied `req.maxOutputTokens`
+ * (output, when set; 0 otherwise — known underestimate documented in
+ * the contract). Returns undefined when no price source resolves;
+ * callers omit the field rather than emit a placeholder zero.
+ */
+export function estimateCostUSD(
+  req: ProviderRequest,
+  prepared: PreparedProviderRequest,
+  cost: CostEstimateContext,
+): number | undefined {
+  const provider = req.agent.provider as string
+  const rates = resolveRates(provider, prepared.model, cost)
+  if (rates === undefined) return undefined
+  const inputTokens = prepared.metrics.tokensEstimate
+  const outputTokens = req.maxOutputTokens ?? 0
+  return (inputTokens * rates.inputPerMTok + outputTokens * rates.outputPerMTok) / 1_000_000
+}
+
+/**
+ * Post-call advisory USD actual. Output-tokens-only semantics (Codex
+ * scope correction): today's Claude / xAI adapters report
+ * `usage.output_tokens` / `usage.completion_tokens`, never full
+ * request cost. Operators reading `costActualUSD` as full invoice
+ * would understate spend. Documented prominently in COMPANY.md /
+ * budgets contract. Returns undefined when no price source resolves.
+ */
+export function actualCostUSD(
+  provider: string,
+  model: string | undefined,
+  cost: CostEstimateContext,
+  tokensUsed: number,
+): number | undefined {
+  const rates = resolveRates(provider, model, cost)
+  if (rates === undefined) return undefined
+  return (tokensUsed * rates.outputPerMTok) / 1_000_000
 }
 
 // --- soft warnings -------------------------------------------------

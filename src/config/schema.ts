@@ -199,6 +199,24 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
       toolCallBudgetMultiplier: 1.5,
       maxWallTimeMinutes: 240,
       softWarnAtRatio: 0.75,
+      // M13 (Codex Q4-bis lock + Blocker 3): out-of-box USD telemetry
+      // for the three Claude shipped models. Per-model rates live here
+      // (priceTable is keyed by `<provider>:<model>`); the M11 capability
+      // record has no model dimension and stays without `costPerMTok`.
+      // xAI / Codex / Gemini / Fake stay omitted — Grok prices rotate
+      // fast, Codex is a ChatGPT-CLI subscription rather than API spend,
+      // Gemini is a stub, Fake is the offline test runtime. Operator
+      // overrides via `.code-oz/config.yaml budgets.global.priceTable`.
+      // Source: https://platform.claude.com/docs/en/about-claude/pricing
+      // Lookup date: 2026-05-01
+      priceTable: Object.freeze({
+        'claude:claude-opus-4-7': Object.freeze({ inputPerMTok: 5, outputPerMTok: 25 }),
+        'claude:claude-sonnet-4-6': Object.freeze({ inputPerMTok: 3, outputPerMTok: 15 }),
+        'claude:claude-haiku-4-5-20251001': Object.freeze({
+          inputPerMTok: 1,
+          outputPerMTok: 5,
+        }),
+      }),
     },
     perPhase: {
       define: { maxTurns: 30, maxProviderCalls: 15, maxTokensEstimate: 300_000 },

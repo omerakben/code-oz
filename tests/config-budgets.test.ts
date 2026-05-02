@@ -22,8 +22,25 @@ describe('budgets.global extension', () => {
     expect(DEFAULT_CONFIG.budgets.global.softWarnAtRatio).toBe(0.75)
   })
 
-  test('priceTable is undefined by default', () => {
-    expect(DEFAULT_CONFIG.budgets.global.priceTable).toBeUndefined()
+  test('priceTable carries Claude model defaults (M13 commit 5)', () => {
+    // Codex Q4-bis lock: per-model Claude prices live in priceTable
+    // (model-level), NOT in DEFAULT_CAPABILITY_BY_ID.claude.costPerMTok
+    // (provider-level — has no model dimension). Source:
+    // https://platform.claude.com/docs/en/about-claude/pricing (2026-05-01).
+    const t = DEFAULT_CONFIG.budgets.global.priceTable
+    expect(t).toBeDefined()
+    expect(t!['claude:claude-opus-4-7']).toEqual({ inputPerMTok: 5, outputPerMTok: 25 })
+    expect(t!['claude:claude-sonnet-4-6']).toEqual({ inputPerMTok: 3, outputPerMTok: 15 })
+    expect(t!['claude:claude-haiku-4-5-20251001']).toEqual({ inputPerMTok: 1, outputPerMTok: 5 })
+  })
+
+  test('priceTable does NOT populate xAI / Codex / Gemini / Fake (rotting-data discipline)', () => {
+    const t = DEFAULT_CONFIG.budgets.global.priceTable!
+    // Per Codex Q4-bis: xAI Grok prices rotate too fast; Codex spend is
+    // ChatGPT-CLI subscription not API; Gemini is a stub; Fake is test.
+    for (const key of Object.keys(t)) {
+      expect(key.startsWith('claude:')).toBe(true)
+    }
   })
 
   test('loadConfig accepts user override of maxWallTimeMinutes', async () => {
