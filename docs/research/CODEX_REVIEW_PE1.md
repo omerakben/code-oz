@@ -130,3 +130,29 @@ Three follow-up commits (A, B, C) before commit 7 (closure):
 Re-run `bun run typecheck` + full `bun test` (offline) + opt-in live test. If clean, re-invoke Codex review on the new commits. If verdict is `push`, ship commit 7 (closure: version bump + ROADMAP/CLAUDE.md status compress + close PE-1).
 
 Tag candidate: `v0.13.0-alpha.0` per Codex Q1 lock.
+
+---
+
+## Round 2 (closure verification)
+
+**Thread:** `019de61a-cb15-7ac0-b60f-1f3d7e270902`
+**Date:** 2026-05-01
+**Verdict:** `push`
+
+### Verbatim Codex round-2 reply (verdict + key findings)
+
+> **Verdict: push**. The three follow-up commits genuinely close the round-1 block-push items. I do not see a new block-push or fix-soon issue in the closure changes.
+>
+> **Block-push #1 closed:** the canonical provider contract now includes `provider_model_missing`, `xai-api-key`, the `xai` default eligibility row, the `4xx-other -> provider_io_error` mapping, pre-network missing-key/missing-model handling, and the corrected field-omission language for tools. `COMPANY.md` now matches the live `AGENT_PROVIDERS` enum.
+>
+> **Block-push #2 closed:** `sanitizeFetchError` now redacts the current `XAI_API_KEY`, `Bearer <token>`, `Authorization: <value>`, and `x-api-key: <value>` patterns before truncation. The doctor path now accepts `fetchRunner` and threads it to `XaiProvider`. `doctorCommand()` does not expose that seam to CLI users.
+>
+> **Fix-soon closed:** the eligibility drift hole is closed in both places — `provider-enum-drift.test.ts` locks `xai.eligiblePhases === AGENT_PHASES`, and `provider-capabilities.test.ts` adds the per-id assertion.
+>
+> **Nits:** a little `Bun.fetch` wording remains in `xai.ts:31`, `xai.ts:344`, and `provider-contract.md:315`. Not behaviorally important.
+>
+> **Recommended next step:** proceed with closure (version bump, ROADMAP/CLAUDE status, tag).
+
+### Synthesis
+
+Verdict absorbed: `push`. Lingering wording nit closed in commit `<TBD>` for the no-tech-debt rule. Proceeding to commit 7 (closure: version bump to `v0.13.0-alpha.0`, ROADMAP PE-1 row, CLAUDE.md status compression).

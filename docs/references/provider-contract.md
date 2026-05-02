@@ -312,7 +312,7 @@ Pre-network failure modes (failures detected before any HTTP request leaves code
 
 Adapters never bypass the `ProviderError` model on HTTP failures — every failure path maps to a typed code with at least one actionable suggestion. Pre-network errors fire before any byte leaves code-oz, so an upstream 400 with a leaky body content cannot be the failure surface for a missing model or a missing key.
 
-**Test-injection seam.** Mirroring the subprocess `runner` seam, HTTP adapters take an injectable fetch-like function as a constructor option (`runner` for symmetry, or a more specific name per the adapter). Default is `Bun.fetch`; tests inject mocks that return canned `Response` objects, keeping the offline-test discipline (rule 8) intact. Live tests against the real upstream endpoint are gated behind an opt-in env flag.
+**Test-injection seam.** Mirroring the subprocess `runner` seam, HTTP adapters take an injectable fetch-like function as a constructor option (`runner` for symmetry, or a more specific name per the adapter). Default is Bun's global `fetch`; tests inject mocks that return canned `Response` objects, keeping the offline-test discipline (rule 8) intact. Live tests against the real upstream endpoint are gated behind an opt-in env flag.
 
 ## Lock boundaries
 

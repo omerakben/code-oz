@@ -28,7 +28,7 @@
 //   Q3: omit tool/search fields entirely
 //   Q4: buffered (no streaming surface in PE-1)
 //   Q5: tokensUsed populated from usage.completion_tokens when present
-//   Q6: Bun.fetch (default fetch); injectable runner for tests
+//   Q6: Bun's global fetch (default); injectable runner for tests
 //
 // xAI labels chat-completions as "legacy" in favor of /v1/responses.
 // PE-1 stays on chat-completions because Responses introduces storage /
@@ -341,7 +341,7 @@ function mapHttpError(status: number): Error {
 /**
  * Network-layer failure (DNS, connect, TLS, abort, etc.). Detail is
  * sanitized to the error class name and the FIRST 200 chars of the
- * message. Bun.fetch errors do not carry headers or response body in
+ * message. Bun's global fetch errors do not carry headers or response body in
  * their messages, but the truncation is defense-in-depth against any
  * future error shape that might.
  */
@@ -368,7 +368,7 @@ function sanitizeFetchError(err: unknown): string {
 
 /**
  * Redact known secret patterns from a string. Belt-and-braces: even
- * though Bun.fetch errors today do not embed Authorization headers or
+ * though Bun's global fetch errors today do not embed Authorization headers or
  * the API key in their messages, a future fetch-layer message shape
  * could. Replacement runs in three passes:
  *
