@@ -282,3 +282,48 @@ and tag. Order is demand-driven (rule 21) — no batched rollout.
 After W3.1 closes: M14 reviewer panel kickoff unparks; that's the
 first simultaneous-provider surface and earns its own
 authority-boundary debate.
+
+---
+
+## ask-me <2026-05-01 23:55>
+
+### Decisions
+
+1. **Overnight target** — W3-lite demo scaffold (binary + local install script) on `feat/w3-lite-demo` off `main`, NOT a W3.1 close-out. Friends-tomorrow demo is the forcing function; full W3.1 cycle still runs in the morning with these artifacts as evaluable input.
+2. **M13 sequencing** — Cloud session closes M13 (merge + tag `v0.14.0-alpha.0` + W3 kickoff). My Ralph loop starts after that, off clean main.
+3. **Install path scope** — Binary + local install script. No GitHub publish, no curl|sh-from-network, no npm/Homebrew/Scoop overnight. Friends receive `code-oz` + `install.sh` via local handoff.
+4. **Target platforms** — `darwin-arm64` + `darwin-x64` only. Smoke-test runs on darwin-arm64; darwin-x64 builds blind. Linux + Windows deferred to formal W3.1.
+5. **Codex sub-agent autonomy** — Read + write + run tests + create commits. **No** tag, **no** merge to main, **no** push, **no** external account creation. Opus orchestrator holds tag/merge/push.
+6. **Cross-family review framing** — Claude Opus is BUILD orchestrator (light context, dispatches sub-agents). Codex is REVIEW family (per CLAUDE.md rule 17 cross-family discipline). Codex sub-agents do bounded implementation tasks each iteration; a separate Codex review pass runs as the loop's penultimate step. Discipline preserved: Claude builds, Codex reviews — the sub-agent dispatch is just delegation, not authority inversion.
+7. **Loop halt condition** — Halt when ALL of: (a) `dist/darwin-arm64/code-oz` and `dist/darwin-x64/code-oz` exist + executable; (b) `scripts/install.sh` smoke-test passes (install to tempdir, run `code-oz --version`, `code-oz init` against tempdir); (c) `bun test` passes (W3-lite adds tests for build orchestrator + install-script logic where mockable); (d) Codex review verdict is `push` or `fix-first` (not `block-push` and not `debate-required`). OR halt when iteration cap (12) hit. OR halt when wall-clock cap (8h from launch) hit. OR halt on sentinel `.code-oz/state/RALPH_HALT.md` written by Opus on a hard escalation.
+8. **Hard escalations** — Loop writes `RALPH_HALT.md` and stops on: new prod-dep request from Codex sub-agent, npm-name conflict (defer to morning), Apple notarization requirement (out of scope, document for W3.1), test regression on existing 2086-test suite, `bun build --compile --target=bun-darwin-x64` failing with toolchain issue.
+
+### Open questions
+
+- **Push grant for W3-lite branch**: not granted. Default no-push policy stands. Morning review decides if/when `feat/w3-lite-demo` merges or rebases into formal W3.1 branch.
+- **macOS code signing / notarization**: deferred. Install script strips quarantine via `xattr -d com.apple.quarantine`. Friends will see a Gatekeeper warning on first run unless they trust the binary manually. Document in install script output.
+- **darwin-x64 smoke-test**: cannot run from this machine. Build artifact is verified by `file` + `bun build --compile` exit code only. Morning verification on a darwin-x64 machine (or via Rosetta) deferred.
+- **Bun version lock**: relying on whatever Bun is currently in `package.json` `engines`. If `bun build --compile --target=...` semantics shifted in a recent Bun version, the loop may fail on first build attempt and halt on hard escalation.
+- **Sample install-script handoff format**: zip? tarball? plain `code-oz + install.sh` directory? Loop produces a `dist/handoff/` directory with both arch binaries + install.sh + README.md; you choose tarball/zip in the morning.
+
+### Assumptions
+
+- Branch name is `feat/w3-lite-demo` (distinct from `feat/w3-distribution` to make the W3.0 vs W3.1 relationship clear). If you'd prefer `feat/w3-demo`, change in flight.
+- Codex sub-agent dispatch uses `mcp__plugin_agent-codex_codex-native__codex` with `gpt-5.5 / xhigh / sandbox: workspace-write / approval-policy: never / cwd: /Users/ozzy-mac/Projects/code-oz`. The fallback to `gpt-5.5` (not `gpt-5.5-codex` or `gpt-5.1-codex-max`) per CLAUDE.md cross-model peer review rule 4 stands.
+- Opus orchestrator stays on `claude-opus-4-7` per the project's Opus-default rule.
+- Each Codex sub-agent dispatch is bounded: one concrete task (e.g., "write `scripts/build-binaries.ts` per the contract in `docs/contracts/W3_LITE_BUILD_MATRIX.md`, with tests, returning a diff"), not open-ended.
+- Opus orchestrator never reads full files between iterations unless Codex flags a specific concern; it reads `events.jsonl`-style summary files Codex writes (`.code-oz/state/ralph-iteration-{n}.md`).
+- The Ralph loop runs in the **current session** (`ralph-loop:ralph-loop`), not as a scheduled cron. You can interrupt at any point with the `ralph-loop:cancel-ralph` command.
+- W3-lite scaffold is **explicitly framed as exploration**, not a milestone close. Morning's formal W3.1 planning round is unaffected. The Codex review at loop end produces `CODEX_REVIEW_W3_LITE.md`, not a milestone-close audit-trail entry.
+- 2086 baseline tests must remain green every iteration. Any regression triggers hard halt.
+- The W3-lite branch will produce ~3-6 commits depending on Codex revision rounds. Each commit has a Codex audit-trail link in the trailer.
+
+### Readiness
+
+**Fully ready and aligned, proceeding on Ralph loop launch off `main` after cloud session reports M13 close + W3 kickoff written.**
+
+Next action: I wait for your "go" signal (the cloud session is still finalizing). On "go", I:
+1. Branch `feat/w3-lite-demo` off main.
+2. Write `docs/contracts/W3_LITE_SCOPE.md` (what the loop produces, halt criteria, Codex sub-agent contract).
+3. Launch Ralph loop with the iteration prompt anchored to that contract.
+4. Sleep / monitor. Loop halts on its own. Morning summary in `.code-oz/state/ralph-summary.md` for your review.

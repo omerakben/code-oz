@@ -39,3 +39,9 @@ bun.lockb
 .code-oz/state/NEEDS_INTERVENTION.json
 .code-oz/state/PAUSE.json
 .code-oz/state/STOP.json
+
+# W3-lite Ralph loop session-local state (overnight 2026-05-01)
+.code-oz/state/ralph-state.md
+.code-oz/state/ralph-summary.md
+.code-oz/state/RALPH_HALT.md
+.code-oz/state/W3_LITE_DONE.json
