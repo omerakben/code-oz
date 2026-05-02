@@ -130,7 +130,7 @@ export interface PhasesConfig {
 export interface CodeOzConfig {
   version: string
   profile: Profile
-  defaultProvider: 'claude' | 'codex' | 'gemini' | 'fake'
+  defaultProvider: 'claude' | 'codex' | 'gemini' | 'fake' | 'xai'
   models: {
     primary: string
     reviewer: string
@@ -151,7 +151,7 @@ export interface CodeOzConfig {
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {
-  version: '0.12.0-alpha.0',
+  version: '0.13.0-alpha.0',
   profile: 'greenfield',
   defaultProvider: 'claude',
   models: {

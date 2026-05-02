@@ -10,13 +10,13 @@ const REPO_ROOT = process.cwd()
 const CLI_ENTRY = join(REPO_ROOT, 'src/cli.ts')
 
 describe('buildProviderRegistry', () => {
-  test('without override, returns the standard four-provider registry', () => {
+  test('without override, registers every PROVIDER_ID adapter', () => {
     const { registry, fakeProvider } = buildProviderRegistry()
     expect(fakeProvider).toBeUndefined()
     for (const id of PROVIDER_IDS) {
       expect(registry.has(id)).toBe(true)
     }
-    // Family lookups still answer correctly.
+    // Family lookups answer correctly for every PROVIDER_ID.
     for (const id of PROVIDER_IDS) {
       expect(registry.familyOf(id)).toBe(id)
     }

@@ -59,14 +59,15 @@ describe('bootstrap', () => {
   })
 })
 
-describe('getProviderRegistry (M4 commit 8 keepalive)', () => {
-  test('exposes all four v0.1 providers with stable ids and families', () => {
+describe('getProviderRegistry (M4 commit 8 keepalive + PE-1 xai registration)', () => {
+  test('exposes every v0.1 provider with stable ids and families', () => {
     const reg = getProviderRegistry()
-    expect([...reg.ids()].sort()).toEqual(['claude', 'codex', 'fake', 'gemini'])
+    expect([...reg.ids()].sort()).toEqual(['claude', 'codex', 'fake', 'gemini', 'xai'])
     expect(reg.familyOf('claude')).toBe('claude')
     expect(reg.familyOf('codex')).toBe('codex')
     expect(reg.familyOf('gemini')).toBe('gemini')
     expect(reg.familyOf('fake')).toBe('fake')
+    expect(reg.familyOf('xai')).toBe('xai')
   })
 
   test('runner option flows through to the subprocess-backed adapters', async () => {

@@ -4,10 +4,11 @@
 // loose thread.
 //
 // Two registries live here: AgentRegistry (loaded personas + project-local
-// overrides) and ProviderRegistry (the four IAgentProvider adapters). Both
-// keepalives matter — without the explicit imports below, the compiled
-// binary's tree-shaker would drop unused adapter modules and the registry
-// would be empty in production.
+// overrides) and ProviderRegistry (the five IAgentProvider adapters: Claude,
+// Codex, Gemini stub, Fake, and the PE-1 xAI HTTP adapter). Both keepalives
+// matter — without the explicit imports below, the compiled binary's tree-
+// shaker would drop unused adapter modules and the registry would be empty
+// in production.
 //
 // The bootstrap is also where commands resolve their CodeOzPaths once. M5+
 // commands (`run`, `status`, `resume`) will share this same shape.
@@ -23,6 +24,7 @@ import { FakeProvider } from '../providers/fake.ts'
 import { ClaudeProvider } from '../providers/claude.ts'
 import { CodexProvider } from '../providers/codex.ts'
 import { GeminiProvider } from '../providers/gemini.ts'
+import { XaiProvider, type FetchRunner } from '../providers/xai.ts'
 import type { Runner } from '../providers/runner.ts'
 import {
   PROVIDER_IDS,
@@ -80,6 +82,16 @@ export async function bootstrap(opts: BootstrapOptions = {}): Promise<CliContext
 export interface ProviderRegistryOptions {
   /** Inject a runner shared across the subprocess-backed adapters (tests only). */
   readonly runner?: Runner
+  /**
+   * Inject a fetch-like runner shared across the HTTP-backed adapters
+   * (tests only). Mirrors `runner` but for the FetchRunner shape used by
+   * XaiProvider. Production callers omit it so the HTTP adapters use the
+   * Bun global fetch. Pinned in PE-1 review round (Codex thread
+   * 019de60e block-push #2) — without this seam, doctor tests have no
+   * way to exercise the xAI health path with a key set, which leaves
+   * the API-key redaction surface untested for the doctor JSON output.
+   */
+  readonly fetchRunner?: FetchRunner
 }
 
 /**
@@ -87,13 +99,14 @@ export interface ProviderRegistryOptions {
  * `code-oz doctor providers` (M4 commit 10) and by M5+ phase logic that
  * needs to call provider.invoke() through the wrapper.
  *
- * Importing all four adapter modules in this file is what keeps them alive
+ * Importing all five adapter modules in this file is what keeps them alive
  * in the compiled binary — same keepalive pattern that closes M2's
  * fae4064 deferred-liveness loose thread for bundled defaults.
  *
- * The runner option lets tests share one mock runner across both
- * subprocess-backed adapters (claude + codex) without instantiating them
- * separately. Production callers omit it so each adapter uses defaultRunner.
+ * The runner option lets tests share one mock runner across the subprocess-
+ * backed adapters (claude + codex). The fetchRunner option does the same
+ * for the HTTP-backed xAI adapter. Production callers omit both so each
+ * adapter uses its native default (Bun.spawn / Bun fetch).
  */
 export function getProviderRegistry(opts: ProviderRegistryOptions = {}): ProviderRegistry {
   return new ProviderRegistry({
@@ -102,6 +115,7 @@ export function getProviderRegistry(opts: ProviderRegistryOptions = {}): Provide
       new ClaudeProvider(opts.runner !== undefined ? { runner: opts.runner } : {}),
       new CodexProvider(opts.runner !== undefined ? { runner: opts.runner } : {}),
       new GeminiProvider(),
+      new XaiProvider(opts.fetchRunner !== undefined ? { runner: opts.fetchRunner } : {}),
     ],
   })
 }

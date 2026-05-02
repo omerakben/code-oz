@@ -33,6 +33,11 @@ export const AUTH_SOURCES = [
   'chatgpt-cli-oauth',
   'gemini-stub',
   'in-process-fake',
+  // PE-1: first API-key transmission auth source. Mechanism is "read
+  // <PROVIDER>_API_KEY from env, transmit as Bearer over HTTPS." See
+  // docs/references/provider-contract.md § "API-key transmission for HTTP
+  // adapters (PE-1)" for the trust-boundary discipline this names.
+  'xai-api-key',
 ] as const
 export type AuthSource = (typeof AUTH_SOURCES)[number]
 
@@ -102,6 +107,12 @@ export const DEFAULT_CAPABILITY_BY_ID: Readonly<Record<ProviderId, ProviderCapab
       authSource: 'in-process-fake' as const,
       eligiblePhases: ALL_PHASES,
       // No costs declared: in-process test runtime, no real billing.
+    }),
+    xai: Object.freeze({
+      authSource: 'xai-api-key' as const,
+      eligiblePhases: ALL_PHASES,
+      // costPerMTok / rateLimits omitted: per-model pricing for Grok variants
+      // rotates faster than this file should track. M13 owns role-cost policy.
     }),
   })
 

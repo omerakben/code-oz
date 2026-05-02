@@ -24,12 +24,18 @@ import { PROVIDER_IDS, type ProviderId } from '../src/providers/types.ts'
 import { AGENT_PHASES } from '../src/agents/schema.ts'
 
 describe('AUTH_SOURCES enum', () => {
-  test('contains exactly the four mechanism-specific values', () => {
+  test('contains exactly the v0.1 mechanism-specific values', () => {
+    // PE-1 added `xai-api-key` as the first API-key transmission auth
+    // source. Future API-key adapters land their own per-mechanism value
+    // (e.g., openrouter-api-key in PE-2 if PE-2 commits) — never a generic
+    // shared name. See docs/references/provider-contract.md § "Capability
+    // and eligibility (M11)" Forward-compat for the discipline.
     expect(AUTH_SOURCES).toEqual([
       'claude-cli-oauth',
       'chatgpt-cli-oauth',
       'gemini-stub',
       'in-process-fake',
+      'xai-api-key',
     ])
   })
 
@@ -69,6 +75,12 @@ describe('DEFAULT_CAPABILITY_BY_ID', () => {
   test('fake declares in-process-fake + every AGENT_PHASES value eligible', () => {
     const cap = DEFAULT_CAPABILITY_BY_ID.fake
     expect(cap.authSource).toBe('in-process-fake')
+    expect([...cap.eligiblePhases]).toEqual([...AGENT_PHASES])
+  })
+
+  test('xai declares xai-api-key + every AGENT_PHASES value eligible (PE-1)', () => {
+    const cap = DEFAULT_CAPABILITY_BY_ID.xai
+    expect(cap.authSource).toBe('xai-api-key')
     expect([...cap.eligiblePhases]).toEqual([...AGENT_PHASES])
   })
 

@@ -30,6 +30,7 @@ export const DEFAULT_FAMILY_BY_ID: Readonly<Record<ProviderId, ProviderFamily>> 
   codex: 'codex',
   gemini: 'gemini',
   fake: 'fake',
+  xai: 'xai',
 })
 
 /**

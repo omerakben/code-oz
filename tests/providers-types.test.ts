@@ -28,8 +28,8 @@ describe('ProviderId / ProviderFamily', () => {
   test('PROVIDER_IDS and PROVIDER_FAMILIES are frozen at declaration', () => {
     // `as const` produces readonly tuples — TypeScript enforces this at the
     // type level. Verify the values themselves match the documented contract.
-    expect(PROVIDER_IDS).toEqual(['claude', 'codex', 'gemini', 'fake'])
-    expect(PROVIDER_FAMILIES).toEqual(['claude', 'codex', 'gemini', 'fake'])
+    expect(PROVIDER_IDS).toEqual(['claude', 'codex', 'gemini', 'fake', 'xai'])
+    expect(PROVIDER_FAMILIES).toEqual(['claude', 'codex', 'gemini', 'fake', 'xai'])
   })
 })
 

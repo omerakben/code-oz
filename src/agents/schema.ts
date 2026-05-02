@@ -17,7 +17,7 @@ export const AGENT_PHASES = [
 ] as const
 export type AgentPhase = (typeof AGENT_PHASES)[number]
 
-export const AGENT_PROVIDERS = ['claude', 'codex', 'gemini', 'fake'] as const
+export const AGENT_PROVIDERS = ['claude', 'codex', 'gemini', 'fake', 'xai'] as const
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number]
 
 export const AGENT_MODEL_POLICIES = ['opus-default', 'strict-opus', 'any'] as const

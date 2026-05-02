@@ -322,21 +322,25 @@ company:
 })
 
 describe('mergeCompany — shared enum with persona schema', () => {
-  test('every AgentProvider value is accepted', async () => {
-    // Spot-check that AGENT_PROVIDERS extension (e.g., PE-1's xai) flows in
-    // automatically. The four v0.1 providers all validate without a
-    // company-schema migration.
+  test('every AgentProvider value is accepted (spot-check)', async () => {
+    // Spot-check that the company-schema route accepts every PROVIDER_ID
+    // without a migration. The exhaustive enum-coverage check lives in
+    // tests/provider-enum-drift.test.ts; this test exercises a couple of
+    // representative values per role to keep the assertion local.
     await writeConfig(`
 company:
   ba: { provider: claude }
   lead: { provider: codex }
   builder: { provider: gemini }
   verifier: { provider: fake }
+  reviewer: { provider: xai, model: grok-4-1-fast-reasoning }
 `)
     const cfg = await loadConfig({ cwd: tmp })
     expect(cfg.company!.ba?.provider).toBe('claude')
     expect(cfg.company!.lead?.provider).toBe('codex')
     expect(cfg.company!.builder?.provider).toBe('gemini')
     expect(cfg.company!.verifier?.provider).toBe('fake')
+    expect(cfg.company!.reviewer?.provider).toBe('xai')
+    expect(cfg.company!.reviewer?.model).toBe('grok-4-1-fast-reasoning')
   })
 })
