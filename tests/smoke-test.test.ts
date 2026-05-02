@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { renderHandoffReadme } from '../scripts/build-binaries.ts'
-import { runSmoke } from '../scripts/smoke-test.ts'
+import { createSmokeTempDirs, runSmoke, runSpawn } from '../scripts/smoke-test.ts'
 
 const VERSION = '0.14.0-alpha.0'
 const tempDirs: string[] = []
@@ -91,6 +91,71 @@ describe('runSmoke', () => {
     expect(result.steps[result.steps.length - 1]?.name).toBe('init')
     expect(result.steps[result.steps.length - 1]?.message).toContain('init failed')
   })
+
+  test('bounds a hung subprocess with a timeout result', async () => {
+    let killed = false
+    const spawn = (() => mockHangingProc(() => {
+      killed = true
+    })) as unknown as typeof Bun.spawn
+    const start = performance.now()
+
+    const result = await runSpawn(spawn, ['/tmp/code-oz', '--version'], {
+      cwd: '/tmp/project',
+      env: {},
+      timeoutMs: 50,
+    })
+
+    expect(performance.now() - start).toBeLessThan(150)
+    expect(killed).toBe(true)
+    expect(result.timedOut).toBe(true)
+    expect(result.timeoutMs).toBe(50)
+  })
+
+  test('returns a timeout step message when the version command hangs', async () => {
+    const fixture = await createSmokeFixture()
+    const spawn = createMockSpawn({ versionHangs: true })
+
+    const result = await runSmoke({
+      bundleDir: fixture.bundleDir,
+      installDir: fixture.installDir,
+      homeDir: fixture.homeDir,
+      projectDir: fixture.projectDir,
+      spawn,
+      pathEnv: '/usr/bin:/bin',
+      timeoutMs: 50,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.steps[result.steps.length - 1]?.name).toBe('version')
+    expect(result.steps[result.steps.length - 1]?.message).toContain('timed out after 50ms')
+  })
+})
+
+describe('createSmokeTempDirs', () => {
+  test('cleans created tempdirs when creation fails midway', async () => {
+    const created = [
+      '/tmp/code-oz-smoke-bundle-1',
+      '/tmp/code-oz-smoke-bin-2',
+    ]
+    const cleaned: string[] = []
+    let calls = 0
+
+    await expect(
+      createSmokeTempDirs({
+        tmpdir: () => '/tmp',
+        mkdtemp: async () => {
+          calls += 1
+          if (calls <= created.length) return created[calls - 1]!
+          throw new Error('mkdtemp denied')
+        },
+        rm: async (path) => {
+          cleaned.push(path)
+        },
+      }),
+    ).rejects.toThrow('mkdtemp denied')
+
+    expect(cleaned).toEqual(created)
+  })
 })
 
 async function createSmokeFixture(): Promise<SmokeFixture> {
@@ -153,6 +218,7 @@ function createMockSpawn(opts: {
   installStderr?: string
   versionExitCode?: number
   versionStderr?: string
+  versionHangs?: boolean
   initExitCode?: number
   initStderr?: string
 } = {}): typeof Bun.spawn {
@@ -162,6 +228,7 @@ function createMockSpawn(opts: {
     }
 
     if (args[1] === '--version') {
+      if (opts.versionHangs === true) return mockHangingProc(() => {})
       return mockProc(
         opts.versionExitCode === undefined ? `${VERSION}\n` : '',
         opts.versionStderr ?? '',
@@ -191,6 +258,23 @@ function mockProc(stdout: string, stderr: string, exitCode: number): ReturnType<
     stderr: new Response(stderr).body,
     exited: Promise.resolve(exitCode),
   } as ReturnType<typeof Bun.spawn>
+}
+
+function mockHangingProc(onKill: () => void): ReturnType<typeof Bun.spawn> {
+  let resolveExit: ((exitCode: number) => void) | undefined
+  const exited = new Promise<number>((resolve) => {
+    resolveExit = resolve
+  })
+
+  return {
+    stdout: new Response('').body,
+    stderr: new Response('').body,
+    exited,
+    kill: () => {
+      onKill()
+      resolveExit?.(143)
+    },
+  } as unknown as ReturnType<typeof Bun.spawn>
 }
 
 interface SmokeFixture {

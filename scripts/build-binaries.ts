@@ -109,6 +109,12 @@ export interface BuildResult {
   readonly manifest: Manifest | null
   readonly errors: string[]
   readonly tarballPath: string | null
+  readonly manifestParseError: string | null
+}
+
+interface ExistingManifestRead {
+  readonly manifest: Manifest | null
+  readonly parseError: string | null
 }
 
 export interface BuildFs {
@@ -198,10 +204,12 @@ export async function buildAll(opts: {
 
   await opts.fs.mkdir(handoffRoot, { recursive: true })
 
-  const existingManifest =
+  const existingManifestRead =
     opts.mode === 'ensure'
       ? await readExistingManifest(opts.fs, manifestPath, opts.version)
-      : null
+      : { manifest: null, parseError: null }
+  const existingManifest = existingManifestRead.manifest
+  const manifestParseError = existingManifestRead.parseError
 
   const rows: ManifestRow[] = []
   let rebuiltAny = false
@@ -228,11 +236,15 @@ export async function buildAll(opts: {
 
     const result = await runBuild(opts.runner, target, localBinaryPath)
     if (result.exitCode !== 0) {
+      const cleanupError = await removePartialHandoff(opts.fs, handoffRoot)
+      const errors = [formatBuildError(target, result)]
+      if (cleanupError !== null) errors.push(cleanupError)
       return {
         ok: false,
         manifest: null,
-        errors: [formatBuildError(target, result)],
+        errors,
         tarballPath: null,
+        manifestParseError,
       }
     }
 
@@ -247,12 +259,12 @@ export async function buildAll(opts: {
 
   const installerError = await copyHandoffInstaller(opts.fs, opts.cwd, handoffRoot)
   if (installerError !== null) {
-    return { ok: false, manifest: null, errors: [installerError], tarballPath: null }
+    return { ok: false, manifest: null, errors: [installerError], tarballPath: null, manifestParseError }
   }
 
   const readmeError = await writeHandoffReadme(opts.fs, handoffRoot, opts.version)
   if (readmeError !== null) {
-    return { ok: false, manifest: null, errors: [readmeError], tarballPath: null }
+    return { ok: false, manifest: null, errors: [readmeError], tarballPath: null, manifestParseError }
   }
 
   const manifest =
@@ -273,10 +285,10 @@ export async function buildAll(opts: {
     manifest,
   })
   if (!tarball.ok) {
-    return { ok: false, manifest: null, errors: tarball.errors, tarballPath: null }
+    return { ok: false, manifest: null, errors: tarball.errors, tarballPath: null, manifestParseError }
   }
 
-  return { ok: true, manifest, errors: [], tarballPath: tarball.tarballPath }
+  return { ok: true, manifest, errors: [], tarballPath: tarball.tarballPath, manifestParseError }
 }
 
 const realFs: BuildFs = {
@@ -314,13 +326,32 @@ async function readExistingManifest(
   fs: BuildFs,
   manifestPath: string,
   version: string,
-): Promise<Manifest | null> {
-  if (!(await fs.exists(manifestPath))) return null
-  const parsed = JSON.parse(await fs.readTextFile(manifestPath)) as unknown
-  if (!isManifest(parsed)) return null
-  if (parsed.version !== version) return null
-  if (parsed.targets.some((row) => row.version !== version)) return null
-  return parsed
+): Promise<ExistingManifestRead> {
+  if (!(await fs.exists(manifestPath))) return { manifest: null, parseError: null }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await fs.readTextFile(manifestPath)) as unknown
+  } catch (err) {
+    return {
+      manifest: null,
+      parseError: `manifest.json invalid JSON: ${formatUnknownError(err)}`,
+    }
+  }
+  if (!isManifest(parsed)) return { manifest: null, parseError: null }
+  if (parsed.version !== version) return { manifest: null, parseError: null }
+  if (parsed.targets.some((row) => row.version !== version)) {
+    return { manifest: null, parseError: null }
+  }
+  return { manifest: parsed, parseError: null }
+}
+
+async function removePartialHandoff(fs: BuildFs, handoffRoot: string): Promise<string | null> {
+  try {
+    await fs.rm(handoffRoot, { recursive: true, force: true })
+    return null
+  } catch (err) {
+    return `build-binaries: failed to remove partial dist/handoff after build failure: ${formatUnknownError(err)}`
+  }
 }
 
 function findMatchingRow(

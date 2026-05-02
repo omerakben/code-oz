@@ -31,12 +31,45 @@ export interface SmokeOptions {
   projectDir: string
   spawn: typeof Bun.spawn
   pathEnv: string
+  timeoutMs?: number
 }
 
 export interface SmokeResult {
   ok: boolean
   steps: { name: string; ok: boolean; message: string }[]
   durationMs: number
+}
+
+export interface RunSpawnOptions {
+  readonly cwd: string
+  readonly env: Record<string, string | undefined>
+  readonly timeoutMs?: number
+}
+
+export interface RunSpawnResult {
+  readonly exitCode: number
+  readonly stdout: string
+  readonly stderr: string
+  readonly timedOut: boolean
+  readonly timeoutMs: number | null
+  readonly timeoutKillError: string | null
+}
+
+export interface SmokeTempDirs {
+  readonly bundleParent: string
+  readonly installDir: string
+  readonly projectDir: string
+  readonly homeDir: string
+  readonly extractDir: string
+  readonly bundleDir: string
+  readonly cleanupPaths: string[]
+}
+
+export interface SmokeTempDirDeps {
+  readonly mkdtemp?: (prefix: string) => Promise<string>
+  readonly rm?: (path: string, opts: { recursive?: boolean; force?: boolean }) => Promise<void>
+  readonly tmpdir?: () => string
+  readonly cleanupPaths?: string[]
 }
 
 export interface ValidateHandoffLayoutOptions {
@@ -134,6 +167,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
       HOME: opts.homeDir,
       PATH: pathEnv,
     },
+    timeoutMs: opts.timeoutMs,
   })
 
   if (install.exitCode !== 0) {
@@ -150,6 +184,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
   const versionResult = await runSpawn(opts.spawn, [binaryPath, '--version'], {
     cwd: opts.projectDir,
     env: binaryEnv,
+    timeoutMs: opts.timeoutMs,
   })
   if (versionResult.exitCode !== 0 || !versionResult.stdout.includes(version)) {
     steps.push({
@@ -167,6 +202,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
   const help = await runSpawn(opts.spawn, [binaryPath, '--help'], {
     cwd: opts.projectDir,
     env: binaryEnv,
+    timeoutMs: opts.timeoutMs,
   })
   if (help.exitCode !== 0) {
     steps.push({ name: 'help', ok: false, message: commandFailure(help) })
@@ -177,6 +213,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
   const init = await runSpawn(opts.spawn, [binaryPath, 'init'], {
     cwd: opts.projectDir,
     env: binaryEnv,
+    timeoutMs: opts.timeoutMs,
   })
   if (init.exitCode !== 0) {
     steps.push({ name: 'init', ok: false, message: commandFailure(init) })
@@ -286,14 +323,12 @@ async function runCli(): Promise<number> {
     return 1
   }
 
-  const bundleParent = await mkdtemp(join(tmpdir(), 'code-oz-smoke-bundle-'))
-  const installDir = await mkdtemp(join(tmpdir(), 'code-oz-smoke-bin-'))
-  const projectDir = await mkdtemp(join(tmpdir(), 'code-oz-smoke-project-'))
-  const homeDir = await mkdtemp(join(tmpdir(), 'code-oz-smoke-home-'))
-  const extractDir = await mkdtemp(join(tmpdir(), 'code-oz-smoke-extract-'))
-  const bundleDir = join(bundleParent, 'handoff')
+  const cleanupPaths: string[] = []
 
   try {
+    const { bundleDir, installDir, projectDir, homeDir, extractDir } = await createSmokeTempDirs({
+      cleanupPaths,
+    })
     await cp(join(cwd, 'dist/handoff'), bundleDir, { recursive: true })
     const smoke = await runSmoke({
       bundleDir,
@@ -324,13 +359,48 @@ async function runCli(): Promise<number> {
     process.stdout.write(`tarball: ${tarball.tarballPath}\n`)
     return 0
   } finally {
-    await Promise.all([
-      rm(bundleParent, { recursive: true, force: true }),
-      rm(installDir, { recursive: true, force: true }),
-      rm(projectDir, { recursive: true, force: true }),
-      rm(homeDir, { recursive: true, force: true }),
-      rm(extractDir, { recursive: true, force: true }),
-    ])
+    const cleanupErrors = await cleanupSmokeTempDirs(cleanupPaths)
+    if (cleanupErrors.length > 0) {
+      throw new Error(`tempdir cleanup failed: ${cleanupErrors.join('; ')}`)
+    }
+  }
+}
+
+export async function createSmokeTempDirs(deps: SmokeTempDirDeps = {}): Promise<SmokeTempDirs> {
+  const mkdtempFn = deps.mkdtemp ?? mkdtemp
+  const rmFn = deps.rm ?? rm
+  const tmpdirFn = deps.tmpdir ?? tmpdir
+  const cleanupPaths = deps.cleanupPaths ?? []
+  const initialCleanupLength = cleanupPaths.length
+
+  try {
+    const bundleParent = await mkdtempFn(join(tmpdirFn(), 'code-oz-smoke-bundle-'))
+    cleanupPaths.push(bundleParent)
+    const installDir = await mkdtempFn(join(tmpdirFn(), 'code-oz-smoke-bin-'))
+    cleanupPaths.push(installDir)
+    const projectDir = await mkdtempFn(join(tmpdirFn(), 'code-oz-smoke-project-'))
+    cleanupPaths.push(projectDir)
+    const homeDir = await mkdtempFn(join(tmpdirFn(), 'code-oz-smoke-home-'))
+    cleanupPaths.push(homeDir)
+    const extractDir = await mkdtempFn(join(tmpdirFn(), 'code-oz-smoke-extract-'))
+    cleanupPaths.push(extractDir)
+    return {
+      bundleParent,
+      installDir,
+      projectDir,
+      homeDir,
+      extractDir,
+      bundleDir: join(bundleParent, 'handoff'),
+      cleanupPaths,
+    }
+  } catch (err) {
+    const createdPaths = cleanupPaths.slice(initialCleanupLength)
+    const cleanupErrors = await cleanupSmokeTempDirs(createdPaths, rmFn)
+    cleanupPaths.splice(initialCleanupLength)
+    if (cleanupErrors.length > 0) {
+      throw new Error(`${formatUnknownError(err)}; tempdir cleanup failed: ${cleanupErrors.join('; ')}`)
+    }
+    throw err
   }
 }
 
@@ -383,11 +453,12 @@ function printSmokeSummary(
   }
 }
 
-async function runSpawn(
+export async function runSpawn(
   spawn: typeof Bun.spawn,
   args: string[],
-  opts: { cwd: string; env: Record<string, string | undefined> },
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  opts: RunSpawnOptions,
+): Promise<RunSpawnResult> {
+  const timeoutMs = opts.timeoutMs ?? 30000
   const proc = spawn(args, {
     cwd: opts.cwd,
     env: opts.env,
@@ -395,15 +466,34 @@ async function runSpawn(
     stdout: 'pipe',
     stderr: 'pipe',
   })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-  return {
-    exitCode: typeof exitCode === 'number' ? exitCode : 1,
-    stdout,
-    stderr,
+  let timedOut = false
+  let timeoutKillError: string | null = null
+  const timer = setTimeout(() => {
+    timedOut = true
+    try {
+      proc.kill()
+    } catch (err) {
+      timeoutKillError = formatUnknownError(err)
+    }
+  }, timeoutMs)
+
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    const normalizedExitCode = typeof exitCode === 'number' ? exitCode : 1
+    return {
+      exitCode: timedOut && normalizedExitCode === 0 ? 1 : normalizedExitCode,
+      stdout,
+      stderr,
+      timedOut,
+      timeoutMs: timedOut ? timeoutMs : null,
+      timeoutKillError,
+    }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -495,7 +585,30 @@ function finish(ok: boolean, steps: SmokeResult['steps'], start: number): SmokeR
   return { ok, steps, durationMs: performance.now() - start }
 }
 
-function commandFailure(result: { exitCode: number; stdout: string; stderr: string }): string {
+async function cleanupSmokeTempDirs(
+  paths: readonly string[],
+  rmFn: (path: string, opts: { recursive?: boolean; force?: boolean }) => Promise<void> = rm,
+): Promise<string[]> {
+  const errors: string[] = []
+  for (const path of paths) {
+    try {
+      await rmFn(path, { recursive: true, force: true })
+    } catch (err) {
+      errors.push(`${path}: ${formatUnknownError(err)}`)
+    }
+  }
+  return errors
+}
+
+function commandFailure(result: RunSpawnResult): string {
+  if (result.timedOut) {
+    const output = lastLines(result.stderr || result.stdout, 20)
+    const killMessage =
+      result.timeoutKillError === null ? '' : `; kill failed: ${result.timeoutKillError}`
+    return output.length > 0
+      ? `timed out after ${result.timeoutMs}ms${killMessage}: ${output}`
+      : `timed out after ${result.timeoutMs}ms${killMessage}`
+  }
   const output = lastLines(result.stderr || result.stdout, 20)
   return output.length > 0 ? `exit ${result.exitCode}: ${output}` : `exit ${result.exitCode}`
 }

@@ -412,6 +412,97 @@ describe('buildAll', () => {
     expect(await fs.readTextFile(x64Handoff)).toBe('stable-x64')
   })
 
+  test('--ensure rebuilds when manifest JSON is malformed', async () => {
+    const fs = new MemoryFs()
+    const cwd = '/tmp/code-oz-bad-manifest'
+    await writeInstallScript(fs, cwd)
+    await fs.writeFile(join(cwd, 'dist/handoff/manifest.json'), '{ bad json')
+    const builtTargets: string[] = []
+    const runner = runnerWritingOutputs(
+      fs,
+      new Map([
+        ['bun-darwin-arm64', bytes('arm64-rebuilt')],
+        ['bun-darwin-x64', bytes('x64-rebuilt')],
+      ]),
+      builtTargets,
+    )
+
+    const result = await buildAll({
+      runner,
+      version: VERSION,
+      cwd,
+      mode: 'ensure',
+      fs,
+      now: () => new Date(BUILT_AT),
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.errors).toEqual([])
+    expect(result.manifestParseError).toContain('manifest.json invalid JSON')
+    expect(builtTargets).toEqual(['bun-darwin-arm64', 'bun-darwin-x64'])
+    expect(result.manifest).toEqual({
+      schemaVersion: 1,
+      version: VERSION,
+      builtAt: BUILT_AT,
+      targets: [
+        {
+          os: 'darwin',
+          arch: 'arm64',
+          bunTarget: 'bun-darwin-arm64',
+          binaryRelativePath: 'darwin-arm64/code-oz',
+          sha256: '16f2185b17626142a3f701d4d6263ae8c0939c7afd08c4a80450a54194dc4844',
+          sizeBytes: 13,
+          version: VERSION,
+        },
+        {
+          os: 'darwin',
+          arch: 'x64',
+          bunTarget: 'bun-darwin-x64',
+          binaryRelativePath: 'darwin-x64/code-oz',
+          sha256: '47b82de1afae8fa34cc625c04b5411ebdd52ab659fad87f094328108465da60c',
+          sizeBytes: 11,
+          version: VERSION,
+        },
+      ],
+    })
+    expect(JSON.parse(await fs.readTextFile(join(cwd, 'dist/handoff/manifest.json')))).toEqual(
+      result.manifest,
+    )
+  })
+
+  test('removes partial handoff when the second target build fails', async () => {
+    await mkdir(join(tmp, 'scripts'), { recursive: true })
+    await writeFile(join(tmp, 'scripts/install.sh'), '#!/bin/sh\necho installer\n')
+    const runner: CommandRunner = async (_cmd, args) => {
+      const targetArg = args.find((arg) => arg.startsWith('--target='))
+      const outfileIndex = args.indexOf('--outfile')
+      const outfile = args[outfileIndex + 1]
+      if (targetArg === '--target=bun-darwin-arm64' && outfile !== undefined) {
+        await mkdir(dirname(outfile), { recursive: true })
+        await writeFile(outfile, bytes('arm64-partial'))
+        return { exitCode: 0, stdout: '', stderr: '' }
+      }
+      return { exitCode: 1, stdout: '', stderr: 'x64 compile failed' }
+    }
+
+    const result = await buildAll({
+      runner,
+      version: VERSION,
+      cwd: tmp,
+      mode: 'force',
+      fs: nodeFs,
+      now: () => new Date(BUILT_AT),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.manifest).toBeNull()
+    expect(result.errors).toEqual([
+      'darwin-x64 build failed with exit code 1\nx64 compile failed',
+    ])
+    expect(existsSync(join(tmp, 'dist/darwin-arm64/code-oz'))).toBe(true)
+    expect(existsSync(join(tmp, 'dist/handoff'))).toBe(false)
+  })
+
   test('copies scripts/install.sh into handoff with executable bit', async () => {
     const installSource = await readFile(join(process.cwd(), 'scripts/install.sh'))
     await mkdir(join(tmp, 'scripts'), { recursive: true })
