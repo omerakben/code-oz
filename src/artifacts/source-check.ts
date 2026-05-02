@@ -561,6 +561,49 @@ function sourceIdKind(id: string): SourceKind | null {
   return m[1] as SourceKind
 }
 
+// Patterns the parser treats as embedded empty-result indicators inside a
+// REF-NONE block's `Searched:` bullet. Tolerance scope: GitHub issue #3 —
+// LLMs (especially on greenfield projects) tend to merge the search action
+// and its empty result into a single Searched bullet, e.g.:
+//   - Searched: glob **/* (no files)
+// rather than producing the contract-required separate Result bullet. When
+// Result is missing AND Searched matches one of these patterns, we synthesize
+// a Result bullet so the artifact validates instead of failing 3/3 retries.
+//
+// Discipline boundary: the tolerance fires ONLY when the missing Result is
+// strongly implied by the Searched value. A REF-NONE block with no Searched
+// pattern AND no Result still fails — we do not silently invent evidence.
+// Extra fields (Path, Lines) on REF-NONE blocks were already silently
+// tolerated by the field-map walk above; this comment makes that explicit.
+const REF_NONE_EMPTY_RESULT_PATTERNS: readonly RegExp[] = Object.freeze([
+  /\(\s*no files?\s*\)/i,
+  /\(\s*only \. and \.\.\s*\)/i,
+  /\(\s*empty\s*\)/i,
+  /\(\s*0 files?\s*\)/i,
+  /\breturned 0\b/i,
+  /\bno relevant pattern found\b/i,
+  /\bno matching files?\b/i,
+  /\bno results?\b/i,
+  /\bempty repository\b/i,
+])
+
+/**
+ * If the Searched bullet embeds an empty-result indicator, return a
+ * synthesized Result string. Otherwise return null.
+ *
+ * The synthesized string is marked `(auto-extracted from Searched)` so the
+ * round-tripped artifact is honest about the synthesis. Issue #3 tolerance.
+ */
+function synthesizeRefNoneResult(searched: string): string | null {
+  for (const pattern of REF_NONE_EMPTY_RESULT_PATTERNS) {
+    const m = searched.match(pattern)
+    if (m !== null) {
+      return `${m[0].replace(/^\(\s*|\s*\)$/g, '')} (auto-extracted from Searched)`
+    }
+  }
+  return null
+}
+
 function buildSource(
   block: BlockBuf,
   kind: SourceKind,
@@ -580,6 +623,19 @@ function buildSource(
       continue
     }
     map.set(b.key, b.value)
+  }
+  // Issue #3 tolerance: REF-NONE blocks where the LLM merged the search
+  // action and its empty result into one Searched bullet (instead of
+  // producing a separate Result bullet) get a synthesized Result IFF the
+  // Searched value clearly embeds an empty-result pattern. This is the only
+  // tolerance applied; missing fields without supporting evidence still fail.
+  if (kind === 'REF-NONE') {
+    const searched = map.get('Searched')
+    const result = map.get('Result')
+    if (searched !== undefined && searched.length > 0 && (result === undefined || result.length === 0)) {
+      const synthesized = synthesizeRefNoneResult(searched)
+      if (synthesized !== null) map.set('Result', synthesized)
+    }
   }
   const required = REQUIRED_FIELDS_PER_KIND[kind]
   let missing = false
