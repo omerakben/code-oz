@@ -27,7 +27,7 @@ import {
   AUTH_SOURCES,
   DEFAULT_CAPABILITY_BY_ID,
 } from '../src/providers/capabilities.ts'
-import { AGENT_PROVIDERS } from '../src/agents/schema.ts'
+import { AGENT_PROVIDERS, AGENT_PHASES } from '../src/agents/schema.ts'
 import { loadConfig } from '../src/config/load.ts'
 
 describe('provider-enum drift (PE-1 commit 1 regression guard)', () => {
@@ -102,5 +102,13 @@ describe('provider-enum drift (PE-1 commit 1 regression guard)', () => {
     expect(DEFAULT_CAPABILITY_BY_ID.xai).toBeDefined()
     expect(DEFAULT_CAPABILITY_BY_ID.xai.authSource).toBe('xai-api-key')
     expect((AUTH_SOURCES as readonly string[]).includes('xai-api-key')).toBe(true)
+  })
+
+  test('xai eligiblePhases stays the full AGENT_PHASES set (PE-1 lock)', () => {
+    // Codex review thread 019de60e fix-soon: a future accidental change
+    // from ALL_PHASES to a subset would slip through the membership check
+    // above. This direct assertion catches an eligiblePhases shape change
+    // even when the xai row still exists.
+    expect([...DEFAULT_CAPABILITY_BY_ID.xai.eligiblePhases]).toEqual([...AGENT_PHASES])
   })
 })

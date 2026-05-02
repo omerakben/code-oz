@@ -78,6 +78,12 @@ describe('DEFAULT_CAPABILITY_BY_ID', () => {
     expect([...cap.eligiblePhases]).toEqual([...AGENT_PHASES])
   })
 
+  test('xai declares xai-api-key + every AGENT_PHASES value eligible (PE-1)', () => {
+    const cap = DEFAULT_CAPABILITY_BY_ID.xai
+    expect(cap.authSource).toBe('xai-api-key')
+    expect([...cap.eligiblePhases]).toEqual([...AGENT_PHASES])
+  })
+
   test('costPerMTok is omitted on every v0.1 default (no rotting data)', () => {
     for (const id of PROVIDER_IDS) {
       expect(DEFAULT_CAPABILITY_BY_ID[id].costPerMTok).toBeUndefined()
