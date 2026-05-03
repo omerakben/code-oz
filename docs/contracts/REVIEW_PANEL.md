@@ -126,11 +126,13 @@ Same-family voters cannot satisfy cross-family quorum. Five enforcement layers, 
 |---|---|---|---|
 | 1 | Config-load | `src/config/load.ts` | `panel_voter_same_family_as_build` |
 | 2 | Runtime registry family resolution | `src/providers/registry.ts` (via `registry.familyOf()`) | n/a (resolved data passed forward) |
-| 3 | Artifact-parse recomputation | `src/artifacts/review-report.ts` (`parseReviewPanelReport`) | `review_artifact_quorum_inconsistent` |
-| 4 | Quorum-time filtering | `src/phases/review-panel-verdict.ts` (`computeCanonicalPanelVerdict`) | n/a (filtered from eligible set) |
+| 3 | Artifact-parse invariant bundle | `src/artifacts/review-report.ts` (`parseReviewPanelReport`) | `review_panelist_manifest_mismatch` (manifest equality), `review_artifact_unknown_source_id` + `review_artifact_authority_impact_inconsistent` (F4 source/impact), `review_artifact_verdict_field_inconsistent` (F5 cross-section verdict), `review_artifact_quorum_inconsistent` (recomputed verdict) |
+| 4 | Panel orchestrator runtime authority | `src/phases/review-panel.ts` (`runReviewPanel`) | `panel_voter_same_family_at_runtime` (registry-resolved family collapses voter into BUILD family at runtime), `panel_provider_family_unresolved` (registry has no family for `providerId`), `panel_budget_exceeded` (aggregate preflight), `review_panelist_manifest_mismatch` (cross-panelist manifest disagreement), `review_panel_resume_mismatch` (partial staging guard with `reason: 'no_completed_event' \| 'sha_mismatch'`) |
 | 5 | Event-validator consistency | `src/state/events.ts` | `event_panel_quorum_inconsistent` (forensic only; does not abort) |
 
-A `panel_quorum_rejected_same_family_vote` event fires whenever any of layers 1-4 rejects a same-family vote attempt. This is the **positive control** for rule-21 ship-gate measurement.
+The pure `computeCanonicalPanelVerdict` helper in `src/phases/review-panel-verdict.ts` is the algorithm both layer 4 (orchestrator) and layer 3 (artifact-parse recompute via `recomputePanelVerdictFromArtifact`) call so the runtime authority and the parse-time recompute always agree on every panel composition.
+
+In v0.1, the `panel_quorum_rejected_same_family_vote` event is emitted ONLY by the doctor baseline command (`code-oz doctor --panel-baseline`) when running synthetic same-family configs through `loadConfig` — it is the layer-1 positive control for rule-21 ship-gate measurement. The runtime layer-4 authority surfaces same-family rejection as a `panel_voter_same_family_at_runtime` intervention rather than emitting this event. (Future: emit the event on layer-4 intervention if telemetry needs it; deferred to M16+ until measurable need.)
 
 ## Routed-provider lineage gating
 

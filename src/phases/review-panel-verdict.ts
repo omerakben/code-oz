@@ -9,15 +9,23 @@
 // docs/contracts/REVIEW_PANEL.md § "Five-layer defense-in-depth"):
 //   - Layer 1 (config-load) rejects same-family voters at YAML parse
 //   - Layer 2 (agent loader) re-checks against the resolved BUILD agent
-//   - Layer 3 (artifact parser) recomputes verdict from artifact bytes
-//   - Layer 4 (THIS MODULE) is the runtime authority — every panel
-//     orchestrator round computes the canonical verdict here
+//   - Layer 3 (artifact parser) bundles parse-time invariants
+//     (manifest equality, F4 authority-impact source consistency,
+//     F5 cross-section verdict, recomputed verdict)
+//   - Layer 4 (panel orchestrator in src/phases/review-panel.ts) is
+//     the runtime authority. THIS MODULE is the pure algorithm the
+//     orchestrator calls; it is also mirrored by layer 3's
+//     parse-time recompute. The orchestrator additionally enforces
+//     registry.familyOf() resolution and same-family-at-runtime
+//     rejection — surfaces neither this module touches.
 //   - Layer 5 (event validator) backstop on review_panel_completed
 //
-// All five layers must agree. Layer 3's recomputation in
-// src/artifacts/review-report.ts is a private mirror that calls into
-// the same algorithm; both implementations track this module as the
-// source of truth.
+// All five layers must agree. Layer 3's recompute and layer 4's
+// runtime authority both call this pure function so they cannot
+// drift on the algorithm; the rest of layer 4's defense (registry
+// resolution, same-family-at-runtime, budget preflight, manifest
+// equality across panelists, resume guard) lives in
+// src/phases/review-panel.ts.
 //
 // Per Codex pushback Q7 (CODEX_RESPONSE_M14.md):
 //   "Same-family advisory may record real severity, but canonical
