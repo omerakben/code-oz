@@ -128,7 +128,7 @@ Same-family voters cannot satisfy cross-family quorum. Five enforcement layers, 
 | 2 | Runtime registry family resolution | `src/providers/registry.ts` (via `registry.familyOf()`) | n/a (resolved data passed forward) |
 | 3 | Artifact-parse invariant bundle | `src/artifacts/review-report.ts` (`parseReviewPanelReport`) | `review_panelist_manifest_mismatch` (manifest equality), `review_artifact_unknown_source_id` + `review_artifact_authority_impact_inconsistent` (F4 source/impact), `review_artifact_verdict_field_inconsistent` (F5 cross-section verdict), `review_artifact_quorum_inconsistent` (recomputed verdict) |
 | 4 | Panel orchestrator runtime authority | `src/phases/review-panel.ts` (`runReviewPanel`) | `panel_voter_same_family_at_runtime` (registry-resolved family collapses voter into BUILD family at runtime), `panel_provider_family_unresolved` (registry has no family for `providerId`), `panel_budget_exceeded` (aggregate preflight), `review_panelist_manifest_mismatch` (cross-panelist manifest disagreement), `review_panel_resume_mismatch` (partial staging guard with `reason: 'no_completed_event' \| 'sha_mismatch'`) |
-| 5 | Event-validator consistency | `src/state/events.ts` | `event_panel_quorum_inconsistent` (forensic only; does not abort) |
+| 5 | Event-validator consistency | `src/state/events.ts` | `event_invalid_value` (layer-5 backstop on `review_panel_completed`: when `panelVerdict='ready'`, `eligibleVoterFamilies` count must be 2) |
 
 The pure `computeCanonicalPanelVerdict` helper in `src/phases/review-panel-verdict.ts` is the algorithm both layer 4 (orchestrator) and layer 3 (artifact-parse recompute via `recomputePanelVerdictFromArtifact`) call so the runtime authority and the parse-time recompute always agree on every panel composition.
 
@@ -295,7 +295,7 @@ Each panelist is a YAML-flow-style block of named fields. Required fields per pa
 - `manifestHash` is `sha256(canonical(PreparedProviderRequest.files))`. All entries must match (manifest equality invariant).
 - `score` is integer 0-10.
 
-Panelist-block field order is fixed; reordering produces a parse error (`review_panelist_field_order`).
+Panelist-block field order is fixed; reordering or missing fields produces a parse error in the `review_panel_reviewer_*` family (`review_panel_reviewer_missing`, `review_panel_reviewer_grammar`, etc.).
 
 ### `## Synthesis` block grammar (locked)
 
@@ -365,7 +365,7 @@ Names listed here; canonical schemas in `src/state/schemas.ts`.
 | `review_panel_started` | Panel orchestrator invoked; panel composition logged with resolved provider families |
 | `review_panelist_completed` | A single panelist finishes; staging file written with manifest hash |
 | `review_panel_disagreement` | Two panelists rate the same fingerprint differently (severity, verdict, or presence) |
-| `panel_quorum_rejected_same_family_vote` | Any of layers 1-4 rejects a same-family vote attempt (positive control) |
+| `panel_quorum_rejected_same_family_vote` | Layer-1 positive control: emitted by `code-oz doctor --panel-baseline` when a synthetic same-family panel YAML is rejected by `loadConfig`. The schema discriminator reserves later-layer values (`runtime-registry`, `artifact-parse`, `quorum-time`) for future use; v0.1 has no runtime emitter — runtime layer-4 surfaces same-family rejection as the `panel_voter_same_family_at_runtime` intervention. |
 | `review_panel_completed` | Synthesis writes canonical REVIEW.md; `panelVerdict` recorded |
 | `review_panel_baseline_completed` | `doctor --panel-baseline` finishes; rule-21 ship-gate metric event |
 
@@ -440,16 +440,20 @@ Runs the same fixture in single-mode (one reviewer) then panel-mode (configured 
 
 ## Common errors
 
-| Error | Meaning | Action |
-|---|---|---|
-| `panel_voter_count_invalid` | `reviewer.panel` has !==2 voters | Edit config to have exactly 2 voters |
-| `panel_voter_same_family_as_build` | Voter family matches build family | Edit config to use cross-family voter |
-| `panel_advisory_only` | Panel has 0 voters (advisory-only) | Add at least 2 cross-family voters |
-| `panel_routed_lineage_unknown` | Voter has `'unknown'` family (routed adapter w/o resolved lineage) | Wait for PE-2+ lineage resolution; or use direct provider |
-| `review_artifact_quorum_inconsistent` | Parsed `Synthesis.panelVerdict` differs from recomputed verdict | Artifact corruption; inspect canonical REVIEW.md and events.jsonl, then restore the canonical artifact or clear the run state and rerun REVIEW (v0.1 has no synthesis-from-staging path) |
-| `review_panelist_field_order` | Per-panelist block fields out of canonical order | Persona repair |
-| `review_panelist_manifest_mismatch` | Two panelists in same round have different manifest hashes | Orchestrator bug; intervention |
-| `event_panel_quorum_inconsistent` | `review_panel_completed` ready-verdict not validated by panelist ancestors | Forensic only; does not abort runtime |
+| Error | Meaning | Action | Layer |
+|---|---|---|---|
+| `panel_voter_count_invalid` | `reviewer.panel` has !==2 voters (covers advisory-only panels with 0 voters) | Edit config to have exactly 2 voters | 1 (config-load) + 4 (orchestrator runtime defense) |
+| `panel_voter_same_family_as_build` | Declared voter family matches resolved build family at config-load time | Edit config to use cross-family voter | 1 (config-load) |
+| `panel_voter_same_family_at_runtime` | Registry-resolved voter family matches build family at runtime (registry override laundering attempt) | Inspect `familyOverrides` and `defaultProvider` — runtime resolution must yield cross-family voter | 4 (orchestrator) |
+| `panel_provider_family_unresolved` | Registry has no family mapping for the panelist's `providerId` | Add the provider id to `DEFAULT_FAMILY_BY_ID` or supply `familyOverrides` | 4 (orchestrator) |
+| `panel_budget_exceeded` | Aggregate panel preflight would exceed a budget cap | Raise the named cap in `.code-oz/config.yaml` (the rule names the specific cap) | 4 (orchestrator preflight) |
+| `review_panelist_manifest_mismatch` | Two panelists in same round report different manifest hashes (or parser detects same in canonical artifact) | Orchestrator bug or hand-edited artifact; intervention | 3 (artifact parse) + 4 (orchestrator) |
+| `review_artifact_unknown_source_id` | A finding's `Sources` references an id absent from the `Reviewers` section | Hand-edited artifact; restore canonical artifact | 3 (artifact parse, F4) |
+| `review_artifact_authority_impact_inconsistent` | A finding's `Authority impact` does not match eligibility-derived value from its sources | Hand-edited artifact; restore canonical artifact | 3 (artifact parse, F4) |
+| `review_artifact_verdict_field_inconsistent` | `Synthesis.Panel verdict` disagrees with the last `Round timeline` entry's panel verdict | Hand-edited artifact; restore canonical artifact | 3 (artifact parse, F5) |
+| `review_artifact_quorum_inconsistent` | Parsed `Synthesis.panelVerdict` differs from recomputed verdict | Artifact corruption; inspect canonical REVIEW.md and events.jsonl, then restore the canonical artifact or clear the run state and rerun REVIEW (v0.1 has no synthesis-from-staging path) | 3 (artifact parse) |
+| `review_panel_resume_mismatch` | Partial panel staging on disk + (no `review_panel_completed` event OR canonical REVIEW.md sha mismatch). The intervention `rule` text discriminates the two reasons | Inspect `.code-oz/runs/<runId>/review-panel/round-<N>/` and `.code-oz/artifacts/REVIEW.md`; clear staging or restore the canonical artifact | 4 (orchestrator preflight) |
+| `event_invalid_value` (layer-5 rule for `review_panel_completed`) | `review_panel_completed.eligibleVoterFamilies` count is not 2 when `panelVerdict='ready'` | Validator backstop; should not occur if layers 1-4 are healthy | 5 (event validator) |
 
 ## Reference
 

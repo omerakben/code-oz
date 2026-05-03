@@ -187,9 +187,13 @@ export const EVENT_TYPES = [
   //     invariant.
   //   review_panel_disagreement — two panelists rate the same fingerprint
   //     differently (severity, verdict, presence, or advisory-unratified).
-  //   panel_quorum_rejected_same_family_vote — layer 1-4 of the 5-layer
-  //     defense rejected a same-family voter attempt; positive control
-  //     event for rule-21 measurement.
+  //   panel_quorum_rejected_same_family_vote — positive-control event
+  //     for rule-21 measurement. v0.1 emits ONLY from the doctor
+  //     baseline command (layer='config-load'); the discriminator's
+  //     later-layer values (runtime-registry / artifact-parse /
+  //     quorum-time) are reserved for future use. Runtime layer-4
+  //     same-family rejection surfaces as the
+  //     `panel_voter_same_family_at_runtime` intervention.
   //   review_panel_completed — synthesis wrote canonical REVIEW.md; panel
   //     verdict recorded. Validator backstop (layer 5): when panelVerdict
   //     is 'ready', eligibleVoterFamilies count MUST be 2.
