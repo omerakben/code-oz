@@ -1881,6 +1881,56 @@ export function parseReviewPanelReport(
     }
   }
 
+  // F4 (Codex M14 R1 finding #4): authority-impact source consistency.
+  // Every finding's `sources` must (a) reference real reviewer ids and
+  // (b) agree with eligibility-derived authorityImpact. If ANY source
+  // is an eligible voter (role='voter' AND providerFamily !==
+  // buildFamily), the finding's `authorityImpact` MUST be 'voter';
+  // otherwise it MUST be 'advisory'. Without this, a hand-crafted
+  // panel artifact with a voter-sourced block finding marked as
+  // 'authorityImpact: advisory' bypasses the gate-authority rule.
+  if (reviewers && findings) {
+    const reviewerById = new Map(reviewers.map((r) => [r.id, r]))
+    const buildFamilyForElig = reviewers.length > 0 ? reviewers[0]!.buildFamily : ''
+    const eligibleVoterIds = new Set(
+      reviewers
+        .filter((r) => r.role === 'voter' && r.providerFamily !== buildFamilyForElig)
+        .map((r) => r.id),
+    )
+    for (const f of findings) {
+      let hasEligibleVoter = false
+      let allSourcesKnown = true
+      for (const src of f.sources) {
+        const reviewer = reviewerById.get(src)
+        if (reviewer === undefined) {
+          allSourcesKnown = false
+          issues.push({
+            file,
+            code: 'review_artifact_unknown_source_id',
+            rule:
+              `Finding ${f.id} cites source '${src}' which is not declared in the Reviewers section ` +
+              '(M14 layer-3 invariant)',
+            detail: `Sources: ${f.sources.join(', ')}; Reviewers: ${[...reviewerById.keys()].join(', ')}`,
+          })
+          continue
+        }
+        if (eligibleVoterIds.has(src)) hasEligibleVoter = true
+      }
+      if (!allSourcesKnown) continue
+      const expected = hasEligibleVoter ? 'voter' : 'advisory'
+      if (f.authorityImpact !== expected) {
+        issues.push({
+          file,
+          code: 'review_artifact_authority_impact_inconsistent',
+          rule:
+            `Finding ${f.id}: Authority impact must be '${expected}' given its Sources ` +
+            '(M14 layer-3 invariant; REVIEW_PANEL.md § "Five-layer defense-in-depth")',
+          detail: `declared='${f.authorityImpact}' expected='${expected}' sources=${f.sources.join(', ')}`,
+        })
+      }
+    }
+  }
+
   // Parse-time quorum recomputation (layer 3 of the 5-layer defense).
   // Recompute panelVerdict from reviewers + findings; reject if claimed
   // value differs.
