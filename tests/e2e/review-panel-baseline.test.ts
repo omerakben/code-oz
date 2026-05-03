@@ -39,10 +39,13 @@ import {
 } from '../../src/artifacts/review-report.ts'
 import type { Panelist } from '../../src/config/schema.ts'
 import { ProviderRegistry } from '../../src/providers/registry.ts'
+import { DEFAULT_CONFIG, type CodeOzConfig } from '../../src/config/schema.ts'
 
 // Tests resolve provider family via registry.familyOf (Codex M14 R1
 // finding #3 closure).
 const testRegistry = new ProviderRegistry({ providers: [] })
+const testConfig: CodeOzConfig = DEFAULT_CONFIG as CodeOzConfig
+const PER_PANELIST_EST = 10
 
 const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
 const NOW = '2026-05-03T01:23:45.000Z'
@@ -192,6 +195,9 @@ describe('e2e: runReviewPanel orchestrator against fixture-driven invocation sea
       panel,
       buildFamily: fixture.buildFamily,
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs,
       round: 1,
       orchestratorAgent: 'panel-orchestrator',

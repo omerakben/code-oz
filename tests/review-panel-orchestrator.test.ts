@@ -24,12 +24,19 @@ import {
   type ReviewUpstreamRefs,
 } from '../src/artifacts/review-report.ts'
 import type { Panelist, CompanyConfig } from '../src/config/schema.ts'
+import { DEFAULT_CONFIG, type CodeOzConfig } from '../src/config/schema.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
 
 // Tests resolve provider family via registry.familyOf (Codex M14 R1
 // finding #3 closure). An empty provider list is sufficient — familyOf
 // only consults DEFAULT_FAMILY_BY_ID + overrides.
 const testRegistry = new ProviderRegistry({ providers: [] })
+
+// Default config for orchestrator tests. Generous caps so the budget
+// preflight (Codex M14 R1 finding #6 closure) does not refuse happy-path
+// rounds; budget-specific tests below override these caps.
+const testConfig: CodeOzConfig = DEFAULT_CONFIG as CodeOzConfig
+const PER_PANELIST_EST = 10
 
 const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
 const NOW = '2026-05-03T01:23:45.000Z'
@@ -157,6 +164,9 @@ describe('runReviewPanel — happy paths', () => {
       panel,
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -195,6 +205,9 @@ describe('runReviewPanel — happy paths', () => {
       panel,
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -237,6 +250,9 @@ describe('runReviewPanel — happy paths', () => {
       panel,
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -265,6 +281,9 @@ describe('runReviewPanel — happy paths', () => {
       panel,
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 2,
       orchestratorAgent: 'panel-orchestrator',
@@ -306,6 +325,9 @@ describe('runReviewPanel — happy paths', () => {
       panel,
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -328,6 +350,9 @@ describe('runReviewPanel — happy paths', () => {
       panel,
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -367,6 +392,9 @@ describe('runReviewPanel — happy paths', () => {
       panel,
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -392,6 +420,9 @@ describe('runReviewPanel — interventions', () => {
       ],
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 5,
       orchestratorAgent: 'panel-orchestrator',
@@ -412,6 +443,9 @@ describe('runReviewPanel — interventions', () => {
       panel: [{ provider: 'codex', role: 'voter' }],
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -436,6 +470,9 @@ describe('runReviewPanel — interventions', () => {
       ],
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -473,6 +510,9 @@ describe('runReviewPanel — interventions', () => {
       ],
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -499,6 +539,9 @@ describe('runReviewPanel — interventions', () => {
       ],
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -548,6 +591,9 @@ describe('runReviewPanel — registry-owned runtime family resolution (Codex M14
       ],
       buildFamily: 'claude',
       registry: overrideRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -591,6 +637,9 @@ describe('runReviewPanel — registry-owned runtime family resolution (Codex M14
       ],
       buildFamily: 'claude',
       registry: overrideRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',
@@ -616,6 +665,122 @@ describe('runReviewPanel — registry-owned runtime family resolution (Codex M14
     const geminiReviewer = parsed.reviewers.find((r) => r.providerId === 'gemini')
     expect(geminiReviewer).toBeDefined()
     expect(geminiReviewer!.providerFamily).toBe('fake')
+  })
+
+  test('aggregate budget refusal blocks the round before any panelist invokes (Codex M14 R1 finding #6)', async () => {
+    // Tight per-phase review cap; the aggregate panel cost must exceed it.
+    const tightConfig: CodeOzConfig = {
+      ...testConfig,
+      budgets: {
+        ...testConfig.budgets,
+        perPhase: {
+          ...testConfig.budgets.perPhase,
+          review: { maxTurns: 100, maxProviderCalls: 100, maxTokensEstimate: 50 },
+        },
+      },
+    }
+    let invokerCalls = 0
+    const trackingInvoker: PanelistInvoker = async (cfg) => {
+      invokerCalls++
+      return {
+        panelistId: cfg.id,
+        providerId: cfg.provider,
+        providerFamily: cfg.provider,
+        modelPolicy: 'any',
+        role: cfg.role,
+        score: 8,
+        verdict: 'ready',
+        findings: [],
+        manifestHash: MANIFEST_HASH,
+        stagingContent: stagingMd(cfg.id),
+      }
+    }
+    const result = await runReviewPanel({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      panelistInvoker: trackingInvoker,
+      panel: [
+        { provider: 'codex', role: 'voter' },
+        { provider: 'gemini', role: 'voter' },
+      ],
+      buildFamily: 'claude',
+      registry: testRegistry,
+      config: tightConfig,
+      events: [],
+      perPanelistTokensEstimate: 50, // 2 panelists × 50 = 100, exceeds cap of 50
+      upstreamRefs: upstreamRefs(),
+      round: 1,
+      orchestratorAgent: 'panel-orchestrator',
+      now: () => NOW,
+      fsyncDir: false,
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status !== 'intervention') return
+    expect(result.code).toBe('panel_budget_exceeded')
+    // No panelist was invoked — partial-panel-prevention invariant.
+    expect(invokerCalls).toBe(0)
+    // No staging directory was materialized either — the panelist loop
+    // never started, and review_panel_started was never emitted.
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const panelStarted = events.filter(
+      (e) => isKnownPhaseEvent(e) && e.type === 'review_panel_started',
+    )
+    expect(panelStarted.length).toBe(0)
+  })
+
+  test('soft-warning threshold emits budget_warning before panelist loop (Codex M14 R1 finding #6)', async () => {
+    // Aggregate cost lands in the soft-warn band (>= 0.75 of cap, < 1.0).
+    const warnConfig: CodeOzConfig = {
+      ...testConfig,
+      budgets: {
+        ...testConfig.budgets,
+        perPhase: {
+          ...testConfig.budgets.perPhase,
+          review: { maxTurns: 100, maxProviderCalls: 100, maxTokensEstimate: 100 },
+        },
+        global: {
+          ...testConfig.budgets.global,
+          maxTokensEstimate: 100,
+          softWarnAtRatio: 0.75,
+        },
+      },
+    }
+    const result = await runReviewPanel({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      panelistInvoker: happyInvoker(),
+      panel: [
+        { provider: 'codex', role: 'voter' },
+        { provider: 'gemini', role: 'voter' },
+      ],
+      buildFamily: 'claude',
+      registry: testRegistry,
+      config: warnConfig,
+      events: [],
+      perPanelistTokensEstimate: 40, // 2 × 40 = 80; 80/100 = 0.8 ≥ 0.75
+      upstreamRefs: upstreamRefs(),
+      round: 1,
+      orchestratorAgent: 'panel-orchestrator',
+      now: () => NOW,
+      fsyncDir: false,
+    })
+    expect(result.status).toBe('resolved')
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const warnings = events.filter(
+      (e) => isKnownPhaseEvent(e) && e.type === 'budget_warning',
+    )
+    // At least one budget_warning event was emitted before the panel ran.
+    expect(warnings.length).toBeGreaterThan(0)
+    // The warning is positioned before review_panel_started in the log.
+    const warningIdx = events.findIndex(
+      (e) => isKnownPhaseEvent(e) && e.type === 'budget_warning',
+    )
+    const startedIdx = events.findIndex(
+      (e) => isKnownPhaseEvent(e) && e.type === 'review_panel_started',
+    )
+    expect(warningIdx).toBeLessThan(startedIdx)
   })
 
   test('unknown providerId from invoker → panel_provider_family_unresolved intervention', async () => {
@@ -645,6 +810,9 @@ describe('runReviewPanel — registry-owned runtime family resolution (Codex M14
       ],
       buildFamily: 'claude',
       registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
       upstreamRefs: upstreamRefs(),
       round: 1,
       orchestratorAgent: 'panel-orchestrator',

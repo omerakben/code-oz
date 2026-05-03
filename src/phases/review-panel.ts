@@ -44,12 +44,17 @@ import {
   computeCanonicalPanelVerdict,
   type PanelistInput,
 } from './review-panel-verdict.ts'
-import type { Panelist, CompanyConfig } from '../config/schema.ts'
+import type { Panelist, CompanyConfig, CodeOzConfig } from '../config/schema.ts'
 import type { ProviderId, ProviderFamily } from '../providers/types.ts'
 import type { ProviderRegistry } from '../providers/registry.ts'
+import { ProviderError } from '../providers/errors.ts'
+import {
+  assertPanelWithinBudget,
+  detectPanelBudgetSoftWarnings,
+} from '../providers/cost.ts'
 import type { RunPaths } from '../state/run.ts'
 import { appendEvent } from '../state/events.ts'
-import type { PhaseEvent } from '../state/schemas.ts'
+import type { PhaseEvent, LoggedEvent } from '../state/schemas.ts'
 
 // --- public types --------------------------------------------------
 
@@ -120,6 +125,22 @@ export interface RunReviewPanelOptions {
    *  registry-resolved family. Honors test seams + future
    *  routed-provider lineage (familyOverrides). */
   readonly registry: ProviderRegistry
+  /** Active CodeOzConfig — read for budget caps in the aggregate panel
+   *  preflight (Codex M14 R1 finding #6). */
+  readonly config: CodeOzConfig
+  /** Already-read events.jsonl entries used to compute cumulative
+   *  budget spend before the panel preflight runs. The caller (runReview)
+   *  reads events for the cross-family check and reuses them here so the
+   *  orchestrator does not re-read the log. */
+  readonly events: readonly LoggedEvent[]
+  /** Conservative upper-bound estimate of the per-panelist token cost
+   *  (prompt + manifest). Manifest equality means each panelist sees the
+   *  same files; v0.1 uses one value broadcast across panel.length. */
+  readonly perPanelistTokensEstimate: number
+  /** Optional CompanyRole label for byRole budget routing. Defaults to
+   *  'reviewer' since panel mode runs in the reviewer role today. Future
+   *  M16+ may panel other roles. */
+  readonly panelRole?: string
   /** Upstream refs (paths + sha256s + task + attempt + commit + patch). */
   readonly upstreamRefs: ReviewUpstreamRefs
   /** REVIEW round being driven (1..4). */
@@ -226,6 +247,53 @@ export async function runReviewPanel(
         'runReviewPanel: panel must have exactly 2 voters (M14 fixed-quorum)',
       detail: `got ${voterCount} voter${voterCount === 1 ? '' : 's'}`,
     }
+  }
+
+  // Aggregate budget preflight (Codex M14 R1 finding #6). MUST run before
+  // any panelist invokes — a partial panel has no valid quorum, so the
+  // policy is "refuse the whole round" rather than "run until budget
+  // exhausted mid-round." Soft warnings emit existing M13 budget_warning
+  // events (no new vocabulary, per anti-pattern lock).
+  const panelistTokenEstimates = Array.from<number>({
+    length: opts.panel.length,
+  }).fill(opts.perPanelistTokensEstimate)
+  const panelPreflightInput = {
+    phase: 'review' as const,
+    role: opts.panelRole ?? 'reviewer',
+    panelistTokenEstimates,
+  }
+  try {
+    assertPanelWithinBudget(opts.config, panelPreflightInput, opts.events, new Date(now()))
+  } catch (err) {
+    if (err instanceof ProviderError) {
+      const issue = err.issues[0]!
+      return {
+        status: 'intervention',
+        code: 'panel_budget_exceeded',
+        rule: issue.rule,
+        ...(issue.detail !== undefined ? { detail: issue.detail } : {}),
+      }
+    }
+    throw err
+  }
+  const softWarnings = detectPanelBudgetSoftWarnings(
+    opts.config,
+    panelPreflightInput,
+    opts.events,
+    new Date(now()),
+  )
+  for (const w of softWarnings) {
+    await emitEvent(opts, {
+      version: 1,
+      type: 'budget_warning',
+      ts: now(),
+      runId: opts.runId,
+      metric: w.metric,
+      ratio: w.ratio,
+      current: w.metric === 'maxWallTimeMinutes' ? Math.floor(w.current) : w.current,
+      limit: w.limit,
+      ...(w.role !== undefined ? { role: w.role } : {}),
+    })
   }
 
   // Emit review_panel_started. Per Codex M14 R1 finding #3: composition
