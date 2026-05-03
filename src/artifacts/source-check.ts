@@ -111,6 +111,230 @@ export interface SourceCheckArtifact {
   readonly openQuestions: readonly string[]
 }
 
+// --- YAML-style tolerance (issue #8) -------------------------------
+
+// LLMs occasionally emit SOURCE_CHECK.md as YAML at the section level —
+// top-level `spec_sources:` / `reference_sources:` / `docs_sources:` /
+// `coverage:` / `open_questions:` keys with indented values, instead of the
+// canonical `## Heading` H2 sections. Tolerance scope: GitHub issue #8 —
+// extends the issue #3 REF-NONE Result synthesis (kept as
+// `synthesizeRefNoneResult` below) with section-level tolerance for all
+// five kinds.
+//
+// Discipline boundary: this adapter handles SECTION-LEVEL drift only.
+// Nested H3 source blocks (`### SC-NNN:`) are NOT rewritten — the persona
+// prompt explicitly forbids nested `- id: SC-NNN` YAML form (defense layer
+// 1), and the strict parser still owns block validation. If nested-source
+// YAML drift surfaces in practice, it gets its own follow-up issue.
+//
+// The adapter fires ONLY on column-0 lines that match a recognised
+// SOURCE_CHECK section key (case-insensitive, with snake_case / camelCase /
+// kebab-case aliases). Canonical `## ` headings, the `# SOURCE_CHECK` H1,
+// the three source sections' bodies (preserved verbatim once we enter
+// them), and unknown keys all pass through. Mixed-format input is
+// supported.
+
+const YAML_SC_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
+  'spec sources': 'Spec sources',
+  spec_sources: 'Spec sources',
+  specsources: 'Spec sources',
+  'spec-sources': 'Spec sources',
+  'reference sources': 'Reference sources',
+  reference_sources: 'Reference sources',
+  referencesources: 'Reference sources',
+  'reference-sources': 'Reference sources',
+  references: 'Reference sources',
+  'docs sources': 'Docs sources',
+  docs_sources: 'Docs sources',
+  docssources: 'Docs sources',
+  'docs-sources': 'Docs sources',
+  docs: 'Docs sources',
+  coverage: 'Coverage',
+  'open questions': 'Open questions',
+  open_questions: 'Open questions',
+  openquestions: 'Open questions',
+  'open-questions': 'Open questions',
+})
+
+const YAML_SC_KEY_PROBE = /^(?:spec[ _-]?sources|reference[ _-]?sources|references|docs[ _-]?sources|docs|coverage|open[ _-]?questions):\s*(?:\[.*\])?\s*$/im
+
+const YAML_SC_KEY_LINE = /^([A-Za-z][A-Za-z _-]*?):\s*(.*)$/
+
+// The three source sections preserve their body verbatim — we emit the
+// canonical heading and let the strict parser validate `### SC-NNN:` block
+// shape inside. Coverage and Open questions are bullet sections and get
+// the SPEC-style indented-bullet collection.
+const YAML_SC_BULLET_SECTIONS: ReadonlySet<string> = new Set(['Coverage', 'Open questions'])
+
+function normalizeSourceCheckKey(raw: string): string | null {
+  const folded = raw.trim().toLowerCase()
+  return YAML_SC_KEY_MAP[folded] ?? null
+}
+
+// Quote-aware top-level comma split — preserves quoted scalars containing
+// commas as single items, including escaped quotes inside them. Required
+// to honour the "rewrite shape, not semantics" boundary (Codex review
+// block-push findings, rounds 1 and 2, on PR #10; same code shape copied
+// here).
+function splitTopLevelCommasSourceCheck(s: string): string[] {
+  const out: string[] = []
+  let current = ''
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!
+    if (ch === '\\' && i + 1 < s.length) {
+      current += ch + s[i + 1]
+      i++
+      continue
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      current += ch
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      current += ch
+      continue
+    }
+    if (ch === ',' && !inSingle && !inDouble) {
+      out.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.length > 0) out.push(current)
+  return out
+}
+
+function parseSourceCheckInlineList(value: string): string[] {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return []
+  const flow = trimmed.match(/^\[(.*)\]$/)
+  const inner = flow !== null ? flow[1]! : trimmed
+  return splitTopLevelCommasSourceCheck(inner)
+    .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+    .filter((s) => s.length > 0)
+}
+
+/**
+ * Pre-parse adapter: rewrite SECTION-LEVEL YAML-style SOURCE_CHECK blocks
+ * (top-level `spec_sources:` / `coverage:` / etc. keys) into canonical
+ * `## Heading` Markdown sections. Returns the input unchanged if no YAML
+ * markers are present.
+ *
+ * Issue #8 tolerance, section level only. Mixed-format input is supported —
+ * canonical `## ` sections pass through verbatim; only YAML key/list pairs
+ * are rewritten. Nested `### SC-NNN:` H3 source blocks are NOT rewritten —
+ * that drift class would need its own follow-up.
+ *
+ * Coverage and Open questions sections collect their indented bullets
+ * (mirroring the SPEC adapter). The three source-block sections are emitted
+ * with the canonical heading only; their body content is preserved verbatim
+ * and the strict parser validates block shape.
+ */
+export function adaptYamlStyleSourceCheck(raw: string): string {
+  if (!YAML_SC_KEY_PROBE.test(raw)) return raw
+  const lines = raw.split(/\r?\n/)
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    if (/^[ \t]/.test(line) || line.length === 0 || line.startsWith('#')) {
+      out.push(line)
+      i++
+      continue
+    }
+    const keyMatch = line.match(YAML_SC_KEY_LINE)
+    if (keyMatch === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    const heading = normalizeSourceCheckKey(keyMatch[1]!)
+    if (heading === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    if (!YAML_SC_BULLET_SECTIONS.has(heading)) {
+      // Spec/Reference/Docs source section — emit the canonical heading
+      // and let the body fall through to the strict parser. If the body
+      // uses YAML-style `- id: SC-NNN`, the strict parser correctly
+      // rejects it.
+      out.push(`## ${heading}`)
+      out.push('')
+      i++
+      continue
+    }
+    // Coverage or Open questions — collect indented bullets.
+    const keyLineIdx = i
+    const inlineValue = keyMatch[2]!.trim()
+    const bullets: string[] = []
+    if (inlineValue.length > 0) bullets.push(...parseSourceCheckInlineList(inlineValue))
+    i++
+    let firstBulletIndent = -1
+    let abortRewrite = false
+    while (i < lines.length) {
+      const cont = lines[i]!
+      if (cont.length === 0) {
+        let j = i + 1
+        while (j < lines.length && lines[j]!.length === 0) j++
+        if (j >= lines.length) break
+        if (!/^[ \t]+/.test(lines[j]!)) break
+        i++
+        continue
+      }
+      if (!/^[ \t]/.test(cont)) break
+      // Reject nested YAML key (indented `key:` with no leading `-`) and
+      // deeper-indent bullets (Codex round-2 block-push finding on PR #10;
+      // same code shape copied here).
+      if (/^[ \t]+[A-Za-z][A-Za-z0-9_-]*\s*:\s*/.test(cont) && !/^[ \t]+-\s/.test(cont)) {
+        abortRewrite = true
+        break
+      }
+      const indented = cont.match(/^[ \t]+-\s*(.*)$/)
+      if (indented !== null) {
+        const bulletIndent = cont.search(/[^ \t]/)
+        if (firstBulletIndent === -1) {
+          firstBulletIndent = bulletIndent
+        } else if (bulletIndent > firstBulletIndent) {
+          abortRewrite = true
+          break
+        } else if (bulletIndent < firstBulletIndent) {
+          break
+        }
+        const bullet = indented[1]!.trim()
+        if (bullet.length > 0) bullets.push(bullet)
+        i++
+        continue
+      }
+      // Folded YAML continuation — append to the previous bullet so the
+      // author's content is preserved instead of silently dropped.
+      const trimmedCont = cont.trim()
+      if (trimmedCont.length > 0) {
+        if (bullets.length > 0) {
+          bullets[bullets.length - 1] = `${bullets[bullets.length - 1]} ${trimmedCont}`
+        } else {
+          bullets.push(trimmedCont)
+        }
+      }
+      i++
+    }
+    if (abortRewrite) {
+      for (let j = keyLineIdx; j < i; j++) out.push(lines[j]!)
+      continue
+    }
+    out.push(`## ${heading}`)
+    out.push('')
+    for (const b of bullets) out.push(`- ${b}`)
+    out.push('')
+  }
+  return out.join('\n')
+}
+
 // --- parser --------------------------------------------------------
 
 const BOM = '﻿'
@@ -147,7 +371,8 @@ const REQUIRED_FIELDS_PER_KIND: Readonly<Record<SourceKind, readonly string[]>> 
 
 export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceCheckArtifact {
   const issues: SourceCheckLoadIssue[] = []
-  const text = raw.startsWith(BOM) ? raw.slice(BOM.length) : raw
+  const adapted = adaptYamlStyleSourceCheck(raw)
+  const text = adapted.startsWith(BOM) ? adapted.slice(BOM.length) : adapted
 
   if (text.trim().length === 0) {
     throw new SourceCheckLoadError([
