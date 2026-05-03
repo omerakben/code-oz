@@ -170,6 +170,35 @@ export async function doctorCommand(args: string[]): Promise<void> {
     process.exit(report.exitCode)
   }
 
+  // M14 commit 10: `code-oz doctor --panel-baseline <fixture>` (or
+  // equivalent subcommand form `doctor panel-baseline <fixture>`).
+  // Rule-21 ship-gate metric command. Loads fixture from disk, runs
+  // baseline measurement, prints summary, exits 0 on shipGatePasses
+  // and 1 otherwise. JSON output via --json.
+  if (subcommand === '--panel-baseline' || subcommand === 'panel-baseline') {
+    const subArgs = args.slice(1)
+    const json = subArgs.includes('--json')
+    const fixturePath = subArgs.find((a) => !a.startsWith('--'))
+    if (fixturePath === undefined) {
+      process.stderr.write('code-oz doctor --panel-baseline: missing <fixture-path> argument\n')
+      process.stderr.write('usage: code-oz doctor --panel-baseline <fixture-path> [--json]\n')
+      process.exit(1)
+    }
+    const { loadAndRunPanelBaseline } = await import('./doctor-panel-baseline.ts')
+    try {
+      const report = await loadAndRunPanelBaseline(fixturePath)
+      if (json) {
+        process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+      } else {
+        process.stdout.write(report.summary + '\n')
+      }
+      process.exit(report.shipGatePasses ? 0 : 1)
+    } catch (err) {
+      process.stderr.write(`code-oz doctor --panel-baseline: ${(err as Error).message}\n`)
+      process.exit(1)
+    }
+  }
+
   if (subcommand !== 'providers') {
     process.stderr.write(`code-oz doctor: unknown subcommand '${subcommand}'\n\n`)
     process.stderr.write(doctorHelp())
@@ -277,13 +306,16 @@ export function doctorHelp(): string {
   return `Usage: code-oz doctor <subcommand> [options]
 
 Subcommands:
-  providers        Probe each provider adapter (auth + CLI presence)
-  tools            Probe required external tools (rg / ripgrep)
-  git              Probe git version (>= 2.40 required for M7+ worktree subsystem)
-  help             Show this help
+  providers              Probe each provider adapter (auth + CLI presence)
+  tools                  Probe required external tools (rg / ripgrep)
+  git                    Probe git version (>= 2.40 required for M7+ worktree subsystem)
+  --panel-baseline <p>   Run M14 reviewer-panel baseline measurement against
+                         the JSON fixture at <p>; prints rule-21 ship-gate
+                         report and exits 0 on PASS, 1 on FAIL
+  help                   Show this help
 
 Options:
-  --json           Emit the report as JSON (providers, tools, git)
+  --json                 Emit the report as JSON (all subcommands)
 
 Exit codes:
   0                Probe succeeded

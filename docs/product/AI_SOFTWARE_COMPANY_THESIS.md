@@ -60,7 +60,7 @@ The long-term product shape is a role roster, not a single assistant. Roles are 
 | Reviewer | M9 (cross-family REVIEW-lite) | Cross-family REVIEW authority |
 | Debate opponent | M10 (`requestDebate()` runtime) | Debate runtime authority |
 | Per-role provider routing | M12 (company roster for shipped roles) | Role-to-provider routing authority |
-| Reviewer panel | M14 | Panel quorum + cross-family enforcement |
+| Reviewer panel | M14 ✓ closed (v0.15.0-alpha.0 target) | Panel quorum + cross-family enforcement (5-layer defense-in-depth, rule-21 ship gate verified via `doctor --panel-baseline`) |
 
 ### Later (deferred until measurable need)
 
@@ -219,7 +219,7 @@ After M10, the productization sequence is one authority boundary per milestone (
 | M11 | Provider capability contract — capability/auth/cost traits per provider; load-time rejection of impossible role assignments. No new roles. |
 | M12 | Company roster for shipped roles only — BA + Lead + Builder + Verifier + Reviewer + Scientist + Debate opponent + Orchestrator. Maps roles to providers. No Researcher, no panels, no parallel builders. |
 | M13 | Role-cost policy under `budgets.global` — per-role budget gating + preflight estimates. Must precede any simultaneous-provider surface. |
-| M14 | Reviewer panel v1 — first simultaneous-provider surface. Panel quorum + cross-family enforcement (same-family panelists are advisory only) + synthesis. |
+| M14 ✓ closed | Reviewer panel v1 — first simultaneous-provider surface. Panel quorum + cross-family enforcement (same-family panelists are advisory only, with NO gate authority — Codex pushback Q7) + orchestrator-owned synthesis. Five-layer defense-in-depth (config-load + agent loader + artifact-parse + quorum-time + event-validator). Rule-21 ship gate satisfied via `doctor --panel-baseline`: `panelOnlyActionableFindingCount > 0` proves panel catches what single-reviewer misses. |
 | M15 | Debate-policy scheduler v1 — automatic-trigger policy for the existing single-opponent `requestDebate()`. Not multi-opponent debate. |
 
 Later milestones (M16+, deferred until measurable need): Researcher phase-tail, parallel builder candidates, multi-opponent debate.
