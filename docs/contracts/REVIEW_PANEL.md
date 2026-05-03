@@ -154,11 +154,20 @@ state/REVIEW.md            (atomic write ONLY after synthesis; canonical)
 
 - Per-panelist drafts are written atomically to `state/review-panel/round-N/panelist-<id>.md` upon `review_panelist_completed`.
 - Canonical `REVIEW.md` is written atomically once after all required panelists complete and synthesis runs.
-- Resume: orchestrator reads completed staging files (by `review_panelist_completed` events) and continues at the first missing panelist.
-- `parseReviewReport` only accepts canonical `REVIEW.md`; staging files have a separate parser used only for resume.
+- **Resume policy (v0.1, M14 R2 finding #2 closure)**: when partial panel staging is on disk for `(runId, taskId, attempt, round=N)` but no `review_panel_completed` event exists for that coordinate, `runReview` refuses to replay the round. It surfaces a `review_panel_resume_mismatch` intervention naming the staging directory and panelist file count. The operator must inspect, clear, or hand-resume; the orchestrator MUST NOT silently re-invoke panelist 0 (that would overwrite completed-panelist evidence and break the staging-vs-canonical authority guarantee). Auto-resume from partial staging is M16+ (deferred until measurable need per rule 21).
+- `parseReviewReport` only accepts canonical `REVIEW.md`; staging files have a separate parser used only for forensic inspection (auto-resume not implemented in v0.1).
 - Synthesis is idempotent: rerunning synthesis on completed staging files produces byte-identical canonical `REVIEW.md` (modulo timestamp normalization handled at write time).
 
 This invariant prevents **partial-but-authoritative artifacts**: a canonical `REVIEW.md` with `panelVerdict: ready` cannot exist before the panel completes.
+
+### Multi-round panel lifecycle (R2 finding #1 closure)
+
+Panel mode supports rounds 1..4 (`REVIEW_ROUND_CAP`). On round N+1, the caller passes the prior canonical panel `REVIEW.md` as `RunReviewOptions.priorReviewMd`. `runReview` detects the grammar via `detectReviewReportMode` and dispatches to `parseReviewPanelReport` (NOT `parseReviewReport`) before the panel branch runs. The parsed `priorPanelReport` is forwarded to `runReviewPanel`, which:
+
+- Carries forward F-NNN ids by fingerprint (re-raised findings reuse prior id + roundRaised).
+- Marks prior fingerprints not raised this round as resolved-this-round.
+- Builds `roundTimeline` as `[...prior.roundTimeline, newEntry]` so the canonical artifact spans the full multi-round run.
+- Re-raised previously-resolved fingerprints are reset to `roundResolved: 'unresolved'` (ping-pong reopen — the panel verdict path catches them via the unresolved-voter-block / fix-first invariants).
 
 ## `REVIEW.md` schema (panel mode)
 
@@ -359,7 +368,13 @@ Names listed here; canonical schemas in `src/state/schemas.ts`.
 | `review_panel_completed` | Synthesis writes canonical REVIEW.md; `panelVerdict` recorded |
 | `review_panel_baseline_completed` | `doctor --panel-baseline` finishes; rule-21 ship-gate metric event |
 
-The single-reviewer event taxonomy (`review_started`, `review_round_completed`, `review_resolved`, `review_blocked`) continues to govern when no panel is configured. Panel mode does NOT emit those events; it emits the panel taxonomy instead. Both terminal events (`review_resolved` for single, `review_panel_completed` for panel) write the same `GATE_REVIEW_PASSED.json` shape (rule 1: file-based gate signals only).
+The single-reviewer event taxonomy (`review_started`, `review_round_completed`, `review_resolved`, `review_blocked`) continues to govern when no panel is configured.
+
+Panel mode emits the panel taxonomy. **It also emits `review_resolved` (on the resolved path) and `review_blocked` (on the block path) as compatibility signals** so the existing `code-oz approve review` gate path (`preApproveReviewHook`) finds a ready/terminal event without contract change. The `review_resolved.finalScore` field is set to `REVIEW_SCORE_MAX` (10) as a sentinel because panel mode does not have a single persona-authored score — the canonical artifact records `Final score: panel`. Event consumers MUST NOT treat the value 10 as a real reviewer-authored score when the source path is panel; they should cross-check against the canonical artifact's `Final score: panel` marker.
+
+`preApproveReviewHook` cross-checks REVIEW.md sha256 against `review_resolved` first; if absent for a panel artifact, it falls back to a matching ready `review_panel_completed` event with the same sha256 (defense-in-depth: covers operator-driven approvals on artifacts produced by older panel runs that pre-date the F1 `review_resolved` emission).
+
+Both terminal paths write the same `GATE_REVIEW_PASSED.json` shape (rule 1: file-based gate signals only).
 
 ### `review_panel_disagreement` payload
 
@@ -389,7 +404,7 @@ The single-reviewer event taxonomy (`review_started`, `review_round_completed`, 
   panelOnlyActionableFindingCount: number              // panelOnly AND severity ∈ {block, fix-first} AND authorityImpact === 'voter'
   expectedFindingRecallDelta?: number                  // present when fixture has oracle
   disagreementCount: number                            // count of review_panel_disagreement events in panel run
-  sameFamilyVoteRejectionCount: number                 // count of panel_quorum_rejected_same_family_vote events
+  sameFamilyVoteRejectionCount: number                 // count of panel_quorum_rejected_same_family_vote events observed in the run-local log (F7: events-derived, NOT fixture-declared)
   manifestEqualityHeld: boolean
   singleReviewArtifactHash: string                     // sha256 of single-mode REVIEW.md
   panelReviewArtifactHash: string                      // sha256 of panel-mode REVIEW.md
@@ -400,7 +415,7 @@ The single-reviewer event taxonomy (`review_started`, `review_round_completed`, 
 
 **Ship gate** (M14 cannot tag without all of these holding on the M14 baseline fixture):
 - `panelOnlyActionableFindingCount > 0`
-- `sameFamilyVoteRejectionCount >= 1` (positive control: requires deliberate same-family-vote attempt fixture that gets rejected)
+- `sameFamilyVoteRejectionCount >= 1` (positive control: the fixture's `sameFamilyVoteRejectionAttempts` field declares the **requested** attempt count; for each, `code-oz doctor --panel-baseline` runs an actual same-family panel YAML through `loadConfig` and emits a real `panel_quorum_rejected_same_family_vote` event with `layer='config-load'`. The metric counts those events in the run-local log — a downstream caller that bypasses appendEvent would surface as 0. If `loadConfig` does NOT reject (real layer-1 regression), the doctor command throws a typed error rather than silently underreporting.)
 - `manifestEqualityHeld === true`
 - `disagreementCount >= 1` (supporting evidence)
 

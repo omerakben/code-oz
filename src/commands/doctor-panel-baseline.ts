@@ -82,11 +82,18 @@ export interface PanelBaselineFixture {
   /** Panel composition for panel-mode (provider order = panelist order). */
   readonly panelistResponses: readonly PanelistResponse[]
   /**
-   * Optional positive-control: a deliberate same-family-voter attempt
-   * that should be rejected at config-load. Each entry contributes 1 to
-   * sameFamilyVoteRejectionCount. The actual rejection happens in
-   * src/config/load.ts (layer 1); this fixture field is the recorded
-   * count for the metric event.
+   * Positive-control attempt count. When `loadAndRunPanelBaseline` is
+   * called with `runPaths`, the doctor command runs each requested
+   * attempt as a real same-family panel YAML through `loadConfig` and
+   * emits a real `panel_quorum_rejected_same_family_vote` event with
+   * `layer='config-load'` per rejection. The metric reads the count
+   * BACK from the run-local event log (events-derived per Codex M14
+   * R1 finding #7 closure, option (a)).
+   *
+   * When `runPaths` is omitted (legacy callers / isolated tests), the
+   * metric falls back to this declared count as informational metadata.
+   * Production callers (the CLI) always pass `runPaths`, so the metric
+   * value in shipping runs is observed-from-events.
    */
   readonly sameFamilyVoteRejectionAttempts?: number
   /** Optional fixture-supplied wall-clock + cost overhead for the

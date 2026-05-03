@@ -25,8 +25,17 @@ When fed through `runPanelBaseline`, this fixture produces:
   - Severity disagreement on the same fingerprint is recorded
 
 - **sameFamilyVoteRejectionCount**: 1
-  - Positive control: the fixture records that 1 same-family vote attempt
-    was rejected at config-load (layer 1 of the 5-layer defense)
+  - Positive control. The fixture's `sameFamilyVoteRejectionAttempts: 1`
+    declares the **requested attempt count**. When `loadAndRunPanelBaseline`
+    is called with a `runPaths`, the doctor command runs each requested
+    attempt as a real same-family panel YAML through `loadConfig` (layer 1
+    of the 5-layer defense) and emits a real
+    `panel_quorum_rejected_same_family_vote` event with `layer='config-load'`
+    per rejection. The metric reads the count BACK from the run-local
+    event log, so the value is observed-from-events (Codex M14 R1 finding
+    #7 closure: option (a)). When `runPaths` is omitted (legacy library
+    callers / isolated tests), the metric falls back to the
+    fixture-declared attempt count and the value is informational only.
 
 - **manifestEqualityHeld**: true
   - All panelists report the same `manifestHash` (no context-difference
@@ -57,12 +66,23 @@ gate is a CI failure.
 
 ## Same-family rejection positive control
 
-The `sameFamilyVoteRejectionAttempts: 1` field records (synthetically)
-that one same-family vote attempt was rejected. The actual rejection is
-exercised in `tests/review-panel-config-validation.test.ts` and
-`tests/agent-loader-review-panel.test.ts` (layers 1 and 2). The
-baseline fixture only records the count for the metric event; the
-event-level test verifies the rejection event itself.
+The `sameFamilyVoteRejectionAttempts: 1` field declares how many real
+same-family vote attempts the doctor command should run when invoked
+with a `runPaths`. Per F7 (Codex M14 R1 finding #7 closure), each
+attempt is run through `loadConfig` against a synthetic same-family
+panel YAML; each rejection emits a real
+`panel_quorum_rejected_same_family_vote` event with `layer='config-load'`,
+and the metric counts those events from the run-local log. If
+`loadConfig` fails to reject (real layer-1 regression), the doctor
+command throws a typed error rather than silently underreporting.
+
+Layers 1 and 2 are also independently exercised by
+`tests/review-panel-config-validation.test.ts` and
+`tests/agent-loader-review-panel.test.ts`. The baseline fixture's role
+in the rule-21 ship gate is to drive the metric event end-to-end; the
+event-level assertion lives in
+`tests/e2e/review-panel-baseline.test.ts` ("F7: sameFamilyVoteRejectionCount
+is events-derived ...").
 
 ## Provider IDs are real
 
