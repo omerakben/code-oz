@@ -23,6 +23,10 @@ import {
   EVENT_TYPES,
   PHASE_OUTCOMES,
   RUN_OUTCOMES,
+  PANELIST_ROLES,
+  PANEL_VERDICTS,
+  PANEL_DISAGREEMENT_KINDS,
+  PANEL_QUORUM_REJECTION_LAYERS,
   isUlid,
   isPhase,
   isProfile,
@@ -1134,6 +1138,441 @@ export function validateEvent(
           rule: `debate_resolved.rationaleSummary must be ≤ ${DEBATE_RATIONALE_SUMMARY_MAX_LEN} characters`,
           detail: `got ${e.rationaleSummary.length}`,
           line,
+        }
+      }
+      break
+    }
+
+    case 'review_panel_started': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_panel_started', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_panel_started.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_panel_started.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, 'review_panel_started.taskId', line)
+      if (tIssue) return tIssue
+      const buildFamilyIssue = nonEmptyString(
+        file, e.buildFamily, 'review_panel_started.buildFamily', line,
+      )
+      if (buildFamilyIssue) return buildFamilyIssue
+      if (!Array.isArray(e.panelComposition) || e.panelComposition.length < 2) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_panel_started.panelComposition must be an array with at least 2 entries (M14 fixed-quorum panel)',
+          detail: `got length ${Array.isArray(e.panelComposition) ? e.panelComposition.length : typeof e.panelComposition}`,
+          line,
+        }
+      }
+      let voterCount = 0
+      for (let i = 0; i < e.panelComposition.length; i++) {
+        const p = e.panelComposition[i] as
+          | { id?: unknown; providerId?: unknown; providerFamily?: unknown; role?: unknown }
+          | undefined
+        if (!p || typeof p.id !== 'string' || p.id.length === 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: `review_panel_started.panelComposition[${i}].id must be a non-empty string`,
+            line,
+          }
+        }
+        if (typeof p.providerId !== 'string' || p.providerId.length === 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: `review_panel_started.panelComposition[${i}].providerId must be a non-empty string`,
+            line,
+          }
+        }
+        if (typeof p.providerFamily !== 'string' || p.providerFamily.length === 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: `review_panel_started.panelComposition[${i}].providerFamily must be a non-empty string`,
+            line,
+          }
+        }
+        if (typeof p.role !== 'string' || !(PANELIST_ROLES as readonly string[]).includes(p.role)) {
+          return enumInvalid(
+            file,
+            `review_panel_started.panelComposition[${i}].role`,
+            PANELIST_ROLES,
+            p.role,
+            line,
+          )
+        }
+        if (p.role === 'voter') voterCount++
+      }
+      if (voterCount !== 2) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_panel_started.panelComposition must contain exactly 2 voter panelists (M14 fixed-quorum)',
+          detail: `got ${voterCount} voter${voterCount === 1 ? '' : 's'}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'review_panelist_completed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_panelist_completed', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_panelist_completed.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_panelist_completed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(
+        file, e.taskId, /^T-\d{3,}$/, 'review_panelist_completed.taskId', line,
+      )
+      if (tIssue) return tIssue
+      if (
+        typeof e.round !== 'number' ||
+        !Number.isInteger(e.round) ||
+        e.round < REVIEW_ROUND_MIN ||
+        e.round > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_panelist_completed.round must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+          detail: `got ${JSON.stringify(e.round)}`,
+          line,
+        }
+      }
+      const panelistIdIssue = nonEmptyString(
+        file, e.panelistId, 'review_panelist_completed.panelistId', line,
+      )
+      if (panelistIdIssue) return panelistIdIssue
+      const providerIdIssue = nonEmptyString(
+        file, e.providerId, 'review_panelist_completed.providerId', line,
+      )
+      if (providerIdIssue) return providerIdIssue
+      const providerFamilyIssue = nonEmptyString(
+        file, e.providerFamily, 'review_panelist_completed.providerFamily', line,
+      )
+      if (providerFamilyIssue) return providerFamilyIssue
+      const modelPolicyIssue = nonEmptyString(
+        file, e.modelPolicy, 'review_panelist_completed.modelPolicy', line,
+      )
+      if (modelPolicyIssue) return modelPolicyIssue
+      if (typeof e.role !== 'string' || !(PANELIST_ROLES as readonly string[]).includes(e.role)) {
+        return enumInvalid(file, 'review_panelist_completed.role', PANELIST_ROLES, e.role, line)
+      }
+      if (
+        typeof e.score !== 'number' ||
+        !Number.isInteger(e.score) ||
+        e.score < REVIEW_SCORE_MIN ||
+        e.score > REVIEW_SCORE_MAX
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_panelist_completed.score must be an integer in [${REVIEW_SCORE_MIN}, ${REVIEW_SCORE_MAX}]`,
+          detail: `got ${JSON.stringify(e.score)}`,
+          line,
+        }
+      }
+      if (typeof e.verdict !== 'string' || !(PANEL_VERDICTS as readonly string[]).includes(e.verdict)) {
+        return enumInvalid(file, 'review_panelist_completed.verdict', PANEL_VERDICTS, e.verdict, line)
+      }
+      const manifestHashIssue = idMatches(
+        file, e.manifestHash, SHA256_REGEX, 'review_panelist_completed.manifestHash', line,
+      )
+      if (manifestHashIssue) return manifestHashIssue
+      const stagingPathIssue = nonEmptyString(
+        file, e.stagingPath, 'review_panelist_completed.stagingPath', line,
+      )
+      if (stagingPathIssue) return stagingPathIssue
+      const stagingShaIssue = idMatches(
+        file, e.stagingSha256, SHA256_REGEX, 'review_panelist_completed.stagingSha256', line,
+      )
+      if (stagingShaIssue) return stagingShaIssue
+      break
+    }
+
+    case 'review_panel_disagreement': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_panel_disagreement', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_panel_disagreement.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_panel_disagreement.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(
+        file, e.taskId, /^T-\d{3,}$/, 'review_panel_disagreement.taskId', line,
+      )
+      if (tIssue) return tIssue
+      if (
+        typeof e.round !== 'number' ||
+        !Number.isInteger(e.round) ||
+        e.round < REVIEW_ROUND_MIN ||
+        e.round > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_panel_disagreement.round must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+          detail: `got ${JSON.stringify(e.round)}`,
+          line,
+        }
+      }
+      const fingerprintIssue = nonEmptyString(
+        file, e.fingerprint, 'review_panel_disagreement.fingerprint', line,
+      )
+      if (fingerprintIssue) return fingerprintIssue
+      if (
+        typeof e.kind !== 'string' ||
+        !(PANEL_DISAGREEMENT_KINDS as readonly string[]).includes(e.kind)
+      ) {
+        return enumInvalid(
+          file, 'review_panel_disagreement.kind', PANEL_DISAGREEMENT_KINDS, e.kind, line,
+        )
+      }
+      if (!Array.isArray(e.reviewerIds) || e.reviewerIds.length === 0) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_panel_disagreement.reviewerIds must be a non-empty array of panelist ids',
+          line,
+        }
+      }
+      for (let i = 0; i < e.reviewerIds.length; i++) {
+        if (typeof e.reviewerIds[i] !== 'string' || (e.reviewerIds[i] as string).length === 0) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: `review_panel_disagreement.reviewerIds[${i}] must be a non-empty string`,
+            line,
+          }
+        }
+      }
+      break
+    }
+
+    case 'panel_quorum_rejected_same_family_vote': {
+      // phase optional for this event (config-load layer fires before any phase enters)
+      if (e.phase !== undefined && !isPhase(e.phase)) {
+        return phaseInvalid(file, 'panel_quorum_rejected_same_family_vote', e.phase, line)
+      }
+      const panelistIdIssue = nonEmptyString(
+        file, e.panelistId, 'panel_quorum_rejected_same_family_vote.panelistId', line,
+      )
+      if (panelistIdIssue) return panelistIdIssue
+      const providerIdIssue = nonEmptyString(
+        file, e.providerId, 'panel_quorum_rejected_same_family_vote.providerId', line,
+      )
+      if (providerIdIssue) return providerIdIssue
+      const providerFamilyIssue = nonEmptyString(
+        file, e.providerFamily, 'panel_quorum_rejected_same_family_vote.providerFamily', line,
+      )
+      if (providerFamilyIssue) return providerFamilyIssue
+      const buildFamilyIssue = nonEmptyString(
+        file, e.buildFamily, 'panel_quorum_rejected_same_family_vote.buildFamily', line,
+      )
+      if (buildFamilyIssue) return buildFamilyIssue
+      // The whole point of this event: voter family equals build family.
+      if (e.providerFamily !== e.buildFamily) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule:
+            'panel_quorum_rejected_same_family_vote requires providerFamily === buildFamily ' +
+            '(this event records same-family rejections; cross-family voters are not rejected)',
+          detail: `providerFamily=${JSON.stringify(e.providerFamily)} buildFamily=${JSON.stringify(e.buildFamily)}`,
+          line,
+        }
+      }
+      if (
+        typeof e.layer !== 'string' ||
+        !(PANEL_QUORUM_REJECTION_LAYERS as readonly string[]).includes(e.layer)
+      ) {
+        return enumInvalid(
+          file,
+          'panel_quorum_rejected_same_family_vote.layer',
+          PANEL_QUORUM_REJECTION_LAYERS,
+          e.layer,
+          line,
+        )
+      }
+      break
+    }
+
+    case 'review_panel_completed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_panel_completed', e.phase, line)
+      const agentIssue = nonEmptyString(file, e.agent, 'review_panel_completed.agent', line)
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(file, e.attempt, 'review_panel_completed.attempt', line)
+      if (aIssue) return aIssue
+      const tIssue = idMatches(
+        file, e.taskId, /^T-\d{3,}$/, 'review_panel_completed.taskId', line,
+      )
+      if (tIssue) return tIssue
+      if (
+        typeof e.finalRound !== 'number' ||
+        !Number.isInteger(e.finalRound) ||
+        e.finalRound < REVIEW_ROUND_MIN ||
+        e.finalRound > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_panel_completed.finalRound must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+          detail: `got ${JSON.stringify(e.finalRound)}`,
+          line,
+        }
+      }
+      if (
+        typeof e.panelVerdict !== 'string' ||
+        !(PANEL_VERDICTS as readonly string[]).includes(e.panelVerdict)
+      ) {
+        return enumInvalid(
+          file, 'review_panel_completed.panelVerdict', PANEL_VERDICTS, e.panelVerdict, line,
+        )
+      }
+      const reportIssue = idMatches(
+        file, e.reviewReportSha256, SHA256_REGEX, 'review_panel_completed.reviewReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      if (!Array.isArray(e.eligibleVoterFamilies)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_panel_completed.eligibleVoterFamilies must be an array',
+          line,
+        }
+      }
+      for (let i = 0; i < e.eligibleVoterFamilies.length; i++) {
+        if (
+          typeof e.eligibleVoterFamilies[i] !== 'string' ||
+          (e.eligibleVoterFamilies[i] as string).length === 0
+        ) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: `review_panel_completed.eligibleVoterFamilies[${i}] must be a non-empty string`,
+            line,
+          }
+        }
+      }
+      // Layer-5 backstop: ready verdict requires exactly 2 eligible voter
+      // families (per docs/contracts/REVIEW_PANEL.md § "Five-layer
+      // defense-in-depth"). This catches a corrupted log line that would
+      // otherwise be accepted; the orchestrator's quorum-time filtering
+      // (layer 4) is the runtime authority.
+      if (e.panelVerdict === 'ready' && e.eligibleVoterFamilies.length !== 2) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule:
+            "review_panel_completed.panelVerdict='ready' requires exactly 2 eligibleVoterFamilies " +
+            '(M14 layer-5 event-validator backstop; REVIEW_PANEL.md § "Five-layer defense-in-depth")',
+          detail: `got ${e.eligibleVoterFamilies.length} families: ${JSON.stringify(e.eligibleVoterFamilies)}`,
+          line,
+        }
+      }
+      const panelistCountIssue = nonNegativeInteger(
+        file, e.panelistCount, 'review_panel_completed.panelistCount', line,
+      )
+      if (panelistCountIssue) return panelistCountIssue
+      const voterCountIssue = nonNegativeInteger(
+        file, e.voterCount, 'review_panel_completed.voterCount', line,
+      )
+      if (voterCountIssue) return voterCountIssue
+      const advisoryCountIssue = nonNegativeInteger(
+        file, e.advisoryCount, 'review_panel_completed.advisoryCount', line,
+      )
+      if (advisoryCountIssue) return advisoryCountIssue
+      break
+    }
+
+    case 'review_panel_baseline_completed': {
+      const fixtureIdIssue = nonEmptyString(
+        file, e.fixtureId, 'review_panel_baseline_completed.fixtureId', line,
+      )
+      if (fixtureIdIssue) return fixtureIdIssue
+      const singleIdIssue = nonEmptyString(
+        file, e.singleRunId, 'review_panel_baseline_completed.singleRunId', line,
+      )
+      if (singleIdIssue) return singleIdIssue
+      const panelIdIssue = nonEmptyString(
+        file, e.panelRunId, 'review_panel_baseline_completed.panelRunId', line,
+      )
+      if (panelIdIssue) return panelIdIssue
+      const counts: Array<[string, unknown]> = [
+        ['singleFindingCount', e.singleFindingCount],
+        ['panelFindingCount', e.panelFindingCount],
+        ['panelOnlyFindingCount', e.panelOnlyFindingCount],
+        ['panelOnlyActionableFindingCount', e.panelOnlyActionableFindingCount],
+        ['disagreementCount', e.disagreementCount],
+        ['sameFamilyVoteRejectionCount', e.sameFamilyVoteRejectionCount],
+      ]
+      for (const [name, val] of counts) {
+        const issue = nonNegativeInteger(
+          file, val, `review_panel_baseline_completed.${name}`, line,
+        )
+        if (issue) return issue
+      }
+      if (typeof e.manifestEqualityHeld !== 'boolean') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_panel_baseline_completed.manifestEqualityHeld must be a boolean',
+          line,
+        }
+      }
+      const singleHashIssue = idMatches(
+        file,
+        e.singleReviewArtifactHash,
+        SHA256_REGEX,
+        'review_panel_baseline_completed.singleReviewArtifactHash',
+        line,
+      )
+      if (singleHashIssue) return singleHashIssue
+      const panelHashIssue = idMatches(
+        file,
+        e.panelReviewArtifactHash,
+        SHA256_REGEX,
+        'review_panel_baseline_completed.panelReviewArtifactHash',
+        line,
+      )
+      if (panelHashIssue) return panelHashIssue
+      if (
+        typeof e.costOverheadRatio !== 'number' ||
+        !Number.isFinite(e.costOverheadRatio) ||
+        e.costOverheadRatio < 0
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_panel_baseline_completed.costOverheadRatio must be a finite non-negative number',
+          detail: `got ${JSON.stringify(e.costOverheadRatio)}`,
+          line,
+        }
+      }
+      if (
+        typeof e.wallClockOverheadMs !== 'number' ||
+        !Number.isFinite(e.wallClockOverheadMs)
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_panel_baseline_completed.wallClockOverheadMs must be a finite number',
+          detail: `got ${JSON.stringify(e.wallClockOverheadMs)}`,
+          line,
+        }
+      }
+      if (e.expectedFindingRecallDelta !== undefined) {
+        if (
+          typeof e.expectedFindingRecallDelta !== 'number' ||
+          !Number.isFinite(e.expectedFindingRecallDelta)
+        ) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule:
+              'review_panel_baseline_completed.expectedFindingRecallDelta must be a finite number when present',
+            detail: `got ${JSON.stringify(e.expectedFindingRecallDelta)}`,
+            line,
+          }
         }
       }
       break

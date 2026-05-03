@@ -178,8 +178,59 @@ export const EVENT_TYPES = [
   // verdict — that would defeat rule 9.
   'debate_started',
   'debate_resolved',
+  // M14 — Reviewer panel v1 (per docs/contracts/REVIEW_PANEL.md). Six events
+  // cover the lifecycle of a multi-provider reviewer panel:
+  //   review_panel_started — orchestrator invoked panel; panel composition
+  //     logged with resolved provider families and build family.
+  //   review_panelist_completed — one panelist finished; per-panelist staging
+  //     draft written; manifest hash recorded for the manifest equality
+  //     invariant.
+  //   review_panel_disagreement — two panelists rate the same fingerprint
+  //     differently (severity, verdict, presence, or advisory-unratified).
+  //   panel_quorum_rejected_same_family_vote — layer 1-4 of the 5-layer
+  //     defense rejected a same-family voter attempt; positive control
+  //     event for rule-21 measurement.
+  //   review_panel_completed — synthesis wrote canonical REVIEW.md; panel
+  //     verdict recorded. Validator backstop (layer 5): when panelVerdict
+  //     is 'ready', eligibleVoterFamilies count MUST be 2.
+  //   review_panel_baseline_completed — doctor --panel-baseline command's
+  //     rule-21 ship-gate metric event.
+  // No `panel_cost_warn` event — M13's `budget_warning` is reused for
+  // panel-aggregate cost warnings (per Codex pushback Q6).
+  'review_panel_started',
+  'review_panelist_completed',
+  'review_panel_disagreement',
+  'panel_quorum_rejected_same_family_vote',
+  'review_panel_completed',
+  'review_panel_baseline_completed',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
+
+/** M14: panelist role values (mirrors src/artifacts/review-report.ts). */
+export const PANELIST_ROLES = ['voter', 'advisory'] as const
+export type PanelistRole = (typeof PANELIST_ROLES)[number]
+
+/** M14: panel verdict values (mirrors src/artifacts/review-report.ts). */
+export const PANEL_VERDICTS = ['ready', 'needs-revision', 'block'] as const
+export type PanelVerdict = (typeof PANEL_VERDICTS)[number]
+
+/** M14: review_panel_disagreement.kind discriminator. */
+export const PANEL_DISAGREEMENT_KINDS = [
+  'severity',
+  'verdict',
+  'presence',
+  'advisory_unratified',
+] as const
+export type PanelDisagreementKind = (typeof PANEL_DISAGREEMENT_KINDS)[number]
+
+/** M14: panel_quorum_rejected_same_family_vote.layer discriminator. */
+export const PANEL_QUORUM_REJECTION_LAYERS = [
+  'config-load',
+  'runtime-registry',
+  'artifact-parse',
+  'quorum-time',
+] as const
+export type PanelQuorumRejectionLayer = (typeof PANEL_QUORUM_REJECTION_LAYERS)[number]
 
 export const PHASE_OUTCOMES = ['passed', 'failed', 'paused'] as const
 export type PhaseOutcome = (typeof PHASE_OUTCOMES)[number]
@@ -769,6 +820,145 @@ export type PhaseEvent =
       /** One-line rationale summary, ≤ 200 characters. The full
        *  rationale lives in DECISION.md § Rationale. */
       readonly rationaleSummary: string
+    }
+  // M14 Reviewer panel events. See docs/contracts/REVIEW_PANEL.md for the
+  // panel grammar + 5-layer defense-in-depth + manifest equality invariant +
+  // rule-21 ship-gate metric event payload.
+  | {
+      readonly version: 1
+      readonly type: 'review_panel_started'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** Orchestrator name (the panel runner; not a panelist persona). */
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** Panel composition with each panelist's resolved provider + family + role.
+       *  Order is the canonical config order. */
+      readonly panelComposition: readonly {
+        readonly id: string
+        readonly providerId: string
+        readonly providerFamily: string
+        readonly role: PanelistRole
+      }[]
+      /** Resolved BUILD family at the time of REVIEW. Same value across all
+       *  panelists in the round. */
+      readonly buildFamily: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'review_panelist_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly round: number
+      readonly panelistId: string
+      readonly providerId: string
+      readonly providerFamily: string
+      readonly modelPolicy: string
+      readonly role: PanelistRole
+      readonly score: number
+      readonly verdict: PanelVerdict
+      /** sha256 of the canonical PreparedProviderRequest.files manifest the
+       *  panelist saw. Manifest equality invariant: must match across all
+       *  panelists in the same round. */
+      readonly manifestHash: string
+      /** Path to the per-panelist staging draft
+       *  (state/review-panel/round-<N>/panelist-<id>.md). */
+      readonly stagingPath: string
+      /** sha256 of the staging file contents. */
+      readonly stagingSha256: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'review_panel_disagreement'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly round: number
+      /** fingerprintFinding(file, title) — same M9 fingerprint used for
+       *  ping-pong dedup. */
+      readonly fingerprint: string
+      readonly kind: PanelDisagreementKind
+      /** Panelist ids involved in the disagreement (≥ 2 typically; advisory
+       *  unratified may have 1 advisory + 0 corroborating voters). */
+      readonly reviewerIds: readonly string[]
+      /** Optional structured details per disagreement kind. */
+      readonly detail?: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'panel_quorum_rejected_same_family_vote'
+      readonly ts: string
+      readonly runId: string
+      /** Phase optional — config-load layer fires before any phase enters. */
+      readonly phase?: Phase
+      readonly panelistId: string
+      readonly providerId: string
+      readonly providerFamily: string
+      readonly buildFamily: string
+      /** Which of the 5-layer defense rejected the vote. */
+      readonly layer: PanelQuorumRejectionLayer
+      readonly detail?: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'review_panel_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly finalRound: number
+      readonly panelVerdict: PanelVerdict
+      /** 64-hex sha256 of the canonical (synthesized) REVIEW.md content. */
+      readonly reviewReportSha256: string
+      /** Eligible cross-family voter families recorded at synthesis. Validator
+       *  layer-5 backstop: when panelVerdict is 'ready', length MUST be 2. */
+      readonly eligibleVoterFamilies: readonly string[]
+      readonly panelistCount: number
+      readonly voterCount: number
+      readonly advisoryCount: number
+    }
+  | {
+      readonly version: 1
+      readonly type: 'review_panel_baseline_completed'
+      readonly ts: string
+      readonly runId: string
+      /** Path or hash of the test fixture used by `doctor --panel-baseline`. */
+      readonly fixtureId: string
+      readonly singleRunId: string
+      readonly panelRunId: string
+      readonly singleFindingCount: number
+      readonly panelFindingCount: number
+      /** Findings raised by panel that single-mode missed. */
+      readonly panelOnlyFindingCount: number
+      /** panelOnly AND severity in {block, fix-first} AND authorityImpact === 'voter'.
+       *  Rule-21 ship gate requires this > 0. */
+      readonly panelOnlyActionableFindingCount: number
+      /** Optional, present when fixture has an oracle. */
+      readonly expectedFindingRecallDelta?: number
+      /** Count of review_panel_disagreement events in panel run. Supporting
+       *  evidence for rule-21; not the core gate. */
+      readonly disagreementCount: number
+      /** Count of panel_quorum_rejected_same_family_vote events. Positive
+       *  control for rule-21. */
+      readonly sameFamilyVoteRejectionCount: number
+      /** True when all panelists in panel run shared same manifest hash. */
+      readonly manifestEqualityHeld: boolean
+      readonly singleReviewArtifactHash: string
+      readonly panelReviewArtifactHash: string
+      /** Telemetry; non-gating. */
+      readonly costOverheadRatio: number
+      readonly wallClockOverheadMs: number
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)
