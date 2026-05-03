@@ -4,6 +4,7 @@ import {
   serializePlan,
   hasMinimumContent,
   allocateTaskId,
+  adaptYamlStylePlan,
   PLAN_SECTION_KEYS,
   TASK_BULLET_KEYS,
   type PlanArtifact,
@@ -317,5 +318,190 @@ describe('PLAN_SECTION_KEYS', () => {
 describe('TASK_BULLET_KEYS', () => {
   test('canonical order matches contract', () => {
     expect(TASK_BULLET_KEYS).toEqual(['Files', 'Validation', 'Risk', 'Hypotheses', 'Sources'])
+  })
+})
+
+// --- issue #9: YAML-style PLAN tolerance (section level) -----------
+
+const YAML_PLAN_BULLET_SECTIONS = `# PLAN
+
+goals:
+  - Decompose the SPEC into atomic tasks.
+
+## Tasks
+
+### T-001: implement scoring
+
+- Files: src/scoring.ts (added)
+- Validation: bun test scoring
+- Risk: none
+- Hypotheses: H-001
+- Sources: SC-SPEC-001
+
+sources:
+  - SC-SPEC-001
+
+out_of_scope:
+  - performance optimisation.
+
+open_questions:
+  - none yet.
+`
+
+describe('adaptYamlStylePlan (issue #9)', () => {
+  test('returns input unchanged when no YAML markers are present', () => {
+    expect(adaptYamlStylePlan(VALID)).toBe(VALID)
+  })
+
+  test('returns input unchanged for empty / pre-title content', () => {
+    expect(adaptYamlStylePlan('')).toBe('')
+    expect(adaptYamlStylePlan('# PLAN\n')).toBe('# PLAN\n')
+  })
+
+  test('rewrites top-level YAML keys to canonical H2 headings', () => {
+    const out = adaptYamlStylePlan(YAML_PLAN_BULLET_SECTIONS)
+    expect(out).toContain('## Goals')
+    expect(out).toContain('## Sources')
+    expect(out).toContain('## Out of scope')
+    expect(out).toContain('## Open questions')
+  })
+
+  test('preserves canonical Tasks section verbatim', () => {
+    // The Tasks section uses H3 task blocks; the adapter must NOT touch it.
+    const out = adaptYamlStylePlan(YAML_PLAN_BULLET_SECTIONS)
+    expect(out).toContain('### T-001: implement scoring')
+    expect(out).toContain('- Files: src/scoring.ts (added)')
+    expect(out).toContain('- Validation: bun test scoring')
+  })
+
+  test('preserves bullet content from indented YAML lists', () => {
+    const out = adaptYamlStylePlan(YAML_PLAN_BULLET_SECTIONS)
+    expect(out).toContain('- Decompose the SPEC into atomic tasks.')
+    expect(out).toContain('- SC-SPEC-001')
+    expect(out).toContain('- performance optimisation.')
+  })
+
+  test('normalises snake_case / camelCase / kebab-case key aliases', () => {
+    const variants = `# PLAN
+
+Goals:
+  - g
+
+## Tasks
+
+### T-001: t
+
+- Files: src/x.ts (modified)
+- Validation: bun test
+- Risk: none
+- Hypotheses: none
+- Sources: SC-SPEC-001
+
+SOURCES:
+  - SC-SPEC-001
+
+outOfScope:
+  - o
+
+open-questions:
+  - q
+`
+    const out = adaptYamlStylePlan(variants)
+    expect(out).toContain('## Goals')
+    expect(out).toContain('## Sources')
+    expect(out).toContain('## Out of scope')
+    expect(out).toContain('## Open questions')
+  })
+
+  test('handles mixed format (canonical Goals, YAML Sources)', () => {
+    const mixed = `# PLAN
+
+## Goals
+
+- canonical goal stays.
+
+## Tasks
+
+### T-001: t
+
+- Files: src/x.ts (modified)
+- Validation: bun test
+- Risk: none
+- Hypotheses: none
+- Sources: SC-SPEC-001
+
+sources:
+  - SC-SPEC-001
+
+## Out of scope
+
+- o
+
+## Open questions
+
+- q
+`
+    const plan = parsePlan(mixed)
+    expect(plan.goals).toEqual(['canonical goal stays.'])
+    expect(plan.sources).toEqual(['SC-SPEC-001'])
+  })
+})
+
+describe('parsePlan — issue #9 YAML tolerance', () => {
+  test('parses YAML-style bullet sections end-to-end', () => {
+    const plan = parsePlan(YAML_PLAN_BULLET_SECTIONS)
+    expect(plan.title).toBe('PLAN')
+    expect(plan.goals.length).toBe(1)
+    expect(plan.tasks.length).toBe(1)
+    expect(plan.tasks[0]!.id).toBe('T-001')
+    expect(plan.sources).toEqual(['SC-SPEC-001'])
+    expect(plan.outOfScope).toEqual(['performance optimisation.'])
+  })
+
+  test('round-trips YAML-style sections through serialize → reparse to canonical', () => {
+    const plan = parsePlan(YAML_PLAN_BULLET_SECTIONS)
+    const serialized = serializePlan(plan)
+    expect(serialized).toContain('## Goals')
+    expect(serialized).toContain('## Sources')
+    expect(serialized).not.toMatch(/^goals:/m)
+    expect(serialized).not.toMatch(/^sources:/m)
+    const reparsed = parsePlan(serialized)
+    expect(reparsed.goals).toEqual(plan.goals)
+    expect(reparsed.sources).toEqual(plan.sources)
+    expect(reparsed.tasks.length).toBe(plan.tasks.length)
+  })
+
+  test('still rejects nested YAML task blocks (defense layer 1: persona prompt)', () => {
+    // Nested `- id: T-NNN` form inside Tasks is intentionally NOT rewritten
+    // by the section-level adapter. The strict parser correctly rejects it.
+    const nestedYaml = `# PLAN
+
+## Goals
+
+- g
+
+## Tasks
+
+- id: T-001
+  title: implement scoring
+  files: [src/scoring.ts]
+  validation: bun test scoring
+  risk: none
+  hypotheses: H-001
+  sources: SC-SPEC-001
+
+## Sources
+
+- SC-SPEC-001
+
+## Out of scope
+
+- o
+
+## Open questions
+
+- q
+`
+    expect(() => parsePlan(nestedYaml)).toThrow()
   })
 })

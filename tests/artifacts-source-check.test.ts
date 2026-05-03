@@ -3,6 +3,7 @@ import {
   parseSourceCheck,
   serializeSourceCheck,
   allocateSourceId,
+  adaptYamlStyleSourceCheck,
   SOURCE_CHECK_SECTION_KEYS,
 } from '../src/artifacts/source-check.ts'
 import { SourceCheckLoadError } from '../src/artifacts/errors.ts'
@@ -404,5 +405,213 @@ ${refNoneBody}
     if (ref.kind === 'REF-NONE') {
       expect(ref.result).toContain('auto-extracted')
     }
+  })
+})
+
+// --- issue #8: YAML-style SOURCE_CHECK tolerance (section level) ---
+
+const YAML_SC_BULLET_SECTIONS = `# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: Acceptance criterion 1
+
+- Spec: SPEC.md ## Acceptance criteria, bullet 1
+- Quote: Given a surname, the app produces 5 candidate given names.
+
+## Reference sources
+
+### SC-REF-NONE-001: no reference found
+
+- Searched: glob src/**/scoring.ts
+- Result: no matching files (auto-extracted from Searched)
+- Why explicit: greenfield repo with no prior scoring module.
+
+## Docs sources
+
+### SC-DOC-001: bun test docs
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: pattern matching
+- Why: bun-native test harness.
+
+coverage:
+  - T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+
+open_questions:
+  - none yet.
+`
+
+describe('adaptYamlStyleSourceCheck (issue #8)', () => {
+  test('returns input unchanged when no YAML markers are present', () => {
+    expect(adaptYamlStyleSourceCheck(VALID)).toBe(VALID)
+  })
+
+  test('returns input unchanged for empty / pre-title content', () => {
+    expect(adaptYamlStyleSourceCheck('')).toBe('')
+    expect(adaptYamlStyleSourceCheck('# SOURCE_CHECK\n')).toBe('# SOURCE_CHECK\n')
+  })
+
+  test('rewrites top-level YAML keys to canonical H2 headings (Coverage + Open questions)', () => {
+    const out = adaptYamlStyleSourceCheck(YAML_SC_BULLET_SECTIONS)
+    expect(out).toContain('## Coverage')
+    expect(out).toContain('## Open questions')
+  })
+
+  test('preserves canonical source sections verbatim', () => {
+    const out = adaptYamlStyleSourceCheck(YAML_SC_BULLET_SECTIONS)
+    expect(out).toContain('### SC-SPEC-001:')
+    expect(out).toContain('### SC-REF-NONE-001:')
+    expect(out).toContain('### SC-DOC-001:')
+    expect(out).toContain('- Spec: SPEC.md')
+    expect(out).toContain('- Library: bun')
+  })
+
+  test('preserves bullet content from indented Coverage YAML list', () => {
+    const out = adaptYamlStyleSourceCheck(YAML_SC_BULLET_SECTIONS)
+    expect(out).toContain('- T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001')
+  })
+
+  test('rewrites YAML source-section keys to canonical H2 (heading-only)', () => {
+    // When the persona uses YAML for the source SECTIONS too, the adapter
+    // emits the canonical heading so the strict parser can run. The body
+    // must already be canonical H3 blocks (the persona prompt forbids
+    // nested YAML); if it isn't, the strict parser will reject it.
+    const yamlSections = `# SOURCE_CHECK
+
+spec_sources:
+
+### SC-SPEC-001: AC 1
+
+- Spec: SPEC.md ## Acceptance criteria, bullet 1
+- Quote: Given a surname, the app produces 5 candidate given names.
+
+reference_sources:
+
+### SC-REF-NONE-001: no reference
+
+- Searched: glob src/**/scoring.ts
+- Result: no matching files (auto-extracted from Searched)
+- Why explicit: greenfield.
+
+docs_sources:
+
+### SC-DOC-001: bun test
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: pattern matching
+- Why: bun harness.
+
+## Coverage
+
+- T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+`
+    const out = adaptYamlStyleSourceCheck(yamlSections)
+    expect(out).toContain('## Spec sources')
+    expect(out).toContain('## Reference sources')
+    expect(out).toContain('## Docs sources')
+  })
+
+  test('normalises snake_case / camelCase / kebab-case key aliases', () => {
+    // Use an input where the source sections already have headings + blocks,
+    // and only the bullet sections (Coverage + Open questions) drift to YAML
+    // with alias keys.
+    const variants = `# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: t
+
+- Spec: SPEC.md AC-1
+- Quote: q
+
+## Reference sources
+
+### SC-REF-NONE-001: t
+
+- Searched: glob src/**/x.ts
+- Result: no matching files
+- Why explicit: greenfield.
+
+## Docs sources
+
+### SC-DOC-001: t
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: s
+- Why: w
+
+COVERAGE:
+  - T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+
+openQuestions:
+  - q
+`
+    const out = adaptYamlStyleSourceCheck(variants)
+    expect(out).toContain('## Coverage')
+    expect(out).toContain('## Open questions')
+  })
+})
+
+describe('parseSourceCheck — issue #8 YAML tolerance', () => {
+  test('parses YAML-style Coverage + Open questions end-to-end', () => {
+    const sc = parseSourceCheck(YAML_SC_BULLET_SECTIONS)
+    expect(sc.title).toBe('SOURCE_CHECK')
+    expect(sc.specSources.length).toBe(1)
+    expect(sc.referenceSources.length).toBe(1)
+    expect(sc.docsSources.length).toBe(1)
+    expect(sc.coverage.length).toBe(1)
+    expect(sc.coverage[0]!.taskId).toBe('T-001')
+    expect(sc.openQuestions).toEqual(['none yet.'])
+  })
+
+  test('round-trips YAML-style sections through serialize → reparse to canonical', () => {
+    const sc = parseSourceCheck(YAML_SC_BULLET_SECTIONS)
+    const serialized = serializeSourceCheck(sc)
+    expect(serialized).toContain('## Coverage')
+    expect(serialized).not.toMatch(/^coverage:/m)
+    expect(serialized).not.toMatch(/^open_questions:/m)
+    const reparsed = parseSourceCheck(serialized)
+    expect(reparsed.coverage.length).toBe(sc.coverage.length)
+    expect(reparsed.openQuestions).toEqual(sc.openQuestions)
+  })
+
+  test('still rejects nested YAML source blocks (defense layer 1: persona prompt)', () => {
+    // Nested `- id: SC-NNN` form is intentionally NOT rewritten by the
+    // section-level adapter. The strict parser correctly rejects it.
+    const nestedYaml = `# SOURCE_CHECK
+
+## Spec sources
+
+- id: SC-SPEC-001
+  title: AC 1
+  spec: SPEC.md AC-1
+  quote: q
+
+## Reference sources
+
+### SC-REF-NONE-001: t
+
+- Searched: glob ** (no files)
+- Result: no matching files
+- Why explicit: greenfield.
+
+## Docs sources
+
+### SC-DOC-001: t
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: s
+- Why: w
+
+## Coverage
+
+- T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+`
+    expect(() => parseSourceCheck(nestedYaml)).toThrow()
   })
 })

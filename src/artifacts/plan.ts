@@ -97,6 +97,137 @@ export interface PlanArtifact {
   readonly openQuestions: readonly string[]
 }
 
+// --- YAML-style tolerance (issue #9) -------------------------------
+
+// LLMs occasionally emit PLAN.md as YAML at the section level — top-level
+// `goals:` / `sources:` / `out_of_scope:` / `open_questions:` keys with
+// indented `- bullet` lists, instead of canonical `## Heading\n\n- bullet`
+// Markdown sections. Tolerance scope: GitHub issue #9 — same drift class as
+// #5 (HYPOTHESES) and #7 (SPEC).
+//
+// Discipline boundary: this adapter handles SECTION-LEVEL drift only. Nested
+// `## Tasks` body H3 blocks (`### T-NNN:`) are NOT rewritten — the persona
+// prompt explicitly forbids nested `- id: T-NNN` YAML form (defense layer 1),
+// and the strict parser still owns task-block validation. If nested-task
+// YAML drift ever surfaces in practice, it gets its own follow-up issue.
+//
+// The adapter fires ONLY on column-0 lines that match a recognised PLAN
+// section key (case-insensitive, with snake_case / camelCase / kebab-case
+// aliases). Canonical `## ` headings, the `# PLAN` H1, the `## Tasks`
+// section body (preserved verbatim once we enter it), and unknown keys all
+// pass through. Mixed-format input is supported.
+
+const YAML_PLAN_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
+  goals: 'Goals',
+  tasks: 'Tasks',
+  sources: 'Sources',
+  'out of scope': 'Out of scope',
+  out_of_scope: 'Out of scope',
+  outofscope: 'Out of scope',
+  'out-of-scope': 'Out of scope',
+  'open questions': 'Open questions',
+  open_questions: 'Open questions',
+  openquestions: 'Open questions',
+  'open-questions': 'Open questions',
+})
+
+const YAML_PLAN_KEY_PROBE = /^(?:goals|tasks|sources|out[ _-]?of[ _-]?scope|open[ _-]?questions):\s*(?:\[.*\])?\s*$/im
+
+const YAML_PLAN_KEY_LINE = /^([A-Za-z][A-Za-z _-]*?):\s*(.*)$/
+
+function normalizePlanKey(raw: string): string | null {
+  const folded = raw.trim().toLowerCase()
+  return YAML_PLAN_KEY_MAP[folded] ?? null
+}
+
+function parsePlanInlineList(value: string): string[] {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return []
+  const flow = trimmed.match(/^\[(.*)\]$/)
+  const inner = flow !== null ? flow[1]! : trimmed
+  return inner
+    .split(',')
+    .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+    .filter((s) => s.length > 0)
+}
+
+/**
+ * Pre-parse adapter: rewrite SECTION-LEVEL YAML-style PLAN blocks (top-level
+ * `goals:` / `sources:` / etc. keys with indented `- bullet` list values or
+ * inline flow lists) into canonical `## Heading\n\n- bullet` Markdown
+ * sections. Returns the input unchanged if no YAML markers are present.
+ *
+ * Issue #9 tolerance, section level only. Mixed-format input is supported —
+ * canonical `## ` sections pass through verbatim; only YAML key/list pairs
+ * are rewritten. Nested `## Tasks` body H3 blocks (`### T-NNN:`) are NOT
+ * rewritten — that drift class would need its own follow-up.
+ */
+export function adaptYamlStylePlan(raw: string): string {
+  if (!YAML_PLAN_KEY_PROBE.test(raw)) return raw
+  const lines = raw.split(/\r?\n/)
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    if (/^[ \t]/.test(line) || line.length === 0 || line.startsWith('#')) {
+      out.push(line)
+      i++
+      continue
+    }
+    const keyMatch = line.match(YAML_PLAN_KEY_LINE)
+    if (keyMatch === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    const heading = normalizePlanKey(keyMatch[1]!)
+    if (heading === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    if (heading === 'Tasks') {
+      // Tasks section body needs nested H3 blocks; the YAML form (`- id:`)
+      // is intentionally NOT rewritten. Emit the canonical heading and let
+      // the strict parser validate the body — if the persona drifted to
+      // YAML inside Tasks, the strict parser surfaces it.
+      out.push(`## ${heading}`)
+      out.push('')
+      i++
+      continue
+    }
+    const inlineValue = keyMatch[2]!.trim()
+    const bullets: string[] = []
+    if (inlineValue.length > 0) bullets.push(...parsePlanInlineList(inlineValue))
+    i++
+    while (i < lines.length) {
+      const cont = lines[i]!
+      if (cont.length === 0) {
+        let j = i + 1
+        while (j < lines.length && lines[j]!.length === 0) j++
+        if (j >= lines.length) break
+        if (!/^[ \t]+/.test(lines[j]!)) break
+        i++
+        continue
+      }
+      if (!/^[ \t]/.test(cont)) break
+      const indented = cont.match(/^[ \t]+-\s*(.*)$/)
+      if (indented === null) {
+        i++
+        continue
+      }
+      const bullet = indented[1]!.trim()
+      if (bullet.length > 0) bullets.push(bullet)
+      i++
+    }
+    out.push(`## ${heading}`)
+    out.push('')
+    for (const b of bullets) out.push(`- ${b}`)
+    out.push('')
+  }
+  return out.join('\n')
+}
+
 // --- parser --------------------------------------------------------
 
 const BOM = '﻿'
@@ -130,7 +261,8 @@ type SectionBuf = BulletSection | TaskSection
  */
 export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
   const issues: PlanLoadIssue[] = []
-  const text = raw.startsWith(BOM) ? raw.slice(BOM.length) : raw
+  const adapted = adaptYamlStylePlan(raw)
+  const text = adapted.startsWith(BOM) ? adapted.slice(BOM.length) : adapted
 
   if (text.trim().length === 0) {
     throw new PlanLoadError([

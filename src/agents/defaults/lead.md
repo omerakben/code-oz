@@ -87,3 +87,159 @@ Tasks that have no load-bearing claims write `- Hypotheses: none`.
 ## Output protocol
 
 Emit `<plan-ready/>` on its own line, then the canonical `# PLAN` document, then the canonical `# SOURCE_CHECK` document. The orchestrator splits on the H1 of SOURCE_CHECK and validates each block strictly. Validation failure produces a draft + `NEEDS_INTERVENTION`; do not retry by re-emitting — fix the specific schema violation the orchestrator surfaces.
+
+## Canonical schemas (read before emitting)
+
+Both `PLAN.md` and `SOURCE_CHECK.md` are **plain Markdown with `## ` H2 sections, dash bullets, and `### ` H3 blocks where called for**. They are NOT YAML. Do not emit top-level YAML keys (`tasks:`, `goals:`, `spec_sources:`) with indented list values, and do not emit `- id: T-NNN` / `- id: SC-NNN` block-style entries with indented `files:` / `validation:` / `quote:` continuations — the parsers reject both forms.
+
+### PLAN.md schema
+
+Wrong (YAML-style — parser rejects):
+
+```
+# PLAN
+
+goals:
+  - ship the scoring API.
+
+tasks:
+- id: T-001
+  title: implement scoring
+  files: [src/scoring.ts]
+  validation: bun test scoring
+  risk: none
+  hypotheses: [H-001]
+  sources: [SC-SPEC-001]
+
+sources:
+  - SC-SPEC-001
+
+out_of_scope:
+  - performance work.
+
+open_questions:
+  - none.
+```
+
+Right (Markdown sections + H3 task blocks — parser accepts):
+
+```
+# PLAN
+
+## Goals
+
+- Ship the scoring API.
+
+## Tasks
+
+### T-001: implement scoring
+
+- Files: src/scoring.ts (added)
+- Validation: bun test scoring
+- Risk: none
+- Hypotheses: H-001
+- Sources: SC-SPEC-001
+
+## Sources
+
+- SC-SPEC-001
+
+## Out of scope
+
+- Performance work.
+
+## Open questions
+
+- None known at plan time.
+```
+
+Required PLAN.md rules:
+
+- H1 form: `# PLAN`.
+- Five required H2 sections in this canonical order: `## Goals`, `## Tasks`, `## Sources`, `## Out of scope`, `## Open questions`.
+- Inside `## Tasks`, H3 task blocks: `### T-NNN: <title>` where `T-NNN` is zero-padded three or more digits (`T-001`, `T-042`).
+- Each task block requires five bullets in canonical order: `Files`, `Validation`, `Risk`, `Hypotheses`, `Sources`.
+- `Files:` is comma-separated, each `<path>` or `<path> (modified|added|deleted)`. Default change kind is `modified`.
+- `Validation:` is a single shell command on one line.
+- `Hypotheses:` is comma-separated `H-NNN` ids, or the literal `none`.
+- `Sources:` is comma-separated source ids drawn from `SOURCE_CHECK.md`.
+- All non-Tasks H2 sections are bullets-only. No paragraphs, no sub-headings, no code fences.
+- Empty open-questions sentinel: `- None known at plan time.`
+
+### SOURCE_CHECK.md schema
+
+Wrong (YAML-style — parser rejects):
+
+```
+# SOURCE_CHECK
+
+spec_sources:
+- id: SC-SPEC-001
+  title: AC for scoring API
+  spec: SPEC.md AC-1
+  quote: "Given a surname, the app produces 5 names."
+
+reference_sources:
+- id: SC-REF-NONE-001
+  title: no reference found
+  searched: glob src/**/scoring.ts (no files)
+  why_explicit: greenfield repo.
+
+docs_sources:
+- id: SC-DOC-001
+  title: bun test docs
+  library: bun
+  url: https://bun.sh/docs/test
+  section: pattern matching
+  why: bun-native test harness.
+
+coverage:
+  - T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+```
+
+Right (Markdown sections + H3 source blocks — parser accepts):
+
+```
+# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: AC for scoring API
+
+- Spec: SPEC.md AC-1
+- Quote: "Given a surname, the app produces 5 names."
+
+## Reference sources
+
+### SC-REF-NONE-001: no reference found
+
+- Searched: glob src/**/scoring.ts
+- Result: no matching files (auto-extracted from Searched)
+- Why explicit: greenfield repo with no prior scoring module.
+
+## Docs sources
+
+### SC-DOC-001: bun test docs
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: pattern matching
+- Why: bun-native test harness.
+
+## Coverage
+
+- T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+```
+
+Required SOURCE_CHECK.md rules:
+
+- H1 form: `# SOURCE_CHECK`.
+- Four required H2 sections: `## Spec sources`, `## Reference sources`, `## Docs sources`, `## Coverage`. Optional fifth: `## Open questions`.
+- Inside the three source sections, H3 source blocks: `### SC-<KIND>-NNN: <title>` where `<KIND>` is `SPEC`, `REF`, `REF-NONE`, `DOC`, or `DOC-NONE` and NNN is zero-padded three or more digits.
+- SPEC sources require `Spec:` and `Quote:` bullets.
+- REF sources require `Path:`, `Lines:`, and `Why:` bullets.
+- REF-NONE sources require `Searched:`, `Result:`, and `Why explicit:` bullets. The Result bullet is required even when empty — do not merge it into Searched.
+- DOC sources require `Library:`, `URL:`, `Section:`, and `Why:` bullets.
+- DOC-NONE sources require a `Why explicit:` bullet only.
+- Coverage: bullets of the form `- T-NNN -> SC-...,SC-...` mapping every task to the source ids it cites.
+- Every source id in Coverage must exist as an H3 block above; every `T-NNN` in PLAN.md must appear in Coverage.
