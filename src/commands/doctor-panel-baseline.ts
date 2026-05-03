@@ -174,7 +174,16 @@ const HEX40_ZERO = '0'.repeat(40)
  *        AND severity ∈ {block, fix-first}
  *      - disagreementCount = fingerprints where panel sources disagree
  *        on severity, OR some raised + some didn't
- *      - sameFamilyVoteRejectionCount = fixture.sameFamilyVoteRejectionAttempts
+ *      - sameFamilyVoteRejectionCount = events-derived (Codex M14 R1
+ *        finding #7 closure, option (a)). When `runPaths` is supplied,
+ *        the doctor command runs each requested attempt as a real
+ *        same-family panel YAML through `loadConfig`; each rejection
+ *        emits a real `panel_quorum_rejected_same_family_vote` event
+ *        with `layer='config-load'` and the metric counts those events
+ *        from the run-local log. When `runPaths` is omitted (legacy
+ *        callers / isolated tests), the metric falls back to the
+ *        fixture-declared `sameFamilyVoteRejectionAttempts` value as
+ *        informational metadata only.
  *      - manifestEqualityHeld = all panelist responses share manifestHash
  *   4. Compose report + (if runPaths) emit event.
  */

@@ -126,7 +126,7 @@ Same-family voters cannot satisfy cross-family quorum. Five enforcement layers, 
 |---|---|---|---|
 | 1 | Config-load | `src/config/load.ts` | `panel_voter_same_family_as_build` |
 | 2 | Runtime registry family resolution | `src/providers/registry.ts` (via `registry.familyOf()`) | n/a (resolved data passed forward) |
-| 3 | Artifact-parse recomputation | `src/artifacts/review-report.ts` (`parseReviewReport`) | `review_artifact_quorum_inconsistent` |
+| 3 | Artifact-parse recomputation | `src/artifacts/review-report.ts` (`parseReviewPanelReport`) | `review_artifact_quorum_inconsistent` |
 | 4 | Quorum-time filtering | `src/phases/review-panel-verdict.ts` (`computeCanonicalPanelVerdict`) | n/a (filtered from eligible set) |
 | 5 | Event-validator consistency | `src/state/events.ts` | `event_panel_quorum_inconsistent` (forensic only; does not abort) |
 
@@ -147,16 +147,15 @@ If two panelists in the same round have different manifest hashes, that is a bug
 ## Staging vs canonical artifact
 
 ```
-state/review-panel/round-N/
+.code-oz/runs/<runId>/review-panel/round-N/
   panelist-<id>.md         (atomic write on review_panelist_completed)
-state/REVIEW.md            (atomic write ONLY after synthesis; canonical)
+.code-oz/artifacts/REVIEW.md  (atomic write ONLY after synthesis; canonical)
 ```
 
-- Per-panelist drafts are written atomically to `state/review-panel/round-N/panelist-<id>.md` upon `review_panelist_completed`.
+- Per-panelist drafts are written atomically to `.code-oz/runs/<runId>/review-panel/round-<N>/panelist-<id>.md` upon `review_panelist_completed`.
 - Canonical `REVIEW.md` is written atomically once after all required panelists complete and synthesis runs.
-- **Resume policy (v0.1, M14 R2 finding #2 closure)**: when partial panel staging is on disk for `(runId, taskId, attempt, round=N)` but no `review_panel_completed` event exists for that coordinate, `runReview` refuses to replay the round. It surfaces a `review_panel_resume_mismatch` intervention naming the staging directory and panelist file count. The operator must inspect, clear, or hand-resume; the orchestrator MUST NOT silently re-invoke panelist 0 (that would overwrite completed-panelist evidence and break the staging-vs-canonical authority guarantee). Auto-resume from partial staging is M16+ (deferred until measurable need per rule 21).
-- `parseReviewReport` only accepts canonical `REVIEW.md`; staging files have a separate parser used only for forensic inspection (auto-resume not implemented in v0.1).
-- Synthesis is idempotent: rerunning synthesis on completed staging files produces byte-identical canonical `REVIEW.md` (modulo timestamp normalization handled at write time).
+- **Resume policy (v0.1, M14 R2 finding #2 + R3 finding #1 closure)**: when partial panel staging is on disk for `(runId, taskId, attempt, round=N)` AND EITHER no `review_panel_completed` event exists for that coordinate OR the matching event's `reviewReportSha256` does not match the on-disk canonical `REVIEW.md`, `runReview` refuses to replay the round. It surfaces a `review_panel_resume_mismatch` intervention naming the staging directory + panelist file count + the reason (`no_completed_event` or `sha_mismatch`). The operator must inspect, clear, or hand-resume; the orchestrator MUST NOT silently re-invoke panelist 0 (that would overwrite completed-panelist evidence and break the staging-vs-canonical authority guarantee). Auto-resume from partial staging is M16+ (deferred until measurable need per rule 21).
+- v0.1 has NO staging parser. Staging files are forensic evidence only — they are written and read for sha verification on `review_panelist_completed`, but never re-parsed back into a `ReviewReportPanelData` for a synthesis-from-staging path. The canonical artifact is always produced by `serializeReviewPanelReport` from in-memory invocation results during the round that produced them.
 
 This invariant prevents **partial-but-authoritative artifacts**: a canonical `REVIEW.md` with `panelVerdict: ready` cannot exist before the panel completes.
 
@@ -171,7 +170,7 @@ Panel mode supports rounds 1..4 (`REVIEW_ROUND_CAP`). On round N+1, the caller p
 
 ## `REVIEW.md` schema (panel mode)
 
-The canonical `REVIEW.md` parser dispatches on the presence of `Reviewers:` (plural, panel mode) vs `Reviewer:` (singular, M9 single-reviewer mode). Both shapes round-trip through `serializeReviewReport` / `parseReviewReport`.
+The canonical `REVIEW.md` parser dispatches on the H2 heading line: an exact `## Reviewers` line means panel mode (handled by `parseReviewPanelReport` / `serializeReviewPanelReport`); an exact `## Reviewer` line means M9 single-reviewer mode (handled by `parseReviewReport` / `serializeReviewReport`). The dispatch helper is `detectReviewReportMode`. Single-mode and panel-mode artifacts are NOT mutually round-trippable — each shape pairs with its own serializer/parser.
 
 ```markdown
 # REVIEW
@@ -353,7 +352,7 @@ permissions:
     review_request: <not invoked by panelists; M9 review-request stays orchestrator-side>
 ```
 
-Panelists never write artifacts directly. Orchestrator writes staging files (`state/review-panel/round-N/panelist-<id>.md`) on `review_panelist_completed` and canonical `REVIEW.md` on synthesis.
+Panelists never write artifacts directly. Orchestrator writes staging files (`.code-oz/runs/<runId>/review-panel/round-<N>/panelist-<id>.md`) on `review_panelist_completed` and canonical `REVIEW.md` (under `.code-oz/artifacts/`) on synthesis.
 
 ## Event types emitted
 
