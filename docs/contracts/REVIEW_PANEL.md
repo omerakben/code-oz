@@ -25,7 +25,7 @@ company:
 ### Locked rules
 
 - **Exactly two `voter` panelists for v1.** Loader rejects panels with fewer or more than two voters with error `panel_voter_count_invalid`. Configurable quorum (k-of-N) is deferred to a future authority boundary.
-- **Both voters must be cross-family relative to the build family.** Same-family voters rejected at config-load with `panel_voter_same_family_as_build`.
+- **Both voters must be cross-family relative to the build family.** Same-family voters are rejected at config-load (`src/config/load.ts`) AND at agent-loader post-company-override validation (`src/agents/loader.ts`'s `enforceReviewerPanelCrossFamily`), both with `panel_voter_same_family_as_build`. The loader check catches voter laundering that config-load cannot see — for example when company overrides change the resolved BUILD agent provider after config-load completed.
 - **Optional advisory panelists.** Any number, any family. Recorded in synthesis but excluded from canonical verdict (positive AND negative gate authority disabled).
 - **Single-reviewer back-compat.** When `reviewer.panel` is absent or has exactly one entry with no `role` field, M9 single-reviewer mode runs unchanged. Single-reviewer artifact, events, and verdict semantics are untouched.
 
@@ -125,7 +125,7 @@ Same-family voters cannot satisfy cross-family quorum. Five enforcement layers, 
 | # | Layer | File | Error code on rejection |
 |---|---|---|---|
 | 1 | Config-load | `src/config/load.ts` | `panel_voter_same_family_as_build` |
-| 2 | Runtime registry family resolution | `src/providers/registry.ts` (via `registry.familyOf()`) | n/a (resolved data passed forward) |
+| 2 | Agent-loader post-company-override validation | `src/agents/loader.ts` (`enforceReviewerPanelCrossFamily`); also threads runtime `registry.familyOf()` resolution forward via `src/providers/registry.ts` | `panel_voter_same_family_as_build` (catches voter laundering that company overrides introduce after config-load) |
 | 3 | Artifact-parse invariant bundle | `src/artifacts/review-report.ts` (`parseReviewPanelReport`) | `review_panelist_manifest_mismatch` (manifest equality), `review_artifact_unknown_source_id` + `review_artifact_authority_impact_inconsistent` (F4 source/impact), `review_artifact_verdict_field_inconsistent` (F5 cross-section verdict), `review_artifact_quorum_inconsistent` (recomputed verdict) |
 | 4 | Panel orchestrator runtime authority | `src/phases/review-panel.ts` (`runReviewPanel`) | `panel_voter_same_family_at_runtime` (registry-resolved family collapses voter into BUILD family at runtime), `panel_provider_family_unresolved` (registry has no family for `providerId`), `panel_budget_exceeded` (aggregate preflight), `review_panelist_manifest_mismatch` (cross-panelist manifest disagreement), `review_panel_resume_mismatch` (partial staging guard with `reason: 'no_completed_event' \| 'sha_mismatch'`) |
 | 5 | Event-validator consistency | `src/state/events.ts` | `event_invalid_value` (layer-5 backstop on `review_panel_completed`: when `panelVerdict='ready'`, `eligibleVoterFamilies` count must be 2) |
@@ -443,7 +443,7 @@ Runs the same fixture in single-mode (one reviewer) then panel-mode (configured 
 | Error | Meaning | Action | Layer |
 |---|---|---|---|
 | `panel_voter_count_invalid` | `reviewer.panel` has !==2 voters (covers advisory-only panels with 0 voters) | Edit config to have exactly 2 voters | 1 (config-load) + 4 (orchestrator runtime defense) |
-| `panel_voter_same_family_as_build` | Declared voter family matches resolved build family at config-load time | Edit config to use cross-family voter | 1 (config-load) |
+| `panel_voter_same_family_as_build` | Declared voter family matches resolved build family — caught at config-load OR at agent-loader post-company-override validation | Edit config (or company role override) to use cross-family voter | 1 (config-load) + 2 (agent-loader `enforceReviewerPanelCrossFamily`) |
 | `panel_voter_same_family_at_runtime` | Registry-resolved voter family matches build family at runtime (registry override laundering attempt) | Inspect `familyOverrides` and `defaultProvider` — runtime resolution must yield cross-family voter | 4 (orchestrator) |
 | `panel_provider_family_unresolved` | Registry has no family mapping for the panelist's `providerId` | Add the provider id to `DEFAULT_FAMILY_BY_ID` or supply `familyOverrides` | 4 (orchestrator) |
 | `panel_budget_exceeded` | Aggregate panel preflight would exceed a budget cap | Raise the named cap in `.code-oz/config.yaml` (the rule names the specific cap) | 4 (orchestrator preflight) |
