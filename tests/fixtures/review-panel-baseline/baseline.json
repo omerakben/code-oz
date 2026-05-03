@@ -1,0 +1,67 @@
+{
+  "fixtureId": "tests/fixtures/review-panel-baseline/baseline.json",
+  "buildFamily": "claude",
+  "singleReviewer": {
+    "providerId": "codex",
+    "modelPolicy": "gpt-5.5",
+    "role": "voter",
+    "score": 8,
+    "verdict": "ready",
+    "findings": [
+      {
+        "file": "src/handler.ts",
+        "title": "minor variable shadowing",
+        "line": "67",
+        "severity": "nit",
+        "recommendation": "rename inner var"
+      }
+    ],
+    "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "panelistResponses": [
+    {
+      "providerId": "codex",
+      "modelPolicy": "gpt-5.5",
+      "role": "voter",
+      "score": 7,
+      "verdict": "needs-revision",
+      "findings": [
+        {
+          "file": "src/handler.ts",
+          "title": "minor variable shadowing",
+          "line": "67",
+          "severity": "nit",
+          "recommendation": "rename inner var"
+        },
+        {
+          "file": "src/handler.ts",
+          "title": "missing null check on user input",
+          "line": "42",
+          "severity": "fix-first",
+          "recommendation": "add explicit null guard before dereference"
+        }
+      ],
+      "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "providerId": "gemini",
+      "modelPolicy": "gemini-2.5-pro",
+      "role": "voter",
+      "score": 6,
+      "verdict": "needs-revision",
+      "findings": [
+        {
+          "file": "src/handler.ts",
+          "title": "missing null check on user input",
+          "line": "42",
+          "severity": "block",
+          "recommendation": "this is a release-blocker; never deref untrusted input"
+        }
+      ],
+      "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "sameFamilyVoteRejectionAttempts": 1,
+  "costOverheadRatio": 1.95,
+  "wallClockOverheadMs": 1200
+}
