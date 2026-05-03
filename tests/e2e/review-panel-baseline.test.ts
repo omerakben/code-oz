@@ -121,6 +121,35 @@ describe('e2e: doctor --panel-baseline against canonical M14 fixture', () => {
     expect(baseline.wallClockOverheadMs).toBe(1200)
   })
 
+  test('F7: sameFamilyVoteRejectionCount is events-derived — real panel_quorum_rejected_same_family_vote events emitted with layer=config-load', async () => {
+    // Codex M14 R1 finding #7: with runPaths supplied, the baseline
+    // helper must actually run each fixture-declared same-family voter
+    // attempt through the config loader and emit a real
+    // panel_quorum_rejected_same_family_vote event per rejection. The
+    // metric count is the observed event count, not a fixture-declared
+    // number.
+    const report = await loadAndRunPanelBaseline(FIXTURE_PATH, {
+      runPaths: paths,
+      now: () => NOW,
+    })
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const rejections = events.filter(
+      (e) => isKnownPhaseEvent(e) && e.type === 'panel_quorum_rejected_same_family_vote',
+    )
+    // Canonical fixture declares 1 attempt → 1 rejection event emitted.
+    expect(rejections.length).toBe(1)
+    expect(rejections.length).toBe(report.metric.sameFamilyVoteRejectionCount)
+    // Each rejection must record layer=config-load (this is the actual
+    // layer the loadConfig path fires from) — proves the doctor helper
+    // exercised real layer-1 validation.
+    for (const r of rejections) {
+      if (!isKnownPhaseEvent(r) || r.type !== 'panel_quorum_rejected_same_family_vote') continue
+      expect(r.layer).toBe('config-load')
+      // providerFamily must equal buildFamily (the rejection trigger).
+      expect(r.providerFamily).toBe(r.buildFamily)
+    }
+  })
+
   test('panel verdict on canonical fixture is BLOCK (cross-family voter raised block-severity finding)', async () => {
     const report = await loadAndRunPanelBaseline(FIXTURE_PATH, { now: () => NOW })
     expect(report.summary).toContain('Panel verdict: block')

@@ -185,17 +185,50 @@ export async function doctorCommand(args: string[]): Promise<void> {
       process.exit(1)
     }
     const { loadAndRunPanelBaseline } = await import('./doctor-panel-baseline.ts')
+    // F7 (Codex M14 R1 finding #7): construct a deterministic run-local
+    // event log so loadAndRunPanelBaseline emits the
+    // review_panel_baseline_completed event AND the
+    // panel_quorum_rejected_same_family_vote events that back the
+    // sameFamilyVoteRejectionCount metric. Without runPaths the metric
+    // is fixture-declared, not events-derived. The temp dir lives only
+    // for the duration of the command and is cleaned up after.
+    const { mkdtemp, rm, mkdir } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'codeoz-doctor-baseline-'))
     try {
-      const report = await loadAndRunPanelBaseline(fixturePath)
-      if (json) {
-        process.stdout.write(JSON.stringify(report, null, 2) + '\n')
-      } else {
-        process.stdout.write(report.summary + '\n')
+      const stateDir = join(tmpRoot, 'state')
+      const artifactRoot = join(tmpRoot, 'artifacts')
+      const runId = '_doctor-baseline'
+      const runDir = join(stateDir, 'runs', runId)
+      const lockDir = join(runDir, '.lock')
+      const eventsFile = join(runDir, 'events.jsonl')
+      await mkdir(runDir, { recursive: true })
+      await mkdir(artifactRoot, { recursive: true })
+      const runPaths = {
+        runDir,
+        artifactRoot,
+        eventsFile,
+        lockDir,
+      } as const
+      try {
+        const report = await loadAndRunPanelBaseline(fixturePath, {
+          // Cast to RunPaths — we only populate the fields the baseline
+          // emitter and rejection-recorder use (eventsFile, lockDir).
+          runPaths: runPaths as never,
+        })
+        if (json) {
+          process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+        } else {
+          process.stdout.write(report.summary + '\n')
+        }
+        process.exit(report.shipGatePasses ? 0 : 1)
+      } catch (err) {
+        process.stderr.write(`code-oz doctor --panel-baseline: ${(err as Error).message}\n`)
+        process.exit(1)
       }
-      process.exit(report.shipGatePasses ? 0 : 1)
-    } catch (err) {
-      process.stderr.write(`code-oz doctor --panel-baseline: ${(err as Error).message}\n`)
-      process.exit(1)
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true })
     }
   }
 

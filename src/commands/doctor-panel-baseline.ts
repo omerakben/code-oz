@@ -21,7 +21,9 @@
 //   disagreementCount >= 1                (supporting evidence)
 
 import { createHash, randomBytes } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   fingerprintFinding,
@@ -45,11 +47,16 @@ import {
   computeCanonicalPanelVerdict,
   type PanelistInput,
 } from '../phases/review-panel-verdict.ts'
-import { appendEvent } from '../state/events.ts'
-import { generateUlid, type PhaseEvent } from '../state/schemas.ts'
+import { appendEvent, readEvents } from '../state/events.ts'
+import {
+  generateUlid,
+  isKnownPhaseEvent,
+  type PhaseEvent,
+} from '../state/schemas.ts'
 import type { ProviderFamily, ProviderId } from '../providers/types.ts'
 import type { RunPaths } from '../state/run.ts'
 import { familyOf } from '../providers/families.ts'
+import { loadConfig, ConfigLoadError } from '../config/load.ts'
 
 // --- fixture types -------------------------------------------------
 
@@ -244,7 +251,30 @@ export async function runPanelBaseline(
   // among recorded sources.
   const disagreementCount = countSeverityDisagreements(fixture.panelistResponses)
 
-  const sameFamilyVoteRejectionCount = fixture.sameFamilyVoteRejectionAttempts ?? 0
+  // F7 (Codex M14 R1 finding #7): events-derived positive control. When
+  // runPaths is supplied, actually run each fixture-declared
+  // same-family-voter attempt through the config loader; each rejection
+  // emits a real `panel_quorum_rejected_same_family_vote` event. The
+  // metric then counts those events from the run-local log, so the
+  // value is observed-from-events instead of fixture-declared.
+  // Without runPaths (legacy library callers / isolated tests), fall
+  // back to the fixture's recorded attempt count and treat it as
+  // metadata only — the metric event still records the count, but the
+  // doctor CLI path is the only production route, and that path now
+  // always passes runPaths.
+  let sameFamilyVoteRejectionCount: number
+  const rejectionAttempts = fixture.sameFamilyVoteRejectionAttempts ?? 0
+  if (opts.runPaths !== undefined && rejectionAttempts > 0) {
+    sameFamilyVoteRejectionCount = await emitSameFamilyVoteRejectionEvents({
+      runPaths: opts.runPaths,
+      panelRunId,
+      buildFamily: fixture.buildFamily,
+      attempts: rejectionAttempts,
+      ts,
+    })
+  } else {
+    sameFamilyVoteRejectionCount = rejectionAttempts
+  }
 
   const firstHash = fixture.panelistResponses[0]?.manifestHash
   const manifestEqualityHeld = fixture.panelistResponses.every(
@@ -334,6 +364,118 @@ export async function loadAndRunPanelBaseline(
 }
 
 // --- helpers -------------------------------------------------------
+
+/**
+ * F7 (Codex M14 R1 finding #7): events-derived positive control. For
+ * each requested attempt, build a synthetic same-family panel YAML in
+ * an ephemeral cwd and run it through `loadConfig`. The loader's layer
+ * 1 validation throws ConfigLoadError with a `panel_voter_same_family_as_build`
+ * issue; we catch it and emit a real `panel_quorum_rejected_same_family_vote`
+ * event into the run-local log. The metric then counts those events.
+ *
+ * Returns the number of events successfully emitted (which equals
+ * `attempts` whenever layer 1 still rejects same-family voters — a real
+ * regression in the loader would surface as a count below `attempts`).
+ */
+async function emitSameFamilyVoteRejectionEvents(args: {
+  readonly runPaths: RunPaths
+  readonly panelRunId: string
+  readonly buildFamily: ProviderFamily
+  readonly attempts: number
+  readonly ts: string
+}): Promise<number> {
+  // Pick a same-family voter pair for the build family. v0.1 default
+  // mapping has family === id, so the buildFamily string IS the
+  // ProviderId we need to use as the voter to force a rejection.
+  const sameFamilyProvider = args.buildFamily as ProviderId
+  // The other voter must be cross-family so the loader's voter-count
+  // rule doesn't fire first; we want the same-family-voter rule to
+  // be the failure that fires.
+  const crossFamilyProvider: ProviderId =
+    sameFamilyProvider === 'gemini' ? 'codex' : 'gemini'
+
+  let emitted = 0
+  for (let i = 0; i < args.attempts; i++) {
+    const tmp = await mkdtemp(join(tmpdir(), 'codeoz-doctor-rej-'))
+    try {
+      await mkdir(join(tmp, '.code-oz'), { recursive: true })
+      // The config loader's defaultProvider sets the resolved BUILD
+      // family that the panel validation cross-checks against. Setting
+      // it to args.buildFamily ensures the same-family-voter trigger
+      // matches what the M14 fixture is targeting.
+      const yaml = `defaultProvider: ${args.buildFamily}
+company:
+  reviewer:
+    panel:
+      - { provider: ${sameFamilyProvider}, role: voter }
+      - { provider: ${crossFamilyProvider}, role: voter }
+`
+      await writeFile(join(tmp, '.code-oz/config.yaml'), yaml, 'utf8')
+      let rejected = false
+      try {
+        await loadConfig({ cwd: tmp })
+      } catch (err) {
+        if (
+          err instanceof ConfigLoadError &&
+          err.issues.some((iss) => iss.code === 'panel_voter_same_family_as_build')
+        ) {
+          rejected = true
+        } else {
+          throw err
+        }
+      }
+      if (!rejected) {
+        // Layer 1 did not reject the same-family voter — this is a real
+        // regression. Surface it as a typed error so the doctor command
+        // exits non-zero rather than silently underreporting.
+        throw new Error(
+          `doctor --panel-baseline: same-family voter attempt ${i + 1} was NOT rejected by ` +
+            `loadConfig (buildFamily=${args.buildFamily}, voter=${sameFamilyProvider}). ` +
+            'Layer-1 panel validation may have regressed.',
+        )
+      }
+      const event: PhaseEvent = {
+        version: 1,
+        type: 'panel_quorum_rejected_same_family_vote',
+        ts: args.ts,
+        runId: args.panelRunId,
+        phase: 'review',
+        panelistId: `attempt-${String(i + 1).padStart(2, '0')}`,
+        providerId: sameFamilyProvider,
+        providerFamily: args.buildFamily,
+        buildFamily: args.buildFamily,
+        layer: 'config-load',
+      }
+      await appendEvent(
+        { file: args.runPaths.eventsFile, lockDir: args.runPaths.lockDir },
+        event,
+      )
+      emitted++
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+    }
+  }
+
+  // Sanity: read the run-local log and count the events we just
+  // emitted, scoped to this panelRunId. The metric value comes from
+  // this observed count (NOT from `emitted`), so a downstream caller
+  // that bypasses appendEvent would still surface as 0.
+  const events = await readEvents({
+    file: args.runPaths.eventsFile,
+    lockDir: args.runPaths.lockDir,
+  })
+  let observed = 0
+  for (const e of events) {
+    if (
+      isKnownPhaseEvent(e) &&
+      e.type === 'panel_quorum_rejected_same_family_vote' &&
+      e.runId === args.panelRunId
+    ) {
+      observed++
+    }
+  }
+  return observed
+}
 
 function synthesizeSingleReviewMd(
   fixture: PanelBaselineFixture,
