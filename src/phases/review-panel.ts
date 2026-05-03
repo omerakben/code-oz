@@ -46,6 +46,7 @@ import {
 } from './review-panel-verdict.ts'
 import type { Panelist, CompanyConfig } from '../config/schema.ts'
 import type { ProviderId, ProviderFamily } from '../providers/types.ts'
+import type { ProviderRegistry } from '../providers/registry.ts'
 import type { RunPaths } from '../state/run.ts'
 import { appendEvent } from '../state/events.ts'
 import type { PhaseEvent } from '../state/schemas.ts'
@@ -57,9 +58,13 @@ export interface PanelistInvocationResult {
   readonly panelistId: string
   /** The actual ProviderId the panelist invoked under. */
   readonly providerId: ProviderId
-  /** Resolved provider family at invocation time (from registry.familyOf,
-   *  honors test seams + future routed-provider lineage). MUST be the value
-   *  the orchestrator passes to the canonical verdict computation. */
+  /** ADVISORY ONLY. Provider family the invoker thinks the panelist ran
+   *  under. The orchestrator IGNORES this field for verdict computation,
+   *  staging artifacts, and panelist-completed events — runtime family is
+   *  resolved exclusively via `opts.registry.familyOf(providerId)`
+   *  (Codex M14 R1 finding #3 closure: "panelist-authored family must
+   *  never reach quorum computation"). Kept on the type for invoker-side
+   *  diagnostics and so existing fixtures continue to compile. */
   readonly providerFamily: ProviderFamily
   /** Model policy / model id used for this panelist. */
   readonly modelPolicy: string
@@ -108,6 +113,13 @@ export interface RunReviewPanelOptions {
   readonly panel: readonly Panelist[]
   /** Resolved BUILD family (from build_provider_recorded or registry). */
   readonly buildFamily: ProviderFamily
+  /** Provider registry used to resolve per-panelist provider family at
+   *  runtime via `registry.familyOf(providerId)`. Per Codex M14 R1
+   *  finding #3, the orchestrator MUST NOT trust invoker-supplied family
+   *  values — every artifact, event, and verdict input records the
+   *  registry-resolved family. Honors test seams + future
+   *  routed-provider lineage (familyOverrides). */
+  readonly registry: ProviderRegistry
   /** Upstream refs (paths + sha256s + task + attempt + commit + patch). */
   readonly upstreamRefs: ReviewUpstreamRefs
   /** REVIEW round being driven (1..4). */
@@ -118,6 +130,15 @@ export interface RunReviewPanelOptions {
   readonly now?: () => string
   /** Test seam: skip directory fsync (sandboxes that forbid opendir). */
   readonly fsyncDir?: boolean
+}
+
+/** Internal record pairing the invoker output with the registry-resolved
+ *  provider family. The orchestrator never reads `result.providerFamily`
+ *  past the invocation seam — every downstream surface uses
+ *  `resolvedFamily`. Codex M14 R1 finding #3. */
+interface ResolvedPanelistInvocation {
+  readonly result: PanelistInvocationResult
+  readonly resolvedFamily: ProviderFamily
 }
 
 export type RunReviewPanelStatus = 'resolved' | 'needs_revision' | 'blocked' | 'intervention'
@@ -207,7 +228,31 @@ export async function runReviewPanel(
     }
   }
 
-  // Emit review_panel_started.
+  // Emit review_panel_started. Per Codex M14 R1 finding #3: composition
+  // uses registry.familyOf — even the declared composition derives the
+  // family from the same authority that runtime resolution uses, so a
+  // mistyped declaration cannot ever appear in this event.
+  let composition: ReadonlyArray<{
+    readonly id: string
+    readonly providerId: ProviderId
+    readonly providerFamily: ProviderFamily
+    readonly role: 'voter' | 'advisory'
+  }>
+  try {
+    composition = opts.panel.map((p, i) => ({
+      id: panelistIdFor(p, i),
+      providerId: p.provider as ProviderId,
+      providerFamily: opts.registry.familyOf(p.provider as ProviderId),
+      role: p.role,
+    }))
+  } catch (err) {
+    return {
+      status: 'intervention',
+      code: 'panel_provider_family_unresolved',
+      rule: 'runReviewPanel: registry.familyOf failed for declared panel composition',
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
   await emitEvent(opts, {
     version: 1,
     type: 'review_panel_started',
@@ -217,15 +262,7 @@ export async function runReviewPanel(
     agent: opts.orchestratorAgent,
     attempt: opts.upstreamRefs.attempt,
     taskId: opts.upstreamRefs.taskId,
-    panelComposition: opts.panel.map((p, i) => ({
-      id: panelistIdFor(p, i),
-      providerId: p.provider,
-      // Note: composition uses the pure family — runtime registry resolution
-      // happens at panelistInvoker invocation. The composition event records
-      // declared family; per-panelist completed events record resolved family.
-      providerFamily: p.provider, // Pre-runtime; family === id in v0.1 default mapping
-      role: p.role,
-    })),
+    panelComposition: composition,
     buildFamily: opts.buildFamily,
   })
 
@@ -233,7 +270,7 @@ export async function runReviewPanel(
   const stagingDir = join(opts.runPaths.runDir, 'review-panel', `round-${opts.round}`)
   await mkdir(stagingDir, { recursive: true })
 
-  const invocations: PanelistInvocationResult[] = []
+  const invocations: ResolvedPanelistInvocation[] = []
   const stagingPaths: string[] = []
   let manifestHash: string | null = null
 
@@ -260,6 +297,39 @@ export async function runReviewPanel(
       }
     }
 
+    // Codex M14 R1 finding #3: resolve family via registry.familyOf, never
+    // trust the invoker. The resolved value is what every downstream
+    // surface (event, staging artifact, canonical artifact, verdict
+    // input) records.
+    let resolvedFamily: ProviderFamily
+    try {
+      resolvedFamily = opts.registry.familyOf(result.providerId)
+    } catch (err) {
+      return {
+        status: 'intervention',
+        code: 'panel_provider_family_unresolved',
+        rule: `panelist '${id}' providerId=${result.providerId} has no registered family`,
+        detail: err instanceof Error ? err.message : String(err),
+      }
+    }
+
+    // Defense-in-depth: layer-1 (config-load) already rejects declared
+    // same-family voters, but runtime familyOverrides could still launder
+    // a voter into the same family as BUILD. Refuse the round before any
+    // artifact is materialized — the canonical artifact grammar requires
+    // voters to declare cross-family pass, and a same-family voter has no
+    // gate authority anyway (rule 2).
+    if (cfg.role === 'voter' && resolvedFamily === opts.buildFamily) {
+      return {
+        status: 'intervention',
+        code: 'panel_voter_same_family_at_runtime',
+        rule:
+          `panelist '${id}' providerId=${result.providerId} resolves to family ` +
+          `${resolvedFamily} which equals buildFamily=${opts.buildFamily}; ` +
+          'voters must be cross-family at runtime (rule 2)',
+      }
+    }
+
     // Manifest equality invariant.
     if (manifestHash === null) {
       manifestHash = result.manifestHash
@@ -281,7 +351,7 @@ export async function runReviewPanel(
     })
     stagingPaths.push(stagingPath)
 
-    // Emit review_panelist_completed.
+    // Emit review_panelist_completed using the registry-resolved family.
     await emitEvent(opts, {
       version: 1,
       type: 'review_panelist_completed',
@@ -294,7 +364,7 @@ export async function runReviewPanel(
       round: opts.round,
       panelistId: id,
       providerId: result.providerId,
-      providerFamily: result.providerFamily,
+      providerFamily: resolvedFamily,
       modelPolicy: result.modelPolicy,
       role: result.role,
       score: result.score,
@@ -304,13 +374,15 @@ export async function runReviewPanel(
       stagingSha256: SHA(result.stagingContent),
     })
 
-    invocations.push(result)
+    invocations.push({ result, resolvedFamily })
   }
 
   // 2. Canonical verdict computation (layer 4 of defense-in-depth).
-  const verdictInputs: PanelistInput[] = invocations.map((inv) => ({
+  // Per Codex M14 R1 finding #3: providerFamily is sourced from the
+  // registry-resolved value, never from the invoker output.
+  const verdictInputs: PanelistInput[] = invocations.map(({ result: inv, resolvedFamily }) => ({
     id: inv.panelistId,
-    providerFamily: inv.providerFamily,
+    providerFamily: resolvedFamily,
     role: inv.role,
     score: inv.score,
     verdict: inv.verdict,
@@ -325,17 +397,19 @@ export async function runReviewPanel(
     panelists: verdictInputs,
   })
 
-  // 3. Build canonical REVIEW.md.
-  const reviewers: ReviewPanelist[] = invocations.map((inv) => ({
+  // 3. Build canonical REVIEW.md. Reviewers and crossFamilyCheck likewise
+  // derive from the registry-resolved family, so a miswired invoker
+  // cannot launder authority into the canonical artifact.
+  const reviewers: ReviewPanelist[] = invocations.map(({ result: inv, resolvedFamily }) => ({
     id: inv.panelistId,
     providerId: inv.providerId,
-    providerFamily: inv.providerFamily,
+    providerFamily: resolvedFamily,
     modelPolicy: inv.modelPolicy,
     role: inv.role,
     score: inv.score,
     verdict: inv.verdict,
     crossFamilyCheck:
-      inv.role === 'voter' && inv.providerFamily !== opts.buildFamily
+      inv.role === 'voter' && resolvedFamily !== opts.buildFamily
         ? CROSS_FAMILY_CHECK_VOTER
         : CROSS_FAMILY_CHECK_ADVISORY,
     buildFamily: opts.buildFamily,
@@ -345,7 +419,7 @@ export async function runReviewPanel(
   // Synthesize findings: assign F-NNN ids, look up recommendation + line
   // from the source panelist's first occurrence of the fingerprint.
   const findingMap = new Map<string, { rec: string; line: string; roundResolved: number | 'unresolved' }>()
-  for (const inv of invocations) {
+  for (const { result: inv } of invocations) {
     for (const f of inv.findings) {
       const key = fingerprintLocal(f.file, f.title)
       if (!findingMap.has(key)) {
@@ -381,7 +455,7 @@ export async function runReviewPanel(
   ]
 
   const uniqueFindingsByReviewer: Record<string, number> = {}
-  for (const inv of invocations) uniqueFindingsByReviewer[inv.panelistId] = 0
+  for (const { result: inv } of invocations) uniqueFindingsByReviewer[inv.panelistId] = 0
   for (const f of synthesizedFindings) {
     if (f.sources.length === 1) {
       uniqueFindingsByReviewer[f.sources[0]!] = (uniqueFindingsByReviewer[f.sources[0]!] ?? 0) + 1
@@ -424,8 +498,8 @@ export async function runReviewPanel(
   })
 
   // Emit review_panel_completed.
-  const voterCountFinal = invocations.filter((inv) => inv.role === 'voter').length
-  const advisoryCountFinal = invocations.filter((inv) => inv.role === 'advisory').length
+  const voterCountFinal = invocations.filter(({ result: inv }) => inv.role === 'voter').length
+  const advisoryCountFinal = invocations.filter(({ result: inv }) => inv.role === 'advisory').length
   await emitEvent(opts, {
     version: 1,
     type: 'review_panel_completed',
