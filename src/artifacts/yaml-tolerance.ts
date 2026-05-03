@@ -16,10 +16,11 @@
 //   2. A flow-list parser that strips an optional `[...]` wrapper, splits on
 //      top-level commas, trims, and unquotes leaf values.
 //
-// Both bodies were identical across all three parsers (named with per-file
-// suffixes `*Plan` / `*SourceCheck` for readability). DRY-at-3x per the
-// project-wide coding standard — this module owns the canonical
-// implementation; the parsers import from here.
+// Executable logic was identical across all three parsers (named with
+// per-file suffixes `*Plan` / `*SourceCheck` for readability; only the
+// surrounding comment blocks differed). DRY-at-3x per the project-wide
+// coding standard — this module owns the canonical implementation; the
+// parsers import from here.
 
 /**
  * Quote-aware top-level comma splitter. Splits on top-level commas only,
