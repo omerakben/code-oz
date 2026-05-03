@@ -228,14 +228,21 @@ export interface PanelResumeProbeInput {
   readonly taskId: string
   readonly attempt: number
   readonly round: number
+  /** Codex M14 R3 finding #1: when a `review_panel_completed` event is
+   *  present for the round, the probe verifies that the canonical
+   *  REVIEW.md exists and its sha256 matches `event.reviewReportSha256`.
+   *  Without this, the panel guard is weaker than the single-reviewer
+   *  guard (which already does the same check via reviewReportPath).
+   *  Optional only for callers that genuinely cannot supply a path
+   *  (legacy tests); production callers always pass it. */
+  readonly reviewReportPath?: string
 }
 
 export interface PanelResumeProbeResult {
   /** True iff partial panel staging is on disk for the round WITHOUT a
-   *  matching review_panel_completed event. Pre-R2-F2 the runtime would
-   *  silently re-invoke panelist A and overwrite an A-staging file
-   *  produced by a prior crashed session — that violates the
-   *  staging-vs-canonical authority guarantee in REVIEW_PANEL.md. */
+   *  matching review_panel_completed event, OR a matching event exists
+   *  but its reviewReportSha256 does not match the on-disk canonical
+   *  REVIEW.md. */
   readonly mismatched: boolean
   /** When mismatched, the path of the panel staging directory the
    *  operator must inspect. */
@@ -244,23 +251,30 @@ export interface PanelResumeProbeResult {
    *  the operator decide whether to keep prior evidence or wipe and
    *  retry. */
   readonly stagingFileCount?: number
+  /** When mismatched, the violation kind. Matches probeReviewResume's
+   *  shape so the orchestrator can render distinguishable messages. */
+  readonly reason?: 'no_completed_event' | 'sha_mismatch'
 }
 
 /**
  * Detects partial panel staging without a matching panel-completed
- * event. Mirrors `probeReviewResume` but for the panel lifecycle:
+ * event, OR a completed event whose canonical REVIEW.md disagrees with
+ * the recorded sha256. Mirrors `probeReviewResume` for the panel
+ * lifecycle:
  *
  *   - A directory `<runDir>/review-panel/round-N/` exists with at least
- *     one `panelist-*.md` file, AND
+ *     one `panelist-*.md` file, AND EITHER
  *   - No `review_panel_completed` event for `(taskId, attempt, round=N)`
- *     is present in `events`.
+ *     is present in `events` (`reason: 'no_completed_event'`), OR
+ *   - The matching event's `reviewReportSha256` does not equal the
+ *     on-disk canonical artifact's sha256, or the artifact is missing
+ *     (`reason: 'sha_mismatch'`).
  *
- * Either a panelist invocation crashed mid-round, or the canonical
- * synthesis step never finished. The orchestrator must NOT re-invoke
- * panelist 0 blindly (the contract says completed staging is
- * load-bearing forensic evidence). Surfacing
- * `review_panel_resume_mismatch` lets the operator inspect / clear /
- * resume manually.
+ * Either case violates the staging-vs-canonical authority guarantee in
+ * REVIEW_PANEL.md. The orchestrator must NOT re-invoke panelist 0
+ * blindly — completed staging is load-bearing forensic evidence.
+ * Surfacing `review_panel_resume_mismatch` lets the operator inspect /
+ * clear / hand-resume.
  */
 export async function probePanelResume(
   input: PanelResumeProbeInput,
@@ -279,19 +293,53 @@ export async function probePanelResume(
   if (stagingFiles.length === 0) {
     return { mismatched: false }
   }
-  const completed = input.events.find(
-    (e) =>
+  type PanelCompleted = Extract<
+    PhaseEvent,
+    { readonly type: 'review_panel_completed' }
+  >
+  let completed: PanelCompleted | undefined
+  for (const e of input.events) {
+    if (
       isKnownPhaseEvent(e) &&
       e.type === 'review_panel_completed' &&
       e.taskId === input.taskId &&
       e.attempt === input.attempt &&
-      e.finalRound === input.round,
-  )
+      e.finalRound === input.round
+    ) {
+      completed = e as PanelCompleted
+      break
+    }
+  }
   if (completed === undefined) {
     return {
       mismatched: true,
       stagingDir,
       stagingFileCount: stagingFiles.length,
+      reason: 'no_completed_event',
+    }
+  }
+  // Codex M14 R3 finding #1 closure: when a completed event exists,
+  // verify the canonical REVIEW.md sha256 matches the event payload.
+  // A missing or overwritten artifact must NOT be silently re-rendered
+  // by re-invoking panelists; the operator must inspect.
+  if (input.reviewReportPath !== undefined) {
+    const onDisk = await readIfExists(input.reviewReportPath)
+    if (onDisk === null) {
+      return {
+        mismatched: true,
+        stagingDir,
+        stagingFileCount: stagingFiles.length,
+        reason: 'sha_mismatch',
+      }
+    }
+    const onDiskSha = sha256Of(onDisk)
+    if (completed.reviewReportSha256 !== onDiskSha) {
+      return {
+        mismatched: true,
+        stagingDir,
+        stagingFileCount: stagingFiles.length,
+        reason: 'sha_mismatch',
+      }
     }
   }
   return { mismatched: false }

@@ -390,9 +390,9 @@ function actionableSuggestionsFor(code: string): readonly string[] {
       ])
     case 'review_panel_resume_mismatch':
       return Object.freeze([
-        'Partial panel staging exists from a prior session but no matching review_panel_completed event.',
+        'Partial panel staging exists from a prior session, and either no review_panel_completed event matches the round OR the canonical REVIEW.md sha256 does not match the recorded event sha.',
         'Inspect .code-oz/runs/<runId>/review-panel/round-<N>/ for per-panelist staging drafts.',
-        'Clear that directory before retrying the round, or hand-resume by completing the missing panelists.',
+        'Inspect .code-oz/artifacts/REVIEW.md against the review_panel_completed event in events.jsonl; restore the canonical artifact or clear the staging dir before retrying the round.',
       ])
     case 'review_scientist_tail_failed':
       return Object.freeze([
@@ -691,12 +691,17 @@ async function runReviewInner(
       taskId: opts.taskId,
       attempt,
       round: opts.round,
+      reviewReportPath: join(opts.runPaths.artifactRoot, 'REVIEW.md'),
     })
     if (panelProbe.mismatched) {
+      const reasonText =
+        panelProbe.reason === 'sha_mismatch'
+          ? `review_panel_completed event exists for round=${opts.round} but its reviewReportSha256 does not match the on-disk REVIEW.md (or REVIEW.md is missing)`
+          : `no review_panel_completed event for round=${opts.round}`
       return recordReviewIntervention(
         ictx,
         'review_panel_resume_mismatch',
-        `partial panel staging exists at ${panelProbe.stagingDir} (${panelProbe.stagingFileCount ?? 0} panelist file(s)) but no review_panel_completed event for round=${opts.round}`,
+        `partial panel staging exists at ${panelProbe.stagingDir} (${panelProbe.stagingFileCount ?? 0} panelist file(s)); ${reasonText}`,
         undefined,
         panelProbe.stagingDir,
       )

@@ -696,6 +696,82 @@ describe('runReview panel-mode dispatch (M14 F1)', () => {
     expect(invoked).toBe(0)
   })
 
+  test('panel staging + review_panel_completed event but missing canonical REVIEW.md → review_panel_resume_mismatch / sha_mismatch (Codex M14 R3 finding #1)', async () => {
+    // Codex M14 R3 closure: probePanelResume must mirror probeReviewResume's
+    // sha-mismatch check. Pre-fix, panel mode would NOT detect a missing or
+    // overwritten canonical artifact and would silently re-invoke panelists,
+    // overwriting prior staging.
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+
+    const stagingRoot = join(paths.runDir, 'review-panel', 'round-1')
+    await mkdir(stagingRoot, { recursive: true })
+    await writeFile(
+      join(stagingRoot, 'panelist-reviewer-A.md'),
+      '# panelist reviewer-A\n',
+    )
+    await writeFile(
+      join(stagingRoot, 'panelist-reviewer-B.md'),
+      '# panelist reviewer-B\n',
+    )
+    // Emit a review_panel_completed event with a sha that does NOT match
+    // anything on disk (canonical REVIEW.md does not exist for this run yet).
+    await appendEvent(
+      { file: paths.eventsFile, lockDir: paths.lockDir },
+      {
+        version: 1,
+        type: 'review_panel_completed',
+        ts: NOW,
+        runId: RUN,
+        phase: 'review',
+        agent: 'panel-orchestrator',
+        attempt: 1,
+        taskId: 'T-001',
+        finalRound: 1,
+        panelVerdict: 'ready',
+        reviewReportSha256: 'b'.repeat(64), // claimed sha; no canonical file matches
+        eligibleVoterFamilies: ['codex', 'gemini'],
+        panelistCount: 2,
+        voterCount: 2,
+        advisoryCount: 0,
+      },
+    )
+
+    let invoked = 0
+    const result = await runReview({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      reviewerAgent: REVIEWER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      invokeCtx: invokeCtxWithPanel(),
+      invokePersona: async () => '',
+      panelistInvoker: async (cfg) => {
+        invoked++
+        return {
+          panelistId: cfg.id,
+          providerId: cfg.provider,
+          providerFamily: cfg.provider,
+          modelPolicy: 'any',
+          role: cfg.role,
+          score: 8,
+          verdict: 'ready',
+          findings: [],
+          manifestHash: MANIFEST_HASH,
+          stagingContent: `# panelist ${cfg.id}\n`,
+        }
+      },
+      now: () => NOW,
+      round: 1,
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status !== 'intervention') return
+    expect(result.code).toBe('review_panel_resume_mismatch')
+    expect(result.rule).toContain('reviewReportSha256')
+    expect(invoked).toBe(0)
+  })
+
   test('completed panel round (review_panel_completed event present) does not trigger resume mismatch', async () => {
     // Sanity: the F1 happy path (where the prior round completed
     // cleanly) MUST NOT trigger the new resume-mismatch guard. The
