@@ -476,6 +476,149 @@ describe('runReview panel-mode dispatch (M14 F1)', () => {
     expect(String(threw)).toContain('Final verdict')
   })
 
+  test('runReview round 2 with prior panel REVIEW.md is parsed via parseReviewPanelReport (Codex M14 R2 finding #1)', async () => {
+    // Build a synthetic prior panel REVIEW.md (round 1 needs-revision)
+    // and pass it to runReview as priorReviewMd. Pre-R2-F1, runReview
+    // always parsed priorReviewMd via parseReviewReport (single mode);
+    // the panel grammar would be rejected before the dispatch branch
+    // could run. Post-fix, the parser is mode-aware and the panel
+    // prior is forwarded to runReviewPanel for finding+timeline carry.
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    expectScientistResponse()
+
+    // Construct a minimal canonical panel REVIEW.md by calling the
+    // serializer directly through a fixture-driven runReviewPanel run
+    // first, then feeding the resulting REVIEW.md into a fresh runReview.
+    // Easier path: serialize from a hand-built structure.
+    const { serializeReviewPanelReport } = await import('../src/artifacts/review-report.ts')
+    const priorPanelMd = serializeReviewPanelReport({
+      mode: 'panel',
+      upstreamRefs: {
+        buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+        buildReportSha256: 'f'.repeat(64),
+        verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+        verifyReportSha256: 'f'.repeat(64),
+        taskId: 'T-001',
+        attempt: 1,
+        baseCommitSha: BASE_COMMIT_SHA,
+        patchSha256: PATCH_SHA,
+      },
+      reviewers: [
+        {
+          id: 'reviewer-A',
+          providerId: 'codex',
+          providerFamily: 'codex',
+          modelPolicy: 'any',
+          role: 'voter',
+          score: 5,
+          verdict: 'needs-revision',
+          crossFamilyCheck: 'passed',
+          buildFamily: 'claude',
+          manifestHash: MANIFEST_HASH,
+        },
+        {
+          id: 'reviewer-B',
+          providerId: 'gemini',
+          providerFamily: 'gemini',
+          modelPolicy: 'any',
+          role: 'voter',
+          score: 8,
+          verdict: 'needs-revision',
+          crossFamilyCheck: 'passed',
+          buildFamily: 'claude',
+          manifestHash: MANIFEST_HASH,
+        },
+      ],
+      synthesis: {
+        panelVerdict: 'needs-revision',
+        quorumReason:
+          "eligible voter 'reviewer-A' not ready (score=5 verdict=needs-revision)",
+        eligibleVoterFamilies: ['codex', 'gemini'],
+        excludedReviewerIds: [],
+        excludedReasons: [],
+        uniqueFindingsByReviewer: { 'reviewer-A': 1, 'reviewer-B': 0 },
+        sharedFindings: 0,
+      },
+      roundTimeline: [
+        {
+          round: 1,
+          timestamp: NOW,
+          findingsRaised: 1,
+          panelVerdict: 'needs-revision',
+        },
+      ],
+      findings: [
+        {
+          id: 'F-001',
+          title: 'priors carry forward',
+          file: 'src/foo.ts',
+          line: '1',
+          severity: 'fix-first',
+          authorityImpact: 'voter',
+          sources: ['reviewer-A'],
+          recommendation: 'fix',
+          roundRaised: 1,
+          roundResolved: 'unresolved',
+        },
+      ],
+      score: {
+        roundCount: 1,
+        finalScore: 'panel',
+        finalVerdict: 'needs-revision',
+        exitReason: 'panel verdict needs-revision: voter not ready',
+      },
+      capStatus: { cap: 4, roundsUsed: 1, capExhausted: false },
+    })
+
+    // Round 2 with the prior panel REVIEW.md. Both voters ready, prior
+    // F-001 not re-raised → resolved at round 2.
+    const round2Invoker: PanelistInvoker = async (cfg) => ({
+      panelistId: cfg.id,
+      providerId: cfg.provider,
+      providerFamily: cfg.provider,
+      modelPolicy: cfg.model ?? 'any',
+      role: cfg.role,
+      score: 8,
+      verdict: 'ready',
+      findings: [],
+      manifestHash: MANIFEST_HASH,
+      stagingContent: `# panelist ${cfg.id}\n\nstub round 2.\n`,
+    })
+
+    const result = await runReview({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      reviewerAgent: REVIEWER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      invokeCtx: invokeCtxWithPanel(),
+      invokePersona: async () => {
+        throw new Error('not invoked in panel mode')
+      },
+      panelistInvoker: round2Invoker,
+      now: () => NOW,
+      round: 2,
+      priorReviewMd: priorPanelMd,
+    })
+    // The dispatch must succeed (pre-fix this returned
+    // review_validation_failed because parseReviewReport rejected the
+    // panel grammar).
+    expect(result.status).toBe('resolved')
+    if (result.status !== 'resolved') return
+
+    // Round 2 REVIEW.md has timeline entries for both round 1 and round 2,
+    // and F-001 is carried forward + marked resolved at round 2.
+    const round2Md = await readFile(result.reviewReportPath, 'utf8')
+    const round2Data = parseReviewPanelReport(round2Md)
+    expect(round2Data.roundTimeline).toHaveLength(2)
+    expect(round2Data.roundTimeline[1]!.round).toBe(2)
+    const carried = round2Data.findings.find((f) => f.id === 'F-001')
+    expect(carried).toBeDefined()
+    expect(carried!.roundResolved).toBe(2)
+  })
+
   test('panel-mode dispatch uses registry.familyOf, not opts.reviewerAgent.provider — same-family reviewer agent does not block panel branch', async () => {
     // Single-reviewer path rejects buildFamily===reviewerFamily. Panel
     // mode must not run that check (per F1 design): the panel orchestrator

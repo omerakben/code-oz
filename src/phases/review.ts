@@ -113,7 +113,11 @@ import {
   type PanelistInvoker,
   type RunReviewPanelResult,
 } from './review-panel.ts'
-import { parseReviewPanelReport } from '../artifacts/review-report.ts'
+import {
+  parseReviewPanelReport,
+  detectReviewReportMode,
+  type ReviewReportPanelData,
+} from '../artifacts/review-report.ts'
 import { estimateTokens } from '../providers/cost.ts'
 import type { ProviderFamily } from '../providers/types.ts'
 import { stat as fsStat } from 'node:fs/promises'
@@ -574,10 +578,29 @@ async function runReviewInner(
 
   // 3. Read prior REVIEW.md when round > 1. Resume mismatch (kickoff
   // Decision 10) is checked against the review-drafts directory below.
+  // Codex M14 R2 finding #1 closure: detect the prior artifact's grammar
+  // (single vs panel) and dispatch to the matching parser. A panel
+  // round 1 → needs-revision → round 2 cycle ships the panel REVIEW.md
+  // back in opts.priorReviewMd; pre-R2 this fell into the single-mode
+  // parser and rejected as malformed before the panel branch was even
+  // reached.
   let priorReport: ReviewReportData | null = null
+  let priorPanelReport: ReviewReportPanelData | null = null
   if (opts.round > 1 && opts.priorReviewMd != null) {
+    const priorMode = detectReviewReportMode(opts.priorReviewMd)
+    if (priorMode === 'unknown') {
+      return recordReviewIntervention(
+        ictx,
+        'review_validation_failed',
+        "priorReviewMd contains neither '## Reviewer' nor '## Reviewers' (or both)",
+      )
+    }
     try {
-      priorReport = parseReviewReport(opts.priorReviewMd)
+      if (priorMode === 'panel') {
+        priorPanelReport = parseReviewPanelReport(opts.priorReviewMd)
+      } else {
+        priorReport = parseReviewReport(opts.priorReviewMd)
+      }
     } catch (err) {
       // Prior REVIEW.md should already be canonical; corruption is a routing bug.
       const reason =
@@ -658,6 +681,7 @@ async function runReviewInner(
       attempt,
       events: known,
       priorReport,
+      priorPanelReport,
     })
   }
 
@@ -1822,6 +1846,10 @@ interface RunReviewPanelBranchInput {
   readonly attempt: number
   readonly events: readonly LoggedEvent[]
   readonly priorReport: ReviewReportData | null
+  /** Codex M14 R2 finding #1 closure: prior canonical panel REVIEW.md
+   *  parsed via parseReviewPanelReport. Forwarded to runReviewPanel so
+   *  multi-round panel runs preserve finding ids + timeline. */
+  readonly priorPanelReport: ReviewReportPanelData | null
 }
 
 /**
@@ -1917,6 +1945,9 @@ async function runReviewPanelBranch(
       config: opts.invokeCtx.config,
       events,
       perPanelistTokensEstimate,
+      ...(input.priorPanelReport !== null
+        ? { priorPanelReport: input.priorPanelReport }
+        : {}),
       upstreamRefs,
       round: opts.round,
       orchestratorAgent: opts.reviewerAgent.name,

@@ -22,6 +22,7 @@ import { readEvents } from '../src/state/events.ts'
 import {
   parseReviewPanelReport,
   type ReviewUpstreamRefs,
+  type ReviewReportPanelData,
 } from '../src/artifacts/review-report.ts'
 import type { Panelist, CompanyConfig } from '../src/config/schema.ts'
 import { DEFAULT_CONFIG, type CodeOzConfig } from '../src/config/schema.ts'
@@ -822,5 +823,275 @@ describe('runReviewPanel — registry-owned runtime family resolution (Codex M14
     expect(result.status).toBe('intervention')
     if (result.status !== 'intervention') return
     expect(result.code).toBe('panel_provider_family_unresolved')
+  })
+})
+
+describe('runReviewPanel — multi-round lifecycle (Codex M14 R2 finding #1)', () => {
+  test('priorPanelReport extends timeline + carries F-NNN ids by fingerprint', async () => {
+    // Round 1: voter A=5, voter B=8 → score below 6 → needs_revision.
+    // The findings raised by reviewer-A get F-001, reviewer-B's get F-002.
+    const round1Invoker: PanelistInvoker = async (cfg) => {
+      const isA = cfg.id === 'reviewer-A'
+      return {
+        panelistId: cfg.id,
+        providerId: cfg.provider,
+        providerFamily: cfg.provider,
+        modelPolicy: 'any',
+        role: cfg.role,
+        score: isA ? 5 : 8,
+        verdict: 'needs-revision',
+        findings: isA
+          ? [
+              {
+                file: 'src/foo.ts',
+                line: '1',
+                title: 'null check missing',
+                severity: 'fix-first',
+                recommendation: 'guard',
+              },
+            ]
+          : [
+              {
+                file: 'src/bar.ts',
+                line: '5',
+                title: 'shadow var',
+                severity: 'nit',
+                recommendation: 'rename',
+              },
+            ],
+        manifestHash: MANIFEST_HASH,
+        stagingContent: stagingMd(cfg.id),
+      }
+    }
+    const round1 = await runReviewPanel({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      panelistInvoker: round1Invoker,
+      panel: [
+        { provider: 'codex', role: 'voter' },
+        { provider: 'gemini', role: 'voter' },
+      ],
+      buildFamily: 'claude',
+      registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
+      upstreamRefs: upstreamRefs(),
+      round: 1,
+      orchestratorAgent: 'panel-orchestrator',
+      now: () => NOW,
+      fsyncDir: false,
+    })
+    expect(round1.status).toBe('needs_revision')
+    if (round1.status === 'intervention') return
+    const round1Md = await readFile(round1.reviewReportPath, 'utf8')
+    const round1Data = parseReviewPanelReport(round1Md)
+    expect(round1Data.findings).toHaveLength(2)
+    const round1NullCheck = round1Data.findings.find((f) => f.title === 'null check missing')
+    expect(round1NullCheck).toBeDefined()
+    expect(round1NullCheck!.id).toMatch(/^F-\d{3}$/)
+    expect(round1NullCheck!.roundRaised).toBe(1)
+    const nullCheckId = round1NullCheck!.id
+    const round1ShadowVar = round1Data.findings.find((f) => f.title === 'shadow var')
+    expect(round1ShadowVar).toBeDefined()
+    const shadowVarId = round1ShadowVar!.id
+
+    // Round 2: A no longer raises null-check (resolved!), B keeps shadow-var
+    // and adds a new fix-first finding. Now both voters score 8.
+    const round2Invoker: PanelistInvoker = async (cfg) => {
+      const isA = cfg.id === 'reviewer-A'
+      return {
+        panelistId: cfg.id,
+        providerId: cfg.provider,
+        providerFamily: cfg.provider,
+        modelPolicy: 'any',
+        role: cfg.role,
+        score: 8,
+        verdict: 'ready',
+        findings: isA
+          ? []
+          : [
+              {
+                file: 'src/bar.ts',
+                line: '5',
+                title: 'shadow var',
+                severity: 'nit',
+                recommendation: 'rename',
+              },
+            ],
+        manifestHash: MANIFEST_HASH,
+        stagingContent: stagingMd(cfg.id),
+      }
+    }
+    const round2 = await runReviewPanel({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      panelistInvoker: round2Invoker,
+      panel: [
+        { provider: 'codex', role: 'voter' },
+        { provider: 'gemini', role: 'voter' },
+      ],
+      buildFamily: 'claude',
+      registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
+      priorPanelReport: round1Data,
+      upstreamRefs: upstreamRefs(),
+      round: 2,
+      orchestratorAgent: 'panel-orchestrator',
+      now: () => NOW,
+      fsyncDir: false,
+    })
+    expect(round2.status).not.toBe('intervention')
+    if (round2.status === 'intervention') return
+    const round2Md = await readFile(round2.reviewReportPath, 'utf8')
+    const round2Data = parseReviewPanelReport(round2Md)
+    // Timeline now has 2 entries (round 1 + round 2).
+    expect(round2Data.roundTimeline).toHaveLength(2)
+    expect(round2Data.roundTimeline[0]!.round).toBe(1)
+    expect(round2Data.roundTimeline[1]!.round).toBe(2)
+    // null-check is carried forward by id, marked resolved at round 2.
+    const carriedNullCheck = round2Data.findings.find((f) => f.id === nullCheckId)
+    expect(carriedNullCheck).toBeDefined()
+    expect(carriedNullCheck!.title).toBe('null check missing')
+    expect(carriedNullCheck!.roundResolved).toBe(2)
+    // shadow-var keeps its id (re-raised), roundRaised stays at 1, still unresolved.
+    const carriedShadowVar = round2Data.findings.find((f) => f.id === shadowVarId)
+    expect(carriedShadowVar).toBeDefined()
+    expect(carriedShadowVar!.title).toBe('shadow var')
+    expect(carriedShadowVar!.roundResolved).toBe('unresolved')
+    expect(carriedShadowVar!.roundRaised).toBe(1)
+  })
+
+  test('priorPanelReport with reopened fingerprint marks roundResolved=unresolved', async () => {
+    // Round 1: A raises F-001 (severity fix-first), it gets resolved (mark
+    // resolved manually via prior fixture data). Round 2: A re-raises the
+    // same fingerprint — must reuse F-001 id and reset to unresolved.
+    const priorPanelReport: ReviewReportPanelData = {
+      mode: 'panel',
+      upstreamRefs: upstreamRefs(),
+      reviewers: [
+        {
+          id: 'reviewer-A',
+          providerId: 'codex',
+          providerFamily: 'codex',
+          modelPolicy: 'any',
+          role: 'voter',
+          score: 8,
+          verdict: 'ready',
+          crossFamilyCheck: 'passed',
+          buildFamily: 'claude',
+          manifestHash: MANIFEST_HASH,
+        },
+        {
+          id: 'reviewer-B',
+          providerId: 'gemini',
+          providerFamily: 'gemini',
+          modelPolicy: 'any',
+          role: 'voter',
+          score: 8,
+          verdict: 'ready',
+          crossFamilyCheck: 'passed',
+          buildFamily: 'claude',
+          manifestHash: MANIFEST_HASH,
+        },
+      ],
+      synthesis: {
+        panelVerdict: 'ready',
+        quorumReason: 'cross-family quorum reached: 2 of 2 voters from {codex, gemini}',
+        eligibleVoterFamilies: ['codex', 'gemini'],
+        excludedReviewerIds: [],
+        excludedReasons: [],
+        uniqueFindingsByReviewer: { 'reviewer-A': 1, 'reviewer-B': 0 },
+        sharedFindings: 0,
+      },
+      roundTimeline: [
+        {
+          round: 1,
+          timestamp: NOW,
+          findingsRaised: 1,
+          panelVerdict: 'ready',
+        },
+      ],
+      findings: [
+        {
+          id: 'F-001',
+          title: 'edge case bug',
+          file: 'src/foo.ts',
+          line: '42',
+          severity: 'fix-first',
+          authorityImpact: 'voter',
+          sources: ['reviewer-A'],
+          recommendation: 'fix',
+          roundRaised: 1,
+          roundResolved: 1, // resolved
+        },
+      ],
+      score: {
+        roundCount: 1,
+        finalScore: 'panel',
+        finalVerdict: 'ready',
+        exitReason: 'cross-family quorum reached AND no unresolved voter actionable findings',
+      },
+      capStatus: { cap: 4, roundsUsed: 1, capExhausted: false },
+    }
+    const round2Invoker: PanelistInvoker = async (cfg) => ({
+      panelistId: cfg.id,
+      providerId: cfg.provider,
+      providerFamily: cfg.provider,
+      modelPolicy: 'any',
+      role: cfg.role,
+      score: 8,
+      verdict: 'needs-revision',
+      // Reviewer-A re-raises the SAME fingerprint that was previously resolved.
+      findings:
+        cfg.id === 'reviewer-A'
+          ? [
+              {
+                file: 'src/foo.ts',
+                line: '42',
+                title: 'edge case bug',
+                severity: 'fix-first',
+                recommendation: 'fix harder',
+              },
+            ]
+          : [],
+      manifestHash: MANIFEST_HASH,
+      stagingContent: stagingMd(cfg.id),
+    })
+    const round2 = await runReviewPanel({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      panelistInvoker: round2Invoker,
+      panel: [
+        { provider: 'codex', role: 'voter' },
+        { provider: 'gemini', role: 'voter' },
+      ],
+      buildFamily: 'claude',
+      registry: testRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
+      priorPanelReport,
+      upstreamRefs: upstreamRefs(),
+      round: 2,
+      orchestratorAgent: 'panel-orchestrator',
+      now: () => NOW,
+      fsyncDir: false,
+    })
+    if (round2.status === 'intervention') {
+      throw new Error(`unexpected intervention: ${round2.code}`)
+    }
+    const round2Md = await readFile(round2.reviewReportPath, 'utf8')
+    const round2Data = parseReviewPanelReport(round2Md)
+    // F-001 is reused (id stable), now flipped back to unresolved (reopen).
+    const reopened = round2Data.findings.find((f) => f.id === 'F-001')
+    expect(reopened).toBeDefined()
+    expect(reopened!.roundResolved).toBe('unresolved')
+    expect(reopened!.roundRaised).toBe(1) // round raised stays at the original round
   })
 })

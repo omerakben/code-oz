@@ -33,6 +33,7 @@ import {
   type ReviewSynthesizedFinding,
   type ReviewPanelist,
   type ReviewPanelTimelineEntry,
+  type ReviewReportPanelData,
   type ReviewSeverity,
   type ReviewUpstreamRefs,
   CROSS_FAMILY_CHECK_VOTER,
@@ -141,6 +142,13 @@ export interface RunReviewPanelOptions {
    *  'reviewer' since panel mode runs in the reviewer role today. Future
    *  M16+ may panel other roles. */
   readonly panelRole?: string
+  /** Prior canonical panel REVIEW.md, parsed, when round > 1. The
+   *  orchestrator carries forward synthesized findings (reusing F-NNN
+   *  ids by fingerprint), extends the round timeline with the new
+   *  entry, and marks prior fingerprints not raised this round as
+   *  resolved-this-round. Codex M14 R2 finding #1 closure: panel mode
+   *  must support multi-round lifecycle. */
+  readonly priorPanelReport?: ReviewReportPanelData
   /** Upstream refs (paths + sha256s + task + attempt + commit + patch). */
   readonly upstreamRefs: ReviewUpstreamRefs
   /** REVIEW round being driven (1..4). */
@@ -484,22 +492,63 @@ export async function runReviewPanel(
     manifestHash: inv.manifestHash,
   }))
 
-  // Synthesize findings: assign F-NNN ids, look up recommendation + line
-  // from the source panelist's first occurrence of the fingerprint.
-  const findingMap = new Map<string, { rec: string; line: string; roundResolved: number | 'unresolved' }>()
+  // Synthesize findings: look up recommendation + line from the source
+  // panelist's first occurrence of the fingerprint.
+  const findingMap = new Map<string, { rec: string; line: string }>()
   for (const { result: inv } of invocations) {
     for (const f of inv.findings) {
       const key = fingerprintLocal(f.file, f.title)
       if (!findingMap.has(key)) {
-        findingMap.set(key, { rec: f.recommendation, line: f.line, roundResolved: 'unresolved' })
+        findingMap.set(key, { rec: f.recommendation, line: f.line })
       }
     }
   }
-  const synthesizedFindings: ReviewSynthesizedFinding[] = verdict.synthesizedFindings.map(
-    (f, i) => {
-      const detail = findingMap.get(f.fingerprint) ?? { rec: '(no recommendation)', line: '0', roundResolved: 'unresolved' as const }
+
+  // Codex M14 R2 finding #1 closure: when prior panel data is supplied,
+  // carry forward F-NNN ids by fingerprint, continue numbering past the
+  // highest prior id, and mark prior findings missing from the current
+  // round as resolved-this-round. This lets a panel `needs_revision`
+  // round 1 → BUILD attempt 2 → panel round 2 cycle preserve finding
+  // ids, the round timeline, and ping-pong reopen semantics.
+  const prior = opts.priorPanelReport
+  const priorByFingerprint = new Map<string, ReviewSynthesizedFinding>()
+  let nextNumber = 1
+  if (prior) {
+    for (const f of prior.findings) {
+      priorByFingerprint.set(fingerprintLocal(f.file, f.title), f)
+      const m = f.id.match(/^F-(\d+)$/)
+      if (m) {
+        const n = Number.parseInt(m[1]!, 10)
+        if (n >= nextNumber) nextNumber = n + 1
+      }
+    }
+  }
+  const currentFingerprints = new Set<string>()
+  const synthesizedCurrent: ReviewSynthesizedFinding[] = verdict.synthesizedFindings.map(
+    (f) => {
+      const fp = f.fingerprint
+      currentFingerprints.add(fp)
+      const detail = findingMap.get(fp) ?? { rec: '(no recommendation)', line: '0' }
+      const priorMatch = priorByFingerprint.get(fp)
+      let id: string
+      let roundRaised: number
+      let roundResolved: number | 'unresolved'
+      if (priorMatch) {
+        // Reuse prior id + roundRaised. If the prior was resolved and is
+        // raised again now, that is a reopen — set to unresolved (the
+        // panel verdict path will catch it via the unresolved-voter
+        // block / fix-first invariants).
+        id = priorMatch.id
+        roundRaised = priorMatch.roundRaised
+        roundResolved = 'unresolved'
+      } else {
+        id = `F-${String(nextNumber).padStart(3, '0')}`
+        nextNumber++
+        roundRaised = opts.round
+        roundResolved = 'unresolved'
+      }
       return {
-        id: `F-${String(i + 1).padStart(3, '0')}`,
+        id,
         title: f.title,
         file: f.file,
         line: detail.line,
@@ -507,20 +556,38 @@ export async function runReviewPanel(
         authorityImpact: f.authorityImpact,
         sources: f.sources,
         recommendation: detail.rec,
-        roundRaised: opts.round,
-        roundResolved: detail.roundResolved,
+        roundRaised,
+        roundResolved,
       }
     },
   )
+  // Carry forward prior findings whose fingerprint is NOT in the current
+  // round — they are resolved this round (no panelist re-raised them).
+  // Already-resolved prior findings keep their roundResolved value.
+  const synthesizedFindings: ReviewSynthesizedFinding[] = [...synthesizedCurrent]
+  if (prior) {
+    for (const f of prior.findings) {
+      const fp = fingerprintLocal(f.file, f.title)
+      if (currentFingerprints.has(fp)) continue
+      synthesizedFindings.push({
+        ...f,
+        roundResolved: f.roundResolved === 'unresolved' ? opts.round : f.roundResolved,
+      })
+    }
+  }
 
-  const timeline: ReviewPanelTimelineEntry[] = [
-    {
-      round: opts.round,
-      timestamp: now(),
-      findingsRaised: synthesizedFindings.length,
-      panelVerdict: verdict.panelVerdict,
-    },
-  ]
+  // Build the round timeline. When prior data is supplied, append the
+  // current round's entry to the prior timeline (preserves the 4-round
+  // cap semantics and makes the artifact self-describing across rounds).
+  const newTimelineEntry: ReviewPanelTimelineEntry = {
+    round: opts.round,
+    timestamp: now(),
+    findingsRaised: synthesizedCurrent.length,
+    panelVerdict: verdict.panelVerdict,
+  }
+  const timeline: ReviewPanelTimelineEntry[] = prior
+    ? [...prior.roundTimeline, newTimelineEntry]
+    : [newTimelineEntry]
 
   const uniqueFindingsByReviewer: Record<string, number> = {}
   for (const { result: inv } of invocations) uniqueFindingsByReviewer[inv.panelistId] = 0
