@@ -3,6 +3,7 @@ import {
   parseSpec,
   serializeSpec,
   hasMinimumContent,
+  adaptYamlStyleSpec,
   SPEC_OPEN_QUESTIONS_NONE,
   SPEC_SECTION_KEYS,
   type SpecArtifact,
@@ -358,5 +359,251 @@ describe('SPEC_SECTION_KEYS', () => {
       'openQuestions',
       'nonGoals',
     ])
+  })
+})
+
+// --- issue #7: YAML-style SPEC tolerance ---------------------------
+
+const YAML_SPEC = `# SPEC
+
+goals:
+  - Help a parent name their newborn.
+  - Suggest names balanced across given-name and surname pairings.
+
+users:
+  - New parents with a fixed surname.
+
+constraints:
+  - Runs locally on a phone-class device.
+
+acceptance_criteria:
+  - Given a surname, the app produces 5 candidate given names.
+
+open_questions:
+  - Does the parent want gender-neutral suggestions only?
+
+explicit_non_goals:
+  - Not building a name registry.
+`
+
+describe('adaptYamlStyleSpec (issue #7)', () => {
+  test('returns input unchanged when no YAML markers are present', () => {
+    expect(adaptYamlStyleSpec(VALID)).toBe(VALID)
+  })
+
+  test('returns input unchanged for empty / pre-title content', () => {
+    expect(adaptYamlStyleSpec('')).toBe('')
+    expect(adaptYamlStyleSpec('# SPEC\n')).toBe('# SPEC\n')
+  })
+
+  test('rewrites YAML keys to canonical H2 headings', () => {
+    const out = adaptYamlStyleSpec(YAML_SPEC)
+    expect(out).toContain('## Goals')
+    expect(out).toContain('## Users')
+    expect(out).toContain('## Constraints')
+    expect(out).toContain('## Acceptance criteria')
+    expect(out).toContain('## Open questions')
+    expect(out).toContain('## Explicit non-goals')
+  })
+
+  test('strips YAML key markers after rewrite', () => {
+    const out = adaptYamlStyleSpec(YAML_SPEC)
+    // Top-level YAML keys are replaced with H2 sections; only `# SPEC` remains
+    // as a non-bullet column-0 line.
+    const columnZeroLines = out.split('\n').filter((l) => l.length > 0 && !/^[ \t]/.test(l))
+    for (const line of columnZeroLines) {
+      expect(line.startsWith('# ') || line.startsWith('## ') || line.startsWith('- ')).toBe(true)
+    }
+  })
+
+  test('preserves bullet content from indented YAML lists', () => {
+    const out = adaptYamlStyleSpec(YAML_SPEC)
+    expect(out).toContain('- Help a parent name their newborn.')
+    expect(out).toContain('- Suggest names balanced across given-name and surname pairings.')
+    expect(out).toContain('- Given a surname, the app produces 5 candidate given names.')
+  })
+
+  test('normalises snake_case / camelCase / kebab-case key aliases', () => {
+    const variants = `# SPEC
+
+Goals:
+  - g
+
+users:
+  - u
+
+CONSTRAINTS:
+  - c
+
+acceptanceCriteria:
+  - a
+
+open-questions:
+  - q
+
+nonGoals:
+  - ng
+`
+    const out = adaptYamlStyleSpec(variants)
+    expect(out).toContain('## Goals')
+    expect(out).toContain('## Users')
+    expect(out).toContain('## Constraints')
+    expect(out).toContain('## Acceptance criteria')
+    expect(out).toContain('## Open questions')
+    expect(out).toContain('## Explicit non-goals')
+  })
+
+  test('accepts inline flow-list values (`goals: [a, b]`)', () => {
+    const flow = `# SPEC
+
+goals: [first goal, second goal]
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const out = adaptYamlStyleSpec(flow)
+    expect(out).toContain('- first goal')
+    expect(out).toContain('- second goal')
+  })
+
+  test('handles mixed format (one canonical section, one YAML key)', () => {
+    const mixed = `# SPEC
+
+## Goals
+
+- Canonical bullet stays.
+
+users:
+  - YAML user gets rewritten.
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(mixed)
+    expect(spec.goals).toEqual(['Canonical bullet stays.'])
+    expect(spec.users).toEqual(['YAML user gets rewritten.'])
+  })
+})
+
+describe('parseSpec — issue #7 YAML tolerance', () => {
+  test('parses pure-YAML input end-to-end', () => {
+    const spec = parseSpec(YAML_SPEC)
+    expect(spec.title).toBe('SPEC')
+    expect(spec.goals.length).toBe(2)
+    expect(spec.users.length).toBe(1)
+    expect(spec.constraints.length).toBe(1)
+    expect(spec.acceptance.length).toBe(1)
+    expect(spec.openQuestions.length).toBe(1)
+    expect(spec.nonGoals.length).toBe(1)
+    expect(spec.acceptance[0]).toContain('5 candidate given names')
+  })
+
+  test('round-trips YAML through serialize → reparse to canonical', () => {
+    const spec = parseSpec(YAML_SPEC)
+    const serialized = serializeSpec(spec)
+    expect(serialized).toContain('## Goals')
+    expect(serialized).not.toMatch(/^goals:/m)
+    const reparsed = parseSpec(serialized)
+    expect(reparsed.goals).toEqual(spec.goals)
+    expect(reparsed.acceptance).toEqual(spec.acceptance)
+    expect(reparsed.nonGoals).toEqual(spec.nonGoals)
+  })
+
+  test('still rejects YAML missing a section (tolerance does not invent sections)', () => {
+    const incomplete = `# SPEC
+
+goals:
+  - g
+
+users:
+  - u
+
+constraints:
+  - c
+
+acceptance:
+  - a
+
+open_questions:
+  - q
+`
+    // Missing explicit_non_goals — strict parser must still surface this.
+    const err = expectSpecLoadError(() => parseSpec(incomplete))
+    expect(err.issues.some((i) => i.code === 'spec_missing_section')).toBe(true)
+  })
+
+  test('still rejects unknown YAML keys via strict parser passthrough', () => {
+    const unknown = `# SPEC
+
+mystery_field:
+  - x
+
+goals:
+  - g
+
+users:
+  - u
+
+constraints:
+  - c
+
+acceptance:
+  - a
+
+open_questions:
+  - q
+
+non_goals:
+  - ng
+`
+    // Unknown YAML keys remain as column-0 `mystery_field:` lines and reach
+    // the strict parser's content guards.
+    expect(() => parseSpec(unknown)).toThrow()
+  })
+
+  test('accepts YAML with empty open_questions sentinel', () => {
+    const withSentinel = `# SPEC
+
+goals:
+  - g
+
+users:
+  - u
+
+constraints:
+  - c
+
+acceptance:
+  - a
+
+open_questions:
+  - ${SPEC_OPEN_QUESTIONS_NONE.slice(2)}
+
+non_goals:
+  - ng
+`
+    const spec = parseSpec(withSentinel)
+    expect(spec.openQuestions).toEqual([SPEC_OPEN_QUESTIONS_NONE.slice(2)])
   })
 })

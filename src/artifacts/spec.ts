@@ -64,6 +64,157 @@ export interface SpecArtifact {
   readonly nonGoals: readonly string[]
 }
 
+// --- YAML-style tolerance (issue #7) -------------------------------
+
+// LLMs occasionally emit SPEC.md as YAML — a top-level key per section
+// (`goals:` / `users:` / `acceptance_criteria:`) with indented `- bullet`
+// list values — instead of the canonical `## Heading\n\n- bullet` H2-block
+// schema. Tolerance scope: GitHub issue #7 — same drift class as #5
+// (HYPOTHESES) and #3 (SOURCE_CHECK REF-NONE) but on the DEFINE-phase
+// artifact, where any failure crashes the very first phase. We pre-rewrite
+// YAML key/list pairs into canonical Markdown sections before strict parsing
+// so the artifact validates instead of failing the DEFINE preview.
+//
+// Discipline boundary: the adapter fires ONLY on lines that start at column 0
+// and match a recognised SPEC section key (case-insensitive) followed by a
+// colon and end-of-line, and only when followed by indented `- bullet` lines
+// or YAML-style flow lists. Canonical `## Heading` blocks pass through
+// untouched, so mixed-format input (some YAML, some canonical) works. The
+// strict parser still owns final validation; an unrecognised top-level key
+// falls through to the strict parser's `spec_unexpected_content` error.
+
+// Key normalisation map: every recognised input key (case folded) maps to its
+// canonical section heading. Aliases (snake_case / camelCase / kebab-case /
+// abbreviated forms) all collapse to the same SpecSectionKey-equivalent
+// heading the strict parser understands.
+const YAML_SPEC_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
+  goals: 'Goals',
+  users: 'Users',
+  constraints: 'Constraints',
+  'acceptance criteria': 'Acceptance criteria',
+  acceptance_criteria: 'Acceptance criteria',
+  acceptancecriteria: 'Acceptance criteria',
+  'acceptance-criteria': 'Acceptance criteria',
+  acceptance: 'Acceptance criteria',
+  'open questions': 'Open questions',
+  open_questions: 'Open questions',
+  openquestions: 'Open questions',
+  'open-questions': 'Open questions',
+  'explicit non-goals': 'Explicit non-goals',
+  'explicit non goals': 'Explicit non-goals',
+  explicit_non_goals: 'Explicit non-goals',
+  explicitnongoals: 'Explicit non-goals',
+  'explicit-non-goals': 'Explicit non-goals',
+  nongoals: 'Explicit non-goals',
+  non_goals: 'Explicit non-goals',
+  'non-goals': 'Explicit non-goals',
+})
+
+// Probe: column-0 line starting with a recognised SPEC section key followed
+// by a colon, with no leading `## ` Markdown heading marker. Matches every
+// alias spelling in YAML_SPEC_KEY_MAP via a single regex so we can short
+// circuit when the input is already canonical Markdown.
+const YAML_SPEC_KEY_PROBE = /^(?:goals|users|constraints|acceptance(?:[ _-]?criteria)?|open[ _-]?questions|(?:explicit[ _-])?non[ _-]?goals):\s*(?:\[.*\])?\s*$/im
+
+const YAML_SPEC_KEY_LINE = /^([A-Za-z][A-Za-z _-]*?):\s*(.*)$/
+
+function normalizeSpecKey(raw: string): string | null {
+  const folded = raw.trim().toLowerCase()
+  return YAML_SPEC_KEY_MAP[folded] ?? null
+}
+
+function parseInlineList(value: string): string[] {
+  // Accepts `[a, b, c]` flow-style YAML or comma-separated bare values.
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return []
+  const flow = trimmed.match(/^\[(.*)\]$/)
+  const inner = flow !== null ? flow[1]! : trimmed
+  return inner
+    .split(',')
+    .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+    .filter((s) => s.length > 0)
+}
+
+/**
+ * Pre-parse adapter: rewrite YAML-style SPEC blocks (top-level
+ * `goals:` / `users:` / etc. keys with indented `- bullet` list values or
+ * inline flow lists) into canonical `## Heading\n\n- bullet` Markdown
+ * sections. Returns the input unchanged if no YAML markers are present.
+ *
+ * Issue #7 tolerance. Mixed-format input is supported — canonical `## `
+ * sections pass through verbatim; only YAML key/list pairs are rewritten.
+ *
+ * The adapter is intentionally narrow: it does not rewrite arbitrary YAML
+ * structure (only the recognised SPEC section keys), it does not invent
+ * sentinel content for empty sections (the strict parser surfaces that), and
+ * it preserves the canonical `# SPEC` H1 untouched.
+ */
+export function adaptYamlStyleSpec(raw: string): string {
+  if (!YAML_SPEC_KEY_PROBE.test(raw)) return raw
+  const lines = raw.split(/\r?\n/)
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    // Only rewrite lines at column 0 that match a recognised key. Anything
+    // else (canonical headings, bullets, blank lines, the H1) passes through.
+    if (/^[ \t]/.test(line) || line.length === 0 || line.startsWith('#')) {
+      out.push(line)
+      i++
+      continue
+    }
+    const keyMatch = line.match(YAML_SPEC_KEY_LINE)
+    if (keyMatch === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    const heading = normalizeSpecKey(keyMatch[1]!)
+    if (heading === null) {
+      out.push(line)
+      i++
+      continue
+    }
+    const inlineValue = keyMatch[2]!.trim()
+    const bullets: string[] = []
+    if (inlineValue.length > 0) {
+      // Inline flow list (`goals: [a, b]`) or single bare value (`goals: only goal`).
+      bullets.push(...parseInlineList(inlineValue))
+    }
+    i++
+    // Collect indented `- bullet` continuations until a column-0 line.
+    // Blank lines inside the list are tolerated when the following non-blank
+    // line is still indented; otherwise the section ends.
+    while (i < lines.length) {
+      const cont = lines[i]!
+      if (cont.length === 0) {
+        let j = i + 1
+        while (j < lines.length && lines[j]!.length === 0) j++
+        if (j >= lines.length) break
+        if (!/^[ \t]+/.test(lines[j]!)) break
+        i++
+        continue
+      }
+      if (!/^[ \t]/.test(cont)) break
+      const indented = cont.match(/^[ \t]+-\s*(.*)$/)
+      if (indented === null) {
+        // Indented continuation that isn't a bullet — drop it; the strict
+        // parser would have rejected the same content anyway.
+        i++
+        continue
+      }
+      const bullet = indented[1]!.trim()
+      if (bullet.length > 0) bullets.push(bullet)
+      i++
+    }
+    out.push(`## ${heading}`)
+    out.push('')
+    for (const b of bullets) out.push(`- ${b}`)
+    out.push('')
+  }
+  return out.join('\n')
+}
+
 // --- parser --------------------------------------------------------
 
 const BOM = '﻿'
@@ -82,7 +233,8 @@ interface SectionBuf {
  */
 export function parseSpec(raw: string, file = 'SPEC.md'): SpecArtifact {
   const issues: SpecLoadIssue[] = []
-  const text = raw.startsWith(BOM) ? raw.slice(BOM.length) : raw
+  const adapted = adaptYamlStyleSpec(raw)
+  const text = adapted.startsWith(BOM) ? adapted.slice(BOM.length) : adapted
 
   if (text.trim().length === 0) {
     throw new SpecLoadError([
