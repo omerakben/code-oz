@@ -607,3 +607,163 @@ non_goals:
     expect(spec.openQuestions).toEqual([SPEC_OPEN_QUESTIONS_NONE.slice(2)])
   })
 })
+
+describe('adaptYamlStyleSpec — Codex review block-push regressions', () => {
+  test('flow list with quoted comma keeps the scalar intact', () => {
+    // Naive split-on-comma would turn one quoted scalar into two bullets.
+    // Quote-aware splitter must preserve `"a, b"` as a single bullet.
+    const yaml = `# SPEC
+
+goals: ["first goal, with comma", "second goal"]
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(yaml)
+    expect(spec.goals).toEqual(['first goal, with comma', 'second goal'])
+  })
+
+  test('flow list with single-quoted comma keeps the scalar intact', () => {
+    const yaml = `# SPEC
+
+goals: ['a, b', c]
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(yaml)
+    expect(spec.goals).toEqual(['a, b', 'c'])
+  })
+
+  test('flow list with trailing comma drops empty trailing item', () => {
+    const yaml = `# SPEC
+
+goals: [a, b, c, ]
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(yaml)
+    expect(spec.goals).toEqual(['a', 'b', 'c'])
+  })
+
+  test('YAML continuation line is folded onto previous bullet, not dropped', () => {
+    // A folded multi-line scalar (`- First line\n    continuation`) must
+    // preserve the continuation text. Silently dropping it would corrupt
+    // author intent — the very class of bug issue #7 is fixing.
+    const yaml = `# SPEC
+
+goals:
+  - First goal line one
+    continuation of first goal
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(yaml)
+    expect(spec.goals).toEqual(['First goal line one continuation of first goal'])
+  })
+
+  test('"non goals" key (probe match without map entry) now resolves correctly', () => {
+    const yaml = `# SPEC
+
+goals:
+  - g
+
+users:
+  - u
+
+constraints:
+  - c
+
+acceptance:
+  - a
+
+open_questions:
+  - q
+
+non goals:
+  - ng
+`
+    const spec = parseSpec(yaml)
+    expect(spec.nonGoals).toEqual(['ng'])
+  })
+
+  test('BOM followed by canonical # SPEC + YAML sections parses correctly', () => {
+    // The adapter runs before BOM stripping. Verify a BOM at the start
+    // does not break either path: canonical heading detection or YAML key
+    // probe.
+    const BOM = '﻿'
+    const yaml = `${BOM}# SPEC
+
+goals:
+  - g
+
+users:
+  - u
+
+constraints:
+  - c
+
+acceptance:
+  - a
+
+open_questions:
+  - q
+
+non_goals:
+  - ng
+`
+    const spec = parseSpec(yaml)
+    expect(spec.title).toBe('SPEC')
+    expect(spec.goals).toEqual(['g'])
+  })
+})

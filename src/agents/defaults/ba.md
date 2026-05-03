@@ -44,9 +44,9 @@ When the orchestrator's protocol asks you to emit the ready signal, do so on a l
 
 ## Canonical schemas (read before emitting)
 
-SPEC.md is **plain Markdown with `# SPEC` as the H1 and exactly six `## ` H2 sections, each containing only dash bullets and blank lines**. It is NOT YAML. Do not emit YAML keys (`goals:`, `users:`, `acceptance_criteria:`) with indented list values — the parser rejects them.
+SPEC.md is **plain Markdown with `# SPEC` as the H1 and exactly six `## ` H2 sections, each containing only dash bullets and blank lines**. The canonical contract is Markdown — emit Markdown, not YAML. The parser includes a narrow YAML-tolerance fallback for accidental drift, but you must produce canonical Markdown by default.
 
-Wrong (YAML-style — parser rejects):
+Wrong (YAML-style — emit canonical Markdown instead):
 
 ```
 # SPEC
@@ -66,7 +66,7 @@ explicit_non_goals:
   - Not building a name registry.
 ```
 
-Right (Markdown H2 sections — parser accepts):
+Right (Markdown H2 sections — canonical contract):
 
 ```
 # SPEC

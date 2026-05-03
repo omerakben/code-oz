@@ -105,6 +105,7 @@ const YAML_SPEC_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
   explicit_non_goals: 'Explicit non-goals',
   explicitnongoals: 'Explicit non-goals',
   'explicit-non-goals': 'Explicit non-goals',
+  'non goals': 'Explicit non-goals',
   nongoals: 'Explicit non-goals',
   non_goals: 'Explicit non-goals',
   'non-goals': 'Explicit non-goals',
@@ -123,14 +124,49 @@ function normalizeSpecKey(raw: string): string | null {
   return YAML_SPEC_KEY_MAP[folded] ?? null
 }
 
+// Quote-aware comma splitter: splits on top-level commas only, respecting
+// single- and double-quoted scalars. `'a, b', c` -> ['\'a, b\'', ' c']
+// rather than the naive 3-way split. Required to honour the "rewrite shape,
+// not semantics" boundary — naive split on `["a, b", c]` would silently
+// turn one quoted scalar into two accepted bullets (Codex review block-push
+// finding on PR #10).
+function splitTopLevelCommas(s: string): string[] {
+  const out: string[] = []
+  let current = ''
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      current += ch
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      current += ch
+      continue
+    }
+    if (ch === ',' && !inSingle && !inDouble) {
+      out.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.length > 0) out.push(current)
+  return out
+}
+
 function parseInlineList(value: string): string[] {
   // Accepts `[a, b, c]` flow-style YAML or comma-separated bare values.
+  // Splits on top-level commas only — quoted scalars containing commas are
+  // preserved as single items.
   const trimmed = value.trim()
   if (trimmed.length === 0) return []
   const flow = trimmed.match(/^\[(.*)\]$/)
   const inner = flow !== null ? flow[1]! : trimmed
-  return inner
-    .split(',')
+  return splitTopLevelCommas(inner)
     .map((s) => s.trim().replace(/^["']|["']$/g, ''))
     .filter((s) => s.length > 0)
 }
@@ -198,8 +234,21 @@ export function adaptYamlStyleSpec(raw: string): string {
       if (!/^[ \t]/.test(cont)) break
       const indented = cont.match(/^[ \t]+-\s*(.*)$/)
       if (indented === null) {
-        // Indented continuation that isn't a bullet — drop it; the strict
-        // parser would have rejected the same content anyway.
+        // Indented continuation that isn't a `- bullet` — folded YAML
+        // continuation (the next-line text of a multi-line scalar). Append
+        // the trimmed text to the previous bullet so the author's content
+        // is preserved instead of silently dropped (Codex review block-push
+        // finding on PR #10). If there is no previous bullet (the YAML key
+        // had no inline value and no prior bullet), push the text as its
+        // own bullet — unusual but better than silent data loss.
+        const trimmedCont = cont.trim()
+        if (trimmedCont.length > 0) {
+          if (bullets.length > 0) {
+            bullets[bullets.length - 1] = `${bullets[bullets.length - 1]} ${trimmedCont}`
+          } else {
+            bullets.push(trimmedCont)
+          }
+        }
         i++
         continue
       }
