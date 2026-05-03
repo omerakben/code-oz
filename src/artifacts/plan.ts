@@ -140,13 +140,44 @@ function normalizePlanKey(raw: string): string | null {
   return YAML_PLAN_KEY_MAP[folded] ?? null
 }
 
+// Quote-aware top-level comma split — preserves quoted scalars containing
+// commas as single items. Required to honour the "rewrite shape, not
+// semantics" boundary (Codex review block-push finding on PR #10's
+// adapter; the same code shape was copied here).
+function splitTopLevelCommasPlan(s: string): string[] {
+  const out: string[] = []
+  let current = ''
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      current += ch
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      current += ch
+      continue
+    }
+    if (ch === ',' && !inSingle && !inDouble) {
+      out.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.length > 0) out.push(current)
+  return out
+}
+
 function parsePlanInlineList(value: string): string[] {
   const trimmed = value.trim()
   if (trimmed.length === 0) return []
   const flow = trimmed.match(/^\[(.*)\]$/)
   const inner = flow !== null ? flow[1]! : trimmed
-  return inner
-    .split(',')
+  return splitTopLevelCommasPlan(inner)
     .map((s) => s.trim().replace(/^["']|["']$/g, ''))
     .filter((s) => s.length > 0)
 }
@@ -213,6 +244,17 @@ export function adaptYamlStylePlan(raw: string): string {
       if (!/^[ \t]/.test(cont)) break
       const indented = cont.match(/^[ \t]+-\s*(.*)$/)
       if (indented === null) {
+        // Folded YAML continuation — append to the previous bullet so the
+        // author's content is preserved (Codex review block-push finding
+        // on PR #10's adapter; the same code shape was copied here).
+        const trimmedCont = cont.trim()
+        if (trimmedCont.length > 0) {
+          if (bullets.length > 0) {
+            bullets[bullets.length - 1] = `${bullets[bullets.length - 1]} ${trimmedCont}`
+          } else {
+            bullets.push(trimmedCont)
+          }
+        }
         i++
         continue
       }

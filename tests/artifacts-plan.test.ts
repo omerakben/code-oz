@@ -471,6 +471,69 @@ describe('parsePlan — issue #9 YAML tolerance', () => {
     expect(reparsed.tasks.length).toBe(plan.tasks.length)
   })
 
+  test('flow list with quoted comma keeps the scalar intact', () => {
+    // Quote-aware splitter regression — naive split would corrupt the goal.
+    const yaml = `# PLAN
+
+goals: ["first goal, with comma", "second goal"]
+
+## Tasks
+
+### T-001: t
+
+- Files: src/x.ts (modified)
+- Validation: bun test
+- Risk: none
+- Hypotheses: none
+- Sources: SC-SPEC-001
+
+sources:
+  - SC-SPEC-001
+
+## Out of scope
+
+- o
+
+## Open questions
+
+- q
+`
+    const plan = parsePlan(yaml)
+    expect(plan.goals).toEqual(['first goal, with comma', 'second goal'])
+  })
+
+  test('YAML continuation line is folded onto previous bullet, not dropped', () => {
+    const yaml = `# PLAN
+
+goals:
+  - First goal line one
+    continuation of first goal
+
+## Tasks
+
+### T-001: t
+
+- Files: src/x.ts (modified)
+- Validation: bun test
+- Risk: none
+- Hypotheses: none
+- Sources: SC-SPEC-001
+
+sources:
+  - SC-SPEC-001
+
+## Out of scope
+
+- o
+
+## Open questions
+
+- q
+`
+    const plan = parsePlan(yaml)
+    expect(plan.goals).toEqual(['First goal line one continuation of first goal'])
+  })
+
   test('still rejects nested YAML task blocks (defense layer 1: persona prompt)', () => {
     // Nested `- id: T-NNN` form inside Tasks is intentionally NOT rewritten
     // by the section-level adapter. The strict parser correctly rejects it.

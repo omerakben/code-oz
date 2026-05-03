@@ -579,6 +579,80 @@ describe('parseSourceCheck — issue #8 YAML tolerance', () => {
     expect(reparsed.openQuestions).toEqual(sc.openQuestions)
   })
 
+  test('flow list with quoted comma in Coverage keeps the scalar intact', () => {
+    // Quote-aware splitter regression on Coverage's flow list.
+    const yaml = `# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: t
+
+- Spec: SPEC.md AC-1
+- Quote: "Given a surname, the app produces 5 names."
+
+## Reference sources
+
+### SC-REF-NONE-001: t
+
+- Searched: glob src/**/x.ts
+- Result: no matching files
+- Why explicit: greenfield.
+
+## Docs sources
+
+### SC-DOC-001: t
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: s
+- Why: w
+
+coverage: ["T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001"]
+`
+    const sc = parseSourceCheck(yaml)
+    expect(sc.coverage.length).toBe(1)
+    expect(sc.coverage[0]!.taskId).toBe('T-001')
+  })
+
+  test('YAML continuation line in Open questions is folded, not dropped', () => {
+    const yaml = `# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: t
+
+- Spec: SPEC.md AC-1
+- Quote: q
+
+## Reference sources
+
+### SC-REF-NONE-001: t
+
+- Searched: glob src/**/x.ts
+- Result: no matching files
+- Why explicit: greenfield.
+
+## Docs sources
+
+### SC-DOC-001: t
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: s
+- Why: w
+
+## Coverage
+
+- T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+
+open_questions:
+  - First question line one
+    continuation of first question
+`
+    const sc = parseSourceCheck(yaml)
+    expect(sc.openQuestions).toEqual(['First question line one continuation of first question'])
+  })
+
   test('still rejects nested YAML source blocks (defense layer 1: persona prompt)', () => {
     // Nested `- id: SC-NNN` form is intentionally NOT rewritten by the
     // section-level adapter. The strict parser correctly rejects it.

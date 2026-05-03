@@ -90,7 +90,7 @@ Emit `<plan-ready/>` on its own line, then the canonical `# PLAN` document, then
 
 ## Canonical schemas (read before emitting)
 
-Both `PLAN.md` and `SOURCE_CHECK.md` are **plain Markdown with `## ` H2 sections, dash bullets, and `### ` H3 blocks where called for**. They are NOT YAML. Do not emit top-level YAML keys (`tasks:`, `goals:`, `spec_sources:`) with indented list values, and do not emit `- id: T-NNN` / `- id: SC-NNN` block-style entries with indented `files:` / `validation:` / `quote:` continuations — the parsers reject both forms.
+Both `PLAN.md` and `SOURCE_CHECK.md` are **plain Markdown with `## ` H2 sections, dash bullets, and `### ` H3 blocks where called for**. The canonical contract is Markdown — emit Markdown, not YAML. The parsers include a narrow YAML-tolerance fallback for accidental section-level drift, but you must produce canonical Markdown by default. Nested `- id: T-NNN` / `- id: SC-NNN` block-style entries are rejected outright by the strict parser.
 
 ### PLAN.md schema
 
