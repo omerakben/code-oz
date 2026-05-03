@@ -94,7 +94,7 @@ Both `PLAN.md` and `SOURCE_CHECK.md` are **plain Markdown with `## ` H2 sections
 
 ### PLAN.md schema
 
-Wrong (YAML-style — parser rejects):
+Wrong (YAML-style — emit canonical Markdown instead; section-level keys hit the narrow tolerance fallback, and the nested `- id: ...` block form is rejected outright):
 
 ```
 # PLAN
@@ -121,7 +121,7 @@ open_questions:
   - none.
 ```
 
-Right (Markdown sections + H3 task blocks — parser accepts):
+Right (Markdown sections + H3 task blocks — canonical contract):
 
 ```
 # PLAN
@@ -168,7 +168,7 @@ Required PLAN.md rules:
 
 ### SOURCE_CHECK.md schema
 
-Wrong (YAML-style — parser rejects):
+Wrong (YAML-style — emit canonical Markdown instead; section-level keys hit the narrow tolerance fallback, and the nested `- id: ...` block form is rejected outright):
 
 ```
 # SOURCE_CHECK
@@ -197,7 +197,7 @@ coverage:
   - T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
 ```
 
-Right (Markdown sections + H3 source blocks — parser accepts):
+Right (Markdown sections + H3 source blocks — canonical contract):
 
 ```
 # SOURCE_CHECK

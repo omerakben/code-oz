@@ -131,7 +131,11 @@ const YAML_PLAN_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
   'open-questions': 'Open questions',
 })
 
-const YAML_PLAN_KEY_PROBE = /^(?:goals|tasks|sources|out[ _-]?of[ _-]?scope|open[ _-]?questions):\s*(?:\[.*\])?\s*$/im
+// Probe enumerates the canonical alias forms exactly so that every shape
+// the probe accepts is also a key in YAML_PLAN_KEY_MAP. Mixed-separator
+// forms like `out_of-scope:` are intentionally NOT matched (probe-vs-map
+// alignment closed Codex round-1 fix-soon on PR #11).
+const YAML_PLAN_KEY_PROBE = /^(?:goals|tasks|sources|outofscope|out of scope|out_of_scope|out-of-scope|openquestions|open questions|open_questions|open-questions):\s*(?:\[.*\])?\s*$/im
 
 const YAML_PLAN_KEY_LINE = /^([A-Za-z][A-Za-z _-]*?):\s*(.*)$/
 
@@ -141,9 +145,10 @@ function normalizePlanKey(raw: string): string | null {
 }
 
 // Quote-aware top-level comma split — preserves quoted scalars containing
-// commas as single items. Required to honour the "rewrite shape, not
-// semantics" boundary (Codex review block-push finding on PR #10's
-// adapter; the same code shape was copied here).
+// commas as single items, including escaped quotes inside them. Required
+// to honour the "rewrite shape, not semantics" boundary (Codex review
+// block-push findings, rounds 1 and 2, on PR #10; same code shape copied
+// here).
 function splitTopLevelCommasPlan(s: string): string[] {
   const out: string[] = []
   let current = ''
@@ -151,6 +156,11 @@ function splitTopLevelCommasPlan(s: string): string[] {
   let inDouble = false
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]!
+    if (ch === '\\' && i + 1 < s.length) {
+      current += ch + s[i + 1]
+      i++
+      continue
+    }
     if (ch === '"' && !inSingle) {
       inDouble = !inDouble
       current += ch
@@ -227,10 +237,13 @@ export function adaptYamlStylePlan(raw: string): string {
       i++
       continue
     }
+    const keyLineIdx = i
     const inlineValue = keyMatch[2]!.trim()
     const bullets: string[] = []
     if (inlineValue.length > 0) bullets.push(...parsePlanInlineList(inlineValue))
     i++
+    let firstBulletIndent = -1
+    let abortRewrite = false
     while (i < lines.length) {
       const cont = lines[i]!
       if (cont.length === 0) {
@@ -242,25 +255,45 @@ export function adaptYamlStylePlan(raw: string): string {
         continue
       }
       if (!/^[ \t]/.test(cont)) break
+      // Reject nested YAML key (indented `key:` with no leading `-`) and
+      // deeper-indent bullets — both indicate nested structure that the
+      // section-level adapter cannot safely rewrite (Codex round-2
+      // block-push finding on PR #10; same code shape copied here).
+      if (/^[ \t]+[A-Za-z][A-Za-z0-9_-]*\s*:\s*/.test(cont) && !/^[ \t]+-\s/.test(cont)) {
+        abortRewrite = true
+        break
+      }
       const indented = cont.match(/^[ \t]+-\s*(.*)$/)
-      if (indented === null) {
-        // Folded YAML continuation — append to the previous bullet so the
-        // author's content is preserved (Codex review block-push finding
-        // on PR #10's adapter; the same code shape was copied here).
-        const trimmedCont = cont.trim()
-        if (trimmedCont.length > 0) {
-          if (bullets.length > 0) {
-            bullets[bullets.length - 1] = `${bullets[bullets.length - 1]} ${trimmedCont}`
-          } else {
-            bullets.push(trimmedCont)
-          }
+      if (indented !== null) {
+        const bulletIndent = cont.search(/[^ \t]/)
+        if (firstBulletIndent === -1) {
+          firstBulletIndent = bulletIndent
+        } else if (bulletIndent > firstBulletIndent) {
+          abortRewrite = true
+          break
+        } else if (bulletIndent < firstBulletIndent) {
+          break
         }
+        const bullet = indented[1]!.trim()
+        if (bullet.length > 0) bullets.push(bullet)
         i++
         continue
       }
-      const bullet = indented[1]!.trim()
-      if (bullet.length > 0) bullets.push(bullet)
+      // Folded YAML continuation — append to the previous bullet so the
+      // author's content is preserved instead of silently dropped.
+      const trimmedCont = cont.trim()
+      if (trimmedCont.length > 0) {
+        if (bullets.length > 0) {
+          bullets[bullets.length - 1] = `${bullets[bullets.length - 1]} ${trimmedCont}`
+        } else {
+          bullets.push(trimmedCont)
+        }
+      }
       i++
+    }
+    if (abortRewrite) {
+      for (let j = keyLineIdx; j < i; j++) out.push(lines[j]!)
+      continue
     }
     out.push(`## ${heading}`)
     out.push('')

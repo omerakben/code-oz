@@ -653,6 +653,78 @@ open_questions:
     expect(sc.openQuestions).toEqual(['First question line one continuation of first question'])
   })
 
+  test('escaped double quote in Coverage flow scalar does not corrupt split', () => {
+    // PR #10 round-2 block-push regression mirrored to SOURCE_CHECK.
+    const yaml = `# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: t
+
+- Spec: SPEC.md AC-1
+- Quote: q
+
+## Reference sources
+
+### SC-REF-NONE-001: t
+
+- Searched: glob src/**/x.ts
+- Result: no matching files
+- Why explicit: greenfield.
+
+## Docs sources
+
+### SC-DOC-001: t
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: s
+- Why: w
+
+coverage: ["T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001", "T-002 -> SC-SPEC-001"]
+`
+    const sc = parseSourceCheck(yaml)
+    expect(sc.coverage.length).toBe(2)
+    expect(sc.coverage[0]!.taskId).toBe('T-001')
+    expect(sc.coverage[1]!.taskId).toBe('T-002')
+  })
+
+  test('nested YAML map under Coverage key is rejected, not flattened', () => {
+    // PR #10 round-2 block-push regression mirrored to SOURCE_CHECK.
+    const yaml = `# SOURCE_CHECK
+
+## Spec sources
+
+### SC-SPEC-001: t
+
+- Spec: SPEC.md AC-1
+- Quote: q
+
+## Reference sources
+
+### SC-REF-NONE-001: t
+
+- Searched: glob src/**/x.ts
+- Result: no matching files
+- Why explicit: greenfield.
+
+## Docs sources
+
+### SC-DOC-001: t
+
+- Library: bun
+- URL: https://bun.sh/docs/test
+- Section: s
+- Why: w
+
+coverage:
+  - T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001
+    nested:
+      - x
+`
+    expect(() => parseSourceCheck(yaml)).toThrow()
+  })
+
   test('still rejects nested YAML source blocks (defense layer 1: persona prompt)', () => {
     // Nested `- id: SC-NNN` form is intentionally NOT rewritten by the
     // section-level adapter. The strict parser correctly rejects it.

@@ -534,6 +534,73 @@ sources:
     expect(plan.goals).toEqual(['First goal line one continuation of first goal'])
   })
 
+  test('escaped double quote in flow scalar does not corrupt comma split', () => {
+    // PR #10 round-2 block-push regression mirrored to PLAN.
+    const yaml = `# PLAN
+
+goals: ["say \\"yes, now\\"", "second"]
+
+## Tasks
+
+### T-001: t
+
+- Files: src/x.ts (modified)
+- Validation: bun test
+- Risk: none
+- Hypotheses: none
+- Sources: SC-SPEC-001
+
+sources:
+  - SC-SPEC-001
+
+## Out of scope
+
+- o
+
+## Open questions
+
+- q
+`
+    const plan = parsePlan(yaml)
+    expect(plan.goals.length).toBe(2)
+    expect(plan.goals[0]).toContain('yes, now')
+    expect(plan.goals[1]).toBe('second')
+  })
+
+  test('nested YAML map under section key is rejected, not flattened', () => {
+    // PR #10 round-2 block-push regression mirrored to PLAN.
+    const yaml = `# PLAN
+
+goals:
+  - first
+    nested:
+      - sub1
+
+## Tasks
+
+### T-001: t
+
+- Files: src/x.ts (modified)
+- Validation: bun test
+- Risk: none
+- Hypotheses: none
+- Sources: SC-SPEC-001
+
+## Sources
+
+- SC-SPEC-001
+
+## Out of scope
+
+- o
+
+## Open questions
+
+- q
+`
+    expect(() => parsePlan(yaml)).toThrow()
+  })
+
   test('still rejects nested YAML task blocks (defense layer 1: persona prompt)', () => {
     // Nested `- id: T-NNN` form inside Tasks is intentionally NOT rewritten
     // by the section-level adapter. The strict parser correctly rejects it.
