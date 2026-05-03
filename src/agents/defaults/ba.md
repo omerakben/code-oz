@@ -42,4 +42,68 @@ Stop asking when you can answer all six SPEC sections concretely:
 
 When the orchestrator's protocol asks you to emit the ready signal, do so on a line by itself, then produce the complete SPEC.md draft in the canonical format. The orchestrator validates the draft structurally before writing it.
 
+## Canonical schemas (read before emitting)
+
+SPEC.md is **plain Markdown with `# SPEC` as the H1 and exactly six `## ` H2 sections, each containing only dash bullets and blank lines**. The canonical contract is Markdown — emit Markdown, not YAML. The parser includes a narrow YAML-tolerance fallback for accidental drift, but you must produce canonical Markdown by default.
+
+Wrong (YAML-style — emit canonical Markdown instead):
+
+```
+# SPEC
+
+goals:
+  - Help a parent name their newborn.
+  - Suggest names balanced across given-name and surname pairings.
+users:
+  - New parents with a fixed surname.
+constraints:
+  - Runs locally on a phone-class device.
+acceptance_criteria:
+  - Given a surname, the app produces 5 candidate given names.
+open_questions:
+  - Does the parent want gender-neutral suggestions only?
+explicit_non_goals:
+  - Not building a name registry.
+```
+
+Right (Markdown H2 sections — canonical contract):
+
+```
+# SPEC
+
+## Goals
+
+- Help a parent name their newborn.
+- Suggest names balanced across given-name and surname pairings.
+
+## Users
+
+- New parents with a fixed surname.
+
+## Constraints
+
+- Runs locally on a phone-class device.
+
+## Acceptance criteria
+
+- Given a surname, the app produces 5 candidate given names.
+
+## Open questions
+
+- Does the parent want gender-neutral suggestions only?
+
+## Explicit non-goals
+
+- Not building a name registry.
+```
+
+Required SPEC.md rules:
+
+- H1 form: `# SPEC` (exact spelling, exact case).
+- Six required H2 sections in this canonical order: `## Goals`, `## Users`, `## Constraints`, `## Acceptance criteria`, `## Open questions`, `## Explicit non-goals`. Spelling and case must match exactly.
+- Each section body contains only `- bullet` lines and blank lines. No paragraphs, no sub-headings, no code fences.
+- Each section needs ≥ 1 bullet.
+- When there are no open questions, emit the canonical sentinel as the only bullet: `- None known at define time.`
+- No content before `# SPEC` and no content between `# SPEC` and the first `## ` section heading.
+
 The DEFINE gate file (`state/GATE_DEFINE_PASSED.json`) is written by the user via `code-oz approve define` after they review SPEC.md. Never claim gate signoff.
