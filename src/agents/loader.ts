@@ -99,6 +99,13 @@ export function buildRegistry(opts: BuildRegistryOptions): AgentRegistry {
   enforceDebateOpposingFamilyAfterOverride(resolved)
   enforceCrossFamilyReview(resolved)
   enforceProviderPhaseEligibility(resolved)
+  // M14: authoritative panel cross-family check. Layer 2 of the 5-layer
+  // defense (per docs/contracts/REVIEW_PANEL.md). Layer 1 (config-load) is
+  // best-effort — it uses defaultProvider when `company.builder.provider`
+  // is unset and cannot see the bundled BUILD agent's frontmatter provider.
+  // This pass uses the resolved BUILD agent's provider, which is the
+  // authoritative value at runtime.
+  enforceReviewerPanelCrossFamily(resolved, opts.company)
 
   return makeRegistry(resolved)
 }
@@ -255,6 +262,67 @@ function enforceProviderPhaseEligibility(definitions: readonly AgentDefinition[]
           })
         }
       }
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new AgentLoadError(conflicts)
+  }
+}
+
+/**
+ * M14 (rule 20: panel quorum + cross-family enforcement + synthesis).
+ * Authoritative cross-family check for `company.reviewer.panel` voters.
+ * Runs after `applyCompanyOverrides` so the BUILD agent's resolved
+ * provider is the same one runtime invocation will see.
+ *
+ * - Detects BUILD agent's resolved provider (the first build-phase agent;
+ *   v0.1 ships exactly one builder per CLAUDE.md rule 20).
+ * - For each `role: voter` panelist in `company.reviewer.panel`, asserts
+ *   `familyOf(voter.provider) !== familyOf(build.provider)`.
+ * - Same-family `role: advisory` entries pass (advisory has NO gate
+ *   authority; Codex pushback Q7 + REVIEW_PANEL.md § "Same-family
+ *   advisory authority").
+ * - Voter count enforcement is layer 1 (config-load); this layer skips
+ *   that check to avoid double-emission.
+ *
+ * Error code `panel_voter_same_family_as_build` is the same code config-
+ * load uses; the `detail` field disambiguates which layer fired.
+ */
+function enforceReviewerPanelCrossFamily(
+  definitions: readonly AgentDefinition[],
+  company: CompanyConfig | undefined,
+): void {
+  const panel = company?.reviewer?.panel
+  if (panel === undefined || panel.length === 0) return
+
+  const buildAgents = definitions.filter((d) => d.phase === 'build')
+  if (buildAgents.length === 0) return
+  // v0.1 ships exactly one BUILD agent per the M7 single-builder
+  // discipline; if a future profile lifts that, all BUILD families must
+  // be cross-family with every panel voter for the panel to be valid.
+  const buildFamilies = Array.from(
+    new Set(buildAgents.map((d) => familyOf(d.provider as ProviderId))),
+  )
+
+  const conflicts: AgentLoadIssue[] = []
+  for (let i = 0; i < panel.length; i++) {
+    const panelist = panel[i]
+    if (panelist === undefined || panelist.role !== 'voter') continue
+    const voterFamily = familyOf(panelist.provider as ProviderId)
+    if (buildFamilies.includes(voterFamily)) {
+      const buildAgent = buildAgents.find((d) => familyOf(d.provider as ProviderId) === voterFamily)
+      conflicts.push({
+        file: '.code-oz/config.yaml',
+        code: 'panel_voter_same_family_as_build',
+        rule:
+          'company.reviewer.panel voter family must differ from the resolved BUILD family ' +
+          '(M14 panel quorum + CLAUDE.md non-negotiable rule 2; loader layer 2 — ' +
+          'config-load layer 1 is best-effort and may miss this when company.builder.provider is unset). ' +
+          'Same-family advisory entries are allowed (no gate authority); same-family voters are not.',
+        detail:
+          `panel[${i}] provider='${panelist.provider}' family='${voterFamily}' matches build family ` +
+          `'${voterFamily}' (build agent='${buildAgent?.name ?? '?'}', provider='${buildAgent?.provider ?? '?'}').`,
+      })
     }
   }
   if (conflicts.length > 0) {

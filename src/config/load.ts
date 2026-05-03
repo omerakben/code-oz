@@ -11,11 +11,13 @@ import { paths as codeOzPaths } from '../paths.ts'
 import {
   DEFAULT_CONFIG,
   M12_COMPANY_ROLES,
+  PANELIST_ROLES,
   type ByRoleBudget,
   type CodeOzConfig,
   type CompanyConfig,
   type CompanyRole,
   type CompanyRoleOverride,
+  type Panelist,
   type PhaseBudget,
   type GlobalBudget,
   type Budgets,
@@ -25,6 +27,8 @@ import {
   type OnMaxRoundsBehavior,
 } from './schema.ts'
 import { AGENT_PROVIDERS, type AgentProvider } from '../agents/schema.ts'
+import { familyOf } from '../providers/families.ts'
+import type { ProviderId } from '../providers/types.ts'
 import type { Phase, Profile } from '../state/schemas.ts'
 
 export interface LoadConfigOptions {
@@ -142,7 +146,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   const budgets = mergeBudgets(raw.budgets, file, issues)
   const permissions = mergePermissions(raw.permissions, file, issues)
   const phases = mergePhases(raw.phases, file, issues)
-  const company = mergeCompany(raw.company, file, issues)
+  const company = mergeCompany(raw.company, defaultProvider, file, issues)
 
   if (issues.length > 0) {
     throw new ConfigLoadError(issues)
@@ -168,10 +172,20 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
 // Decision B and Risk #5, unsupported row keys (`permissions`, `budgets`,
 // `bash`) raise typed config issues so the user does not get false
 // authority over deferred surfaces.
+//
+// M14 (rule 20: panel quorum + cross-family enforcement + synthesis):
+// the `panel` field is allowed ONLY on the `reviewer` role; any other
+// role with `panel:` raises `config_invalid_value`. Panel validation
+// is layer 1 of the 5-layer defense-in-depth; the agent loader's
+// panel-cross-family check is the authoritative pass once the resolved
+// build family is known. See docs/contracts/REVIEW_PANEL.md.
 const COMPANY_ROW_FIELDS = ['provider', 'model'] as const
+const REVIEWER_ROW_FIELDS = ['provider', 'model', 'panel'] as const
+const PANELIST_FIELDS = ['provider', 'model', 'role'] as const
 
 function mergeCompany(
   raw: unknown,
+  defaultProvider: AgentProvider,
   file: string,
   issues: ConfigLoadIssue[],
 ): CompanyConfig | undefined {
@@ -185,6 +199,25 @@ function mergeCompany(
     return undefined
   }
   const c = raw as Record<string, unknown>
+  // Pre-resolve build provider (best-effort) so the reviewer panel cross-
+  // family check at config-load can fire before the agent loader runs.
+  // Authoritative cross-family check happens in src/agents/loader.ts where
+  // the resolved BUILD agent's actual provider is known. Layer 1 here is
+  // best-effort early rejection; layer 2 is the authoritative loader pass.
+  const builderRaw = c.builder
+  let builderProvider: AgentProvider | undefined
+  if (
+    builderRaw !== null &&
+    typeof builderRaw === 'object' &&
+    !Array.isArray(builderRaw) &&
+    typeof (builderRaw as Record<string, unknown>).provider === 'string' &&
+    (AGENT_PROVIDERS as readonly string[]).includes(
+      (builderRaw as Record<string, unknown>).provider as string,
+    )
+  ) {
+    builderProvider = (builderRaw as Record<string, unknown>).provider as AgentProvider
+  }
+  const buildProviderForPanelCheck: AgentProvider = builderProvider ?? defaultProvider
   const out: Partial<Record<CompanyRole, CompanyRoleOverride>> = {}
   for (const [key, rowRaw] of Object.entries(c)) {
     if (!(M12_COMPANY_ROLES as readonly string[]).includes(key)) {
@@ -197,7 +230,13 @@ function mergeCompany(
       continue
     }
     const role = key as CompanyRole
-    const override = mergeCompanyRow(rowRaw, role, file, issues)
+    const override = mergeCompanyRow(
+      rowRaw,
+      role,
+      buildProviderForPanelCheck,
+      file,
+      issues,
+    )
     if (override !== undefined) {
       out[role] = override
     }
@@ -209,6 +248,7 @@ function mergeCompany(
 function mergeCompanyRow(
   raw: unknown,
   role: CompanyRole,
+  buildProviderForPanelCheck: AgentProvider,
   file: string,
   issues: ConfigLoadIssue[],
 ): CompanyRoleOverride | undefined {
@@ -221,19 +261,23 @@ function mergeCompanyRow(
     return undefined
   }
   const r = raw as Record<string, unknown>
-  // Surface every unsupported row key, not just the first — users typing a
-  // YAML row often add several at once (`permissions`, `budgets`, `bash`).
+  // Reviewer accepts `panel` in addition to provider/model; other roles do not.
+  const allowedFields = role === 'reviewer' ? REVIEWER_ROW_FIELDS : COMPANY_ROW_FIELDS
   for (const k of Object.keys(r)) {
-    if (!(COMPANY_ROW_FIELDS as readonly string[]).includes(k)) {
+    if (!(allowedFields as readonly string[]).includes(k)) {
+      const detail =
+        k === 'panel' && role !== 'reviewer'
+          ? `'panel' is valid only on company.reviewer (M14 reviewer panel v1)`
+          : `unsupported key: '${k}'`
       issues.push({
         file,
         code: 'config_invalid_value',
-        rule: `company.${role} may contain only ${COMPANY_ROW_FIELDS.join(' / ')} in v0.1 (per-role budgets are M13; permissions stay persona-shaped)`,
-        detail: `unsupported key: '${k}'`,
+        rule: `company.${role} may contain only ${allowedFields.join(' / ')} in v0.1 (per-role budgets are M13; permissions stay persona-shaped)`,
+        detail,
       })
     }
   }
-  const override: { provider?: AgentProvider; model?: string } = {}
+  const override: { provider?: AgentProvider; model?: string; panel?: readonly Panelist[] } = {}
   if (r.provider !== undefined) {
     if (
       typeof r.provider !== 'string' ||
@@ -261,7 +305,152 @@ function mergeCompanyRow(
       override.model = r.model
     }
   }
+  if (role === 'reviewer' && r.panel !== undefined) {
+    const panel = mergeReviewerPanel(r.panel, buildProviderForPanelCheck, file, issues)
+    if (panel !== undefined) {
+      override.panel = panel
+    }
+  }
   return Object.freeze(override)
+}
+
+/**
+ * M14: parse + validate `company.reviewer.panel`. Layer 1 of the 5-layer
+ * defense-in-depth (per docs/contracts/REVIEW_PANEL.md § "Five-layer
+ * defense-in-depth"). Validates:
+ *   - shape (must be array of mappings)
+ *   - each panelist has valid provider, role, optional model
+ *   - exactly two `voter` panelists (no configurable quorum in v1)
+ *   - voter families are cross-family vs the resolved build family
+ *     (best-effort here; agent loader runs the authoritative check)
+ *   - optional advisory panelists allowed; advisory may be same-family
+ *     (advisory has no gate authority — Codex pushback Q7)
+ *
+ * Errors:
+ *   - `panel_voter_count_invalid` if voters !== 2
+ *   - `panel_voter_same_family_as_build` if any voter is same-family
+ *   - `config_invalid_shape` for malformed array / mapping
+ *   - `config_invalid_value` for invalid provider / role / model
+ */
+function mergeReviewerPanel(
+  raw: unknown,
+  buildProvider: AgentProvider,
+  file: string,
+  issues: ConfigLoadIssue[],
+): readonly Panelist[] | undefined {
+  if (!Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'company.reviewer.panel must be an array of panelists',
+      detail: `got ${typeof raw === 'object' && raw !== null ? 'object' : typeof raw}`,
+    })
+    return undefined
+  }
+  const buildFamily = familyOf(buildProvider as ProviderId)
+  const panelists: Panelist[] = []
+  let voterCount = 0
+  for (let i = 0; i < raw.length; i++) {
+    const itemRaw = raw[i]
+    if (itemRaw === null || typeof itemRaw !== 'object' || Array.isArray(itemRaw)) {
+      issues.push({
+        file,
+        code: 'config_invalid_shape',
+        rule: `company.reviewer.panel[${i}] must be a mapping with provider + role (model optional)`,
+      })
+      continue
+    }
+    const item = itemRaw as Record<string, unknown>
+    for (const k of Object.keys(item)) {
+      if (!(PANELIST_FIELDS as readonly string[]).includes(k)) {
+        issues.push({
+          file,
+          code: 'config_invalid_value',
+          rule: `company.reviewer.panel[${i}] may contain only ${PANELIST_FIELDS.join(' / ')}`,
+          detail: `unsupported key: '${k}'`,
+        })
+      }
+    }
+    let provider: AgentProvider | undefined
+    if (
+      typeof item.provider !== 'string' ||
+      !(AGENT_PROVIDERS as readonly string[]).includes(item.provider)
+    ) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `company.reviewer.panel[${i}].provider must be one of: ${AGENT_PROVIDERS.join(' | ')}`,
+        detail: `got ${JSON.stringify(item.provider)}`,
+      })
+    } else {
+      provider = item.provider as AgentProvider
+    }
+    let panelistRole: 'voter' | 'advisory' | undefined
+    if (
+      typeof item.role !== 'string' ||
+      !(PANELIST_ROLES as readonly string[]).includes(item.role)
+    ) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `company.reviewer.panel[${i}].role must be one of: ${PANELIST_ROLES.join(' | ')}`,
+        detail: `got ${JSON.stringify(item.role)}`,
+      })
+    } else {
+      panelistRole = item.role as 'voter' | 'advisory'
+    }
+    let model: string | undefined
+    if (item.model !== undefined) {
+      if (typeof item.model !== 'string' || item.model.trim().length === 0) {
+        issues.push({
+          file,
+          code: 'config_invalid_value',
+          rule: `company.reviewer.panel[${i}].model must be a non-blank string`,
+          detail: `got ${JSON.stringify(item.model)}`,
+        })
+      } else {
+        model = item.model
+      }
+    }
+    if (provider === undefined || panelistRole === undefined) continue
+
+    if (panelistRole === 'voter') {
+      voterCount++
+      const voterFamily = familyOf(provider as ProviderId)
+      if (voterFamily === buildFamily) {
+        issues.push({
+          file,
+          code: 'panel_voter_same_family_as_build',
+          rule:
+            'company.reviewer.panel voter family must differ from the resolved BUILD family ' +
+            '(M14 panel quorum + CLAUDE.md non-negotiable rule 2). ' +
+            'Same-family advisory entries are allowed (no gate authority); same-family voters are not.',
+          detail:
+            `panel[${i}] provider='${provider}' family='${voterFamily}' matches build family ` +
+            `'${buildFamily}' (build provider='${buildProvider}'). Use a different family or change role to advisory.`,
+        })
+      }
+    }
+
+    panelists.push(
+      Object.freeze({
+        provider,
+        ...(model !== undefined ? { model } : {}),
+        role: panelistRole,
+      }),
+    )
+  }
+  if (voterCount !== 2) {
+    issues.push({
+      file,
+      code: 'panel_voter_count_invalid',
+      rule:
+        'company.reviewer.panel must have exactly 2 voters in v0.1 ' +
+        '(M14 fixed-quorum; configurable k-of-N is M16+). Optional advisory entries do not count.',
+      detail: `got ${voterCount} voter${voterCount === 1 ? '' : 's'} (panel.length=${raw.length})`,
+    })
+  }
+  return Object.freeze(panelists)
 }
 
 function mergeModels(

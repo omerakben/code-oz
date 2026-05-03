@@ -19,9 +19,27 @@ import type { CompanyRole } from '../agents/role.ts'
 // are M13 and permissions stay persona-shaped; unsupported row keys
 // (`permissions`, `budgets`, `bash`) raise a typed config issue at
 // load time so users do not get false authority over a deferred surface.
+//
+// M14 (rule 20: panel quorum + cross-family enforcement + synthesis):
+// the optional `panel` field is valid ONLY on the `reviewer` role. When
+// present, it declares a multi-provider Reviewer panel; the loader
+// rejects panels with !==2 voters, voters whose family matches the
+// resolved BUILD family, or `panel` on any role other than reviewer.
+// Same-family advisory entries are allowed but carry NO gate authority
+// (positive or negative). See docs/contracts/REVIEW_PANEL.md.
+export interface Panelist {
+  readonly provider: AgentProvider
+  readonly model?: string
+  readonly role: 'voter' | 'advisory'
+}
+
+export const PANELIST_ROLES = ['voter', 'advisory'] as const
+
 export interface CompanyRoleOverride {
   readonly provider?: AgentProvider
   readonly model?: string
+  /** M14: panel applies to the `reviewer` role only; loader rejects elsewhere. */
+  readonly panel?: readonly Panelist[]
 }
 
 export type CompanyConfig = Readonly<Partial<Record<CompanyRole, CompanyRoleOverride>>>

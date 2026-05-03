@@ -16,6 +16,7 @@ export type AgentLoadErrorCode =
   | 'loader_cross_family_violation'
   | 'loader_provider_phase_not_eligible'
   | 'loader_company_role_unknown'
+  | 'panel_voter_same_family_as_build'
 
 export interface AgentLoadIssue {
   readonly file: string
