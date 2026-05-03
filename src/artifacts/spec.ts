@@ -21,6 +21,7 @@
 // Markdown with normalized whitespace.
 
 import { SpecLoadError, type SpecLoadIssue } from './errors.ts'
+import { parseInlineList } from './yaml-tolerance.ts'
 
 // --- types ---------------------------------------------------------
 
@@ -125,62 +126,6 @@ const YAML_SPEC_KEY_LINE = /^([A-Za-z][A-Za-z _-]*?):\s*(.*)$/
 function normalizeSpecKey(raw: string): string | null {
   const folded = raw.trim().toLowerCase()
   return YAML_SPEC_KEY_MAP[folded] ?? null
-}
-
-// Quote-aware comma splitter: splits on top-level commas only, respecting
-// single- and double-quoted scalars and backslash escapes inside them.
-// `'a, b', c` -> ['\'a, b\'', ' c']; `"\"yes, now\""` stays intact instead
-// of toggling quote state on the escaped quote. Required to honour the
-// "rewrite shape, not semantics" boundary — naive split would silently
-// turn one quoted scalar into multiple accepted bullets (Codex review
-// block-push findings, rounds 1 and 2, on PR #10).
-function splitTopLevelCommas(s: string): string[] {
-  const out: string[] = []
-  let current = ''
-  let inSingle = false
-  let inDouble = false
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]!
-    // Backslash escape — preserve verbatim, don't toggle quote state.
-    // Honors `\"` inside double-quoted scalars and `\'` inside single-quoted
-    // scalars; the escaped char passes through to the bullet text untouched.
-    if (ch === '\\' && i + 1 < s.length) {
-      current += ch + s[i + 1]
-      i++
-      continue
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble
-      current += ch
-      continue
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle
-      current += ch
-      continue
-    }
-    if (ch === ',' && !inSingle && !inDouble) {
-      out.push(current)
-      current = ''
-      continue
-    }
-    current += ch
-  }
-  if (current.length > 0) out.push(current)
-  return out
-}
-
-function parseInlineList(value: string): string[] {
-  // Accepts `[a, b, c]` flow-style YAML or comma-separated bare values.
-  // Splits on top-level commas only — quoted scalars containing commas are
-  // preserved as single items.
-  const trimmed = value.trim()
-  if (trimmed.length === 0) return []
-  const flow = trimmed.match(/^\[(.*)\]$/)
-  const inner = flow !== null ? flow[1]! : trimmed
-  return splitTopLevelCommas(inner)
-    .map((s) => s.trim().replace(/^["']|["']$/g, ''))
-    .filter((s) => s.length > 0)
 }
 
 /**

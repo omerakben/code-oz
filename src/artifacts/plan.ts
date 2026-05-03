@@ -29,6 +29,7 @@
 // All other H2 sections are bullets-only (mirroring SPEC.md).
 
 import { PlanLoadError, type PlanLoadIssue } from './errors.ts'
+import { parseInlineList } from './yaml-tolerance.ts'
 
 // --- types ---------------------------------------------------------
 
@@ -144,54 +145,6 @@ function normalizePlanKey(raw: string): string | null {
   return YAML_PLAN_KEY_MAP[folded] ?? null
 }
 
-// Quote-aware top-level comma split — preserves quoted scalars containing
-// commas as single items, including escaped quotes inside them. Required
-// to honour the "rewrite shape, not semantics" boundary (Codex review
-// block-push findings, rounds 1 and 2, on PR #10; same code shape copied
-// here).
-function splitTopLevelCommasPlan(s: string): string[] {
-  const out: string[] = []
-  let current = ''
-  let inSingle = false
-  let inDouble = false
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]!
-    if (ch === '\\' && i + 1 < s.length) {
-      current += ch + s[i + 1]
-      i++
-      continue
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble
-      current += ch
-      continue
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle
-      current += ch
-      continue
-    }
-    if (ch === ',' && !inSingle && !inDouble) {
-      out.push(current)
-      current = ''
-      continue
-    }
-    current += ch
-  }
-  if (current.length > 0) out.push(current)
-  return out
-}
-
-function parsePlanInlineList(value: string): string[] {
-  const trimmed = value.trim()
-  if (trimmed.length === 0) return []
-  const flow = trimmed.match(/^\[(.*)\]$/)
-  const inner = flow !== null ? flow[1]! : trimmed
-  return splitTopLevelCommasPlan(inner)
-    .map((s) => s.trim().replace(/^["']|["']$/g, ''))
-    .filter((s) => s.length > 0)
-}
-
 /**
  * Pre-parse adapter: rewrite SECTION-LEVEL YAML-style PLAN blocks (top-level
  * `goals:` / `sources:` / etc. keys with indented `- bullet` list values or
@@ -240,7 +193,7 @@ export function adaptYamlStylePlan(raw: string): string {
     const keyLineIdx = i
     const inlineValue = keyMatch[2]!.trim()
     const bullets: string[] = []
-    if (inlineValue.length > 0) bullets.push(...parsePlanInlineList(inlineValue))
+    if (inlineValue.length > 0) bullets.push(...parseInlineList(inlineValue))
     i++
     let firstBulletIndent = -1
     let abortRewrite = false

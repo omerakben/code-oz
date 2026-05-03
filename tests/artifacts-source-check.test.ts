@@ -653,8 +653,13 @@ open_questions:
     expect(sc.openQuestions).toEqual(['First question line one continuation of first question'])
   })
 
-  test('escaped double quote in Coverage flow scalar does not corrupt split', () => {
-    // PR #10 round-2 block-push regression mirrored to SOURCE_CHECK.
+  test('escaped double quote in flow scalar does not corrupt comma split', () => {
+    // PR #10 round-2 block-push regression mirrored to SOURCE_CHECK. The
+    // Coverage flow scalar exercises quoted-comma split (commas embedded in
+    // quoted scalars must not split top-level entries). The Open questions
+    // flow scalar exercises escape handling — `\"` inside a quoted scalar
+    // must not toggle quote state, so the inner comma stays inside the
+    // scalar and the two top-level entries split correctly.
     const yaml = `# SOURCE_CHECK
 
 ## Spec sources
@@ -682,11 +687,15 @@ open_questions:
 - Why: w
 
 coverage: ["T-001 -> SC-SPEC-001, SC-REF-NONE-001, SC-DOC-001", "T-002 -> SC-SPEC-001"]
+open_questions: ["why does \\"a, b\\" not parse", "second"]
 `
     const sc = parseSourceCheck(yaml)
     expect(sc.coverage.length).toBe(2)
     expect(sc.coverage[0]!.taskId).toBe('T-001')
     expect(sc.coverage[1]!.taskId).toBe('T-002')
+    expect(sc.openQuestions.length).toBe(2)
+    expect(sc.openQuestions[0]).toContain('a, b')
+    expect(sc.openQuestions[1]).toBe('second')
   })
 
   test('nested YAML map under Coverage key is rejected, not flattened', () => {
