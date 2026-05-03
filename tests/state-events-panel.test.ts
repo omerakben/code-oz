@@ -149,7 +149,7 @@ describe('review_panelist_completed — validator', () => {
       score: 8,
       verdict: 'ready',
       manifestHash: SHA64A,
-      stagingPath: 'state/review-panel/round-1/panelist-reviewer-A.md',
+      stagingPath: '.code-oz/runs/01HX/review-panel/round-1/panelist-reviewer-A.md',
       stagingSha256: SHA64B,
       ...overrides,
     }

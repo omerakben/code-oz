@@ -868,7 +868,7 @@ export type PhaseEvent =
        *  panelists in the same round. */
       readonly manifestHash: string
       /** Path to the per-panelist staging draft
-       *  (state/review-panel/round-<N>/panelist-<id>.md). */
+       *  (.code-oz/runs/<runId>/review-panel/round-<N>/panelist-<id>.md). */
       readonly stagingPath: string
       /** sha256 of the staging file contents. */
       readonly stagingSha256: string

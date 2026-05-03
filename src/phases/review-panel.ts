@@ -94,7 +94,7 @@ export interface PanelistInvocationResult {
    *  in the same round must report the same hash. */
   readonly manifestHash: string
   /** Full Markdown text of the per-panelist staging draft to be written
-   *  atomically to state/review-panel/round-N/panelist-<id>.md. */
+   *  atomically to .code-oz/runs/<runId>/review-panel/round-<N>/panelist-<id>.md. */
   readonly stagingContent: string
 }
 

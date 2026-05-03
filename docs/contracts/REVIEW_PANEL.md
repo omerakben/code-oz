@@ -155,7 +155,7 @@ If two panelists in the same round have different manifest hashes, that is a bug
 - Per-panelist drafts are written atomically to `.code-oz/runs/<runId>/review-panel/round-<N>/panelist-<id>.md` upon `review_panelist_completed`.
 - Canonical `REVIEW.md` is written atomically once after all required panelists complete and synthesis runs.
 - **Resume policy (v0.1, M14 R2 finding #2 + R3 finding #1 closure)**: when partial panel staging is on disk for `(runId, taskId, attempt, round=N)` AND EITHER no `review_panel_completed` event exists for that coordinate OR the matching event's `reviewReportSha256` does not match the on-disk canonical `REVIEW.md`, `runReview` refuses to replay the round. It surfaces a `review_panel_resume_mismatch` intervention naming the staging directory + panelist file count + the reason (`no_completed_event` or `sha_mismatch`). The operator must inspect, clear, or hand-resume; the orchestrator MUST NOT silently re-invoke panelist 0 (that would overwrite completed-panelist evidence and break the staging-vs-canonical authority guarantee). Auto-resume from partial staging is M16+ (deferred until measurable need per rule 21).
-- v0.1 has NO staging parser. Staging files are forensic evidence only — they are written and read for sha verification on `review_panelist_completed`, but never re-parsed back into a `ReviewReportPanelData` for a synthesis-from-staging path. The canonical artifact is always produced by `serializeReviewPanelReport` from in-memory invocation results during the round that produced them.
+- v0.1 has NO staging parser. Staging files are forensic evidence only. The orchestrator atomically writes each staging file and records its `stagingSha256` in `review_panelist_completed` from the in-memory content; v0.1 does NOT read staging back for verification, resume, recovery, or synthesis-from-staging. The canonical artifact is always produced by `serializeReviewPanelReport` from in-memory invocation results during the round that produced them.
 
 This invariant prevents **partial-but-authoritative artifacts**: a canonical `REVIEW.md` with `panelVerdict: ready` cannot exist before the panel completes.
 
@@ -444,7 +444,7 @@ Runs the same fixture in single-mode (one reviewer) then panel-mode (configured 
 | `panel_voter_same_family_as_build` | Voter family matches build family | Edit config to use cross-family voter |
 | `panel_advisory_only` | Panel has 0 voters (advisory-only) | Add at least 2 cross-family voters |
 | `panel_routed_lineage_unknown` | Voter has `'unknown'` family (routed adapter w/o resolved lineage) | Wait for PE-2+ lineage resolution; or use direct provider |
-| `review_artifact_quorum_inconsistent` | Parsed `Synthesis.panelVerdict` differs from recomputed verdict | Artifact corruption; orchestrator regenerates from staging |
+| `review_artifact_quorum_inconsistent` | Parsed `Synthesis.panelVerdict` differs from recomputed verdict | Artifact corruption; inspect canonical REVIEW.md and events.jsonl, then restore the canonical artifact or clear the run state and rerun REVIEW (v0.1 has no synthesis-from-staging path) |
 | `review_panelist_field_order` | Per-panelist block fields out of canonical order | Persona repair |
 | `review_panelist_manifest_mismatch` | Two panelists in same round have different manifest hashes | Orchestrator bug; intervention |
 | `event_panel_quorum_inconsistent` | `review_panel_completed` ready-verdict not validated by panelist ancestors | Forensic only; does not abort runtime |
