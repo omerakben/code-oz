@@ -511,3 +511,237 @@ export function detectBudgetSoftWarnings(
   }
   return Object.freeze(out)
 }
+
+// =====================================================================
+// M14 commit 7 — Aggregate panel budget preflight.
+//
+// Per Codex pushback Q6 (CODEX_RESPONSE_M14.md): aggregate preflight
+// refuses the WHOLE panel before any panelist invokes if the budget
+// cannot support a full panel round. Avoids partial panel artifacts
+// (a panel round needs ALL panelists for valid quorum).
+//
+// Per Codex pushback (commit 6 audit): NO new event vocabulary —
+// reuses M13 `budget_warning` event for soft warnings, extends
+// `assertWithinBudget`-style refusal with `provider_budget_exceeded`
+// for hard caps. Both helpers reuse the existing summarizeBudgetUse
+// reducer; the only new thing here is "next call costs" being a sum
+// across panelists rather than a single value.
+// =====================================================================
+
+/**
+ * Input shape for panel preflight. The orchestrator computes one
+ * tokensEstimate per panelist (each panelist's prompt + manifest is
+ * the same in v0.1 — the manifest equality invariant — so the per-
+ * panelist values are typically identical). The aggregate is the sum.
+ */
+export interface PanelPreflightInput {
+  /** REVIEW (panel runs in this phase only in v0.1). */
+  readonly phase: Phase
+  /** Role attribution. v0.1 panel always runs under the 'reviewer' role
+   *  (M12 + M13 routing); future M16+ may panel other roles. */
+  readonly role?: string
+  /** Per-panelist tokensEstimate (one entry per planned panelist). */
+  readonly panelistTokenEstimates: readonly number[]
+}
+
+/**
+ * Pre-panel budget refusal. Throws ProviderError(provider_budget_exceeded)
+ * on the first cap that the aggregate panel round would push over.
+ * Detail messages name "panel aggregate" so the operator can distinguish
+ * a panel refusal from a single-call refusal.
+ *
+ * Order of checks mirrors assertWithinBudget: per-phase tokens,
+ * per-role tokens (when role + cap present), global tokens, per-phase
+ * turns, global turns, per-phase provider calls, per-role provider
+ * calls (when role + cap present), global provider calls, wall time.
+ * First breach wins.
+ *
+ * Why aggregate-then-refuse rather than per-call-and-refuse-mid-panel:
+ *   A partial panel has no valid quorum. The orchestrator cannot
+ *   complete a useful round on N-1 panelists. Codex pushback Q6:
+ *   "refuse the whole panel before any call ... preserves the
+ *    invariant that a panel round means one complete pass."
+ */
+export function assertPanelWithinBudget(
+  config: CodeOzConfig,
+  input: PanelPreflightInput,
+  events: readonly LoggedEvent[],
+  now: Date = new Date(),
+): void {
+  const counts = summarizeBudgetUse(events, input.phase, now)
+  const perPhase = config.budgets.perPhase[input.phase]
+  const global = config.budgets.global
+
+  const panelistCount = input.panelistTokenEstimates.length
+  const aggregateTokens = input.panelistTokenEstimates.reduce((a, b) => a + b, 0)
+  const role = input.role
+  const byRoleRow =
+    role !== undefined ? global.byRole?.[role as keyof typeof global.byRole] : undefined
+
+  if (counts.perPhaseTokens + aggregateTokens > perPhase.maxTokensEstimate) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `panel aggregate would exceed phase ${input.phase} maxTokensEstimate`,
+      [`raise budgets.perPhase.${input.phase}.maxTokensEstimate in .code-oz/config.yaml`],
+      `running=${counts.perPhaseTokens}, panel-aggregate=${aggregateTokens} (${panelistCount} panelists), cap=${perPhase.maxTokensEstimate}`,
+    )
+  }
+  if (
+    role !== undefined &&
+    byRoleRow?.maxTokensEstimate !== undefined &&
+    (counts.byRoleTokens[role] ?? 0) + aggregateTokens > byRoleRow.maxTokensEstimate
+  ) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `panel aggregate would exceed role ${role} maxTokensEstimate`,
+      [`raise budgets.global.byRole.${role}.maxTokensEstimate in .code-oz/config.yaml`],
+      `running=${counts.byRoleTokens[role] ?? 0}, panel-aggregate=${aggregateTokens} (${panelistCount} panelists), cap=${byRoleRow.maxTokensEstimate}`,
+    )
+  }
+  if (counts.globalTokens + aggregateTokens > global.maxTokensEstimate) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `panel aggregate would exceed global maxTokensEstimate`,
+      [`raise budgets.global.maxTokensEstimate in .code-oz/config.yaml`],
+      `running=${counts.globalTokens}, panel-aggregate=${aggregateTokens} (${panelistCount} panelists), cap=${global.maxTokensEstimate}`,
+    )
+  }
+  if (counts.perPhaseTurns > perPhase.maxTurns) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `phase ${input.phase} has exceeded maxTurns (panel preflight)`,
+      [`raise budgets.perPhase.${input.phase}.maxTurns in .code-oz/config.yaml`],
+      `running=${counts.perPhaseTurns}, cap=${perPhase.maxTurns}`,
+    )
+  }
+  if (counts.globalTurns > global.maxTurns) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `global maxTurns has been exceeded (panel preflight)`,
+      [`raise budgets.global.maxTurns in .code-oz/config.yaml`],
+      `running=${counts.globalTurns}, cap=${global.maxTurns}`,
+    )
+  }
+  if (counts.perPhaseProviderCalls + panelistCount > perPhase.maxProviderCalls) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `panel aggregate would exceed phase ${input.phase} maxProviderCalls`,
+      [`raise budgets.perPhase.${input.phase}.maxProviderCalls in .code-oz/config.yaml`],
+      `running=${counts.perPhaseProviderCalls}, panel-aggregate=${panelistCount}, cap=${perPhase.maxProviderCalls}`,
+    )
+  }
+  if (
+    role !== undefined &&
+    byRoleRow?.maxProviderCalls !== undefined &&
+    (counts.byRoleProviderCalls[role] ?? 0) + panelistCount > byRoleRow.maxProviderCalls
+  ) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `panel aggregate would exceed role ${role} maxProviderCalls`,
+      [`raise budgets.global.byRole.${role}.maxProviderCalls in .code-oz/config.yaml`],
+      `running=${counts.byRoleProviderCalls[role] ?? 0}, panel-aggregate=${panelistCount}, cap=${byRoleRow.maxProviderCalls}`,
+    )
+  }
+  if (counts.globalProviderCalls + panelistCount > global.maxProviderCalls) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `panel aggregate would exceed global maxProviderCalls`,
+      [`raise budgets.global.maxProviderCalls in .code-oz/config.yaml`],
+      `running=${counts.globalProviderCalls}, panel-aggregate=${panelistCount}, cap=${global.maxProviderCalls}`,
+    )
+  }
+  if (
+    counts.wallTimeMinutes !== null &&
+    counts.wallTimeMinutes > global.maxWallTimeMinutes
+  ) {
+    throw providerError(
+      'provider_budget_exceeded',
+      `global maxWallTimeMinutes has been exceeded (panel preflight)`,
+      [`raise budgets.global.maxWallTimeMinutes in .code-oz/config.yaml`],
+      `running=${counts.wallTimeMinutes.toFixed(2)}, cap=${global.maxWallTimeMinutes}`,
+    )
+  }
+}
+
+/**
+ * M14: panel-aware soft warning detector. Mirrors
+ * detectBudgetSoftWarnings but reasons about aggregate panel cost.
+ * Returns at most one warning per (metric, role) — same dedup discipline
+ * as the per-call detector. REUSES SoftBudgetWarning shape so the
+ * caller emits the existing `budget_warning` event (no new vocabulary).
+ *
+ * The orchestrator emits the resulting warnings via the same code path
+ * M13 uses for per-call warnings: write `budget_warning` with the
+ * recorded metric / ratio / current / limit / role.
+ */
+export function detectPanelBudgetSoftWarnings(
+  config: CodeOzConfig,
+  input: PanelPreflightInput,
+  events: readonly LoggedEvent[],
+  now: Date = new Date(),
+): readonly SoftBudgetWarning[] {
+  const counts = summarizeBudgetUse(events, input.phase, now)
+  const global = config.budgets.global
+  const ratio = global.softWarnAtRatio
+  const out: SoftBudgetWarning[] = []
+  const alreadyWarned = new Set<string>()
+  const guardKey = (metric: SoftBudgetMetric, role?: string): string =>
+    `${metric}|${role ?? 'global'}`
+  for (const e of events) {
+    if (isKnownPhaseEvent(e) && e.type === 'budget_warning') {
+      alreadyWarned.add(guardKey(e.metric as SoftBudgetMetric, e.role))
+    }
+  }
+  const consider = (
+    metric: SoftBudgetMetric,
+    nextValue: number,
+    cap: number,
+    role?: string,
+  ): void => {
+    if (cap <= 0 || alreadyWarned.has(guardKey(metric, role))) return
+    const r = nextValue / cap
+    if (r >= ratio && r < 1) {
+      out.push(
+        Object.freeze({
+          metric,
+          ratio: r,
+          current: nextValue,
+          limit: cap,
+          ...(role !== undefined ? { role } : {}),
+        }),
+      )
+    }
+  }
+  const panelistCount = input.panelistTokenEstimates.length
+  const aggregateTokens = input.panelistTokenEstimates.reduce((a, b) => a + b, 0)
+  // Global warnings.
+  consider('maxTokensEstimate', counts.globalTokens + aggregateTokens, global.maxTokensEstimate)
+  consider('maxTurns', counts.globalTurns, global.maxTurns)
+  consider('maxProviderCalls', counts.globalProviderCalls + panelistCount, global.maxProviderCalls)
+  if (counts.wallTimeMinutes !== null) {
+    consider('maxWallTimeMinutes', counts.wallTimeMinutes, global.maxWallTimeMinutes)
+  }
+  // Per-role warnings.
+  const role = input.role
+  const byRoleRow =
+    role !== undefined ? global.byRole?.[role as keyof typeof global.byRole] : undefined
+  if (role !== undefined && byRoleRow !== undefined) {
+    if (byRoleRow.maxTokensEstimate !== undefined) {
+      consider(
+        'maxTokensEstimate',
+        (counts.byRoleTokens[role] ?? 0) + aggregateTokens,
+        byRoleRow.maxTokensEstimate,
+        role,
+      )
+    }
+    if (byRoleRow.maxProviderCalls !== undefined) {
+      consider(
+        'maxProviderCalls',
+        (counts.byRoleProviderCalls[role] ?? 0) + panelistCount,
+        byRoleRow.maxProviderCalls,
+        role,
+      )
+    }
+  }
+  return Object.freeze(out)
+}
