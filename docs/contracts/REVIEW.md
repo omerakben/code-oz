@@ -4,6 +4,8 @@ User-facing summary of the REVIEW phase contract — the data REVIEW writes, how
 
 This contract is part of the pre-M7 handoff surface. M7 implements [`BUILD.md`](./BUILD.md)'s writers; M8 implements [`VERIFY.md`](./VERIFY.md)'s readers + restart; M9 implements this contract. SHIP (W4 scope) consumes one immutable field from REVIEW.md and nothing else.
 
+**Panel-mode extension (M14):** when `reviewer.panel: [...]` is configured under the `company:` block with two or more entries, REVIEW delegates to the panel orchestrator. Panel mode runs cross-family quorum (exactly 2 voters) with optional same-family advisory panelists, stages per-panelist drafts, and synthesizes one canonical `REVIEW.md` after all panelists complete. See [`REVIEW_PANEL.md`](./REVIEW_PANEL.md) for the full panel contract; the schema, events, and verdict semantics in this document continue to govern when no panel is configured.
+
 ## Phase overview
 
 REVIEW invokes a different-family reviewer on the changed files BUILD recorded, runs a bounded loop (≤ 4 rounds) with score-and-verdict exit, writes `REVIEW.md`, runs the Scientist phase-tail, and stops before SHIP. REVIEW's authority is **cross-family disagreement made auditable** (non-negotiable rule 2): the reviewer's provider family must differ from BUILD's, the reviewer receives file paths (not curated summaries), and the loop closes on agreement (`score ≥ 6` AND `verdict: ready`) or exhaustion (round 5 → `NEEDS_INTERVENTION.json`).
