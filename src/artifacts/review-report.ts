@@ -1830,6 +1830,25 @@ export function parseReviewPanelReport(
           detail: `score.finalVerdict=${score.finalVerdict} timeline.last.panelVerdict=${last.panelVerdict}`,
         })
       }
+      // F5 (Codex M14 R1 finding #5): cross-section verdict invariant.
+      // Synthesis.Panel verdict, Score.Final verdict, the last Round
+      // timeline entry's panel verdict, and the recomputed panel
+      // verdict (checked below against synthesis) must ALL agree.
+      // Without this, the parser accepts a panel artifact where
+      // Synthesis says 'needs-revision' but Score says 'ready'.
+      // Combined with the existing score-vs-timeline check above and
+      // the synthesis-vs-recomputed check below, this gives full
+      // transitivity: synthesis = lastTimeline = score = recomputed.
+      if (synthesis && synthesis.panelVerdict !== last.panelVerdict) {
+        issues.push({
+          file,
+          code: 'review_artifact_verdict_field_inconsistent',
+          rule:
+            'Synthesis.Panel verdict must equal the last Round timeline entry panel verdict ' +
+            '(M14 cross-section verdict invariant; REVIEW_PANEL.md § "Five-layer defense-in-depth")',
+          detail: `synthesis.panelVerdict='${synthesis.panelVerdict}' timeline.last.panelVerdict='${last.panelVerdict}'`,
+        })
+      }
     }
   }
 
