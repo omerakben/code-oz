@@ -210,3 +210,89 @@ async function readIfExists(path: string): Promise<string | null> {
 function sha256Of(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
+
+// --- panel staging resume detection (Codex M14 R2 finding #2) ------
+
+/** Per-round panel staging directory:
+ *  `.code-oz/runs/<runId>/review-panel/round-<N>/`. The orchestrator
+ *  writes `panelist-<id>.md` into this directory atomically and emits
+ *  `review_panelist_completed` per panelist; canonical REVIEW.md is
+ *  written only after `review_panel_completed` fires. */
+export function panelStagingDir(runDir: string, round: number): string {
+  return join(runDir, 'review-panel', `round-${round}`)
+}
+
+export interface PanelResumeProbeInput {
+  readonly runDir: string
+  readonly events: readonly LoggedEvent[]
+  readonly taskId: string
+  readonly attempt: number
+  readonly round: number
+}
+
+export interface PanelResumeProbeResult {
+  /** True iff partial panel staging is on disk for the round WITHOUT a
+   *  matching review_panel_completed event. Pre-R2-F2 the runtime would
+   *  silently re-invoke panelist A and overwrite an A-staging file
+   *  produced by a prior crashed session — that violates the
+   *  staging-vs-canonical authority guarantee in REVIEW_PANEL.md. */
+  readonly mismatched: boolean
+  /** When mismatched, the path of the panel staging directory the
+   *  operator must inspect. */
+  readonly stagingDir?: string
+  /** Number of `panelist-*.md` files found under the staging dir; helps
+   *  the operator decide whether to keep prior evidence or wipe and
+   *  retry. */
+  readonly stagingFileCount?: number
+}
+
+/**
+ * Detects partial panel staging without a matching panel-completed
+ * event. Mirrors `probeReviewResume` but for the panel lifecycle:
+ *
+ *   - A directory `<runDir>/review-panel/round-N/` exists with at least
+ *     one `panelist-*.md` file, AND
+ *   - No `review_panel_completed` event for `(taskId, attempt, round=N)`
+ *     is present in `events`.
+ *
+ * Either a panelist invocation crashed mid-round, or the canonical
+ * synthesis step never finished. The orchestrator must NOT re-invoke
+ * panelist 0 blindly (the contract says completed staging is
+ * load-bearing forensic evidence). Surfacing
+ * `review_panel_resume_mismatch` lets the operator inspect / clear /
+ * resume manually.
+ */
+export async function probePanelResume(
+  input: PanelResumeProbeInput,
+): Promise<PanelResumeProbeResult> {
+  const { readdir } = await import('node:fs/promises')
+  const stagingDir = panelStagingDir(input.runDir, input.round)
+  let entries: string[]
+  try {
+    entries = await readdir(stagingDir)
+  } catch {
+    return { mismatched: false }
+  }
+  const stagingFiles = entries.filter(
+    (name) => name.startsWith('panelist-') && name.endsWith('.md'),
+  )
+  if (stagingFiles.length === 0) {
+    return { mismatched: false }
+  }
+  const completed = input.events.find(
+    (e) =>
+      isKnownPhaseEvent(e) &&
+      e.type === 'review_panel_completed' &&
+      e.taskId === input.taskId &&
+      e.attempt === input.attempt &&
+      e.finalRound === input.round,
+  )
+  if (completed === undefined) {
+    return {
+      mismatched: true,
+      stagingDir,
+      stagingFileCount: stagingFiles.length,
+    }
+  }
+  return { mismatched: false }
+}

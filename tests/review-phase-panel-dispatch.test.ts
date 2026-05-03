@@ -619,6 +619,109 @@ describe('runReview panel-mode dispatch (M14 F1)', () => {
     expect(carried!.roundResolved).toBe(2)
   })
 
+  test('partial panel staging without review_panel_completed → review_panel_resume_mismatch (Codex M14 R2 finding #2)', async () => {
+    // Simulate a crashed prior panel round: write a panelist staging file
+    // under .code-oz/runs/<RUN>/review-panel/round-1/panelist-reviewer-A.md
+    // and emit a review_panelist_completed event for it, but DO NOT emit
+    // review_panel_completed (the synthesis step never finished). A fresh
+    // runReview call must surface review_panel_resume_mismatch instead of
+    // re-invoking panelist 0.
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+
+    const stagingRoot = join(paths.runDir, 'review-panel', 'round-1')
+    await mkdir(stagingRoot, { recursive: true })
+    await writeFile(
+      join(stagingRoot, 'panelist-reviewer-A.md'),
+      '# panelist reviewer-A\n\nstub draft from prior crashed session.\n',
+    )
+    await appendEvent(
+      { file: paths.eventsFile, lockDir: paths.lockDir },
+      {
+        version: 1,
+        type: 'review_panelist_completed',
+        ts: NOW,
+        runId: RUN,
+        phase: 'review',
+        agent: 'panel-orchestrator',
+        attempt: 1,
+        taskId: 'T-001',
+        round: 1,
+        panelistId: 'reviewer-A',
+        providerId: 'codex',
+        providerFamily: 'codex',
+        modelPolicy: 'any',
+        role: 'voter',
+        score: 8,
+        verdict: 'ready',
+        manifestHash: MANIFEST_HASH,
+        stagingPath: join(stagingRoot, 'panelist-reviewer-A.md'),
+        stagingSha256: '0'.repeat(64),
+      },
+    )
+
+    let invoked = 0
+    const result = await runReview({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      reviewerAgent: REVIEWER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      invokeCtx: invokeCtxWithPanel(),
+      invokePersona: async () => '',
+      panelistInvoker: async (cfg) => {
+        invoked++
+        return {
+          panelistId: cfg.id,
+          providerId: cfg.provider,
+          providerFamily: cfg.provider,
+          modelPolicy: 'any',
+          role: cfg.role,
+          score: 8,
+          verdict: 'ready',
+          findings: [],
+          manifestHash: MANIFEST_HASH,
+          stagingContent: `# panelist ${cfg.id}\n`,
+        }
+      },
+      now: () => NOW,
+      round: 1,
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status !== 'intervention') return
+    expect(result.code).toBe('review_panel_resume_mismatch')
+    // The panel orchestrator must NOT have re-invoked any panelist —
+    // staging-vs-canonical authority guarantee.
+    expect(invoked).toBe(0)
+  })
+
+  test('completed panel round (review_panel_completed event present) does not trigger resume mismatch', async () => {
+    // Sanity: the F1 happy path (where the prior round completed
+    // cleanly) MUST NOT trigger the new resume-mismatch guard. The
+    // first-round dispatch should run as before.
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    expectScientistResponse()
+
+    const result = await runReview({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      reviewerAgent: REVIEWER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      invokeCtx: invokeCtxWithPanel(),
+      invokePersona: async () => {
+        throw new Error('not invoked in panel mode')
+      },
+      panelistInvoker: happyPanelistInvoker(),
+      now: () => NOW,
+      round: 1,
+    })
+    expect(result.status).toBe('resolved')
+  })
+
   test('panel-mode dispatch uses registry.familyOf, not opts.reviewerAgent.provider — same-family reviewer agent does not block panel branch', async () => {
     // Single-reviewer path rejects buildFamily===reviewerFamily. Panel
     // mode must not run that check (per F1 design): the panel orchestrator

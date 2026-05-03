@@ -65,6 +65,7 @@ import { runPaths as worktreePathsFor } from '../worktree/paths.ts'
 import {
   cleanupReviewDraftsForRound,
   persistReviewDraft,
+  probePanelResume,
   probeReviewResume,
   reviewDraftPath,
 } from './review-resume.ts'
@@ -387,6 +388,12 @@ function actionableSuggestionsFor(code: string): readonly string[] {
         'A partial draft exists from a prior session but no matching review_round_completed event.',
         'Inspect .code-oz/runs/<runId>/review-drafts/ and clear it before retrying, or restart the round.',
       ])
+    case 'review_panel_resume_mismatch':
+      return Object.freeze([
+        'Partial panel staging exists from a prior session but no matching review_panel_completed event.',
+        'Inspect .code-oz/runs/<runId>/review-panel/round-<N>/ for per-panelist staging drafts.',
+        'Clear that directory before retrying the round, or hand-resume by completing the missing panelists.',
+      ])
     case 'review_scientist_tail_failed':
       return Object.freeze([
         'The Scientist phase-tail produced an intervention. Inspect HYPOTHESES.md / OPEN_QUESTIONS.md drafts.',
@@ -670,6 +677,30 @@ async function runReviewInner(
   // is skipped in this branch. The branch returns through the same
   // ReviewResult contract (resolved/needs_revision/blocked/intervention).
   if (shouldUseReviewPanel(opts.invokeCtx.config.company)) {
+    // Codex M14 R2 finding #2 closure: refuse to replay a panel round
+    // that has partial staging from a prior crashed session. The
+    // single-mode `probeReviewResume` only inspects `review-drafts/`;
+    // panel mode writes per-panelist staging under
+    // `review-panel/round-<N>/panelist-*.md`. If those files are
+    // present without a matching `review_panel_completed` event, the
+    // staging-vs-canonical authority guarantee in REVIEW_PANEL.md
+    // would be violated by re-invoking panelist 0.
+    const panelProbe = await probePanelResume({
+      runDir: opts.runPaths.runDir,
+      events,
+      taskId: opts.taskId,
+      attempt,
+      round: opts.round,
+    })
+    if (panelProbe.mismatched) {
+      return recordReviewIntervention(
+        ictx,
+        'review_panel_resume_mismatch',
+        `partial panel staging exists at ${panelProbe.stagingDir} (${panelProbe.stagingFileCount ?? 0} panelist file(s)) but no review_panel_completed event for round=${opts.round}`,
+        undefined,
+        panelProbe.stagingDir,
+      )
+    }
     return runReviewPanelBranch({
       opts,
       ictx,
