@@ -767,3 +767,178 @@ non_goals:
     expect(spec.goals).toEqual(['g'])
   })
 })
+
+describe('adaptYamlStyleSpec — Codex round-2 regressions', () => {
+  test('escaped double quote in flow scalar does not corrupt comma split', () => {
+    // `["say \"yes, now\"", second]` previously toggled quote state on the
+    // escaped `"` and split at the inner comma, yielding 3 bullets. The
+    // backslash-escape path now preserves quote state, leaving the scalar
+    // intact (Codex round-2 block-push finding).
+    const yaml = `# SPEC
+
+goals: ["say \\"yes, now\\"", "second"]
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(yaml)
+    expect(spec.goals.length).toBe(2)
+    // The escaped quote stays in the bullet text (we rewrite shape, not
+    // semantics — leaving \" verbatim is acceptable).
+    expect(spec.goals[0]).toContain('yes, now')
+    expect(spec.goals[1]).toBe('second')
+  })
+
+  test('escaped single quote in flow scalar does not corrupt comma split', () => {
+    const yaml = `# SPEC
+
+goals: ['don\\'t, please', 'second']
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(yaml)
+    expect(spec.goals.length).toBe(2)
+    expect(spec.goals[0]).toContain('don')
+    expect(spec.goals[0]).toContain('please')
+    expect(spec.goals[1]).toBe('second')
+  })
+
+  test('nested YAML map under a section key is rejected, not flattened', () => {
+    // `goals:\n  - first\n    nested:\n      - sub1` previously folded
+    // `nested:` and `- sub1` into the prior bullet. The adapter now aborts
+    // the rewrite of this YAML block and lets the strict parser reject the
+    // nested structure (Codex round-2 block-push finding).
+    const yaml = `# SPEC
+
+goals:
+  - first
+    nested:
+      - sub1
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    expect(() => parseSpec(yaml)).toThrow()
+  })
+
+  test('nested list (deeper indent bullet) is rejected, not folded', () => {
+    const yaml = `# SPEC
+
+goals:
+  - first
+    - nested-item-deeper-indent
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    expect(() => parseSpec(yaml)).toThrow()
+  })
+
+  test('explicitnongoals (concatenated, no separator) probe matches and resolves', () => {
+    // Probe was previously `(?:explicit[ _-])?non[ _-]?goals` — required a
+    // separator after `explicit`, so `explicitnongoals:` skipped the
+    // adapter even though the map accepted it. The optional separator now
+    // closes the asymmetry (Codex round-2 fix-soon).
+    const yaml = `# SPEC
+
+goals:
+  - g
+
+users:
+  - u
+
+constraints:
+  - c
+
+acceptance:
+  - a
+
+open_questions:
+  - q
+
+explicitnongoals:
+  - ng
+`
+    const spec = parseSpec(yaml)
+    expect(spec.nonGoals).toEqual(['ng'])
+  })
+
+  test('round-trip: YAML flow list with comma scalar serialize → reparse stable', () => {
+    // Codex round-2 fix-soon: confirm a goal containing a comma round-trips
+    // through serialize → reparse without splitting.
+    const yaml = `# SPEC
+
+goals: ["a, b", c]
+
+users:
+  - U
+
+constraints:
+  - C
+
+acceptance:
+  - A
+
+open_questions:
+  - Q
+
+non_goals:
+  - NG
+`
+    const spec = parseSpec(yaml)
+    expect(spec.goals).toEqual(['a, b', 'c'])
+    const serialized = serializeSpec(spec)
+    expect(serialized).toContain('- a, b')
+    const reparsed = parseSpec(serialized)
+    expect(reparsed.goals).toEqual(['a, b', 'c'])
+  })
+})

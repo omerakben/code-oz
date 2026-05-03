@@ -115,7 +115,10 @@ const YAML_SPEC_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
 // by a colon, with no leading `## ` Markdown heading marker. Matches every
 // alias spelling in YAML_SPEC_KEY_MAP via a single regex so we can short
 // circuit when the input is already canonical Markdown.
-const YAML_SPEC_KEY_PROBE = /^(?:goals|users|constraints|acceptance(?:[ _-]?criteria)?|open[ _-]?questions|(?:explicit[ _-])?non[ _-]?goals):\s*(?:\[.*\])?\s*$/im
+// The `[ _-]?` after `explicit` is optional so the probe matches
+// concatenated forms like `explicitnongoals` and `explicitNonGoals`
+// (which the map already accepts) — closes a round-2 fix-soon asymmetry.
+const YAML_SPEC_KEY_PROBE = /^(?:goals|users|constraints|acceptance(?:[ _-]?criteria)?|open[ _-]?questions|(?:explicit[ _-]?)?non[ _-]?goals):\s*(?:\[.*\])?\s*$/im
 
 const YAML_SPEC_KEY_LINE = /^([A-Za-z][A-Za-z _-]*?):\s*(.*)$/
 
@@ -125,11 +128,12 @@ function normalizeSpecKey(raw: string): string | null {
 }
 
 // Quote-aware comma splitter: splits on top-level commas only, respecting
-// single- and double-quoted scalars. `'a, b', c` -> ['\'a, b\'', ' c']
-// rather than the naive 3-way split. Required to honour the "rewrite shape,
-// not semantics" boundary — naive split on `["a, b", c]` would silently
-// turn one quoted scalar into two accepted bullets (Codex review block-push
-// finding on PR #10).
+// single- and double-quoted scalars and backslash escapes inside them.
+// `'a, b', c` -> ['\'a, b\'', ' c']; `"\"yes, now\""` stays intact instead
+// of toggling quote state on the escaped quote. Required to honour the
+// "rewrite shape, not semantics" boundary — naive split would silently
+// turn one quoted scalar into multiple accepted bullets (Codex review
+// block-push findings, rounds 1 and 2, on PR #10).
 function splitTopLevelCommas(s: string): string[] {
   const out: string[] = []
   let current = ''
@@ -137,6 +141,14 @@ function splitTopLevelCommas(s: string): string[] {
   let inDouble = false
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]!
+    // Backslash escape — preserve verbatim, don't toggle quote state.
+    // Honors `\"` inside double-quoted scalars and `\'` inside single-quoted
+    // scalars; the escaped char passes through to the bullet text untouched.
+    if (ch === '\\' && i + 1 < s.length) {
+      current += ch + s[i + 1]
+      i++
+      continue
+    }
     if (ch === '"' && !inSingle) {
       inDouble = !inDouble
       current += ch
@@ -211,6 +223,7 @@ export function adaptYamlStyleSpec(raw: string): string {
       i++
       continue
     }
+    const keyLineIdx = i
     const inlineValue = keyMatch[2]!.trim()
     const bullets: string[] = []
     if (inlineValue.length > 0) {
@@ -219,8 +232,21 @@ export function adaptYamlStyleSpec(raw: string): string {
     }
     i++
     // Collect indented `- bullet` continuations until a column-0 line.
-    // Blank lines inside the list are tolerated when the following non-blank
-    // line is still indented; otherwise the section ends.
+    // Three rejection conditions abort this YAML block's rewrite — the
+    // collected lines are restored verbatim so the strict parser surfaces
+    // them rather than silently flattening them into bullets:
+    //
+    //   1. Nested YAML key (indented `key: value` line, no leading `-`)
+    //      indicates a nested map structure the section-level adapter
+    //      cannot safely rewrite.
+    //   2. Deeper-indented `- bullet` (indent > the first bullet's indent)
+    //      indicates a nested list, same reason.
+    //
+    // Otherwise indented non-bullet text is treated as a folded YAML
+    // continuation and appended to the previous bullet (Codex review
+    // block-push findings, rounds 1 and 2, on PR #10).
+    let firstBulletIndent = -1
+    let abortRewrite = false
     while (i < lines.length) {
       const cont = lines[i]!
       if (cont.length === 0) {
@@ -232,29 +258,50 @@ export function adaptYamlStyleSpec(raw: string): string {
         continue
       }
       if (!/^[ \t]/.test(cont)) break
+      // Reject nested YAML key (indented `key:` with no leading `-`).
+      if (/^[ \t]+[A-Za-z][A-Za-z0-9_-]*\s*:\s*/.test(cont) && !/^[ \t]+-\s/.test(cont)) {
+        abortRewrite = true
+        break
+      }
       const indented = cont.match(/^[ \t]+-\s*(.*)$/)
-      if (indented === null) {
-        // Indented continuation that isn't a `- bullet` — folded YAML
-        // continuation (the next-line text of a multi-line scalar). Append
-        // the trimmed text to the previous bullet so the author's content
-        // is preserved instead of silently dropped (Codex review block-push
-        // finding on PR #10). If there is no previous bullet (the YAML key
-        // had no inline value and no prior bullet), push the text as its
-        // own bullet — unusual but better than silent data loss.
-        const trimmedCont = cont.trim()
-        if (trimmedCont.length > 0) {
-          if (bullets.length > 0) {
-            bullets[bullets.length - 1] = `${bullets[bullets.length - 1]} ${trimmedCont}`
-          } else {
-            bullets.push(trimmedCont)
-          }
+      if (indented !== null) {
+        const bulletIndent = cont.search(/[^ \t]/)
+        if (firstBulletIndent === -1) {
+          firstBulletIndent = bulletIndent
+        } else if (bulletIndent > firstBulletIndent) {
+          // Reject deeper-indent bullet (nested list).
+          abortRewrite = true
+          break
+        } else if (bulletIndent < firstBulletIndent) {
+          // Shallower indent — section ended.
+          break
         }
+        const bullet = indented[1]!.trim()
+        if (bullet.length > 0) bullets.push(bullet)
         i++
         continue
       }
-      const bullet = indented[1]!.trim()
-      if (bullet.length > 0) bullets.push(bullet)
+      // Folded continuation (indented text with no `-` and no `:`).
+      // Append the trimmed text to the previous bullet so the author's
+      // content is preserved instead of silently dropped. If there is no
+      // previous bullet, push the text as its own bullet (unusual; YAML
+      // key with continuation but no leading `-`).
+      const trimmedCont = cont.trim()
+      if (trimmedCont.length > 0) {
+        if (bullets.length > 0) {
+          bullets[bullets.length - 1] = `${bullets[bullets.length - 1]} ${trimmedCont}`
+        } else {
+          bullets.push(trimmedCont)
+        }
+      }
       i++
+    }
+    if (abortRewrite) {
+      // Emit the original key line + collected lines verbatim. The strict
+      // parser will surface the unrewritten YAML structure rather than
+      // accepting a flattened form that drops nesting.
+      for (let j = keyLineIdx; j < i; j++) out.push(lines[j]!)
+      continue
     }
     out.push(`## ${heading}`)
     out.push('')
