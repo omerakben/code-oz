@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import { runReview } from '../src/phases/review.ts'
 import type { PanelistInvoker, PanelistInvocationResult } from '../src/phases/review-panel.ts'
 import { parseReviewPanelReport } from '../src/artifacts/review-report.ts'
+import { preApproveReviewHook } from '../src/commands/approve.ts'
 import { runPathsFor, initRun, type RunPaths } from '../src/state/run.ts'
 import { generateUlid, isKnownPhaseEvent } from '../src/state/schemas.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
@@ -367,6 +368,112 @@ describe('runReview panel-mode dispatch (M14 F1)', () => {
     expect(result.status).toBe('intervention')
     if (result.status !== 'intervention') return
     expect(result.code).toBe('review_panel_invoker_missing')
+  })
+
+  test('panel runReview → preApproveReviewHook accepts panel REVIEW.md (M14 F2 closure)', async () => {
+    // Full lifecycle: panel mode → canonical panel REVIEW.md → ready
+    // exit → preApproveReviewHook runs end-to-end without throwing.
+    // Pre-F2, parseReviewReport rejected `## Reviewers` grammar.
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+    expectScientistResponse()
+
+    const result = await runReview({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      reviewerAgent: REVIEWER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      invokeCtx: invokeCtxWithPanel(),
+      invokePersona: async () => {
+        throw new Error('not invoked in panel mode')
+      },
+      panelistInvoker: happyPanelistInvoker(),
+      now: () => NOW,
+      round: 1,
+    })
+    expect(result.status).toBe('resolved')
+    if (result.status !== 'resolved') return
+
+    // Hook runs without throwing. Worktree is removed (the seed step
+    // creates one under .code-oz/runs/<RUN>/worktree/), so the
+    // worktree_destroyed branch fires.
+    await preApproveReviewHook({
+      cwd: tmp,
+      runId: RUN,
+      runPaths: { eventsFile: paths.eventsFile, lockDir: paths.lockDir },
+      reviewPath: result.reviewReportPath,
+      now: () => NOW,
+    })
+  })
+
+  test('preApproveReviewHook rejects panel REVIEW.md with finalVerdict !== ready', async () => {
+    // Manually craft a panel REVIEW.md with finalVerdict='block' and
+    // confirm the hook rejects it. Panel-aware parser must STILL gate
+    // on finalVerdict.
+    await seedBuildAndVerifyArtifacts()
+    await seedBuildProviderEvent()
+
+    // Run panel mode with a blocking panelist to produce a real panel
+    // REVIEW.md with finalVerdict='block'.
+    expectScientistResponse()
+    const blockingInvoker: PanelistInvoker = async (cfg) => ({
+      panelistId: cfg.id,
+      providerId: cfg.provider,
+      providerFamily: cfg.provider,
+      modelPolicy: 'any',
+      role: cfg.role,
+      score: 8,
+      verdict: cfg.id === 'reviewer-A' ? 'block' : 'ready',
+      findings:
+        cfg.id === 'reviewer-A'
+          ? [
+              {
+                file: 'src/foo.ts',
+                line: '1',
+                title: 'critical',
+                severity: 'block',
+                recommendation: 'fix',
+              },
+            ]
+          : [],
+      manifestHash: MANIFEST_HASH,
+      stagingContent: `# panelist ${cfg.id}\n\nstub.\n`,
+    })
+    const result = await runReview({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      reviewerAgent: REVIEWER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      invokeCtx: invokeCtxWithPanel(),
+      invokePersona: async () => {
+        throw new Error('not invoked in panel mode')
+      },
+      panelistInvoker: blockingInvoker,
+      now: () => NOW,
+      round: 1,
+    })
+    expect(result.status).toBe('blocked')
+    if (result.status === 'intervention') return
+
+    // Now the hook should reject because finalVerdict is 'block'.
+    let threw: unknown = null
+    try {
+      await preApproveReviewHook({
+        cwd: tmp,
+        runId: RUN,
+        runPaths: { eventsFile: paths.eventsFile, lockDir: paths.lockDir },
+        reviewPath: result.reviewReportPath,
+        now: () => NOW,
+      })
+    } catch (err) {
+      threw = err
+    }
+    expect(threw).not.toBeNull()
+    expect(String(threw)).toContain('Final verdict')
   })
 
   test('panel-mode dispatch uses registry.familyOf, not opts.reviewerAgent.provider — same-family reviewer agent does not block panel branch', async () => {

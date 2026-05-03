@@ -46,6 +46,8 @@ import { parseSpec } from '../artifacts/spec.ts'
 import { parseVerifyReport, VerifyReportLoadError } from '../artifacts/verify-report.ts'
 import {
   parseReviewReport,
+  parseReviewPanelReport,
+  detectReviewReportMode,
   ReviewReportLoadError,
 } from '../artifacts/review-report.ts'
 import { SpecLoadError } from '../artifacts/errors.ts'
@@ -383,36 +385,82 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
     }
     throw err
   }
-  let reviewData: ReturnType<typeof parseReviewReport>
-  try {
-    reviewData = parseReviewReport(reviewText, input.reviewPath)
-  } catch (err) {
-    if (err instanceof ReviewReportLoadError) {
-      const summary = err.issues
-        .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
-        .join('\n')
-      throw new Error(
-        [
-          `cannot approve review: ${input.reviewPath} is not a valid REVIEW.md.`,
-          summary,
-          'Re-run REVIEW or repair the artifact before approving.',
-        ].join('\n'),
-      )
-    }
-    throw err
-  }
-  if (reviewData.score.finalVerdict !== 'ready') {
+
+  // Codex M14 R1 finding #2: dispatch to the mode-correct parser. Single
+  // mode uses parseReviewReport; panel mode uses parseReviewPanelReport.
+  // Panel artifacts carry `## Reviewers` (plural) instead of `## Reviewer`,
+  // so the single-mode parser would reject them as malformed even when
+  // the panel artifact is canonical.
+  const mode = detectReviewReportMode(reviewText)
+  if (mode === 'unknown') {
     throw new Error(
       [
-        `cannot approve review: REVIEW.md Final verdict is '${reviewData.score.finalVerdict}'.`,
+        `cannot approve review: ${input.reviewPath} contains neither '## Reviewer' nor '## Reviewers' (or both).`,
+        'The REVIEW.md grammar must declare exactly one of single-reviewer or panel mode.',
+        'Re-run REVIEW or repair the artifact before approving.',
+      ].join('\n'),
+    )
+  }
+
+  // Common upstream-ref shape (same on single + panel data).
+  let upstreamRefs: { readonly taskId: string; readonly attempt: number }
+  let finalVerdict: string
+  if (mode === 'panel') {
+    let panelData: ReturnType<typeof parseReviewPanelReport>
+    try {
+      panelData = parseReviewPanelReport(reviewText, input.reviewPath)
+    } catch (err) {
+      if (err instanceof ReviewReportLoadError) {
+        const summary = err.issues
+          .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+          .join('\n')
+        throw new Error(
+          [
+            `cannot approve review: ${input.reviewPath} is not a valid panel REVIEW.md.`,
+            summary,
+            'Re-run REVIEW or repair the artifact before approving.',
+          ].join('\n'),
+        )
+      }
+      throw err
+    }
+    upstreamRefs = panelData.upstreamRefs
+    finalVerdict = panelData.score.finalVerdict
+  } else {
+    let reviewData: ReturnType<typeof parseReviewReport>
+    try {
+      reviewData = parseReviewReport(reviewText, input.reviewPath)
+    } catch (err) {
+      if (err instanceof ReviewReportLoadError) {
+        const summary = err.issues
+          .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+          .join('\n')
+        throw new Error(
+          [
+            `cannot approve review: ${input.reviewPath} is not a valid REVIEW.md.`,
+            summary,
+            'Re-run REVIEW or repair the artifact before approving.',
+          ].join('\n'),
+        )
+      }
+      throw err
+    }
+    upstreamRefs = reviewData.upstreamRefs
+    finalVerdict = reviewData.score.finalVerdict
+  }
+  if (finalVerdict !== 'ready') {
+    throw new Error(
+      [
+        `cannot approve review: REVIEW.md Final verdict is '${finalVerdict}'.`,
         'Only verdict=ready REVIEW.md can be approved (CLAUDE.md non-negotiable rule 6).',
       ].join('\n'),
     )
   }
 
-  // 2. Cross-check against events.jsonl: a review_resolved event must
-  //    exist for the same (runId, taskId, attempt) AND its
-  //    reviewReportSha256 must match the canonical REVIEW.md sha.
+  // 2. Cross-check against events.jsonl. Both single-reviewer runReview
+  //    and panel-mode runReview emit `review_resolved` on a ready exit
+  //    (panel emission added in F1, finding #1 closure), so this check
+  //    is mode-agnostic. The sha must match the canonical artifact.
   const reviewSha256 = sha256Of(reviewText)
   const events = await readEvents({
     file: input.runPaths.eventsFile,
@@ -421,18 +469,55 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
   const resolved = findReviewResolvedFor(
     events,
     input.runId,
-    reviewData.upstreamRefs.taskId,
-    reviewData.upstreamRefs.attempt,
+    upstreamRefs.taskId,
+    upstreamRefs.attempt,
   )
   if (resolved === null) {
-    throw new Error(
-      [
-        `cannot approve review: no review_resolved event for taskId=${reviewData.upstreamRefs.taskId} attempt=${reviewData.upstreamRefs.attempt}.`,
-        'REVIEW must reach a canonical ready exit (and emit review_resolved) before approval.',
-      ].join('\n'),
-    )
-  }
-  if (resolved.reviewReportSha256 !== reviewSha256) {
+    // Panel-mode fallback: per F2 contract, accept review_panel_completed
+    // with panelVerdict='ready' as the ready-event substitute when no
+    // review_resolved is present. F1 typically emits both; this branch
+    // covers operator-driven approvals on artifacts produced by older
+    // panel runs that pre-date the F1 review_resolved emission.
+    if (mode === 'panel') {
+      const panelCompleted = findReviewPanelCompletedFor(
+        events,
+        input.runId,
+        upstreamRefs.taskId,
+        upstreamRefs.attempt,
+      )
+      if (panelCompleted === null) {
+        throw new Error(
+          [
+            `cannot approve review: no review_resolved or review_panel_completed event for taskId=${upstreamRefs.taskId} attempt=${upstreamRefs.attempt}.`,
+            'Panel-mode REVIEW must reach a canonical ready exit before approval.',
+          ].join('\n'),
+        )
+      }
+      if (panelCompleted.panelVerdict !== 'ready') {
+        throw new Error(
+          [
+            `cannot approve review: review_panel_completed event has panelVerdict='${panelCompleted.panelVerdict}'.`,
+            'Only panelVerdict=ready panel REVIEW.md can be approved.',
+          ].join('\n'),
+        )
+      }
+      if (panelCompleted.reviewReportSha256 !== reviewSha256) {
+        throw new Error(
+          [
+            `cannot approve review: panel REVIEW.md sha256 (${reviewSha256}) does not match the review_panel_completed event sha (${panelCompleted.reviewReportSha256}).`,
+            'The artifact on disk diverged from what runReviewPanel emitted. Re-run REVIEW or restore the canonical artifact.',
+          ].join('\n'),
+        )
+      }
+    } else {
+      throw new Error(
+        [
+          `cannot approve review: no review_resolved event for taskId=${upstreamRefs.taskId} attempt=${upstreamRefs.attempt}.`,
+          'REVIEW must reach a canonical ready exit (and emit review_resolved) before approval.',
+        ].join('\n'),
+      )
+    }
+  } else if (resolved.reviewReportSha256 !== reviewSha256) {
     throw new Error(
       [
         `cannot approve review: REVIEW.md sha256 (${reviewSha256}) does not match the review_resolved event sha (${resolved.reviewReportSha256}).`,
@@ -445,12 +530,12 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
   //    validated REVIEW.md upstream refs (the artifact is now the
   //    source of truth; build_provider_recorded is still validated as
   //    a defense-in-depth check below).
-  const attempt = reviewData.upstreamRefs.attempt
+  const attempt = upstreamRefs.attempt
   const buildProviderEvent = events
     .filter((e) =>
       isBuildProviderRecordedEventFor(
         e,
-        reviewData.upstreamRefs.taskId,
+        upstreamRefs.taskId,
         attempt,
       ),
     )
@@ -459,7 +544,7 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
   if (buildProviderEvent === undefined) {
     throw new Error(
       [
-        `cannot approve review: events.jsonl has no build_provider_recorded for taskId=${reviewData.upstreamRefs.taskId} attempt=${attempt}.`,
+        `cannot approve review: events.jsonl has no build_provider_recorded for taskId=${upstreamRefs.taskId} attempt=${attempt}.`,
         'BUILD must complete and emit build_provider_recorded before REVIEW can be approved.',
       ].join('\n'),
     )
@@ -553,6 +638,32 @@ function isBuildProviderRecordedEventFor(
     event.taskId === taskId &&
     event.attempt === attempt
   )
+}
+
+type PanelCompletedEventShape = Extract<
+  PhaseEvent,
+  { readonly type: 'review_panel_completed' }
+>
+
+function findReviewPanelCompletedFor(
+  events: readonly LoggedEvent[],
+  runId: string,
+  taskId: string,
+  attempt: number,
+): PanelCompletedEventShape | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (
+      isKnownPhaseEvent(e) &&
+      e.type === 'review_panel_completed' &&
+      e.runId === runId &&
+      e.taskId === taskId &&
+      e.attempt === attempt
+    ) {
+      return e
+    }
+  }
+  return null
 }
 
 async function defaultConfirm(message: string): Promise<boolean> {
