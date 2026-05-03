@@ -108,10 +108,21 @@ import {
 } from './review-remediation.ts'
 import type { BuildReportCarryForward } from '../artifacts/build-report.ts'
 import {
+  runReviewPanel,
+  shouldUseReviewPanel,
+  type PanelistInvoker,
+  type RunReviewPanelResult,
+} from './review-panel.ts'
+import { parseReviewPanelReport } from '../artifacts/review-report.ts'
+import { estimateTokens } from '../providers/cost.ts'
+import type { ProviderFamily } from '../providers/types.ts'
+import { stat as fsStat } from 'node:fs/promises'
+import {
   appendEvent,
   readEvents,
   type EventLogPaths,
 } from '../state/events.ts'
+import type { LoggedEvent } from '../state/schemas.ts'
 import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import { LockBusyError, withLock } from '../state/lock.ts'
@@ -138,6 +149,16 @@ export interface RunReviewOptions {
    * persona's Findings + Score can be evidence-grounded.
    */
   readonly invokePersona: (composedPrompt: string) => Promise<string>
+  /**
+   * Panel-mode invocation seam (Codex M14 R1 finding #1). When
+   * `invokeCtx.config.company.reviewer.panel` declares two or more
+   * panelists, runReview dispatches to runReviewPanel and uses this
+   * callback to invoke each panelist. Required iff panel mode is
+   * configured; ignored otherwise. Production callers wire this to
+   * invokeAgent in the CLI bootstrap layer; tests inject deterministic
+   * fakes (matching the contract used by tests/review-panel-orchestrator).
+   */
+  readonly panelistInvoker?: PanelistInvoker
   readonly now?: () => string
   /** REVIEW round being driven. Validated against REVIEW_ROUND_CAP. */
   readonly round: number
@@ -618,6 +639,28 @@ async function runReviewInner(
       `events.jsonl has no build_provider_recorded for taskId=${opts.taskId} attempt=${attempt}`,
     )
   }
+
+  // Codex M14 R1 finding #1: panel-mode dispatch. When the company config
+  // declares a 2-voter panel under reviewer.panel, the panel orchestrator
+  // owns per-panelist family resolution + cross-family enforcement
+  // (registry.familyOf), so the single-reviewer cross-family check below
+  // is skipped in this branch. The branch returns through the same
+  // ReviewResult contract (resolved/needs_revision/blocked/intervention).
+  if (shouldUseReviewPanel(opts.invokeCtx.config.company)) {
+    return runReviewPanelBranch({
+      opts,
+      ictx,
+      now,
+      buildFamily: buildFamily as ProviderFamily,
+      buildReport,
+      buildReportSha256,
+      verifyReportSha256,
+      attempt,
+      events: known,
+      priorReport,
+    })
+  }
+
   // Use the runtime ProviderRegistry's family lookup, which validates
   // adapter.family vs familyOf(adapter.id) at registration. This keeps
   // BUILD and REVIEW on the same registry-resolved authority.
@@ -1766,7 +1809,332 @@ function collectToolNames(agent: AgentDefinition): readonly string[] {
   return Object.freeze(names)
 }
 
+// --- panel-mode dispatch (Codex M14 R1 finding #1) ----------------
+
+interface RunReviewPanelBranchInput {
+  readonly opts: RunReviewOptions
+  readonly ictx: InterventionContext
+  readonly now: () => string
+  readonly buildFamily: ProviderFamily
+  readonly buildReport: ReturnType<typeof parseBuildReport>
+  readonly buildReportSha256: string
+  readonly verifyReportSha256: string
+  readonly attempt: number
+  readonly events: readonly LoggedEvent[]
+  readonly priorReport: ReviewReportData | null
+}
+
+/**
+ * Panel-mode REVIEW dispatch. Runs runReviewPanel with the wired
+ * panelistInvoker, translates RunReviewPanelResult to ReviewResult,
+ * and emits the gate-completion signals (review_resolved /
+ * review_blocked) the approve.ts hook expects so panel-mode REVIEW.md
+ * can pass `code-oz approve review`.
+ *
+ * Flow per kickoff finding #1:
+ *   - resolved → emit review_resolved + Scientist tail + requireGate('review')
+ *   - blocked  → emit review_blocked(reason='block') +
+ *                review_block_terminal intervention + Scientist tail
+ *   - needs_revision → parse REVIEW.md, run decideReviewRemediation
+ *     against synthesized findings, return ReviewNeedsRevision (mirrors
+ *     single-reviewer remediation chain so BUILD attempt N+1 routing
+ *     works for panel mode too)
+ *   - intervention → recordReviewIntervention with the panel code
+ */
+async function runReviewPanelBranch(
+  input: RunReviewPanelBranchInput,
+): Promise<ReviewResult> {
+  const { opts, ictx, now, buildFamily, buildReport, attempt, events } = input
+  const company = opts.invokeCtx.config.company
+  const panel = company?.reviewer?.panel
+  if (panel === undefined || panel.length < 2) {
+    return recordReviewIntervention(
+      ictx,
+      'review_panel_config_invariant_violated',
+      'shouldUseReviewPanel returned true but company.reviewer.panel is missing or has fewer than 2 entries',
+    )
+  }
+  if (opts.panelistInvoker === undefined) {
+    return recordReviewIntervention(
+      ictx,
+      'review_panel_invoker_missing',
+      'panel mode is configured but RunReviewOptions.panelistInvoker was not provided; ' +
+        'wire it via the CLI bootstrap or pass a deterministic fake from a test',
+    )
+  }
+
+  // Conservative per-panelist token estimate. Manifest equality means
+  // each panelist sees the same files; we sum the sizes of the BUILD
+  // changed files (best-effort: missing files contribute 0, mirroring
+  // the pre-call estimator's tolerance for absent metadata) and add a
+  // small allowance for the prompt itself.
+  const worktreeRoot = worktreePathsFor(opts.cwd, opts.runId).worktree
+  let totalChangedBytes = 0
+  for (const f of buildReport.changedFiles) {
+    try {
+      const s = await fsStat(join(worktreeRoot, f.path))
+      if (s.isFile()) totalChangedBytes += s.size
+    } catch {
+      // File absent (deleted, or panel running outside a real worktree
+      // in tests). Estimate as 0 and let the per-call estimator inside
+      // invokeAgent catch hard caps later.
+    }
+  }
+  const PANEL_PROMPT_OVERHEAD = 4096 // characters; accounts for persona body + REVIEW_CONTEXT
+  const perPanelistTokensEstimate = estimateTokens({
+    prompt: ' '.repeat(PANEL_PROMPT_OVERHEAD),
+    files: [
+      {
+        path: 'panel-manifest-aggregate',
+        sha256: '0'.repeat(64),
+        sizeBytes: totalChangedBytes,
+        content: Buffer.alloc(0),
+      },
+    ],
+  })
+
+  const upstreamRefs = {
+    buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+    buildReportSha256: input.buildReportSha256,
+    verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+    verifyReportSha256: input.verifyReportSha256,
+    taskId: opts.taskId,
+    attempt,
+    baseCommitSha: buildReport.base.baseCommitSha,
+    patchSha256: buildReport.patch.patchSha256,
+  }
+
+  let panelResult: RunReviewPanelResult
+  try {
+    panelResult = await runReviewPanel({
+      runPaths: opts.runPaths,
+      runId: opts.runId,
+      cwd: opts.cwd,
+      panelistInvoker: opts.panelistInvoker,
+      panel,
+      buildFamily,
+      registry: opts.invokeCtx.registry,
+      config: opts.invokeCtx.config,
+      events,
+      perPanelistTokensEstimate,
+      upstreamRefs,
+      round: opts.round,
+      orchestratorAgent: opts.reviewerAgent.name,
+      now,
+    })
+  } catch (err) {
+    return recordReviewIntervention(
+      ictx,
+      'review_panel_runtime_error',
+      `runReviewPanel threw: ${errorDetail(err)}`,
+    )
+  }
+
+  if (panelResult.status === 'intervention') {
+    return recordReviewIntervention(
+      ictx,
+      panelResult.code,
+      panelResult.rule,
+      panelResult.detail,
+    )
+  }
+
+  // Re-parse canonical REVIEW.md for synthesized findings — needed for
+  // result.findings + (on needs-revision) the remediation coordinator.
+  let panelData: ReturnType<typeof parseReviewPanelReport>
+  try {
+    const reviewText = await readFile(panelResult.reviewReportPath, 'utf8')
+    panelData = parseReviewPanelReport(reviewText)
+  } catch (err) {
+    return recordReviewIntervention(
+      ictx,
+      'review_panel_artifact_unreadable',
+      `panel REVIEW.md unreadable after orchestrator success: ${errorDetail(err)}`,
+    )
+  }
+  const findings: readonly ReviewFinding[] = panelData.findings
+
+  if (panelResult.status === 'resolved') {
+    // Emit review_resolved so preApproveReviewHook (single source of
+    // truth for the approve gate) finds the canonical ready signal.
+    // F2 makes the parser mode-aware; this emission keeps the event
+    // log compatible with both single- and panel-mode parsers.
+    await appendEvent(eventPathsFor(opts.runPaths), {
+      version: 1,
+      type: 'review_resolved',
+      ts: now(),
+      runId: opts.runId,
+      phase: 'review',
+      agent: opts.reviewerAgent.name,
+      attempt,
+      taskId: opts.taskId,
+      finalRound: panelResult.round,
+      // Panel mode does not have a single persona-authored score; the
+      // canonical artifact records `finalScore: 'panel'`. The
+      // review_resolved event still wants a numeric finalScore for
+      // approve.ts's existing schema; use the cap (10) as a sentinel.
+      finalScore: REVIEW_SCORE_MAX,
+      reviewReportSha256: panelResult.reviewReportSha256,
+    })
+    const tail = await runScientistPhaseTail({
+      invokeCtx: opts.invokeCtx,
+      runPaths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.scientistAgent,
+      phase: 'review',
+      primaryArtifactPath: panelResult.reviewReportPath,
+      now,
+    })
+    if (tail.status === 'intervention') {
+      return recordReviewIntervention(ictx, 'review_scientist_tail_failed', tail.rule)
+    }
+    const preflight = await validateScientistSidecars({
+      phase: 'review',
+      artifactRoot: opts.runPaths.artifactRoot,
+      today: now().slice(0, 10),
+    })
+    if (!preflight.ok) {
+      return recordReviewIntervention(
+        ictx,
+        preflight.code,
+        preflight.rule,
+        preflight.detail,
+      )
+    }
+    await requireGate({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      phase: 'review',
+      blockedOn: 'code-oz approve review',
+      now,
+    })
+    return Object.freeze({
+      status: 'resolved' as const,
+      reviewReportPath: panelResult.reviewReportPath,
+      reviewReportSha256: panelResult.reviewReportSha256,
+      verdict: 'ready' as const,
+      score: REVIEW_SCORE_MAX,
+      findings,
+      round: panelResult.round,
+    })
+  }
+
+  if (panelResult.status === 'blocked') {
+    await appendEvent(eventPathsFor(opts.runPaths), {
+      version: 1,
+      type: 'review_blocked',
+      ts: now(),
+      runId: opts.runId,
+      phase: 'review',
+      agent: opts.reviewerAgent.name,
+      attempt,
+      taskId: opts.taskId,
+      reason: 'block',
+      finalRound: panelResult.round,
+      reviewReportSha256: panelResult.reviewReportSha256,
+    })
+    await recordReviewIntervention(
+      ictx,
+      'review_block_terminal',
+      `panel verdict block (${panelResult.quorumReason}); REVIEW loop terminated`,
+    )
+    const tail = await runScientistPhaseTail({
+      invokeCtx: opts.invokeCtx,
+      runPaths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.scientistAgent,
+      phase: 'review',
+      primaryArtifactPath: panelResult.reviewReportPath,
+      now,
+    })
+    if (tail.status === 'intervention') {
+      // Layered intervention; primary terminal already recorded above.
+    }
+    return Object.freeze({
+      status: 'blocked' as const,
+      reviewReportPath: panelResult.reviewReportPath,
+      reviewReportSha256: panelResult.reviewReportSha256,
+      verdict: 'block' as const,
+      score: REVIEW_SCORE_MIN,
+      findings,
+      round: panelResult.round,
+    })
+  }
+
+  // panelResult.status === 'needs_revision'. Mirror single-reviewer
+  // remediation: re-read events for THIS round's panel-completed entry
+  // and hand the synthesized findings to decideReviewRemediation. The
+  // BUILD attempt N+1 chain works the same shape — REVIEW does not need
+  // to know panel-vs-single beyond this branch.
+  const eventsForRemediation = await readEvents(eventPathsFor(opts.runPaths))
+  const remediation = decideReviewRemediation({
+    events: eventsForRemediation,
+    runId: opts.runId,
+    taskId: opts.taskId,
+    priorRound: panelResult.round,
+    priorAttempt: attempt,
+    priorFindings: findings,
+    reviewReportPath: panelResult.reviewReportPath,
+    reviewReportSha256: panelResult.reviewReportSha256,
+    priorValidationCommand: buildReport.validationCommand.command,
+    reopenedIds: [], // panel mode does not surface reopened-id ping-pong yet (M14 v1)
+  })
+  if (remediation.action === 'review_cap_exhausted') {
+    await appendEvent(eventPathsFor(opts.runPaths), {
+      version: 1,
+      type: 'review_blocked',
+      ts: now(),
+      runId: opts.runId,
+      phase: 'review',
+      agent: opts.reviewerAgent.name,
+      attempt,
+      taskId: opts.taskId,
+      reason: 'cap_exhausted',
+      finalRound: panelResult.round,
+      reviewReportSha256: panelResult.reviewReportSha256,
+    })
+    await recordReviewIntervention(
+      ictx,
+      'review_cap_exhausted_terminal',
+      remediation.reason,
+    )
+    return Object.freeze({
+      status: 'blocked' as const,
+      reviewReportPath: panelResult.reviewReportPath,
+      reviewReportSha256: panelResult.reviewReportSha256,
+      verdict: 'block' as const,
+      score: REVIEW_SCORE_MIN,
+      findings,
+      round: panelResult.round,
+    })
+  }
+  if (remediation.action === 'build_cap_blocked') {
+    await recordReviewIntervention(
+      ictx,
+      'review_build_cap_overlap',
+      remediation.reason,
+    )
+    return Object.freeze({
+      status: 'intervention' as const,
+      code: 'review_build_cap_overlap',
+      rule: remediation.reason,
+    })
+  }
+  // remediation.action === 'continue'
+  return Object.freeze({
+    status: 'needs_revision' as const,
+    reviewReportPath: panelResult.reviewReportPath,
+    reviewReportSha256: panelResult.reviewReportSha256,
+    verdict: 'needs-revision' as const,
+    score: REVIEW_SCORE_MIN,
+    findings,
+    round: panelResult.round,
+    remediation,
+    carryForward: remediation.carryForward,
+  })
+}
+
 // --- intentionally exported for tests + future commits ------------
 
-export { fingerprintFinding }
+export { fingerprintFinding, runReviewPanelBranch }
 export type { ReviewFinding, ReviewReportData, ReviewVerdict, ReviewSeverity }
