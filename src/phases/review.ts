@@ -114,6 +114,8 @@ import {
   type PanelistInvoker,
   type RunReviewPanelResult,
 } from './review-panel.ts'
+import { runReviewSchedulerHook } from './review-scheduler-hook.ts'
+import type { PanelistVerdictSnapshot } from '../policy/debate-scheduler.ts'
 import {
   parseReviewPanelReport,
   detectReviewReportMode,
@@ -935,6 +937,34 @@ async function runReviewInner(
     // Bind the event to the canonical artifact via sha256 so resume
     // probes can verify event/artifact agreement.
     reviewReportSha256,
+  })
+
+  // 14b. M15 commit 4a — post-verdict scheduler evaluate hook (single mode).
+  // Always emits `debate_scheduler_evaluated`; emits `debate_scheduler_skipped`
+  // when the decision is to skip. NO fire path yet (commit 4b). The decision
+  // is intentionally discarded here; commit 4b's wiring will branch on it.
+  // Re-read events so the hook's accumulators include the just-appended
+  // review_round_completed event.
+  const eventsForScheduler = await readEvents(eventPathsFor(opts.runPaths))
+  await runReviewSchedulerHook({
+    runId: opts.runId,
+    taskId: opts.taskId,
+    attempt,
+    reviewRound: opts.round,
+    phase: 'review',
+    agent: opts.reviewerAgent.name,
+    reviewerAgent: opts.reviewerAgent,
+    preReviewReportSha256: reviewReportSha256,
+    reviewState: {
+      mode: 'single',
+      score: personaScore,
+      verdict,
+    },
+    debatePolicyFromConfig: opts.invokeCtx.config.debatePolicy,
+    buildReportChangedFileCount: buildReport.changedFiles.length,
+    events: eventsForScheduler,
+    eventPaths: eventPathsFor(opts.runPaths),
+    now,
   })
 
   // Clean up the round's draft directory now that the canonical write
@@ -2020,6 +2050,38 @@ async function runReviewPanelBranch(
     )
   }
   const findings: readonly ReviewFinding[] = panelData.findings
+
+  // M15 commit 4a — post-verdict scheduler evaluate hook (panel mode).
+  // Fires after `review_panel_completed` is on disk and panelData is parsed,
+  // before the resolved/needs_revision/blocked branch. Always emits
+  // `debate_scheduler_evaluated`; emits `debate_scheduler_skipped` for skip
+  // decisions. NO fire path yet (commit 4b).
+  const panelistVerdictsForScheduler: readonly PanelistVerdictSnapshot[] =
+    panelData.reviewers.map((r) => ({
+      id: r.id,
+      verdict: r.verdict,
+      authorityImpact: r.role,
+    }))
+  const eventsForPanelScheduler = await readEvents(eventPathsFor(opts.runPaths))
+  await runReviewSchedulerHook({
+    runId: opts.runId,
+    taskId: opts.taskId,
+    attempt,
+    reviewRound: opts.round,
+    phase: 'review',
+    agent: opts.reviewerAgent.name,
+    reviewerAgent: opts.reviewerAgent,
+    preReviewReportSha256: panelResult.reviewReportSha256,
+    reviewState: {
+      mode: 'panel',
+      panelistVerdicts: panelistVerdictsForScheduler,
+    },
+    debatePolicyFromConfig: opts.invokeCtx.config.debatePolicy,
+    buildReportChangedFileCount: buildReport.changedFiles.length,
+    events: eventsForPanelScheduler,
+    eventPaths: eventPathsFor(opts.runPaths),
+    now,
+  })
 
   if (panelResult.status === 'resolved') {
     // Emit review_resolved so preApproveReviewHook (single source of
