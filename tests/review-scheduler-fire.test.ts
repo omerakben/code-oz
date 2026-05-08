@@ -108,8 +108,13 @@ function makeMockExecutor(
   let calls = 0
   return {
     get calls() { return calls },
-    fn: async () => {
+    fn: async (_input, hooks) => {
       calls++
+      // Honor the C13a contract: emit fired before "starting" the debate.
+      await hooks.emitFired({
+        opposingProvider: result.opposingProvider,
+        debateTopic: result.debateTopic,
+      })
       return result
     },
   }
@@ -414,9 +419,39 @@ describe('fire path — intervention', () => {
 // Executor exception safety
 // ---------------------------------------------------------------------------
 describe('fire path — executor throws', () => {
-  test('thrown error coerced to scheduler_error reason=other', async () => {
+  test('pre-emit throw: scheduler_error + fireOutcome.fired === false', async () => {
+    // Executor throws BEFORE calling hooks.emitFired. Per C13a, this is a
+    // pre-fire failure: no `debate_scheduler_fired` lands in events.jsonl
+    // and fireOutcome.fired is false (no debate started).
     const exec: SchedulerFirePathExecutor = async () => {
       throw new Error('whatever went wrong')
+    }
+    const result = await callHook(
+      { mode: 'single', score: 6, verdict: 'needs-revision' },
+      exec,
+    )
+    expect(result.fireOutcome.fired).toBe(false)
+    expect(result.fireOutcome.result).toBeNull()
+
+    const evts = await readSchedulerEvents()
+    const errEv = evts.find((e) => e.type === 'debate_scheduler_error') as
+      | (LoggedEvent & { reason: string; underlyingErrorCode?: string })
+      | undefined
+    expect(errEv?.reason).toBe('other')
+    expect(errEv?.underlyingErrorCode).toBe('whatever went wrong')
+
+    const types = evts.map((e) => e.type)
+    expect(types).not.toContain('debate_scheduler_fired')
+  })
+
+  test('post-emit throw: fired present + scheduler_error + fired===true', async () => {
+    // Executor calls emitFired with a real selection, then throws (e.g.,
+    // requestDebate raised). The trace records `fired` THEN
+    // `debate_scheduler_error`, and fireOutcome.result carries the
+    // recorded selection so the reducer can attribute the failure.
+    const exec: SchedulerFirePathExecutor = async (_input, hooks) => {
+      await hooks.emitFired({ opposingProvider: 'gemini', debateTopic: 't' })
+      throw new Error('requestDebate exploded')
     }
     const result = await callHook(
       { mode: 'single', score: 6, verdict: 'needs-revision' },
@@ -427,19 +462,122 @@ describe('fire path — executor throws', () => {
       throw new Error('expected error_degrade')
     }
     expect(result.fireOutcome.result.errorReason).toBe('other')
+    expect(result.fireOutcome.result.opposingProvider).toBe('gemini')
+    expect(result.fireOutcome.result.debateTopic).toBe('t')
+    expect(result.fireOutcome.result.underlyingErrorCode).toBe(
+      'requestDebate exploded',
+    )
+
+    const evts = await readSchedulerEvents()
+    const types = evts.map((e) => e.type)
+    expect(types).toEqual([
+      'debate_scheduler_evaluated',
+      'debate_scheduler_fired',
+      'debate_scheduler_error',
+    ])
+  })
+
+  test('executor returns without emitFired: scheduler_error + fired===false', async () => {
+    // Programming-error path: an executor that returns a result without
+    // calling emitFired violates the C13a contract. The hook surfaces
+    // this as scheduler_error reason=other so events.jsonl stays honest.
+    const exec: SchedulerFirePathExecutor = async () => ({
+      status: 'success',
+      opposingProvider: 'gemini',
+      debateTopic: 't',
+      newReviewReportSha256: SHA64B,
+      verdictPost: 'ready',
+      findingsAddedCount: 0,
+      actionableFindingsAddedCount: 0,
+    })
+    const result = await callHook(
+      { mode: 'single', score: 6, verdict: 'needs-revision' },
+      exec,
+    )
+    expect(result.fireOutcome.fired).toBe(false)
+    expect(result.fireOutcome.result).toBeNull()
 
     const evts = await readSchedulerEvents()
     const errEv = evts.find((e) => e.type === 'debate_scheduler_error') as
-      | (LoggedEvent & { reason: string; underlyingErrorCode?: string })
+      | (LoggedEvent & { underlyingErrorCode?: string })
       | undefined
-    expect(errEv?.reason).toBe('other')
-    expect(errEv?.underlyingErrorCode).toBe('whatever went wrong')
-
-    // Note: when the executor throws, we never got to emit `fired` (the
-    // hook caught the exception before that point). This is the only
-    // event-ordering case where `fired` is absent on a fire decision.
+    expect(errEv?.underlyingErrorCode).toBe('executor_did_not_emit_fired')
     const types = evts.map((e) => e.type)
     expect(types).not.toContain('debate_scheduler_fired')
+  })
+
+  test('emitFired called twice: throws contract violation', async () => {
+    // C13a contract: emitFired is exactly-once. A second call must throw
+    // so the executor can fail fast rather than silently appending two
+    // `fired` events for one decision.
+    const exec: SchedulerFirePathExecutor = async (_input, hooks) => {
+      await hooks.emitFired({ opposingProvider: 'gemini', debateTopic: 't' })
+      // Second call: contract violation. The executor would catch this
+      // and surface error_degrade in production; here we let it bubble
+      // to verify the hook's post-emit error path.
+      await hooks.emitFired({ opposingProvider: 'gemini', debateTopic: 't' })
+      return {
+        status: 'success',
+        opposingProvider: 'gemini',
+        debateTopic: 't',
+        newReviewReportSha256: SHA64B,
+        verdictPost: 'ready',
+        findingsAddedCount: 0,
+        actionableFindingsAddedCount: 0,
+      }
+    }
+    const result = await callHook(
+      { mode: 'single', score: 6, verdict: 'needs-revision' },
+      exec,
+    )
+    expect(result.fireOutcome.fired).toBe(true)
+    if (result.fireOutcome.result?.status !== 'error_degrade') {
+      throw new Error('expected error_degrade')
+    }
+    expect(result.fireOutcome.result.underlyingErrorCode).toContain(
+      'emitFired exactly once',
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// C13a event ordering: emitFired is the seam that locks `fired` BEFORE
+// the executor calls requestDebate. Verified by an executor that reads
+// events.jsonl after emitFired returns and confirms `fired` is present.
+// (Codex R1 #6: without this seam, requestDebate's debate_started event
+// would land before debate_scheduler_fired, breaking the resume contract.)
+// ---------------------------------------------------------------------------
+describe('fire path — C13a event ordering', () => {
+  test('emitFired returns with debate_scheduler_fired already in events.jsonl', async () => {
+    let typesAtEmitTime: readonly string[] = []
+    const exec: SchedulerFirePathExecutor = async (_input, hooks) => {
+      await hooks.emitFired({ opposingProvider: 'gemini', debateTopic: 't' })
+      // After emitFired returns, the hook has already appended `fired`.
+      // A real executor would now call requestDebate (which emits
+      // debate_started). We snapshot events.jsonl here to lock the
+      // ordering invariant without synthesizing real debate events.
+      const evts = await readEvents(paths)
+      typesAtEmitTime = evts.map((e) => e.type)
+      return {
+        status: 'success',
+        opposingProvider: 'gemini',
+        debateTopic: 't',
+        newReviewReportSha256: SHA64B,
+        verdictPost: 'ready',
+        findingsAddedCount: 1,
+        actionableFindingsAddedCount: 1,
+      }
+    }
+    await callHook(
+      { mode: 'single', score: 6, verdict: 'needs-revision' },
+      exec,
+    )
+
+    expect(typesAtEmitTime).toContain('debate_scheduler_fired')
+    expect(typesAtEmitTime).toContain('debate_scheduler_evaluated')
+    // postreview lands AFTER the executor returns, so it must NOT be in
+    // the snapshot taken inside the executor body.
+    expect(typesAtEmitTime).not.toContain('debate_scheduler_postreview')
   })
 })
 

@@ -132,13 +132,58 @@ export type SchedulerFirePathResult =
     }
 
 /**
+ * Provider/topic selection the executor commits to before invoking
+ * `requestDebate`. Passed to `hooks.emitFired` (M15 Phase 2 C13a) so the
+ * `debate_scheduler_fired` event records the chosen pair before any
+ * downstream debate event (`debate_started` / `debate_resolved`) lands.
+ */
+export interface SchedulerFirePathSelection {
+  readonly opposingProvider: string
+  readonly debateTopic: string
+}
+
+/**
+ * Lifecycle hooks the executor receives from the runtime.
+ *
+ * Why this exists: Codex R1 finding #6 in `docs/research/CODEX_REVIEW_M15.md`
+ * showed that emitting `debate_scheduler_fired` AFTER the executor returned
+ * inverts the resume contract once the executor calls `requestDebate()` —
+ * `requestDebate` synchronously emits `debate_started` and `debate_resolved`
+ * inside the executor body, so without this seam the trace would land
+ * `evaluated → debate_started → debate_resolved → fired → postreview`,
+ * contradicting `docs/contracts/DEBATE_POLICY.md` § "Resume semantics".
+ * The callback gives the hook the authority to emit `fired` synchronously
+ * after selection and before `requestDebate`, locking the order to
+ * `evaluated → fired → debate_started → debate_resolved → postreview`.
+ */
+export interface SchedulerFirePathHooks {
+  /**
+   * Executor MUST call this exactly once after selecting opposingProvider
+   * and debateTopic and BEFORE invoking `requestDebate`. The hook appends
+   * `debate_scheduler_fired` synchronously. Calling more than once or
+   * calling `requestDebate` before this throws a contract-violation
+   * Error that the hook catches and surfaces as `debate_scheduler_error`
+   * with `reason: 'other'`.
+   *
+   * The selection passed here is authoritative for the emitted `fired`
+   * event. The `SchedulerFirePathResult` returned by the executor still
+   * carries `opposingProvider` and `debateTopic` (for callers that
+   * pattern-match on `fireOutcome.result`); the executor is responsible
+   * for keeping the two values consistent.
+   */
+  readonly emitFired: (selection: SchedulerFirePathSelection) => Promise<void>
+}
+
+/**
  * The fire-path executor seam. Production wires this to a function that
  * synthesizes a briefing + calls requestDebate + re-runs the reviewer
  * persona. Tests inject mock executors. Either way, the executor must
- * not re-acquire `.review.lock` (Codex Risk #4 fix).
+ * not re-acquire `.review.lock` (Codex Risk #4 fix) and must call
+ * `hooks.emitFired` before invoking `requestDebate` (Codex R1 #6 fix).
  */
 export type SchedulerFirePathExecutor = (
   input: SchedulerFirePathInput,
+  hooks: SchedulerFirePathHooks,
 ) => Promise<SchedulerFirePathResult>
 
 export interface ReviewSchedulerHookOptions {
@@ -397,30 +442,71 @@ async function runFirePath(ctx: FirePathContext): Promise<ReviewSchedulerHookRes
   const { opts, decisionId, decision, inputDigest } = ctx
   const executor = opts.firePathExecutor!
 
-  // Invoke the executor first. The executor chooses opposingProvider +
-  // debateTopic (it has access to the registry + persona M11 eligibility).
-  // We then emit `debate_scheduler_fired` with the chosen values BEFORE
-  // emitting any subsequent event so the trace ordering is deterministic
-  // (Codex Risk #3 — fired must precede postreview / scheduler_error).
+  // The executor receives an `emitFired` callback (M15 Phase 2 C13a) that
+  // the hook controls. The executor MUST call it exactly once, after
+  // selecting (opposingProvider, debateTopic) and BEFORE invoking
+  // `requestDebate`. This locks the trace order to:
+  //   evaluated → fired → debate_started → debate_resolved → postreview
+  // Without this seam, `requestDebate` would emit `debate_started` inside
+  // the executor body before `fired`, breaking the resume contract in
+  // docs/contracts/DEBATE_POLICY.md § "Resume semantics".
+  let firedEmitted = false
+  let firedSelection: SchedulerFirePathSelection | null = null
+  const emitFired = async (sel: SchedulerFirePathSelection): Promise<void> => {
+    if (firedEmitted) {
+      throw new Error(
+        'SchedulerFirePathExecutor must call hooks.emitFired exactly once',
+      )
+    }
+    firedEmitted = true
+    firedSelection = sel
+    await appendEvent(opts.eventPaths, {
+      version: 1,
+      type: 'debate_scheduler_fired',
+      ts: opts.now(),
+      runId: opts.runId,
+      phase: opts.phase,
+      agent: opts.agent,
+      attempt: opts.attempt,
+      taskId: opts.taskId,
+      decisionId,
+      reviewRound: opts.reviewRound,
+      reason: decision.reason,
+      opposingProvider: sel.opposingProvider,
+      debateTopic: sel.debateTopic,
+      preReviewReportSha256: opts.preReviewReportSha256,
+    })
+  }
+
   let result: SchedulerFirePathResult
   try {
-    result = await executor({
-      runId: opts.runId,
-      taskId: opts.taskId,
-      attempt: opts.attempt,
-      reviewRound: opts.reviewRound,
-      phase: opts.phase,
-      decisionId,
-      reviewerAgent: opts.reviewerAgent,
-      preReviewReportSha256: opts.preReviewReportSha256,
-      reviewState: opts.reviewState,
-      buildReportChangedFileCount: opts.buildReportChangedFileCount,
-      now: opts.now,
-    })
+    result = await executor(
+      {
+        runId: opts.runId,
+        taskId: opts.taskId,
+        attempt: opts.attempt,
+        reviewRound: opts.reviewRound,
+        phase: opts.phase,
+        decisionId,
+        reviewerAgent: opts.reviewerAgent,
+        preReviewReportSha256: opts.preReviewReportSha256,
+        reviewState: opts.reviewState,
+        buildReportChangedFileCount: opts.buildReportChangedFileCount,
+        now: opts.now,
+      },
+      { emitFired },
+    )
   } catch (err) {
-    // Executor itself threw — coerce to scheduler_error (other) and degrade.
-    // The executor SHOULD return a structured result; throwing is the safety
-    // net for unexpected programmer errors.
+    // Executor itself threw — coerce to scheduler_error (other). Two
+    // sub-cases:
+    //   (a) firedEmitted=false: executor never committed; trace records
+    //       no `fired` event. fireOutcome.fired === false. The pre-fire
+    //       budget is preserved (no debate ran).
+    //   (b) firedEmitted=true: executor emitted `fired` then threw
+    //       (e.g., during requestDebate). The `fired` event is already
+    //       in events.jsonl; surface error_degrade with the recorded
+    //       selection so the rule-21 reducer can attribute the failure.
+    const code = err instanceof Error ? err.message : String(err)
     await appendEvent(opts.eventPaths, {
       version: 1,
       type: 'debate_scheduler_error',
@@ -433,8 +519,17 @@ async function runFirePath(ctx: FirePathContext): Promise<ReviewSchedulerHookRes
       decisionId,
       reviewRound: opts.reviewRound,
       reason: 'other',
-      underlyingErrorCode: err instanceof Error ? err.message : String(err),
+      underlyingErrorCode: code,
     })
+    if (!firedEmitted) {
+      return {
+        decisionId,
+        decision,
+        inputDigest,
+        fireOutcome: { fired: false, result: null },
+      }
+    }
+    const sel = firedSelection!
     return {
       decisionId,
       decision,
@@ -443,34 +538,40 @@ async function runFirePath(ctx: FirePathContext): Promise<ReviewSchedulerHookRes
         fired: true,
         result: {
           status: 'error_degrade',
-          opposingProvider: 'unknown',
-          debateTopic: 'unknown',
+          opposingProvider: sel.opposingProvider,
+          debateTopic: sel.debateTopic,
           errorReason: 'other',
-          underlyingErrorCode: err instanceof Error ? err.message : String(err),
+          underlyingErrorCode: code,
         },
       },
     }
   }
 
-  // Emit `fired` BEFORE postreview / scheduler_error / intervention. The
-  // fired event records the scheduler's decision to fire + the chosen
-  // opposingProvider + debateTopic. Subsequent events join via decisionId.
-  await appendEvent(opts.eventPaths, {
-    version: 1,
-    type: 'debate_scheduler_fired',
-    ts: opts.now(),
-    runId: opts.runId,
-    phase: opts.phase,
-    agent: opts.agent,
-    attempt: opts.attempt,
-    taskId: opts.taskId,
-    decisionId,
-    reviewRound: opts.reviewRound,
-    reason: decision.reason,
-    opposingProvider: result.opposingProvider,
-    debateTopic: result.debateTopic,
-    preReviewReportSha256: opts.preReviewReportSha256,
-  })
+  if (!firedEmitted) {
+    // Programming-error path: executor returned normally without calling
+    // emitFired. Treat as scheduler_error (other) so events.jsonl stays
+    // honest and the rule-21 reducer surfaces the contract violation.
+    await appendEvent(opts.eventPaths, {
+      version: 1,
+      type: 'debate_scheduler_error',
+      ts: opts.now(),
+      runId: opts.runId,
+      phase: opts.phase,
+      agent: opts.agent,
+      attempt: opts.attempt,
+      taskId: opts.taskId,
+      decisionId,
+      reviewRound: opts.reviewRound,
+      reason: 'other',
+      underlyingErrorCode: 'executor_did_not_emit_fired',
+    })
+    return {
+      decisionId,
+      decision,
+      inputDigest,
+      fireOutcome: { fired: false, result: null },
+    }
+  }
 
   if (result.status === 'success') {
     // Emit postreview with verdict pre/post + finding deltas.

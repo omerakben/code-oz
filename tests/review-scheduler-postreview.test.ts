@@ -96,7 +96,13 @@ function autoPolicy(): DebatePolicyConfig {
 }
 
 function mockExec(result: SchedulerFirePathResult): SchedulerFirePathExecutor {
-  return async () => result
+  return async (_input, hooks) => {
+    await hooks.emitFired({
+      opposingProvider: result.opposingProvider,
+      debateTopic: result.debateTopic,
+    })
+    return result
+  }
 }
 
 async function fireFromRound(opts: {
