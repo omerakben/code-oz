@@ -124,7 +124,7 @@ import {
   buildDebateTopicForReview,
   buildDebateBriefingSections,
   buildDebatePanelBriefingSections,
-  diffFindingsForPostDebateBasic,
+  diffFindingsForPostDebate,
   mapProviderErrorToFireResult,
   buildSchedulerPreflightInputForSingle,
   buildSchedulerPreflightInputForPanel,
@@ -1311,7 +1311,7 @@ async function runReviewRoundLocked(
       //    finding deltas to the hook so it can emit
       //    `debate_scheduler_postreview` with non-zero scalars.
       postDebateOutcome = postRound
-      const diff = diffFindingsForPostDebateBasic(
+      const diff = diffFindingsForPostDebate(
         preDebateFindings,
         postRound.canonical.findings,
       )

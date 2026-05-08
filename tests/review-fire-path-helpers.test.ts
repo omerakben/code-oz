@@ -12,7 +12,7 @@ import {
   buildDebateTopicForReview,
   buildDebateBriefingSections,
   buildDebatePanelBriefingSections,
-  diffFindingsForPostDebateBasic,
+  diffFindingsForPostDebate,
   mapProviderErrorToFireResult,
   buildSchedulerPreflightInputForSingle,
   buildSchedulerPreflightInputForPanel,
@@ -273,20 +273,20 @@ describe('buildDebateBriefingSections', () => {
 })
 
 // ---------------------------------------------------------------------------
-// diffFindingsForPostDebateBasic
+// diffFindingsForPostDebate (C15: fingerprint+severity)
 // ---------------------------------------------------------------------------
-describe('diffFindingsForPostDebateBasic', () => {
-  test('counts new ids only', () => {
+describe('diffFindingsForPostDebate', () => {
+  test('counts post findings whose fingerprint did not appear pre-debate', () => {
     const pre = makeFindings([
       { id: 'F-001', severity: 'fix-first', file: 'a.ts', line: 1 },
       { id: 'F-002', severity: 'block', file: 'b.ts', line: 1 },
     ])
     const post = makeFindings([
-      { id: 'F-001', severity: 'fix-first', file: 'a.ts', line: 1 }, // carry-over
-      { id: 'F-003', severity: 'fix-first', file: 'c.ts', line: 1 }, // new actionable
-      { id: 'F-004', severity: 'nit', file: 'd.ts', line: 1 }, // new, not actionable
+      { id: 'F-001', severity: 'fix-first', file: 'a.ts', line: 1 }, // same fingerprint, same severity → carry-over
+      { id: 'F-003', severity: 'fix-first', file: 'c.ts', line: 1 }, // new fingerprint, actionable
+      { id: 'F-004', severity: 'nit', file: 'd.ts', line: 1 }, // new fingerprint, not actionable
     ])
-    const d = diffFindingsForPostDebateBasic(pre, post)
+    const d = diffFindingsForPostDebate(pre, post)
     expect(d.findingsAddedCount).toBe(2)
     expect(d.actionableFindingsAddedCount).toBe(1)
   })
@@ -295,7 +295,7 @@ describe('diffFindingsForPostDebateBasic', () => {
     const pre = makeFindings([
       { id: 'F-001', severity: 'block', file: 'a.ts', line: 1 },
     ])
-    const d = diffFindingsForPostDebateBasic(pre, [])
+    const d = diffFindingsForPostDebate(pre, [])
     expect(d.findingsAddedCount).toBe(0)
     expect(d.actionableFindingsAddedCount).toBe(0)
   })
@@ -307,7 +307,7 @@ describe('diffFindingsForPostDebateBasic', () => {
       { id: 'F-003', severity: 'nit', file: 'c.ts', line: 1 },
       { id: 'F-004', severity: 'fyi', file: 'd.ts', line: 1 },
     ])
-    const d = diffFindingsForPostDebateBasic([], post)
+    const d = diffFindingsForPostDebate([], post)
     expect(d.findingsAddedCount).toBe(4)
     expect(d.actionableFindingsAddedCount).toBe(2)
   })
@@ -317,8 +317,149 @@ describe('diffFindingsForPostDebateBasic', () => {
       { id: 'F-100', severity: 'nit', file: 'a.ts', line: 1 },
       { id: 'F-101', severity: 'fyi', file: 'b.ts', line: 1 },
     ])
-    const d = diffFindingsForPostDebateBasic([], post)
+    const d = diffFindingsForPostDebate([], post)
     expect(d.findingsAddedCount).toBe(2)
+    expect(d.actionableFindingsAddedCount).toBe(0)
+  })
+
+  test('SAME fingerprint with severity escalation FROM nit TO fix-first counts as actionable added', () => {
+    const pre = makeFindings([
+      { id: 'F-001', severity: 'nit', file: 'a.ts', line: 1 }, // pre-debate: nit
+    ])
+    const post = makeFindings([
+      { id: 'F-001', severity: 'fix-first', file: 'a.ts', line: 1 }, // post-debate: escalated to fix-first
+    ])
+    const d = diffFindingsForPostDebate(pre, post)
+    // Same fingerprint → not a NEW finding (findingsAddedCount stays 0)
+    expect(d.findingsAddedCount).toBe(0)
+    // But actionable signal that did not exist pre-debate
+    expect(d.actionableFindingsAddedCount).toBe(1)
+  })
+
+  test('SAME fingerprint with severity escalation FROM fyi TO block counts as actionable added', () => {
+    const pre = makeFindings([
+      { id: 'F-001', severity: 'fyi', file: 'a.ts', line: 1 },
+    ])
+    const post = makeFindings([
+      { id: 'F-001', severity: 'block', file: 'a.ts', line: 1 },
+    ])
+    const d = diffFindingsForPostDebate(pre, post)
+    expect(d.findingsAddedCount).toBe(0)
+    expect(d.actionableFindingsAddedCount).toBe(1)
+  })
+
+  test('SAME fingerprint with same actionable severity does NOT count as added', () => {
+    const pre = makeFindings([
+      { id: 'F-001', severity: 'block', file: 'a.ts', line: 1 },
+    ])
+    const post = makeFindings([
+      { id: 'F-001', severity: 'block', file: 'a.ts', line: 1 },
+    ])
+    const d = diffFindingsForPostDebate(pre, post)
+    expect(d.findingsAddedCount).toBe(0)
+    expect(d.actionableFindingsAddedCount).toBe(0)
+  })
+
+  test('SAME fingerprint with severity DE-escalation does NOT count', () => {
+    const pre = makeFindings([
+      { id: 'F-001', severity: 'block', file: 'a.ts', line: 1 },
+    ])
+    const post = makeFindings([
+      { id: 'F-001', severity: 'fix-first', file: 'a.ts', line: 1 }, // de-escalated
+    ])
+    const d = diffFindingsForPostDebate(pre, post)
+    expect(d.findingsAddedCount).toBe(0)
+    // De-escalation is not new actionable signal — the pre-debate already
+    // flagged it at higher rank.
+    expect(d.actionableFindingsAddedCount).toBe(0)
+  })
+
+  test('fingerprint normalization is title-based, not id-based (different ids same title-file → same fingerprint)', () => {
+    // The pre-debate finding had id F-001; post-debate the persona used
+    // F-NEW which is replaced by F-002 by the canonicalizer. Despite the
+    // different ids, the file+title pair identifies the same finding.
+    const pre = Object.freeze([
+      Object.freeze({
+        id: 'F-001',
+        severity: 'nit' as const,
+        file: 'a.ts',
+        line: '1',
+        title: 'shared title',
+        recommendation: 'fix',
+        roundRaised: 1,
+        roundResolved: 'unresolved' as const,
+      }) as unknown as ReviewFinding,
+    ])
+    const post = Object.freeze([
+      Object.freeze({
+        id: 'F-002',
+        severity: 'block' as const,
+        file: 'a.ts',
+        line: '1',
+        title: 'shared title', // SAME title as pre
+        recommendation: 'fix',
+        roundRaised: 2,
+        roundResolved: 'unresolved' as const,
+      }) as unknown as ReviewFinding,
+    ])
+    const d = diffFindingsForPostDebate(pre, post)
+    expect(d.findingsAddedCount).toBe(0) // same fingerprint
+    expect(d.actionableFindingsAddedCount).toBe(1) // escalation
+  })
+
+  test('fingerprint differs when file changes even if title and id match', () => {
+    const pre = makeFindings([
+      { id: 'F-001', severity: 'block', file: 'a.ts', line: 1 },
+    ])
+    const post = makeFindings([
+      { id: 'F-001', severity: 'block', file: 'b.ts', line: 1 }, // same id+title, different file
+    ])
+    const d = diffFindingsForPostDebate(pre, post)
+    expect(d.findingsAddedCount).toBe(1) // different fingerprint
+    expect(d.actionableFindingsAddedCount).toBe(1)
+  })
+
+  test('duplicate pre fingerprints retain the highest severity for escalation comparison', () => {
+    // Edge case: pre has two findings with the same fingerprint at
+    // different severities. The diff should compare against the
+    // highest pre severity so a post escalation is detected against
+    // the strongest existing signal.
+    const pre = Object.freeze([
+      Object.freeze({
+        id: 'F-001',
+        severity: 'nit' as const,
+        file: 'a.ts',
+        line: '1',
+        title: 'shared title',
+        recommendation: 'fix',
+        roundRaised: 1,
+        roundResolved: 'unresolved' as const,
+      }) as unknown as ReviewFinding,
+      Object.freeze({
+        id: 'F-002',
+        severity: 'fix-first' as const,
+        file: 'a.ts',
+        line: '1',
+        title: 'shared title',
+        recommendation: 'fix',
+        roundRaised: 1,
+        roundResolved: 'unresolved' as const,
+      }) as unknown as ReviewFinding,
+    ])
+    const post = Object.freeze([
+      Object.freeze({
+        id: 'F-001',
+        severity: 'fix-first' as const, // matches pre's higher rank — no escalation
+        file: 'a.ts',
+        line: '1',
+        title: 'shared title',
+        recommendation: 'fix',
+        roundRaised: 2,
+        roundResolved: 'unresolved' as const,
+      }) as unknown as ReviewFinding,
+    ])
+    const d = diffFindingsForPostDebate(pre, post)
+    expect(d.findingsAddedCount).toBe(0)
     expect(d.actionableFindingsAddedCount).toBe(0)
   })
 })

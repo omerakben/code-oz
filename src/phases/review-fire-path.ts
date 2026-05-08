@@ -45,7 +45,11 @@ import type { AgentDefinition } from '../agents/schema.ts'
 import { ProviderError } from '../providers/errors.ts'
 import type { ProviderRegistry } from '../providers/registry.ts'
 import type { ProviderFamily, ProviderId } from '../providers/types.ts'
-import type { ReviewFinding, ReviewSeverity } from '../artifacts/review-report.ts'
+import {
+  fingerprintFinding,
+  type ReviewFinding,
+  type ReviewSeverity,
+} from '../artifacts/review-report.ts'
 import type { SchedulerFirePathResult } from './review-scheduler-hook.ts'
 import type { SchedulerPreflightInput } from '../providers/cost.ts'
 
@@ -238,25 +242,81 @@ function altVerdictsFor(v: 'ready' | 'needs-revision' | 'block'): string {
 const ACTIONABLE_SEVERITIES: ReadonlySet<ReviewSeverity> = new Set(['block', 'fix-first'])
 
 /**
- * Basic finding diff: count post-debate findings whose ids did not appear
- * in the pre-debate set; sub-count the actionable ones (severity in {block,
- * fix-first}). C15 will replace this with a fingerprint+severity helper
- * that detects fingerprint reuse with severity escalation.
- *
- * Severity filter (Codex Q7 lock + DEBATE_POLICY.md § "New-actionable-
- * finding rate"): nit and fyi are noise, not signal.
+ * Severity rank for actionable-escalation detection. Higher rank = more
+ * actionable. The rule-21 reducer cares whether the post-debate REVIEW
+ * round produced NEW signal, so a fingerprint that was nit/fyi pre-debate
+ * but escalated to fix-first/block post-debate counts as actionable
+ * added — the post-debate reviewer realized the issue was load-bearing.
  */
-export function diffFindingsForPostDebateBasic(
+const SEVERITY_RANK: Readonly<Record<ReviewSeverity, number>> = Object.freeze({
+  fyi: 0,
+  nit: 1,
+  'fix-first': 2,
+  block: 3,
+})
+
+function isEscalatedToActionable(
+  preSeverity: ReviewSeverity | null,
+  postSeverity: ReviewSeverity,
+): boolean {
+  if (!ACTIONABLE_SEVERITIES.has(postSeverity)) return false
+  if (preSeverity === null) return true
+  return SEVERITY_RANK[postSeverity] > SEVERITY_RANK[preSeverity]
+}
+
+/**
+ * Fingerprint+severity diff for the rule-21 baseline reducer.
+ *
+ * Closes Codex R1 #5 (`docs/research/CODEX_REVIEW_M15.md`): the M15 Phase 1
+ * `actionableFindingsAddedCount` scalar was authored from fixture JSONL
+ * directly because no production code computed it from real pre/post
+ * REVIEW artifacts. The post-debate event schema only validated the
+ * scalar as a non-negative integer, so fixtures could lie. C15 wires the
+ * production diff so the scalar becomes a derived measurement.
+ *
+ * Definitions (DEBATE_POLICY.md § "New-actionable-finding rate"):
+ *   - findingsAddedCount: count of post-debate findings whose
+ *     fingerprint (file + normalized title) does NOT appear in the pre-
+ *     debate set.
+ *   - actionableFindingsAddedCount: count of post-debate findings that
+ *     are EITHER (a) new fingerprints with severity in {block, fix-first},
+ *     OR (b) re-used fingerprints whose severity escalated FROM nit/fyi
+ *     TO {block, fix-first} (the post-debate reviewer recognized a
+ *     previously-cosmetic finding as load-bearing).
+ *
+ * Severity ranks: fyi=0, nit=1, fix-first=2, block=3. Same-rank or
+ * lower-rank fingerprint reuse does NOT count as actionable added —
+ * those are noise per Codex Q7.
+ */
+export function diffFindingsForPostDebate(
   pre: readonly ReviewFinding[],
   post: readonly ReviewFinding[],
 ): { findingsAddedCount: number; actionableFindingsAddedCount: number } {
-  const preIds = new Set(pre.map((f) => f.id))
+  const preByFingerprint = new Map<string, ReviewSeverity>()
+  for (const f of pre) {
+    const fp = fingerprintFinding(f.file, f.title)
+    // If duplicate fingerprints exist in pre (rare), keep the highest
+    // severity so escalation detection compares against the strongest
+    // pre-existing severity.
+    const existing = preByFingerprint.get(fp)
+    if (existing === undefined || SEVERITY_RANK[f.severity] > SEVERITY_RANK[existing]) {
+      preByFingerprint.set(fp, f.severity)
+    }
+  }
   let added = 0
   let actionableAdded = 0
   for (const f of post) {
-    if (preIds.has(f.id)) continue
-    added++
-    if (ACTIONABLE_SEVERITIES.has(f.severity)) actionableAdded++
+    const fp = fingerprintFinding(f.file, f.title)
+    const preSeverity = preByFingerprint.get(fp) ?? null
+    if (preSeverity === null) {
+      added++
+      if (ACTIONABLE_SEVERITIES.has(f.severity)) actionableAdded++
+    } else if (isEscalatedToActionable(preSeverity, f.severity)) {
+      // Fingerprint reuse with severity escalation: counts as actionable
+      // added but NOT as findingsAddedCount (it's the same finding, just
+      // re-weighted).
+      actionableAdded++
+    }
   }
   return { findingsAddedCount: added, actionableFindingsAddedCount: actionableAdded }
 }
