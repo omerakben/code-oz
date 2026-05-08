@@ -42,6 +42,7 @@ import {
   type LoggedEvent,
   type Phase,
   type SchedulerErrorReason,
+  type SchedulerFireReason,
   type SchedulerReviewVerdict,
 } from '../state/schemas.ts'
 import { appendEvent, type EventLogPaths } from '../state/events.ts'
@@ -85,6 +86,14 @@ export interface SchedulerFirePathInput {
   readonly preReviewReportSha256: string
   readonly reviewState: ReviewSchedulerHookReviewState
   readonly buildReportChangedFileCount: number
+  /**
+   * The pure decision function's `fire` reason that triggered the
+   * executor. Surfaced into the input so the executor can label the
+   * debate briefing with the actual signal that fired (rule-21
+   * reproducibility) rather than re-deriving it from `reviewState`.
+   * Added in M15 Phase 2 C13b.
+   */
+  readonly fireReason: SchedulerFireReason
   readonly now: () => string
 }
 
@@ -492,6 +501,7 @@ async function runFirePath(ctx: FirePathContext): Promise<ReviewSchedulerHookRes
         preReviewReportSha256: opts.preReviewReportSha256,
         reviewState: opts.reviewState,
         buildReportChangedFileCount: opts.buildReportChangedFileCount,
+        fireReason: decision.reason,
         now: opts.now,
       },
       { emitFired },
