@@ -207,6 +207,40 @@ export const EVENT_TYPES = [
   'panel_quorum_rejected_same_family_vote',
   'review_panel_completed',
   'review_panel_baseline_completed',
+  // M15 — Debate-policy scheduler v1 (per docs/contracts/DEBATE_POLICY.md
+  // and docs/design/SESSION_M15_IMPL_KICKOFF.md). Six events cover the
+  // scheduler's mechanical decision lifecycle at the post-REVIEW call site.
+  // The scheduler is NOT an LLM — it is a pure predicate over typed REVIEW
+  // state + cost/policy state + cooldown counters; rule 1 + rule 20 + rule
+  // 21 invariants pinned in the kickoff. Correlation across the disjoint
+  // (evaluated → fired/skipped → postreview) trace flows through `decisionId`
+  // (run-scoped ULID) + `reviewRound` + `preReviewReportSha256`. The
+  // baseline command is the rule-21 ship gate.
+  //   debate_scheduler_evaluated — always fires per scheduler decision; logs
+  //     the canonicalized SchedulerInput digest for reproducibility.
+  //   debate_scheduler_fired — fires when the scheduler decided to fire;
+  //     names the chosen opposingProvider + debate topic for join-key.
+  //   debate_scheduler_skipped — fires when the scheduler decided to skip;
+  //     names the SchedulerSkipReason. Optional budgetTipReason on the
+  //     `budget_exhausted` reason names which cap would tip.
+  //   debate_scheduler_error — fires when the scheduler fired but
+  //     requestDebate threw at runtime; reason is the degraded-error
+  //     classification (artifact_invalid / transient_io / resume_after_fire_no_start
+  //     / other). Operator-actionable errors (auth / permission / concurrent /
+  //     topic-collision / manifest-blocked) raise NEEDS_INTERVENTION instead.
+  //   debate_scheduler_postreview — fires after the post-debate REVIEW round
+  //     completes (synchronous reissue under the existing `.review.lock` via
+  //     factored runReviewRoundLocked); records pre/post REVIEW.md sha256
+  //     + verdict pair + finding deltas. Round counter does NOT increment
+  //     for the post-debate round (4-round cap from M9 unchanged).
+  //   debate_policy_baseline_completed — doctor --debate-policy-baseline
+  //     command's rule-21 ship-gate metric event.
+  'debate_scheduler_evaluated',
+  'debate_scheduler_fired',
+  'debate_scheduler_skipped',
+  'debate_scheduler_error',
+  'debate_scheduler_postreview',
+  'debate_policy_baseline_completed',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -235,6 +269,75 @@ export const PANEL_QUORUM_REJECTION_LAYERS = [
   'quorum-time',
 ] as const
 export type PanelQuorumRejectionLayer = (typeof PANEL_QUORUM_REJECTION_LAYERS)[number]
+
+/** M15: debate-policy scheduler runtime modes (per docs/contracts/DEBATE_POLICY.md
+ *  + kickoff §2.12). `manual` is the default and preserves M10 behavior.
+ *  `auto` opts in to the scheduler. `off` disables both manual <debate-request>
+ *  blocks and the scheduler — used by the rule-21 baseline control run. */
+export const DEBATE_SCHEDULER_MODES = ['off', 'manual', 'auto'] as const
+export type DebateSchedulerMode = (typeof DEBATE_SCHEDULER_MODES)[number]
+
+/** M15: SchedulerFireReason — objective signals only (verdict-confidence
+ *  rejected per Codex Q2). Single-mode triggers fire on score grey-zone or
+ *  needs-revision-with-high-score; panel-mode triggers fire on eligible
+ *  voter disagreement only (panel REVIEW has no numeric Score.Final score
+ *  per Codex Risk #1). */
+export const SCHEDULER_FIRE_REASONS = [
+  'score_in_grey_zone',
+  'panel_voter_disagreement',
+  'needs_revision_with_high_score',
+] as const
+export type SchedulerFireReason = (typeof SCHEDULER_FIRE_REASONS)[number]
+
+/** M15: SchedulerSkipReason — every skip path carries an explicit reason
+ *  (rule 21 baseline reducer breaks down skipped fires by reason). */
+export const SCHEDULER_SKIP_REASONS = [
+  'mode_off',
+  'mode_manual',
+  'no_trigger_matched',
+  'max_per_run_exhausted',
+  'max_per_task_exhausted',
+  'budget_exhausted',
+  'persona_no_debate_permission',
+  'persona_no_eligible_opponent',
+  'concurrent_limit',
+  'manifest_size_exceeds_maxFiles',
+  'dedup_fingerprint_already_debated',
+] as const
+export type SchedulerSkipReason = (typeof SCHEDULER_SKIP_REASONS)[number]
+
+/** M15: SchedulerErrorReason — degraded-error classifications when the
+ *  scheduler fired but requestDebate threw at runtime. Operator-actionable
+ *  errors (auth / permission / concurrent / topic-collision / manifest-blocked)
+ *  raise NEEDS_INTERVENTION and do NOT emit `debate_scheduler_error` (kickoff
+ *  §2.7 table). */
+export const SCHEDULER_ERROR_REASONS = [
+  'artifact_invalid',
+  'transient_io',
+  'resume_after_fire_no_start',
+  'other',
+] as const
+export type SchedulerErrorReason = (typeof SCHEDULER_ERROR_REASONS)[number]
+
+/** M15: budget tip reasons — when SchedulerSkipReason='budget_exhausted',
+ *  optional `budgetTipReason` names which `budgets.global` cap would tip
+ *  under aggregate preflight. Mirrors the four caps in M13 cost.ts. */
+export const SCHEDULER_BUDGET_TIP_REASONS = [
+  'maxTokensEstimate',
+  'maxProviderCalls',
+  'maxTurns',
+  'maxWallTimeMinutes',
+] as const
+export type SchedulerBudgetTipReason = (typeof SCHEDULER_BUDGET_TIP_REASONS)[number]
+
+/** M15: REVIEW.md verdict values as observed by the scheduler postreview event.
+ *  Single-mode REVIEW emits 'ready' | 'needs-revision' | 'block'. Panel-mode
+ *  REVIEW emits the literal sentinel 'panel' (per M14 — `Final score: panel`,
+ *  `review_resolved.finalScore=10` is a compatibility marker; panel verdicts
+ *  travel through PanelVerdict). The postreview event records both verdictPre
+ *  and verdictPost as the union below to stay symmetric across modes. */
+export const SCHEDULER_REVIEW_VERDICTS = ['ready', 'needs-revision', 'block', 'panel'] as const
+export type SchedulerReviewVerdict = (typeof SCHEDULER_REVIEW_VERDICTS)[number]
 
 export const PHASE_OUTCOMES = ['passed', 'failed', 'paused'] as const
 export type PhaseOutcome = (typeof PHASE_OUTCOMES)[number]
@@ -963,6 +1066,155 @@ export type PhaseEvent =
       /** Telemetry; non-gating. */
       readonly costOverheadRatio: number
       readonly wallClockOverheadMs: number
+    }
+  // M15 Debate-policy scheduler events. See docs/contracts/DEBATE_POLICY.md
+  // (commit 7) for the surface + defense-in-depth + common errors. The
+  // scheduler is mechanical orchestrator code at the post-REVIEW call site;
+  // events here are written by the orchestrator, never by an LLM. Correlation
+  // through `decisionId` (run-scoped ULID) joins evaluated → fired/skipped →
+  // postreview into a single trace.
+  | {
+      readonly version: 1
+      readonly type: 'debate_scheduler_evaluated'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** Run-scoped ULID joining this scheduler decision's events together. */
+      readonly decisionId: string
+      /** Pre-debate REVIEW round (1-indexed) that produced the input. The
+       *  4-round cap from M9 is unchanged; the post-debate round, when fired,
+       *  consumes the same `reviewRound` value (no increment). */
+      readonly reviewRound: number
+      readonly mode: DebateSchedulerMode
+      /** sha256 of the canonicalized SchedulerInput (rule-21 reproducibility). */
+      readonly inputDigest: string
+      /** sha256 of the pre-debate REVIEW.md content (canonical artifact at
+       *  decision time). Joins to debate_scheduler_postreview's
+       *  preReviewReportSha256 for verdict-flip metric attribution. */
+      readonly preReviewReportSha256: string
+      /** Single-mode review's Final score, when present; `null` for panel
+       *  mode (panel REVIEW has no numeric Score.Final score per Codex Risk
+       *  #1). */
+      readonly reviewMode: 'single' | 'panel'
+    }
+  | {
+      readonly version: 1
+      readonly type: 'debate_scheduler_fired'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly decisionId: string
+      readonly reviewRound: number
+      readonly reason: SchedulerFireReason
+      /** Selected from the calling persona's `tool_use.debate.opposingProviders`
+       *  list (M10 selection logic reused). */
+      readonly opposingProvider: string
+      /** Topic slug (matches debate_started.topic for join-key). */
+      readonly debateTopic: string
+      readonly preReviewReportSha256: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'debate_scheduler_skipped'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly decisionId: string
+      readonly reviewRound: number
+      readonly reason: SchedulerSkipReason
+      readonly preReviewReportSha256: string
+      /** Optional discriminator on the `budget_exhausted` reason naming which
+       *  `budgets.global` cap would tip under aggregate preflight. Absent on
+       *  any other reason. */
+      readonly budgetTipReason?: SchedulerBudgetTipReason
+    }
+  | {
+      readonly version: 1
+      readonly type: 'debate_scheduler_error'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly decisionId: string
+      readonly reviewRound: number
+      readonly reason: SchedulerErrorReason
+      /** Optional free-form provider error code from the underlying
+       *  ProviderError; recorded for triage. */
+      readonly underlyingErrorCode?: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'debate_scheduler_postreview'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      readonly decisionId: string
+      /** Same round value as the pre-debate evaluated/fired event — round
+       *  counter does NOT increment for the post-debate round. */
+      readonly reviewRound: number
+      readonly preReviewReportSha256: string
+      /** sha256 of the canonical (post-debate) REVIEW.md content. */
+      readonly postReviewReportSha256: string
+      readonly verdictPre: SchedulerReviewVerdict
+      readonly verdictPost: SchedulerReviewVerdict
+      /** Count of finding fingerprints present in post-debate REVIEW that were
+       *  absent from the pre-debate REVIEW (post \ pre). */
+      readonly findingsAddedCount: number
+      /** findingsAddedCount restricted to severity ∈ {block, fix-first}. The
+       *  rule-21 new-actionable-finding-rate metric numerator. */
+      readonly actionableFindingsAddedCount: number
+    }
+  | {
+      readonly version: 1
+      readonly type: 'debate_policy_baseline_completed'
+      readonly ts: string
+      readonly runId: string
+      /** Path or hash of the canonical fixture set used by
+       *  `doctor --debate-policy-baseline`. */
+      readonly fixtureSet: string
+      /** % of fired debates whose post-debate REVIEW round produces a verdict
+       *  closer to the fixture oracle's labeled-correct verdict than the
+       *  pre-debate verdict was. Rule-21 floor: ≥ 0.10. */
+      readonly correctiveDeltaRate: number
+      /** Count of fires that flipped in the wrong direction (oracle says X,
+       *  pre-debate said X, post-debate said not-X). Surfaced as a regression
+       *  signal alongside corrective rate. */
+      readonly antiCorrectiveCount: number
+      /** % of fires whose post-debate REVIEW raised ≥1 actionable
+       *  (block | fix-first) finding by fingerprint vs pre-debate. Rule-21
+       *  floor: ≥ 0.30. */
+      readonly newActionableFindingRate: number
+      /** % of fires whose post-debate REVIEW returned the SAME verdict and
+       *  added zero new findings. Telemetry — surfaces wasted fires. No
+       *  floor. */
+      readonly noSignalFireRate: number
+      /** Per-trigger breakdown — useful for tuning grey-zone min/max and
+       *  panel-disagreement gating thresholds. */
+      readonly perTriggerBreakdown: readonly {
+        readonly reason: SchedulerFireReason
+        readonly fired: number
+        readonly correctiveCount: number
+        readonly newActionableCount: number
+      }[]
+      /** Telemetry; non-gating. */
+      readonly costOverheadAvgTokens: number
+      readonly latencyOverheadAvgMs: number
+      /** `correctiveDeltaRate >= 0.10 && newActionableFindingRate >= 0.30`. */
+      readonly passedRuleTwentyOne: boolean
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

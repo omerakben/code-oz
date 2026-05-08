@@ -27,6 +27,12 @@ import {
   PANEL_VERDICTS,
   PANEL_DISAGREEMENT_KINDS,
   PANEL_QUORUM_REJECTION_LAYERS,
+  DEBATE_SCHEDULER_MODES,
+  SCHEDULER_FIRE_REASONS,
+  SCHEDULER_SKIP_REASONS,
+  SCHEDULER_ERROR_REASONS,
+  SCHEDULER_BUDGET_TIP_REASONS,
+  SCHEDULER_REVIEW_VERDICTS,
   isUlid,
   isPhase,
   isProfile,
@@ -1577,8 +1583,332 @@ export function validateEvent(
       }
       break
     }
+    // M15 — Debate-policy scheduler events. Six cases share the same envelope
+    // shape (runId/phase/agent/attempt/taskId/decisionId/reviewRound) plus a
+    // small number of per-event fields. The shared validator below keeps the
+    // switch case bodies short and consistent.
+    case 'debate_scheduler_evaluated': {
+      const env = validateSchedulerEnvelope(file, e, 'debate_scheduler_evaluated', line)
+      if (env) return env
+      if (!(DEBATE_SCHEDULER_MODES as readonly string[]).includes(e.mode as string)) {
+        return enumInvalid(
+          file, 'debate_scheduler_evaluated.mode', DEBATE_SCHEDULER_MODES, e.mode, line,
+        )
+      }
+      const inputDigestIssue = idMatches(
+        file, e.inputDigest, SHA256_REGEX, 'debate_scheduler_evaluated.inputDigest', line,
+      )
+      if (inputDigestIssue) return inputDigestIssue
+      const preIssue = idMatches(
+        file, e.preReviewReportSha256, SHA256_REGEX,
+        'debate_scheduler_evaluated.preReviewReportSha256', line,
+      )
+      if (preIssue) return preIssue
+      if (e.reviewMode !== 'single' && e.reviewMode !== 'panel') {
+        return enumInvalid(
+          file, 'debate_scheduler_evaluated.reviewMode', ['single', 'panel'], e.reviewMode, line,
+        )
+      }
+      break
+    }
+    case 'debate_scheduler_fired': {
+      const env = validateSchedulerEnvelope(file, e, 'debate_scheduler_fired', line)
+      if (env) return env
+      if (!(SCHEDULER_FIRE_REASONS as readonly string[]).includes(e.reason as string)) {
+        return enumInvalid(
+          file, 'debate_scheduler_fired.reason', SCHEDULER_FIRE_REASONS, e.reason, line,
+        )
+      }
+      const opIssue = nonEmptyString(
+        file, e.opposingProvider, 'debate_scheduler_fired.opposingProvider', line,
+      )
+      if (opIssue) return opIssue
+      const topicIssue = nonEmptyString(
+        file, e.debateTopic, 'debate_scheduler_fired.debateTopic', line,
+      )
+      if (topicIssue) return topicIssue
+      const preIssue = idMatches(
+        file, e.preReviewReportSha256, SHA256_REGEX,
+        'debate_scheduler_fired.preReviewReportSha256', line,
+      )
+      if (preIssue) return preIssue
+      break
+    }
+    case 'debate_scheduler_skipped': {
+      const env = validateSchedulerEnvelope(file, e, 'debate_scheduler_skipped', line)
+      if (env) return env
+      if (!(SCHEDULER_SKIP_REASONS as readonly string[]).includes(e.reason as string)) {
+        return enumInvalid(
+          file, 'debate_scheduler_skipped.reason', SCHEDULER_SKIP_REASONS, e.reason, line,
+        )
+      }
+      const preIssue = idMatches(
+        file, e.preReviewReportSha256, SHA256_REGEX,
+        'debate_scheduler_skipped.preReviewReportSha256', line,
+      )
+      if (preIssue) return preIssue
+      // Optional discriminator only on the budget_exhausted path.
+      if (e.budgetTipReason !== undefined) {
+        if (e.reason !== 'budget_exhausted') {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule:
+              'debate_scheduler_skipped.budgetTipReason is only valid when reason === "budget_exhausted"',
+            detail: `got reason=${JSON.stringify(e.reason)}`,
+            line,
+          }
+        }
+        if (
+          !(SCHEDULER_BUDGET_TIP_REASONS as readonly string[]).includes(
+            e.budgetTipReason as string,
+          )
+        ) {
+          return enumInvalid(
+            file,
+            'debate_scheduler_skipped.budgetTipReason',
+            SCHEDULER_BUDGET_TIP_REASONS,
+            e.budgetTipReason,
+            line,
+          )
+        }
+      }
+      break
+    }
+    case 'debate_scheduler_error': {
+      const env = validateSchedulerEnvelope(file, e, 'debate_scheduler_error', line)
+      if (env) return env
+      if (!(SCHEDULER_ERROR_REASONS as readonly string[]).includes(e.reason as string)) {
+        return enumInvalid(
+          file, 'debate_scheduler_error.reason', SCHEDULER_ERROR_REASONS, e.reason, line,
+        )
+      }
+      if (e.underlyingErrorCode !== undefined) {
+        const codeIssue = nonEmptyString(
+          file, e.underlyingErrorCode, 'debate_scheduler_error.underlyingErrorCode', line,
+        )
+        if (codeIssue) return codeIssue
+      }
+      break
+    }
+    case 'debate_scheduler_postreview': {
+      const env = validateSchedulerEnvelope(file, e, 'debate_scheduler_postreview', line)
+      if (env) return env
+      const preIssue = idMatches(
+        file, e.preReviewReportSha256, SHA256_REGEX,
+        'debate_scheduler_postreview.preReviewReportSha256', line,
+      )
+      if (preIssue) return preIssue
+      const postIssue = idMatches(
+        file, e.postReviewReportSha256, SHA256_REGEX,
+        'debate_scheduler_postreview.postReviewReportSha256', line,
+      )
+      if (postIssue) return postIssue
+      if (!(SCHEDULER_REVIEW_VERDICTS as readonly string[]).includes(e.verdictPre as string)) {
+        return enumInvalid(
+          file, 'debate_scheduler_postreview.verdictPre',
+          SCHEDULER_REVIEW_VERDICTS, e.verdictPre, line,
+        )
+      }
+      if (!(SCHEDULER_REVIEW_VERDICTS as readonly string[]).includes(e.verdictPost as string)) {
+        return enumInvalid(
+          file, 'debate_scheduler_postreview.verdictPost',
+          SCHEDULER_REVIEW_VERDICTS, e.verdictPost, line,
+        )
+      }
+      const findingsIssue = nonNegativeInteger(
+        file, e.findingsAddedCount,
+        'debate_scheduler_postreview.findingsAddedCount', line,
+      )
+      if (findingsIssue) return findingsIssue
+      const actionableIssue = nonNegativeInteger(
+        file, e.actionableFindingsAddedCount,
+        'debate_scheduler_postreview.actionableFindingsAddedCount', line,
+      )
+      if (actionableIssue) return actionableIssue
+      // Defense-in-depth: actionable count cannot exceed total count.
+      if (
+        typeof e.actionableFindingsAddedCount === 'number' &&
+        typeof e.findingsAddedCount === 'number' &&
+        e.actionableFindingsAddedCount > e.findingsAddedCount
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule:
+            'debate_scheduler_postreview.actionableFindingsAddedCount must not exceed findingsAddedCount',
+          detail: `actionable=${e.actionableFindingsAddedCount} total=${e.findingsAddedCount}`,
+          line,
+        }
+      }
+      break
+    }
+    case 'debate_policy_baseline_completed': {
+      const fixtureIssue = nonEmptyString(
+        file, e.fixtureSet, 'debate_policy_baseline_completed.fixtureSet', line,
+      )
+      if (fixtureIssue) return fixtureIssue
+      const ratios: Array<[string, unknown]> = [
+        ['correctiveDeltaRate', e.correctiveDeltaRate],
+        ['newActionableFindingRate', e.newActionableFindingRate],
+        ['noSignalFireRate', e.noSignalFireRate],
+      ]
+      for (const [name, val] of ratios) {
+        if (
+          typeof val !== 'number' ||
+          !Number.isFinite(val) ||
+          val < 0 ||
+          val > 1
+        ) {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule: `debate_policy_baseline_completed.${name} must be a finite number in [0, 1]`,
+            detail: `got ${JSON.stringify(val)}`,
+            line,
+          }
+        }
+      }
+      const antiIssue = nonNegativeInteger(
+        file, e.antiCorrectiveCount,
+        'debate_policy_baseline_completed.antiCorrectiveCount', line,
+      )
+      if (antiIssue) return antiIssue
+      const costIssue = finiteNonNegativeNumberOrInvalid(
+        file, e.costOverheadAvgTokens,
+        'debate_policy_baseline_completed.costOverheadAvgTokens', line,
+      )
+      // costOverheadAvgTokens is required (not optional) — rewrap as required.
+      if (e.costOverheadAvgTokens === undefined || costIssue) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule:
+            'debate_policy_baseline_completed.costOverheadAvgTokens must be a finite non-negative number',
+          detail: `got ${JSON.stringify(e.costOverheadAvgTokens)}`,
+          line,
+        }
+      }
+      const latencyIssue = finiteNonNegativeNumberOrInvalid(
+        file, e.latencyOverheadAvgMs,
+        'debate_policy_baseline_completed.latencyOverheadAvgMs', line,
+      )
+      if (e.latencyOverheadAvgMs === undefined || latencyIssue) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule:
+            'debate_policy_baseline_completed.latencyOverheadAvgMs must be a finite non-negative number',
+          detail: `got ${JSON.stringify(e.latencyOverheadAvgMs)}`,
+          line,
+        }
+      }
+      if (typeof e.passedRuleTwentyOne !== 'boolean') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'debate_policy_baseline_completed.passedRuleTwentyOne must be a boolean',
+          detail: `got ${JSON.stringify(e.passedRuleTwentyOne)}`,
+          line,
+        }
+      }
+      // perTriggerBreakdown shape check.
+      if (!Array.isArray(e.perTriggerBreakdown)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule:
+            'debate_policy_baseline_completed.perTriggerBreakdown must be an array of per-reason rows',
+          detail: `got ${JSON.stringify(e.perTriggerBreakdown)}`,
+          line,
+        }
+      }
+      for (let i = 0; i < e.perTriggerBreakdown.length; i++) {
+        const row = e.perTriggerBreakdown[i] as Record<string, unknown>
+        if (row === null || typeof row !== 'object') {
+          return {
+            file,
+            code: 'event_invalid_value',
+            rule:
+              `debate_policy_baseline_completed.perTriggerBreakdown[${i}] must be an object`,
+            line,
+          }
+        }
+        if (!(SCHEDULER_FIRE_REASONS as readonly string[]).includes(row.reason as string)) {
+          return enumInvalid(
+            file,
+            `debate_policy_baseline_completed.perTriggerBreakdown[${i}].reason`,
+            SCHEDULER_FIRE_REASONS,
+            row.reason,
+            line,
+          )
+        }
+        const counts: Array<[string, unknown]> = [
+          ['fired', row.fired],
+          ['correctiveCount', row.correctiveCount],
+          ['newActionableCount', row.newActionableCount],
+        ]
+        for (const [name, val] of counts) {
+          const issue = nonNegativeInteger(
+            file, val,
+            `debate_policy_baseline_completed.perTriggerBreakdown[${i}].${name}`, line,
+          )
+          if (issue) return issue
+        }
+      }
+      break
+    }
   }
 
+  return null
+}
+
+/**
+ * M15: shared envelope validator for the five scheduler decision events.
+ * The five events (debate_scheduler_evaluated/fired/skipped/error/postreview)
+ * all carry the same five trace fields beyond the v1 envelope:
+ *   phase / agent / attempt / taskId / decisionId / reviewRound.
+ * `phase` is always `review` in v0.1 (post-REVIEW trigger surface only —
+ * rule 20 + kickoff §1); the validator checks only that it's a known phase.
+ * `decisionId` is a run-scoped ULID (joins evaluated → fired/skipped →
+ * postreview into a single trace).
+ */
+function validateSchedulerEnvelope(
+  file: string,
+  e: Record<string, unknown>,
+  evtType: string,
+  line?: number,
+): EventLogIssue | null {
+  if (!isPhase(e.phase)) return phaseInvalid(file, evtType, e.phase, line)
+  const agentIssue = nonEmptyString(file, e.agent, `${evtType}.agent`, line)
+  if (agentIssue) return agentIssue
+  const attemptIssue = positiveInteger(file, e.attempt, `${evtType}.attempt`, line)
+  if (attemptIssue) return attemptIssue
+  const taskIdIssue = idMatches(file, e.taskId, /^T-\d{3,}$/, `${evtType}.taskId`, line)
+  if (taskIdIssue) return taskIdIssue
+  if (!isUlid(e.decisionId)) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${evtType}.decisionId must be a 26-char Crockford ULID`,
+      detail: `got ${JSON.stringify(e.decisionId)}`,
+      line,
+    }
+  }
+  if (
+    typeof e.reviewRound !== 'number' ||
+    !Number.isInteger(e.reviewRound) ||
+    e.reviewRound < REVIEW_ROUND_MIN ||
+    e.reviewRound > REVIEW_ROUND_CAP
+  ) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${evtType}.reviewRound must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+      detail: `got ${JSON.stringify(e.reviewRound)}`,
+      line,
+    }
+  }
   return null
 }
 
