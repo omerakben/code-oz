@@ -181,6 +181,21 @@ export interface ReviewSchedulerHookOptions {
    *  emitted) — preserved for commit 4a tests and for transitional wiring
    *  while production executor is being plumbed. */
   readonly firePathExecutor?: SchedulerFirePathExecutor
+  /** Optional aggregate budget preflight result (M15 commit 5). When
+   *  provided, the hook plumbs the {wouldTip, tipReason} into
+   *  SchedulerInput.budget so the pure decision function can short-circuit
+   *  the trigger evaluation with reason='budget_exhausted' (carrying the
+   *  optional budgetTipReason discriminator). When omitted, the preflight
+   *  defaults to `{ aggregatePreflightWouldTip: false }` — preserves
+   *  commits 4a + 4b transitional behavior. The caller (review.ts wiring)
+   *  is responsible for calling aggregateDebateSchedulerPreflight from
+   *  src/providers/cost.ts and passing the result here. */
+  readonly aggregatePreflightWouldTip?: boolean
+  readonly aggregatePreflightTipReason?:
+    | 'maxTokensEstimate'
+    | 'maxProviderCalls'
+    | 'maxTurns'
+    | 'maxWallTimeMinutes'
 }
 
 export interface ReviewSchedulerHookFireOutcome {
@@ -269,10 +284,15 @@ export async function runReviewSchedulerHook(
       currentFingerprint,
     },
     budget: {
-      // Commit 5 wires the real aggregateDebateSchedulerPreflight result.
-      // Commit 4a defaults to false so the hook never spuriously skips on
-      // budget; the existing M13 chokepoints still backstop downstream.
-      aggregatePreflightWouldTip: false,
+      // M15 commit 5: real preflight result is plumbed via opts. When the
+      // caller did not run the preflight (e.g., transitional wiring), we
+      // default to false — the existing M13 chokepoints (assertWithinBudget)
+      // still backstop downstream. The optional tipReason flows through
+      // to debate_scheduler_skipped's optional budgetTipReason field.
+      aggregatePreflightWouldTip: opts.aggregatePreflightWouldTip ?? false,
+      ...(opts.aggregatePreflightTipReason !== undefined
+        ? { tipReason: opts.aggregatePreflightTipReason }
+        : {}),
     },
     persona: personaSnapshot as SchedulerInput['persona'],
     concurrency: { debateInFlight },

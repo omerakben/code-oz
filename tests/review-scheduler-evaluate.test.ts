@@ -234,6 +234,37 @@ describe('runReviewSchedulerHook — skip path', () => {
     expect(skipped?.reason).toBe('no_trigger_matched')
   })
 
+  test('preflight tip plumbs through to skipped event with budgetTipReason', async () => {
+    // M15 commit 5: when caller passes preflight result indicating the
+    // aggregate would tip, hook builds SchedulerInput with
+    // aggregatePreflightWouldTip=true and pure function returns
+    // budget_exhausted with the optional budgetTipReason discriminator.
+    await runReviewSchedulerHook({
+      runId: RUN,
+      taskId: 'T-001',
+      attempt: 1,
+      reviewRound: 1,
+      phase: 'review',
+      agent: 'reviewer',
+      reviewerAgent: reviewerAgent({ withDebatePerm: true }),
+      preReviewReportSha256: SHA64A,
+      reviewState: { mode: 'single', score: 6, verdict: 'needs-revision' },
+      debatePolicyFromConfig: autoPolicy(),
+      buildReportChangedFileCount: 4,
+      events: [],
+      eventPaths: paths,
+      now: () => TS,
+      aggregatePreflightWouldTip: true,
+      aggregatePreflightTipReason: 'maxTokensEstimate',
+    })
+    const evts = await readSchedulerEvents()
+    const skipped = evts.find((e) => e.type === 'debate_scheduler_skipped') as
+      | (LoggedEvent & { reason: string; budgetTipReason?: string })
+      | undefined
+    expect(skipped?.reason).toBe('budget_exhausted')
+    expect(skipped?.budgetTipReason).toBe('maxTokensEstimate')
+  })
+
   test('skip event correlation: decisionId matches the evaluated event', async () => {
     const result = await callHook({
       reviewState: { mode: 'single', score: 9, verdict: 'ready' },
