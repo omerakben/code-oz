@@ -129,6 +129,7 @@ import {
   buildSchedulerPreflightInputForSingle,
   buildSchedulerPreflightInputForPanel,
   buildDebateFilesManifest,
+  detectSchedulerResumeMismatch,
 } from './review-fire-path.ts'
 import { requestDebate } from '../tools/debate-request.ts'
 import { aggregateDebateSchedulerPreflight } from '../providers/cost.ts'
@@ -495,6 +496,22 @@ function actionableSuggestionsFor(code: string): readonly string[] {
         "Inspect the persona's tool_use.debate.maxFiles cap and the manifest preview at .code-oz/runs/<runId>/artifacts/debates/<topic>/MANIFEST.preview.md.",
         'Adjust .code-ozignore exclusions or raise maxFiles only after explicit operator approval.',
       ])
+    case 'debate_scheduler_resume_after_fire':
+      return Object.freeze([
+        'A prior session emitted debate_scheduler_fired but never started the debate (no debate_started event).',
+        'Re-firing risks cost double-charge and topic collision — confirm the prior debate has not partially completed before re-running.',
+        'Inspect events.jsonl for the orphan decisionId and clear .code-oz/runs/<runId>/artifacts/debates/<topic>/ if no work was committed.',
+      ])
+    case 'debate_scheduler_resume_after_resolve':
+      return Object.freeze([
+        'A prior session completed the cross-family debate (debate_resolved emitted) but the post-debate REVIEW round did not record its outcome.',
+        'Inspect .code-oz/runs/<runId>/artifacts/debates/<topic>/DECISION.md and the canonical REVIEW.md, then either re-run the round or restore the post-debate REVIEW.md from forensics before retrying.',
+      ])
+    case 'debate_scheduler_resume_evaluate_orphan':
+      return Object.freeze([
+        'A prior session ran the pure scheduler (debate_scheduler_evaluated emitted) but the orchestrator crashed before recording a decision.',
+        'Inspect events.jsonl for the orphan decisionId. The earlier event is preserved in append-only events.jsonl; restart the run cleanly to re-evaluate.',
+      ])
     default:
       return Object.freeze(['Inspect REVIEW.md, events.jsonl, and the relevant draft directory.'])
   }
@@ -797,6 +814,33 @@ async function runReviewRoundLocked(
       probe.draftPath,
     )
   }
+
+  // 4b. M15 Phase 2 C18 — minimal scheduler-resume mismatch detection.
+  // When `schedulerEnabled === 'enabled'`, scan events.jsonl for the
+  // three crash points named in `docs/contracts/DEBATE_POLICY.md` §
+  // "Resume semantics" and halt with NEEDS_INTERVENTION when one is
+  // detected. Conservative: re-firing risks cost double-charge and topic
+  // collision; we surface for operator inspection rather than auto-
+  // resuming. The post-debate round (`disabled_post_debate`) is itself
+  // resume territory — skip the detection there.
+  if (opts.schedulerEnabled === 'enabled') {
+    const schedulerMismatch = detectSchedulerResumeMismatch(events, {
+      runId: opts.runId,
+      taskId: opts.taskId,
+      attempt,
+      round: opts.round,
+    })
+    if (schedulerMismatch !== null) {
+      const code =
+        schedulerMismatch.kind === 'fired_no_debate_started'
+          ? 'debate_scheduler_resume_after_fire'
+          : schedulerMismatch.kind === 'debate_resolved_no_postreview'
+            ? 'debate_scheduler_resume_after_resolve'
+            : 'debate_scheduler_resume_evaluate_orphan'
+      return recordReviewIntervention(ictx, code, schedulerMismatch.detail)
+    }
+  }
+
   const draftAttempt1Path = reviewDraftPath(opts.runPaths.runDir, opts.round, 1)
   const draftAttempt2Path = reviewDraftPath(opts.runPaths.runDir, opts.round, 2)
 

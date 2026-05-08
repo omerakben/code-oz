@@ -17,7 +17,9 @@ import {
   buildSchedulerPreflightInputForSingle,
   buildSchedulerPreflightInputForPanel,
   buildDebateFilesManifest,
+  detectSchedulerResumeMismatch,
 } from '../src/phases/review-fire-path.ts'
+import { generateUlid, type LoggedEvent } from '../src/state/schemas.ts'
 import type { AgentDefinition } from '../src/agents/schema.ts'
 import type {
   ProviderFamily,
@@ -731,6 +733,222 @@ describe('buildDebateFilesManifest', () => {
     expect(m[3]).toBe('src/z.ts')
     expect(m[4]).toBe('src/a.ts')
     expect(m[5]).toBe('src/m.ts')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// detectSchedulerResumeMismatch (C18)
+// ---------------------------------------------------------------------------
+describe('detectSchedulerResumeMismatch', () => {
+  const RUN = generateUlid({ now: 1_000_000_000_000, random: new Uint8Array(10) })
+  const TS = '2026-05-08T05:00:00.000Z'
+  const SHA64A = 'a'.repeat(64)
+
+  const SCOPE = { runId: RUN, taskId: 'T-001', attempt: 1, round: 1 }
+
+  function evaluatedEv(decisionId: string): LoggedEvent {
+    return {
+      version: 1,
+      type: 'debate_scheduler_evaluated',
+      ts: TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      attempt: 1,
+      taskId: 'T-001',
+      decisionId,
+      reviewRound: 1,
+      mode: 'auto',
+      inputDigest: SHA64A,
+      preReviewReportSha256: SHA64A,
+      reviewMode: 'single',
+    } as LoggedEvent
+  }
+
+  function skippedEv(decisionId: string): LoggedEvent {
+    return {
+      version: 1,
+      type: 'debate_scheduler_skipped',
+      ts: TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      attempt: 1,
+      taskId: 'T-001',
+      decisionId,
+      reviewRound: 1,
+      reason: 'no_trigger_matched',
+      preReviewReportSha256: SHA64A,
+    } as LoggedEvent
+  }
+
+  function firedEv(decisionId: string, topic: string): LoggedEvent {
+    return {
+      version: 1,
+      type: 'debate_scheduler_fired',
+      ts: TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      attempt: 1,
+      taskId: 'T-001',
+      decisionId,
+      reviewRound: 1,
+      reason: 'score_in_grey_zone',
+      opposingProvider: 'claude',
+      debateTopic: topic,
+      preReviewReportSha256: SHA64A,
+    } as LoggedEvent
+  }
+
+  function debateStartedEv(topic: string): LoggedEvent {
+    return {
+      version: 1,
+      type: 'debate_started',
+      ts: TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      topic,
+      debateDirPath: `.code-oz/runs/${RUN}/artifacts/debates/${topic}`,
+      briefingSha256: SHA64A,
+      manifestPreviewSha256: SHA64A,
+      callerFamily: 'codex',
+      opposingProvider: 'claude',
+      opposingFamily: 'claude',
+    } as LoggedEvent
+  }
+
+  function debateResolvedEv(topic: string): LoggedEvent {
+    return {
+      version: 1,
+      type: 'debate_resolved',
+      ts: TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      topic,
+      debateDirPath: `.code-oz/runs/${RUN}/artifacts/debates/${topic}`,
+      decisionSha256: SHA64A,
+      callerVerdict: 'accept-with-modifications',
+      responseVerdict: 'oppose',
+      rationaleSummary: 'r',
+    } as LoggedEvent
+  }
+
+  function postreviewEv(decisionId: string): LoggedEvent {
+    return {
+      version: 1,
+      type: 'debate_scheduler_postreview',
+      ts: TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      attempt: 1,
+      taskId: 'T-001',
+      decisionId,
+      reviewRound: 1,
+      preReviewReportSha256: SHA64A,
+      postReviewReportSha256: SHA64A,
+      verdictPre: 'needs-revision',
+      verdictPost: 'ready',
+      findingsAddedCount: 0,
+      actionableFindingsAddedCount: 0,
+    } as LoggedEvent
+  }
+
+  test('returns null when no scheduler events are present', () => {
+    expect(detectSchedulerResumeMismatch([], SCOPE)).toBeNull()
+  })
+
+  test('returns null for a complete evaluated → skipped flow', () => {
+    const dId = 'd-001'
+    const events: LoggedEvent[] = [evaluatedEv(dId), skippedEv(dId)]
+    expect(detectSchedulerResumeMismatch(events, SCOPE)).toBeNull()
+  })
+
+  test('returns null for a complete evaluated → fired → debate_started → debate_resolved → postreview flow', () => {
+    const dId = 'd-002'
+    const topic = 'review-r1-a1-t-001'
+    const events: LoggedEvent[] = [
+      evaluatedEv(dId),
+      firedEv(dId, topic),
+      debateStartedEv(topic),
+      debateResolvedEv(topic),
+      postreviewEv(dId),
+    ]
+    expect(detectSchedulerResumeMismatch(events, SCOPE)).toBeNull()
+  })
+
+  test('detects fired_no_debate_started: re-fire is unsafe (highest priority)', () => {
+    const dId = 'd-003'
+    const topic = 'review-r1-a1-t-001'
+    const events: LoggedEvent[] = [evaluatedEv(dId), firedEv(dId, topic)]
+    const result = detectSchedulerResumeMismatch(events, SCOPE)
+    expect(result?.kind).toBe('fired_no_debate_started')
+    expect(result?.decisionId).toBe(dId)
+  })
+
+  test('detects debate_resolved_no_postreview', () => {
+    const dId = 'd-004'
+    const topic = 'review-r1-a1-t-001'
+    const events: LoggedEvent[] = [
+      evaluatedEv(dId),
+      firedEv(dId, topic),
+      debateStartedEv(topic),
+      debateResolvedEv(topic),
+    ]
+    const result = detectSchedulerResumeMismatch(events, SCOPE)
+    expect(result?.kind).toBe('debate_resolved_no_postreview')
+    expect(result?.decisionId).toBe(dId)
+  })
+
+  test('detects evaluated_no_terminal', () => {
+    const dId = 'd-005'
+    const events: LoggedEvent[] = [evaluatedEv(dId)]
+    const result = detectSchedulerResumeMismatch(events, SCOPE)
+    expect(result?.kind).toBe('evaluated_no_terminal')
+    expect(result?.decisionId).toBe(dId)
+  })
+
+  test('skips events for a different (taskId, attempt, round)', () => {
+    const dId = 'd-006'
+    const events: LoggedEvent[] = [
+      { ...evaluatedEv(dId), taskId: 'T-OTHER' } as LoggedEvent,
+    ]
+    expect(detectSchedulerResumeMismatch(events, SCOPE)).toBeNull()
+  })
+
+  test('skips events for a different runId', () => {
+    const dId = 'd-007'
+    const events: LoggedEvent[] = [
+      { ...evaluatedEv(dId), runId: 'other-run' } as LoggedEvent,
+    ]
+    expect(detectSchedulerResumeMismatch(events, SCOPE)).toBeNull()
+  })
+
+  test('returns null when fire was followed by error_degrade (no resume needed)', () => {
+    const dId = 'd-008'
+    const topic = 'review-r1-a1-t-001'
+    const events: LoggedEvent[] = [
+      evaluatedEv(dId),
+      firedEv(dId, topic),
+      debateStartedEv(topic),
+      {
+        version: 1,
+        type: 'debate_scheduler_error',
+        ts: TS,
+        runId: RUN,
+        phase: 'review',
+        agent: 'reviewer',
+        attempt: 1,
+        taskId: 'T-001',
+        decisionId: dId,
+        reviewRound: 1,
+        reason: 'transient_io',
+      } as LoggedEvent,
+    ]
+    expect(detectSchedulerResumeMismatch(events, SCOPE)).toBeNull()
   })
 })
 

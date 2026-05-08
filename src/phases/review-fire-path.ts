@@ -52,6 +52,7 @@ import {
 } from '../artifacts/review-report.ts'
 import type { SchedulerFirePathResult } from './review-scheduler-hook.ts'
 import type { SchedulerPreflightInput } from '../providers/cost.ts'
+import { isKnownPhaseEvent, type LoggedEvent } from '../state/schemas.ts'
 
 // Conservative single-turn token estimate. The aggregate preflight covers
 // opposing + synthesis + post-debate REVIEW = 3 turns. Per-call
@@ -571,4 +572,171 @@ export function buildDebateFilesManifest(input: {
   const remaining = input.maxFiles - required.length
   const extras = input.changedFilePaths.slice(0, remaining)
   return Object.freeze([...required, ...extras])
+}
+
+// ---------------------------------------------------------------------------
+// M15 Phase 2 C18 — minimal scheduler-resume mismatch detection
+// ---------------------------------------------------------------------------
+//
+// Per `docs/contracts/DEBATE_POLICY.md` § "Resume semantics", three crash
+// points need detection on a fresh runReview() invocation:
+//
+//   1. `evaluated` emitted, no `fired`/`skipped`. The pure scheduler ran
+//      but the orchestrator crashed before recording its decision.
+//      Recovery: re-evaluate (the earlier event stays in events.jsonl;
+//      rule-21 reducer dedups by latest decisionId).
+//   2. `fired` emitted, no `debate_started`. The orchestrator emitted
+//      the fire event but `requestDebate` never started its own debate
+//      lifecycle. Re-firing is unsafe (cost double-charge); halt with
+//      NEEDS_INTERVENTION.
+//   3. `debate_resolved` emitted, no `postreview`. The debate completed
+//      but the post-debate REVIEW round never produced its event.
+//      Recovery: post-debate REVIEW round runs on resume (DECISION.md is
+//      on disk). v0.1 minimal: surface a halt; broader auto-resume UX
+//      deferred to M16+.
+//
+// Detection runs at the top of `runReviewRoundLocked` (after the
+// existing `probeReviewResume`) and only for `schedulerEnabled === 'enabled'`
+// rounds — the post-debate round (`disabled_post_debate`) is itself
+// part of resume territory.
+
+export type SchedulerResumeMismatchKind =
+  | 'evaluated_no_terminal'
+  | 'fired_no_debate_started'
+  | 'debate_resolved_no_postreview'
+
+export interface SchedulerResumeMismatch {
+  readonly kind: SchedulerResumeMismatchKind
+  /** The orphan decisionId that triggered the mismatch. */
+  readonly decisionId: string
+  /** Pretty-printed orphan summary for the intervention detail. */
+  readonly detail: string
+}
+
+interface FiredHeaderForResume {
+  readonly decisionId: string
+  readonly topic?: string
+}
+
+/**
+ * Scan events.jsonl for a scheduler-resume mismatch on the (runId,
+ * taskId, attempt, round) tuple this round body is about to drive.
+ *
+ * Returns `null` when no mismatch is detected (the round may proceed
+ * normally). Returns a `SchedulerResumeMismatch` describing the orphan
+ * scheduler event that needs operator inspection.
+ *
+ * Detection is conservative: any of the three crash patterns triggers
+ * a halt + NEEDS_INTERVENTION. Broader auto-resume (re-fire after a
+ * partial completion) is deferred to M16+; v0.1 prioritizes safety over
+ * convenience, since re-firing risks cost double-charge and topic
+ * collision.
+ */
+export function detectSchedulerResumeMismatch(
+  events: readonly LoggedEvent[],
+  scope: {
+    readonly runId: string
+    readonly taskId: string
+    readonly attempt: number
+    readonly round: number
+  },
+): SchedulerResumeMismatch | null {
+  const evaluatedByDecision = new Map<string, true>()
+  const skippedByDecision = new Map<string, true>()
+  const firedByDecision = new Map<string, FiredHeaderForResume>()
+  const errorByDecision = new Map<string, true>()
+  const postreviewByDecision = new Map<string, true>()
+  const debateStartedByTopic = new Map<string, true>()
+  const debateResolvedByTopic = new Map<string, true>()
+
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.runId !== scope.runId) continue
+    if (
+      e.type === 'debate_scheduler_evaluated' ||
+      e.type === 'debate_scheduler_skipped' ||
+      e.type === 'debate_scheduler_fired' ||
+      e.type === 'debate_scheduler_error' ||
+      e.type === 'debate_scheduler_postreview'
+    ) {
+      if (e.taskId !== scope.taskId || e.attempt !== scope.attempt) continue
+      if (e.reviewRound !== scope.round) continue
+      switch (e.type) {
+        case 'debate_scheduler_evaluated':
+          evaluatedByDecision.set(e.decisionId, true)
+          break
+        case 'debate_scheduler_skipped':
+          skippedByDecision.set(e.decisionId, true)
+          break
+        case 'debate_scheduler_fired':
+          firedByDecision.set(e.decisionId, {
+            decisionId: e.decisionId,
+            topic: e.debateTopic,
+          })
+          break
+        case 'debate_scheduler_error':
+          errorByDecision.set(e.decisionId, true)
+          break
+        case 'debate_scheduler_postreview':
+          postreviewByDecision.set(e.decisionId, true)
+          break
+      }
+      continue
+    }
+    // M10 debate primitive lifecycle — keyed by topic, scoped by runId.
+    if (e.type === 'debate_started' && e.runId === scope.runId) {
+      debateStartedByTopic.set(e.topic, true)
+    } else if (e.type === 'debate_resolved' && e.runId === scope.runId) {
+      debateResolvedByTopic.set(e.topic, true)
+    }
+  }
+
+  // Check 2 (highest priority — re-fire is unsafe): fired without
+  // matching debate_started.
+  for (const [decisionId, fired] of firedByDecision) {
+    const topic = fired.topic ?? ''
+    if (topic !== '' && !debateStartedByTopic.has(topic)) {
+      return {
+        kind: 'fired_no_debate_started',
+        decisionId,
+        detail: `debate_scheduler_fired emitted (decisionId=${decisionId}, topic=${topic}) but no matching debate_started; re-firing risks cost double-charge`,
+      }
+    }
+  }
+
+  // Check 3: debate_resolved without postreview (and no error).
+  for (const [decisionId, fired] of firedByDecision) {
+    const topic = fired.topic ?? ''
+    if (
+      topic !== '' &&
+      debateResolvedByTopic.has(topic) &&
+      !postreviewByDecision.has(decisionId) &&
+      !errorByDecision.has(decisionId)
+    ) {
+      return {
+        kind: 'debate_resolved_no_postreview',
+        decisionId,
+        detail: `debate completed (decisionId=${decisionId}, topic=${topic}) but no debate_scheduler_postreview emitted; post-debate REVIEW round did not record its outcome`,
+      }
+    }
+  }
+
+  // Check 1: evaluated without any terminal (skipped, fired, error,
+  // postreview). The pure scheduler ran but no decision was recorded.
+  for (const [decisionId] of evaluatedByDecision) {
+    if (
+      !skippedByDecision.has(decisionId) &&
+      !firedByDecision.has(decisionId) &&
+      !errorByDecision.has(decisionId) &&
+      !postreviewByDecision.has(decisionId)
+    ) {
+      return {
+        kind: 'evaluated_no_terminal',
+        decisionId,
+        detail: `debate_scheduler_evaluated emitted (decisionId=${decisionId}) without a terminal event; the pure scheduler ran but the orchestrator crashed before recording the decision`,
+      }
+    }
+  }
+
+  return null
 }
