@@ -203,6 +203,16 @@ If you find yourself doing any of these, stop and re-debate the milestone shape:
 12. **Bypassing `budgets.global`.** Rule 19. Aggregate preflight is mandatory.
 13. **Same-family auto-debate.** Cross-family discipline (rule 2) is preserved by the M10 runtime; the scheduler adds nothing, removes nothing.
 
+## Opponent-family invariant (M15 Phase 2 A1 lock, 2026-05-08)
+
+Scheduler-fired debate uses the existing M10 `tool_use.debate` permission and `requestDebate()` runtime checks. The runtime invariant is **caller-family != opposing-provider-family**. M15 does not require the opposing provider to differ from the original BUILD provider family, because REVIEW has already enforced BUILD-family != REVIEW-family before the scheduler can run. A reviewer persona may choose to exclude BUILD-family opponents for stricter independence, but the bundled reviewer intentionally allows a BUILD-family opponent to steel-man the BUILD-favorable side. REVIEW remains the gate authority; debate output is evidence for a post-debate REVIEW round, not a gate decision.
+
+Cross-references:
+- Rule 2 (CLAUDE.md `non-negotiable rules`): BUILD vs REVIEW cross-family enforced at the REVIEW gate.
+- `requestDebate()` at `src/tools/debate-request.ts:174-188`: caller vs opposing-family enforced at fire time.
+- Load-time validator at `src/agents/schema.ts:402-424`: `opposingProviders` cannot include the persona's own family.
+- Replan thread: `docs/research/CODEX_RESPONSE_M15_REPLAN.md` § Q2.
+
 ## Pinned design decisions (history)
 
 These were locked during planning convergence (Codex `gpt-5.5 xhigh` debate, thread `019e0561-3c95-72a2-b786-056eb685307f`, 2026-05-07):

@@ -1,15 +1,23 @@
 // M15 commit 8 — bundled reviewer.md gets tool_use.debate (Path A locked).
 //
 // Coverage:
-//   - reviewer.md declares tool_use.debate with the locked shape from
-//     kickoff §11.8 (opposingProviders=['claude', 'gemini'], maxConcurrent=1,
-//     previewBeforeSend=true, maxFiles=16, timeoutMs=600_000)
+//   - reviewer.md declares tool_use.debate with the locked shape: the
+//     opposingProviders list is `['claude']` (gemini is a stub with
+//     eligiblePhases=NO_PHASES so M11 filters it out at load time; codex
+//     is reviewer's own family; xai requires operator-configured API-key
+//     auth that bundled defaults stay conservative on).
 //   - reviewer's existing M9 review_request scope is preserved (debate is
 //     additive, not a replacement)
 //   - cross-family invariant: reviewer's own family (codex) is NOT in
 //     opposingProviders; load-time check would reject otherwise
 //   - reviewer is no longer in the M10 NON_DEBATE_DEFAULTS list (covered
 //     in tests/lead-debate-permission.test.ts edit)
+//
+// M15 Phase 2 C19 doc-drift fix: this comment originally said
+// `['claude', 'gemini']` based on the M15 Phase 1 kickoff §11.8 shape;
+// commit 8 narrowed it to `['claude']` for the M11-eligibility reason
+// noted in the inline rationale below. The first-line text now matches
+// the assertion at line 37.
 
 import { describe, test, expect } from 'bun:test'
 import { readFile } from 'node:fs/promises'
