@@ -481,10 +481,85 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   }
 }
 
+/**
+ * Scheduler-hook activation flag for the lock-free round body.
+ *
+ * 'enabled' (default): the post-verdict scheduler hook (step 14b) runs.
+ *   This is the only flag value used today; M15 Phase 2 commit C13b will
+ *   pass 'disabled_post_debate' for the post-debate REVIEW round invoked
+ *   by the production fire-path executor, so a grey-zone post-debate
+ *   verdict does not recursively schedule another debate.
+ *
+ * 'disabled_post_debate': the scheduler hook is skipped on this round.
+ *   Reserved for the post-debate REVIEW round (C13b). Today no caller
+ *   passes this value; the flag exists for forward compatibility.
+ */
+type SchedulerEnabledFlag = 'enabled' | 'disabled_post_debate'
+
+interface RunReviewRoundLockedOptions extends RunReviewOptions {
+  readonly schedulerEnabled: SchedulerEnabledFlag
+}
+
+/** Successful round completion. Carries the locals step 15 (terminal
+ *  branching: ready / block / needs-revision) consumes. The locked body
+ *  never writes terminal events itself — `finalizeReviewRound` is the
+ *  authority for `review_resolved`, `review_blocked`, scientist-tail,
+ *  gate-required, and remediation. */
+interface RoundCompleteOutcome {
+  readonly kind: 'round_complete'
+  readonly attempt: number
+  readonly verdict: 'ready' | 'needs-revision' | 'block'
+  readonly personaScore: number
+  readonly reviewReportPath: string
+  readonly reviewReportSha256: string
+  readonly canonical: {
+    readonly findings: readonly ReviewFinding[]
+    readonly reopenedIds: readonly string[]
+  }
+  readonly buildReportValidationCommand: string
+  readonly interventionCtx: InterventionContext
+}
+
+/** Result of the lock-free round body. Either a successful round
+ *  (`RoundCompleteOutcome`, narrowed by `kind: 'round_complete'`) that
+ *  the caller passes to `finalizeReviewRound`, or a `ReviewResult` that
+ *  the caller returns unchanged (intervention from steps 1-13, or the
+ *  panel-branch's terminal status). */
+type RoundLockedResult = RoundCompleteOutcome | ReviewResult
+
 async function runReviewInner(
   opts: RunReviewOptions,
   now: () => string,
 ): Promise<ReviewResult> {
+  const round = await runReviewRoundLocked(
+    { ...opts, schedulerEnabled: 'enabled' },
+    now,
+  )
+  if (!('kind' in round)) return round
+  return finalizeReviewRound(round, opts, now)
+}
+
+/**
+ * Lock-free single-mode REVIEW round body (steps 1-14b + draft cleanup).
+ *
+ * Authority: produces the canonical REVIEW.md artifact and emits the
+ * `review_round_completed` event for this round. Optionally invokes the
+ * post-verdict scheduler hook (step 14b) when `schedulerEnabled` is
+ * 'enabled'. NEVER writes terminal events (`review_resolved`,
+ * `review_blocked`), never invokes the scientist phase-tail, never
+ * writes the operator-facing gate. Those effects live in
+ * `finalizeReviewRound` so the M15 fire path (commit C13b) can settle
+ * the scheduler decision before the gate result is locked in.
+ *
+ * The function presumes `runReview` already holds `.review.lock`. It
+ * does not acquire any lock state itself, so the production fire-path
+ * executor (C13b) can re-invoke it for the post-debate REVIEW round
+ * without colliding on `.review.lock` (Codex R0 Risk #4 closure).
+ */
+async function runReviewRoundLocked(
+  opts: RunReviewRoundLockedOptions,
+  now: () => string,
+): Promise<RoundLockedResult> {
   const interventionCtx: InterventionContext = {
     runPaths: opts.runPaths,
     runId: opts.runId,
@@ -945,31 +1020,80 @@ async function runReviewInner(
   // is intentionally discarded here; commit 4b's wiring will branch on it.
   // Re-read events so the hook's accumulators include the just-appended
   // review_round_completed event.
-  const eventsForScheduler = await readEvents(eventPathsFor(opts.runPaths))
-  await runReviewSchedulerHook({
-    runId: opts.runId,
-    taskId: opts.taskId,
-    attempt,
-    reviewRound: opts.round,
-    phase: 'review',
-    agent: opts.reviewerAgent.name,
-    reviewerAgent: opts.reviewerAgent,
-    preReviewReportSha256: reviewReportSha256,
-    reviewState: {
-      mode: 'single',
-      score: personaScore,
-      verdict,
-    },
-    debatePolicyFromConfig: opts.invokeCtx.config.debatePolicy,
-    buildReportChangedFileCount: buildReport.changedFiles.length,
-    events: eventsForScheduler,
-    eventPaths: eventPathsFor(opts.runPaths),
-    now,
-  })
+  //
+  // M15 Phase 2 C12: the hook runs only when `schedulerEnabled === 'enabled'`.
+  // C13b will invoke the locked body recursively with 'disabled_post_debate'
+  // for the post-debate REVIEW round so a grey-zone post-debate verdict
+  // cannot fire another debate.
+  if (opts.schedulerEnabled === 'enabled') {
+    const eventsForScheduler = await readEvents(eventPathsFor(opts.runPaths))
+    await runReviewSchedulerHook({
+      runId: opts.runId,
+      taskId: opts.taskId,
+      attempt,
+      reviewRound: opts.round,
+      phase: 'review',
+      agent: opts.reviewerAgent.name,
+      reviewerAgent: opts.reviewerAgent,
+      preReviewReportSha256: reviewReportSha256,
+      reviewState: {
+        mode: 'single',
+        score: personaScore,
+        verdict,
+      },
+      debatePolicyFromConfig: opts.invokeCtx.config.debatePolicy,
+      buildReportChangedFileCount: buildReport.changedFiles.length,
+      events: eventsForScheduler,
+      eventPaths: eventPathsFor(opts.runPaths),
+      now,
+    })
+  }
 
   // Clean up the round's draft directory now that the canonical write
   // succeeded — drafts only have value when there is no canonical output.
   await cleanupReviewDraftsForRound([draftAttempt1Path, draftAttempt2Path])
+
+  return {
+    kind: 'round_complete',
+    attempt,
+    verdict,
+    personaScore,
+    reviewReportPath,
+    reviewReportSha256,
+    canonical: {
+      findings: canonical.findings,
+      reopenedIds: canonical.reopenedIds,
+    },
+    buildReportValidationCommand: buildReport.validationCommand.command,
+    interventionCtx: ictx,
+  }
+}
+
+/**
+ * Step 15 — terminal branching for a successfully completed REVIEW round.
+ *
+ * Owns the `review_resolved` / `review_blocked` events, the scientist
+ * phase-tail invocation, the gate-preflight + `requireGate` write, and
+ * the remediation coordinator dispatch for needs-revision verdicts.
+ * Separated from the round body (M15 Phase 2 C12) so the scheduler
+ * fire-path executor (C13b) can run a post-debate REVIEW round and
+ * settle its result before the terminal effects lock in.
+ */
+async function finalizeReviewRound(
+  round: RoundCompleteOutcome,
+  opts: RunReviewOptions,
+  now: () => string,
+): Promise<ReviewResult> {
+  const {
+    attempt,
+    verdict,
+    personaScore,
+    reviewReportPath,
+    reviewReportSha256,
+    canonical,
+    buildReportValidationCommand,
+    interventionCtx: ictx,
+  } = round
 
   // 15. Branch on verdict.
   if (verdict === 'ready') {
@@ -1104,7 +1228,7 @@ async function runReviewInner(
     priorFindings: canonical.findings,
     reviewReportPath,
     reviewReportSha256,
-    priorValidationCommand: buildReport.validationCommand.command,
+    priorValidationCommand: buildReportValidationCommand,
     reopenedIds: canonical.reopenedIds,
   })
   if (remediation.action === 'review_cap_exhausted') {
