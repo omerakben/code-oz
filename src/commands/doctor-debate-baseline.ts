@@ -74,14 +74,30 @@ export interface PerTriggerRow {
 
 export interface BaselineComputation {
   readonly fixtureCount: number
+  /** Total `debate_scheduler_fired` events seen across all fixtures.
+   *  Denominator for correctiveDeltaRate / newActionableFindingRate /
+   *  noSignalFireRate per `docs/contracts/DEBATE_POLICY.md:144,150`. */
   readonly firedCount: number
-  /** Numerator of correctiveDeltaRate. */
+  /** M15 Phase 2 C16: count of fires whose terminal event was a
+   *  `debate_scheduler_error` (degraded). Visible in the report so rule
+   *  21 cannot be gamed by fires that always errored. */
+  readonly errorCount: number
+  /** M15 Phase 2 C16: count of fires that have neither a
+   *  `debate_scheduler_postreview` NOR a `debate_scheduler_error`
+   *  (in-flight crash; resume territory). Visible for the same reason
+   *  as `errorCount`. */
+  readonly missingTerminalCount: number
+  /** Numerator of correctiveDeltaRate. Only `success` (postreview-joined)
+   *  fires can contribute. Error / missing-terminal fires count toward
+   *  `firedCount` but are non-corrective. */
   readonly correctiveCount: number
-  /** Numerator of antiCorrective surface metric (fires moving AWAY from oracle). */
+  /** Numerator of antiCorrective surface metric (fires moving AWAY from oracle).
+   *  Only `success` fires can contribute. */
   readonly antiCorrectiveCount: number
-  /** Numerator of noSignalFireRate. */
+  /** Numerator of noSignalFireRate. Only `success` fires can contribute. */
   readonly noSignalCount: number
-  /** Numerator of newActionableFindingRate. */
+  /** Numerator of newActionableFindingRate. Only `success` fires can
+   *  contribute (no postreview event = no scalar to read). */
   readonly newActionableCount: number
   readonly correctiveDeltaRate: number
   readonly newActionableFindingRate: number
@@ -104,6 +120,9 @@ export interface BaselineReport extends BaselineComputation {
     readonly antiCorrective: number
     readonly noSignal: number
     readonly newActionable: number
+    /** M15 Phase 2 C16: per-fixture error/missing-terminal visibility. */
+    readonly errored: number
+    readonly missingTerminal: number
   }[]
   /** Pre-rendered text summary (mirrors panel-baseline shape). */
   readonly summary: string
@@ -124,6 +143,8 @@ export function computeDebatePolicyBaseline(
   fixtures: readonly FixtureRecord[],
 ): BaselineComputation {
   let firedCount = 0
+  let errorCount = 0
+  let missingTerminalCount = 0
   let correctiveCount = 0
   let antiCorrectiveCount = 0
   let noSignalCount = 0
@@ -140,11 +161,30 @@ export function computeDebatePolicyBaseline(
   for (const fixture of fixtures) {
     const fires = collectFires(fixture.treatmentEvents)
     for (const fire of fires) {
+      // M15 Phase 2 C16 (Codex R1 #4 closure): EVERY `debate_scheduler_fired`
+      // counts toward `firedCount`. The contract denominator is total fired
+      // count (`docs/contracts/DEBATE_POLICY.md:144,150`); silently dropping
+      // orphaned/errored fires inflates correctiveDeltaRate +
+      // newActionableFindingRate.
       firedCount++
       const trigRow = triggerMap.get(fire.fired.reason as SchedulerFireReason)
       if (trigRow !== undefined) trigRow.fired++
 
-      // Verdict-direction classification against fixture oracle.
+      if (fire.kind === 'error') {
+        // Errored fires are visible (errorCount) but contribute nothing
+        // to numerators — they did not produce a post-debate verdict
+        // delta or finding diff to measure.
+        errorCount++
+        continue
+      }
+      if (fire.kind === 'missing') {
+        // Fired without terminal: in-flight crash territory. Surfaces as
+        // missingTerminalCount; non-corrective + non-actionable.
+        missingTerminalCount++
+        continue
+      }
+
+      // fire.kind === 'success': postreview joined; classify normally.
       const oracle = fixture.oracle.verdict
       const direction = classifyVerdictDelta(fire.postreview.verdictPre, fire.postreview.verdictPost, oracle)
       if (direction === 'corrective') {
@@ -208,6 +248,8 @@ export function computeDebatePolicyBaseline(
   return {
     fixtureCount: fixtures.length,
     firedCount,
+    errorCount,
+    missingTerminalCount,
     correctiveCount,
     antiCorrectiveCount,
     noSignalCount,
@@ -226,28 +268,67 @@ export function computeDebatePolicyBaseline(
 // Internal: events.jsonl reduction helpers
 // ---------------------------------------------------------------------------
 
-interface JoinedFire {
-  readonly fired: {
-    readonly decisionId: string
-    readonly reason: string
-    readonly ts: string
-  }
-  readonly postreview: {
-    readonly ts: string
-    readonly verdictPre: ObservedVerdict
-    readonly verdictPost: ObservedVerdict
-    readonly findingsAddedCount: number
-    readonly actionableFindingsAddedCount: number
-  }
+interface FiredHeader {
+  readonly decisionId: string
+  readonly reason: string
+  readonly ts: string
 }
 
-/** Join debate_scheduler_fired with debate_scheduler_postreview by
- *  decisionId. Fires without a matching postreview are silently dropped —
- *  the rule-21 metric is about completed scheduler decisions only;
- *  in-flight or errored fires are surfaced in counts.error elsewhere. */
+interface PostreviewPayload {
+  readonly ts: string
+  readonly verdictPre: ObservedVerdict
+  readonly verdictPost: ObservedVerdict
+  readonly findingsAddedCount: number
+  readonly actionableFindingsAddedCount: number
+}
+
+interface ErrorPayload {
+  readonly ts: string
+  readonly reason: string
+  readonly underlyingErrorCode?: string
+}
+
+/** Discriminated join of `debate_scheduler_fired` to its terminal event.
+ *
+ *   - `success`: matched a `debate_scheduler_postreview` by decisionId.
+ *   - `error`:   matched a `debate_scheduler_error` by decisionId.
+ *   - `missing`: no terminal event seen (in-flight crash territory).
+ *
+ * M15 Phase 2 C16 (Codex R1 #4 closure): every `debate_scheduler_fired`
+ * counts toward the rule-21 denominator. `error` and `missing` fires are
+ * non-corrective and non-actionable in the numerators, but they are
+ * SURFACED in BaselineComputation.errorCount / missingTerminalCount so
+ * the rule-21 metric cannot be gamed by fires that always errored.
+ */
+type JoinedFire =
+  | {
+      readonly kind: 'success'
+      readonly fired: FiredHeader
+      readonly postreview: PostreviewPayload
+    }
+  | {
+      readonly kind: 'error'
+      readonly fired: FiredHeader
+      readonly error: ErrorPayload
+    }
+  | {
+      readonly kind: 'missing'
+      readonly fired: FiredHeader
+    }
+
+/** Reduce events.jsonl to one `JoinedFire` per `debate_scheduler_fired`.
+ *
+ * Closes Codex R1 #4 (`docs/research/CODEX_REVIEW_M15.md`): the M15
+ * Phase 1 reducer joined `fired -> postreview` only and silently dropped
+ * orphaned/errored fires, contradicting `docs/contracts/DEBATE_POLICY.md`
+ * § "Corrective verdict delta rate" which says the denominator is total
+ * fired count. C16 fixes the denominator and surfaces error/missing
+ * counts so the rule-21 gate cannot be gamed.
+ */
 function collectFires(events: readonly LoggedEvent[]): readonly JoinedFire[] {
-  const fires = new Map<string, { decisionId: string; reason: string; ts: string }>()
-  const postreviews = new Map<string, JoinedFire['postreview']>()
+  const fires = new Map<string, FiredHeader>()
+  const postreviews = new Map<string, PostreviewPayload>()
+  const errors = new Map<string, ErrorPayload>()
   for (const e of events) {
     if (!isKnownPhaseEvent(e)) continue
     if (e.type === 'debate_scheduler_fired') {
@@ -260,12 +341,29 @@ function collectFires(events: readonly LoggedEvent[]): readonly JoinedFire[] {
         findingsAddedCount: e.findingsAddedCount,
         actionableFindingsAddedCount: e.actionableFindingsAddedCount,
       })
+    } else if (e.type === 'debate_scheduler_error') {
+      errors.set(e.decisionId, {
+        ts: e.ts,
+        reason: e.reason,
+        ...(e.underlyingErrorCode !== undefined
+          ? { underlyingErrorCode: e.underlyingErrorCode }
+          : {}),
+      })
     }
   }
   const joined: JoinedFire[] = []
   for (const [decisionId, fired] of fires) {
     const postreview = postreviews.get(decisionId)
-    if (postreview !== undefined) joined.push({ fired, postreview })
+    if (postreview !== undefined) {
+      joined.push({ kind: 'success', fired, postreview })
+      continue
+    }
+    const error = errors.get(decisionId)
+    if (error !== undefined) {
+      joined.push({ kind: 'error', fired, error })
+      continue
+    }
+    joined.push({ kind: 'missing', fired })
   }
   return joined
 }
@@ -433,7 +531,17 @@ export async function runDebatePolicyBaseline(
     let antiCorrective = 0
     let noSignal = 0
     let newActionable = 0
+    let errored = 0
+    let missingTerminal = 0
     for (const fire of fires) {
+      if (fire.kind === 'error') {
+        errored++
+        continue
+      }
+      if (fire.kind === 'missing') {
+        missingTerminal++
+        continue
+      }
       const direction = classifyVerdictDelta(
         fire.postreview.verdictPre,
         fire.postreview.verdictPost,
@@ -457,6 +565,8 @@ export async function runDebatePolicyBaseline(
       antiCorrective,
       noSignal,
       newActionable,
+      errored,
+      missingTerminal,
     }
   })
 
@@ -478,6 +588,10 @@ function renderBaselineSummary(fixtureSet: string, computed: BaselineComputation
   lines.push(`Fixture set: ${fixtureSet}`)
   lines.push(`Fixtures: ${computed.fixtureCount}`)
   lines.push(`Fires: ${computed.firedCount}`)
+  // M15 Phase 2 C16: surface error/missing counts so degraded fires are
+  // visible alongside the rule-21 metrics. Hides nothing.
+  lines.push(`  Errored: ${computed.errorCount}`)
+  lines.push(`  Missing terminal: ${computed.missingTerminalCount}`)
   lines.push('')
   lines.push('## Rule-21 metrics')
   lines.push(

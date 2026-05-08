@@ -324,12 +324,16 @@ describe('computeDebatePolicyBaseline — per-trigger breakdown', () => {
   })
 })
 
-describe('computeDebatePolicyBaseline — fires without postreview are dropped', () => {
-  test('orphan fired events do not contribute to rates', () => {
+describe('computeDebatePolicyBaseline — every fire counts in the denominator (M15 C16)', () => {
+  test('orphan fires count toward firedCount but not toward numerators', () => {
+    // Closes Codex R1 #4: M15 Phase 1 silently dropped orphaned fires
+    // from the denominator, inflating correctiveDeltaRate +
+    // newActionableFindingRate. C16: every `debate_scheduler_fired`
+    // counts; missing-terminal fires surface in `missingTerminalCount`.
     const ev: LoggedEvent[] = []
     const dId1 = decisionId()
     ev.push(firedEvent({ decisionId: dId1, reason: 'score_in_grey_zone' }))
-    // no matching postreview for dId1
+    // no matching postreview for dId1 — missing-terminal
     const dId2 = decisionId()
     ev.push(firedEvent({ decisionId: dId2, reason: 'score_in_grey_zone' }))
     ev.push(
@@ -346,7 +350,106 @@ describe('computeDebatePolicyBaseline — fires without postreview are dropped',
       treatmentEvents: ev,
     })
     const result = computeDebatePolicyBaseline([fixture])
-    expect(result.firedCount).toBe(1) // orphan dropped
+    expect(result.firedCount).toBe(2) // C16: both fires count
+    expect(result.missingTerminalCount).toBe(1)
+    expect(result.errorCount).toBe(0)
+    expect(result.correctiveCount).toBe(1) // only the joined fire
+    // 1 / 2 = 0.5 (the orphan fire dilutes the rate, as the contract requires)
+    expect(result.correctiveDeltaRate).toBeCloseTo(0.5, 5)
+    expect(result.newActionableCount).toBe(1)
+    expect(result.newActionableFindingRate).toBeCloseTo(0.5, 5)
+  })
+
+  test('errored fires count toward firedCount + errorCount but not numerators', () => {
+    const ev: LoggedEvent[] = []
+    const dId1 = decisionId()
+    ev.push(firedEvent({ decisionId: dId1, reason: 'score_in_grey_zone' }))
+    ev.push({
+      version: 1,
+      type: 'debate_scheduler_error',
+      ts: '2026-05-08T08:00:05.000Z',
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      attempt: 1,
+      taskId: 'T-001',
+      decisionId: dId1,
+      reviewRound: 1,
+      reason: 'transient_io',
+      underlyingErrorCode: 'provider_io_error',
+    } as LoggedEvent)
+    const fixture = makeFixture({
+      name: 'fx-error',
+      oracle: 'ready',
+      treatmentEvents: ev,
+    })
+    const result = computeDebatePolicyBaseline([fixture])
+    expect(result.firedCount).toBe(1)
+    expect(result.errorCount).toBe(1)
+    expect(result.missingTerminalCount).toBe(0)
+    expect(result.correctiveCount).toBe(0)
+    expect(result.newActionableCount).toBe(0)
+    expect(result.correctiveDeltaRate).toBe(0)
+    expect(result.newActionableFindingRate).toBe(0)
+  })
+
+  test('a treatment of 99 errored + 1 corrective fire reports 1% corrective rate, not 100%', () => {
+    // Codex R1 #4 worked example: "A treatment with 100 fires, 99 failed
+    // postreviews, and 1 corrective postreview reports a 100 percent
+    // corrective rate instead of 1 percent." C16 closes this gaming.
+    const ev: LoggedEvent[] = []
+    for (let i = 0; i < 99; i++) {
+      const dId = decisionId()
+      ev.push(firedEvent({ decisionId: dId, reason: 'score_in_grey_zone' }))
+      ev.push({
+        version: 1,
+        type: 'debate_scheduler_error',
+        ts: '2026-05-08T08:00:05.000Z',
+        runId: RUN,
+        phase: 'review',
+        agent: 'reviewer',
+        attempt: 1,
+        taskId: 'T-001',
+        decisionId: dId,
+        reviewRound: 1,
+        reason: 'other',
+      } as LoggedEvent)
+    }
+    const correctiveDId = decisionId()
+    ev.push(firedEvent({ decisionId: correctiveDId, reason: 'score_in_grey_zone' }))
+    ev.push(
+      postreviewEvent({
+        decisionId: correctiveDId,
+        verdictPre: 'needs-revision',
+        verdictPost: 'ready',
+        actionableAdded: 1,
+      }),
+    )
+    const fixture = makeFixture({
+      name: 'fx-99-errored',
+      oracle: 'ready',
+      treatmentEvents: ev,
+    })
+    const result = computeDebatePolicyBaseline([fixture])
+    expect(result.firedCount).toBe(100)
+    expect(result.errorCount).toBe(99)
+    expect(result.correctiveCount).toBe(1)
+    expect(result.correctiveDeltaRate).toBeCloseTo(0.01, 5) // 1%, not 100%
+    expect(result.newActionableFindingRate).toBeCloseTo(0.01, 5)
+  })
+
+  test('per-fixture detail rows surface errored + missingTerminal counts', () => {
+    const ev: LoggedEvent[] = []
+    const dId = decisionId()
+    ev.push(firedEvent({ decisionId: dId, reason: 'score_in_grey_zone' }))
+    // Missing terminal
+    const fixture = makeFixture({
+      name: 'fx-missing',
+      oracle: 'ready',
+      treatmentEvents: ev,
+    })
+    const result = computeDebatePolicyBaseline([fixture])
+    expect(result.missingTerminalCount).toBe(1)
   })
 })
 
