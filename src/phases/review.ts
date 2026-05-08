@@ -123,9 +123,11 @@ import {
   selectEligibleOpponent,
   buildDebateTopicForReview,
   buildDebateBriefingSections,
+  buildDebatePanelBriefingSections,
   diffFindingsForPostDebateBasic,
   mapProviderErrorToFireResult,
   buildSchedulerPreflightInputForSingle,
+  buildSchedulerPreflightInputForPanel,
   buildDebateFilesManifest,
 } from './review-fire-path.ts'
 import { requestDebate } from '../tools/debate-request.ts'
@@ -2529,11 +2531,25 @@ async function runReviewPanelBranch(
   }
   const findings: readonly ReviewFinding[] = panelData.findings
 
-  // M15 commit 4a — post-verdict scheduler evaluate hook (panel mode).
-  // Fires after `review_panel_completed` is on disk and panelData is parsed,
-  // before the resolved/needs_revision/blocked branch. Always emits
-  // `debate_scheduler_evaluated`; emits `debate_scheduler_skipped` for skip
-  // decisions. NO fire path yet (commit 4b).
+  // M15 Phase 2 C14 — post-verdict scheduler hook (panel mode).
+  //
+  // Fires after `review_panel_completed` is on disk and panelData is
+  // parsed, before the resolved/needs_revision/blocked branch. Reuses
+  // the same fire-path executor pattern as single-mode (C13b) with
+  // panel-aware preflight (postReviewProviderCalls = panel.length).
+  //
+  // v0.1 panel post-debate REVIEW round semantics: the executor runs
+  // the cross-family debate end-to-end (opposing turn + synthesis +
+  // DECISION.md authoring), but does NOT recursively re-run
+  // `runReviewPanel` with DECISION.md surfaced to all panelists. Per
+  // the locked replan in `docs/research/CODEX_RESPONSE_M15_REPLAN.md`:
+  // "panel can contribute new-actionable + no-signal telemetry in M15;
+  // a real panel correctness oracle can wait." DECISION.md is in
+  // events.jsonl + on disk for operator inspection; the panel verdict
+  // remains unchanged. A full panel re-run with `postDebateEvidence`
+  // plumbed through `PanelistInvoker` is deferred to M16+ (requires
+  // extending the panelistInvoker contract through the CLI bootstrap
+  // wiring).
   const panelistVerdictsForScheduler: readonly PanelistVerdictSnapshot[] =
     panelData.reviewers.map((r) => ({
       id: r.id,
@@ -2541,7 +2557,134 @@ async function runReviewPanelBranch(
       authorityImpact: r.role,
     }))
   const eventsForPanelScheduler = await readEvents(eventPathsFor(opts.runPaths))
-  await runReviewSchedulerHook({
+
+  const panelPreflightInput = buildSchedulerPreflightInputForPanel({
+    panelSize: panel.length,
+  })
+  const panelPreflight = aggregateDebateSchedulerPreflight(
+    opts.invokeCtx.config,
+    panelPreflightInput,
+    eventsForPanelScheduler,
+    new Date(now()),
+  )
+
+  // Closure-captured pre-debate panel state for the executor's briefing
+  // and finding-diff helpers. Findings list is the panelData's
+  // synthesized findings (the panel orchestrator's canonical artifact).
+  const preDebatePanelVerdict = panelResult.panelVerdict
+  const preDebatePanelFindings: readonly ReviewFinding[] = findings
+  const preDebatePanelReviewSha = panelResult.reviewReportSha256
+  const panelistVerdictsForBriefing = panelData.reviewers.map((r) => ({
+    id: r.id,
+    verdict: r.verdict,
+    authorityImpact: r.role,
+  }))
+
+  // Build a stable changedFilePaths reference for the executor closure.
+  const panelChangedFilePaths: readonly string[] = Object.freeze(
+    buildReport.changedFiles.map((f) => f.path),
+  )
+
+  const panelExecutor: SchedulerFirePathExecutor = async (input, hooks) => {
+    const opposing = selectEligibleOpponent(opts.reviewerAgent, opts.invokeCtx.registry)
+    if (opposing === null) {
+      return {
+        status: 'error_degrade',
+        opposingProvider: 'unknown',
+        debateTopic: 'unknown',
+        errorReason: 'other',
+        underlyingErrorCode: 'no_eligible_opponent',
+      } satisfies SchedulerFirePathResult
+    }
+
+    const debateTopic = buildDebateTopicForReview({
+      taskId: opts.taskId,
+      attempt: input.attempt,
+      round: opts.round,
+    })
+    const briefingSections = buildDebatePanelBriefingSections({
+      reviewerAgent: opts.reviewerAgent,
+      opposingProvider: opposing,
+      round: opts.round,
+      attempt: input.attempt,
+      taskId: opts.taskId,
+      panelistVerdicts: panelistVerdictsForBriefing,
+      panelVerdict: preDebatePanelVerdict,
+      preReviewFindings: preDebatePanelFindings,
+      buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+      verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+      reviewReportPath: '.code-oz/artifacts/REVIEW.md',
+      changedFilePaths: panelChangedFilePaths,
+    })
+    const personaDebatePerm = opts.reviewerAgent.permissions.tool_use?.debate
+    const filesPaths = buildDebateFilesManifest({
+      buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+      verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+      reviewReportPath: '.code-oz/artifacts/REVIEW.md',
+      changedFilePaths: panelChangedFilePaths,
+      maxFiles: personaDebatePerm?.maxFiles ?? 16,
+    })
+
+    await hooks.emitFired({ opposingProvider: opposing, debateTopic })
+
+    let runner
+    try {
+      runner = requestDebate(opts.invokeCtx, {
+        caller: opts.reviewerAgent,
+        phase: 'review',
+        topic: debateTopic,
+        opposingProvider: opposing,
+        question: 'The voter panel disagreed on the verdict. Steel-man the dissenting panelist or argue the consensus is correct, citing specific files in the changed-file manifest.',
+        files: filesPaths.map((p) => ({ path: p })),
+        runId: opts.runId,
+        date: now().slice(0, 10),
+        callerLabel: opts.reviewerAgent.name,
+        targetLabel: opposing,
+        cycle: 'review',
+        status: 'review',
+        briefingSections,
+        projectRoot: opts.invokeCtx.projectRoot,
+        resolvedBy: `${opts.reviewerAgent.name} (REVIEW panel debate scheduler, round ${opts.round})`,
+        readySignal: REVIEW_READY_SIGNAL,
+      })
+      for await (const _ev of runner) {
+        // ProviderEvents already flow through invokeAgent's appendEvent
+        // chokepoint.
+      }
+    } catch (err) {
+      return mapProviderErrorToFireResult(err, opposing, debateTopic)
+    }
+
+    const debateResult = runner.result()
+    if (debateResult === null) {
+      return {
+        status: 'error_degrade',
+        opposingProvider: opposing,
+        debateTopic,
+        errorReason: 'other',
+        underlyingErrorCode: 'debate_runtime_no_result',
+      } satisfies SchedulerFirePathResult
+    }
+
+    // v0.1 panel postreview: the panel verdict remains unchanged; the
+    // post-debate event records that the cross-family debate ran and
+    // DECISION.md is in events.jsonl + on disk for operator inspection.
+    // Findings diff is zero (no panel re-run). Once the panelistInvoker
+    // contract is extended in M16+ to accept postDebateEvidence, the
+    // success branch here will mirror the single-mode flow with a
+    // recursive runReviewPanel call.
+    return {
+      status: 'success',
+      opposingProvider: opposing,
+      debateTopic,
+      newReviewReportSha256: preDebatePanelReviewSha,
+      verdictPost: 'panel',
+      findingsAddedCount: 0,
+      actionableFindingsAddedCount: 0,
+    } satisfies SchedulerFirePathResult
+  }
+
+  const panelHookResult = await runReviewSchedulerHook({
     runId: opts.runId,
     taskId: opts.taskId,
     attempt,
@@ -2559,7 +2702,28 @@ async function runReviewPanelBranch(
     events: eventsForPanelScheduler,
     eventPaths: eventPathsFor(opts.runPaths),
     now,
+    firePathExecutor: panelExecutor,
+    aggregatePreflightWouldTip: panelPreflight.wouldTip,
+    ...(panelPreflight.tipReason !== undefined
+      ? { aggregatePreflightTipReason: panelPreflight.tipReason }
+      : {}),
   })
+
+  // Panel post-hook branch: intervention surfaces NEEDS_INTERVENTION and
+  // halts the run; success/error_degrade/no-fire continue to the panel
+  // terminal branching below (resolved / blocked / needs_revision).
+  if (
+    panelHookResult.fireOutcome.fired &&
+    panelHookResult.fireOutcome.result?.status === 'intervention'
+  ) {
+    const r = panelHookResult.fireOutcome.result
+    return recordReviewIntervention(
+      ictx,
+      r.interventionCode,
+      r.interventionRule,
+      r.underlyingErrorCode,
+    )
+  }
 
   if (panelResult.status === 'resolved') {
     // Emit review_resolved so preApproveReviewHook (single source of

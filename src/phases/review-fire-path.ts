@@ -385,6 +385,111 @@ export function buildSchedulerPreflightInputForSingle(): SchedulerPreflightInput
 }
 
 /**
+ * Panel-mode preflight input. Post-review = N reviewer calls (one per
+ * panelist; manifest equality means every panelist sees the same files,
+ * so per-panelist token estimate equals the single-mode reviewer's).
+ *
+ * v0.1 panel post-debate REVIEW round is debate-evidence-only (no full
+ * panel re-run with DECISION.md surfaced to all panelists; deferred per
+ * the replan locked in `docs/research/CODEX_RESPONSE_M15_REPLAN.md` —
+ * "panel can contribute new-actionable and no-signal telemetry in M15").
+ * The preflight still budgets for the would-be re-run so the gate is
+ * honest about full-cost firing once the panel re-run lands.
+ */
+export function buildSchedulerPreflightInputForPanel(input: {
+  readonly panelSize: number
+}): SchedulerPreflightInput {
+  return Object.freeze({
+    phase: 'review' as const,
+    role: 'reviewer',
+    opposingMaxTokens: DEBATE_TURN_TOKEN_ESTIMATE,
+    synthesisMaxTokens: DEBATE_TURN_TOKEN_ESTIMATE,
+    postReviewMaxTokens: DEBATE_TURN_TOKEN_ESTIMATE * Math.max(1, input.panelSize),
+    postReviewProviderCalls: Math.max(1, input.panelSize),
+  })
+}
+
+export interface PanelBriefingSectionInputs {
+  readonly reviewerAgent: AgentDefinition
+  readonly opposingProvider: ProviderId
+  readonly round: number
+  readonly attempt: number
+  readonly taskId: string
+  readonly panelistVerdicts: readonly {
+    readonly id: string
+    readonly verdict: string
+    readonly authorityImpact: string
+  }[]
+  readonly panelVerdict: 'ready' | 'needs-revision' | 'block'
+  readonly preReviewFindings: readonly ReviewFinding[]
+  readonly buildReportPath: string
+  readonly verifyReportPath: string
+  readonly reviewReportPath: string
+  readonly changedFilePaths: readonly string[]
+}
+
+/**
+ * Panel-mode briefing assembly. Mirrors the single-mode helper but
+ * substitutes the "score=N" language with the per-panelist verdicts
+ * (panel REVIEW has no numeric Score.Final score; the literal `panel`
+ * sentinel is not oracle-comparable). Only fires from
+ * `panel_voter_disagreement` per the pure scheduler decision function.
+ */
+export function buildDebatePanelBriefingSections(
+  input: PanelBriefingSectionInputs,
+): DebateBriefingSections {
+  const findingsList =
+    input.preReviewFindings.length === 0
+      ? '- (no findings raised)'
+      : input.preReviewFindings
+          .map(
+            (f) =>
+              `- ${f.id} | ${f.severity} | ${f.file}:${f.line} | ${f.title}`,
+          )
+          .join('\n')
+  const verdictsList = input.panelistVerdicts
+    .map((p) => `- ${p.id} (${p.authorityImpact}): ${p.verdict}`)
+    .join('\n')
+  return Object.freeze({
+    whatYouAreReading: [
+      `Cross-family debate request for panel-mode REVIEW round ${input.round} of task ${input.taskId} (attempt ${input.attempt}).`,
+      `Caller persona: ${input.reviewerAgent.name} (${input.reviewerAgent.provider}, panel orchestrator). Opposing provider: ${input.opposingProvider}.`,
+      `The voter panel disagreed on the verdict (panel mode). Panel REVIEW has no single numeric score; the literal panel sentinel is not oracle-comparable. The orchestrator's debate-policy scheduler decided this disagreement warrants a cross-family challenge before the REVIEW gate locks in.`,
+    ].join('\n\n'),
+    whereWeStand: [
+      `Synthesized panel verdict: ${input.panelVerdict}.`,
+      'Per-panelist verdicts:',
+      verdictsList,
+      'Findings (synthesized across panelists):',
+      findingsList,
+      `Upstream artifacts: ${input.buildReportPath}, ${input.verifyReportPath}, ${input.reviewReportPath}.`,
+      `Changed files (count=${input.changedFilePaths.length}): see BUILD_REPORT.md manifest.`,
+    ].join('\n\n'),
+    whatIsLocked: [
+      'REVIEW gate authority belongs to the orchestrator. Your DECISION.md is evidence the post-debate REVIEW round will consider; it is NOT a gate decision (CLAUDE.md non-negotiable rule 1: file-based gate signals only).',
+      'Cross-family invariant: your provider family must differ from the caller family. The runtime enforces this; if you contest the assignment, raise an `intervention` rather than authoring DECISION.md.',
+      'Panel mode v0.1 contributes new-actionable + no-signal telemetry only — DECISION.md will land in events.jsonl for operator inspection. A full panel re-run with DECISION.md surfaced to all panelists is deferred to M16+.',
+    ].join('\n\n'),
+    whatIsUpForDebate: [
+      'Did the disagreement reflect a real correctness/security/architecture issue one of the panelists missed? Or was it noise (a stylistic disagreement that does not warrant blocking the gate)?',
+    ].join('\n'),
+    recommendedPath: [
+      'Steel-man the side the dissenting panelist took:',
+      "If a voter said 'block' or 'needs-revision' while the other said 'ready', argue why the dissent is correct (or why the consensus is correct).",
+      'Cite specific files in the changed-file manifest; do not exact-copy panelist findings.',
+    ].join('\n'),
+    decisionPrompts: [
+      '1. Which panelist verdict was load-bearing on the disagreement, and why?',
+      '2. Are there bugs in the changed files that the dissent surfaces but the consensus missed?',
+      '3. Should the synthesized verdict change, and if so, in which direction and why?',
+    ].join('\n'),
+    whatIWantFromYou: [
+      "Author RESPONSE.<your-side>.md per the schema (Overall verdict + substantive rationale citing specific files in the manifest). Do not exact-copy panelist findings — your rationale must be original analysis. The caller will then synthesize DECISION.md.",
+    ].join('\n'),
+  })
+}
+
+/**
  * Build the file manifest for the debate request. Cap = `maxFiles` from
  * the reviewer's `tool_use.debate.maxFiles`. The three artifact files
  * (BUILD_REPORT.md, VERIFY.md, REVIEW.md) are always included; remaining

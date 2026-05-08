@@ -11,9 +11,11 @@ import {
   selectEligibleOpponent,
   buildDebateTopicForReview,
   buildDebateBriefingSections,
+  buildDebatePanelBriefingSections,
   diffFindingsForPostDebateBasic,
   mapProviderErrorToFireResult,
   buildSchedulerPreflightInputForSingle,
+  buildSchedulerPreflightInputForPanel,
   buildDebateFilesManifest,
 } from '../src/phases/review-fire-path.ts'
 import type { AgentDefinition } from '../src/agents/schema.ts'
@@ -437,6 +439,103 @@ describe('buildSchedulerPreflightInputForSingle', () => {
     expect(i.opposingMaxTokens).toBeGreaterThan(0)
     expect(i.synthesisMaxTokens).toBeGreaterThan(0)
     expect(i.postReviewMaxTokens).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildSchedulerPreflightInputForPanel
+// ---------------------------------------------------------------------------
+describe('buildSchedulerPreflightInputForPanel', () => {
+  test('scales postReview tokens + provider calls by panel size', () => {
+    const single = buildSchedulerPreflightInputForSingle()
+    const panel2 = buildSchedulerPreflightInputForPanel({ panelSize: 2 })
+    const panel3 = buildSchedulerPreflightInputForPanel({ panelSize: 3 })
+    expect(panel2.postReviewProviderCalls).toBe(2)
+    expect(panel3.postReviewProviderCalls).toBe(3)
+    expect(panel2.postReviewMaxTokens).toBe(single.postReviewMaxTokens * 2)
+    expect(panel3.postReviewMaxTokens).toBe(single.postReviewMaxTokens * 3)
+  })
+
+  test('opposing + synthesis token estimates match single mode', () => {
+    const single = buildSchedulerPreflightInputForSingle()
+    const panel = buildSchedulerPreflightInputForPanel({ panelSize: 2 })
+    expect(panel.opposingMaxTokens).toBe(single.opposingMaxTokens)
+    expect(panel.synthesisMaxTokens).toBe(single.synthesisMaxTokens)
+  })
+
+  test('floors panelSize to 1 when called with 0 (defensive)', () => {
+    const i = buildSchedulerPreflightInputForPanel({ panelSize: 0 })
+    expect(i.postReviewProviderCalls).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildDebatePanelBriefingSections
+// ---------------------------------------------------------------------------
+describe('buildDebatePanelBriefingSections', () => {
+  const baseInput = (
+    overrides: Partial<Parameters<typeof buildDebatePanelBriefingSections>[0]> = {},
+  ): Parameters<typeof buildDebatePanelBriefingSections>[0] => ({
+    reviewerAgent: reviewerWithOpposing(['claude']),
+    opposingProvider: 'claude' as ProviderId,
+    round: 2,
+    attempt: 1,
+    taskId: 'T-001',
+    panelistVerdicts: [
+      { id: 'r-A', verdict: 'ready', authorityImpact: 'voter' },
+      { id: 'r-B', verdict: 'needs-revision', authorityImpact: 'voter' },
+    ],
+    panelVerdict: 'needs-revision',
+    preReviewFindings: [],
+    buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+    verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+    reviewReportPath: '.code-oz/artifacts/REVIEW.md',
+    changedFilePaths: ['src/foo.ts'],
+    ...overrides,
+  })
+
+  test('returns all seven required sections', () => {
+    const s = buildDebatePanelBriefingSections(baseInput())
+    expect(s.whatYouAreReading.length).toBeGreaterThan(0)
+    expect(s.whereWeStand.length).toBeGreaterThan(0)
+    expect(s.whatIsLocked.length).toBeGreaterThan(0)
+    expect(s.whatIsUpForDebate.length).toBeGreaterThan(0)
+    expect(s.recommendedPath.length).toBeGreaterThan(0)
+    expect(s.decisionPrompts.length).toBeGreaterThan(0)
+    expect(s.whatIWantFromYou.length).toBeGreaterThan(0)
+  })
+
+  test('whatYouAreReading mentions panel mode + voter disagreement', () => {
+    const s = buildDebatePanelBriefingSections(baseInput())
+    expect(s.whatYouAreReading).toContain('panel')
+    expect(s.whatYouAreReading).toContain('disagreed')
+  })
+
+  test('whereWeStand lists the synthesized panel verdict and per-panelist verdicts', () => {
+    const s = buildDebatePanelBriefingSections(baseInput())
+    expect(s.whereWeStand).toContain('needs-revision')
+    expect(s.whereWeStand).toContain('r-A (voter): ready')
+    expect(s.whereWeStand).toContain('r-B (voter): needs-revision')
+  })
+
+  test('whatIsLocked notes the v0.1 telemetry-only constraint', () => {
+    const s = buildDebatePanelBriefingSections(baseInput())
+    expect(s.whatIsLocked).toContain('telemetry')
+    expect(s.whatIsLocked).toContain('M16+')
+  })
+
+  test('does NOT mention "score=N" (panel REVIEW has no numeric score)', () => {
+    const s = buildDebatePanelBriefingSections(baseInput())
+    const all = [
+      s.whatYouAreReading,
+      s.whereWeStand,
+      s.whatIsLocked,
+      s.whatIsUpForDebate,
+      s.recommendedPath,
+      s.decisionPrompts,
+      s.whatIWantFromYou,
+    ].join('\n')
+    expect(all).not.toMatch(/score=\d/i)
   })
 })
 
