@@ -232,6 +232,62 @@ export async function doctorCommand(args: string[]): Promise<void> {
     }
   }
 
+  // M15 commit 6a: `code-oz doctor --debate-policy [--events <path>] [--json]`.
+  // Read-only inspector: prints effective debatePolicy + tabulates last N
+  // debate_scheduler_* events. Resolves events file from --events arg or
+  // active-run pointer (.code-oz/state/active.json). No event emitted.
+  if (subcommand === '--debate-policy' || subcommand === 'debate-policy') {
+    const subArgs = args.slice(1)
+    const json = subArgs.includes('--json')
+    const eventsIdx = subArgs.indexOf('--events')
+    const eventsArg =
+      eventsIdx >= 0 && eventsIdx + 1 < subArgs.length ? subArgs[eventsIdx + 1] : undefined
+    const limitIdx = subArgs.indexOf('--limit')
+    const limitArg =
+      limitIdx >= 0 && limitIdx + 1 < subArgs.length
+        ? Number.parseInt(subArgs[limitIdx + 1] ?? '', 10)
+        : undefined
+
+    const { inspectDebatePolicy, formatDebatePolicyTable, resolveActiveRunEventsFile } =
+      await import('./doctor-debate-policy.ts')
+    const { loadConfig } = await import('../config/load.ts')
+    const { DEFAULT_CONFIG } = await import('../config/schema.ts')
+    const { paths: codeOzPaths } = await import('../paths.ts')
+
+    let config = DEFAULT_CONFIG
+    try {
+      config = await loadConfig({ cwd: process.cwd() })
+    } catch {
+      // Fall back to defaults if config is missing or invalid; the
+      // inspector still prints the effective policy + (empty) events.
+    }
+
+    let resolvedEventsFile: string | undefined = eventsArg
+    if (resolvedEventsFile === undefined) {
+      const p = codeOzPaths(process.cwd())
+      const fromPointer = await resolveActiveRunEventsFile({
+        stateDir: p.state,
+        activeFile: p.activeRun,
+      })
+      if (fromPointer !== null) resolvedEventsFile = fromPointer
+    }
+
+    const report = await inspectDebatePolicy({
+      config,
+      ...(resolvedEventsFile !== undefined ? { eventsFile: resolvedEventsFile } : {}),
+      ...(limitArg !== undefined && Number.isFinite(limitArg) && limitArg >= 0
+        ? { limit: limitArg }
+        : {}),
+    })
+
+    if (json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+    } else {
+      process.stdout.write(formatDebatePolicyTable(report))
+    }
+    process.exit(0)
+  }
+
   if (subcommand !== 'providers') {
     process.stderr.write(`code-oz doctor: unknown subcommand '${subcommand}'\n\n`)
     process.stderr.write(doctorHelp())
@@ -345,6 +401,11 @@ Subcommands:
   --panel-baseline <p>   Run M14 reviewer-panel baseline measurement against
                          the JSON fixture at <p>; prints rule-21 ship-gate
                          report and exits 0 on PASS, 1 on FAIL
+  --debate-policy        M15 read-only inspector: prints effective
+                         debatePolicy config + tabulates last N
+                         debate_scheduler_* events from the active run
+                         (or --events <path>). Use --limit <n> to change
+                         the tail size (default 20).
   help                   Show this help
 
 Options:
