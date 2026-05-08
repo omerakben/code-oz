@@ -232,6 +232,60 @@ export async function doctorCommand(args: string[]): Promise<void> {
     }
   }
 
+  // M15 commit 6b: `code-oz doctor --debate-policy-baseline <fixture-set> [--json]`.
+  // Rule-21 ship-gate command. Loads fixture set from disk, computes
+  // corrective verdict delta + new-actionable-finding rate + per-trigger
+  // breakdown + no-signal-fire rate + cost/latency overhead, emits
+  // debate_policy_baseline_completed event into a temp run dir, prints
+  // summary, exits 0 on shipGatePasses and 1 otherwise.
+  if (
+    subcommand === '--debate-policy-baseline' ||
+    subcommand === 'debate-policy-baseline'
+  ) {
+    const subArgs = args.slice(1)
+    const json = subArgs.includes('--json')
+    const fixturePath = subArgs.find((a) => !a.startsWith('--'))
+    if (fixturePath === undefined) {
+      process.stderr.write(
+        'code-oz doctor --debate-policy-baseline: missing <fixture-set> argument\n',
+      )
+      process.stderr.write(
+        'usage: code-oz doctor --debate-policy-baseline <fixture-set> [--json]\n',
+      )
+      process.exit(1)
+    }
+    const { runDebatePolicyBaseline } = await import('./doctor-debate-baseline.ts')
+    const { mkdtemp, rm, mkdir } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const tmpRoot = await mkdtemp(
+      join(tmpdir(), 'codeoz-doctor-debate-baseline-'),
+    )
+    try {
+      const runDir = join(tmpRoot, 'run')
+      const eventsFile = join(runDir, 'events.jsonl')
+      await mkdir(runDir, { recursive: true })
+      try {
+        const report = await runDebatePolicyBaseline(fixturePath, {
+          eventPaths: { file: eventsFile, lockDir: join(runDir, '.lock') },
+        })
+        if (json) {
+          process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+        } else {
+          process.stdout.write(report.summary + '\n')
+        }
+        process.exit(report.shipGatePasses ? 0 : 1)
+      } catch (err) {
+        process.stderr.write(
+          `code-oz doctor --debate-policy-baseline: ${(err as Error).message}\n`,
+        )
+        process.exit(1)
+      }
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true })
+    }
+  }
+
   // M15 commit 6a: `code-oz doctor --debate-policy [--events <path>] [--json]`.
   // Read-only inspector: prints effective debatePolicy + tabulates last N
   // debate_scheduler_* events. Resolves events file from --events arg or
@@ -406,6 +460,11 @@ Subcommands:
                          debate_scheduler_* events from the active run
                          (or --events <path>). Use --limit <n> to change
                          the tail size (default 20).
+  --debate-policy-baseline <p>
+                         Run M15 debate-policy baseline against the fixture
+                         set at <p>; prints rule-21 ship-gate report and
+                         exits 0 on PASS (correctiveDeltaRate>=0.10 AND
+                         newActionableFindingRate>=0.30), 1 on FAIL.
   help                   Show this help
 
 Options:
