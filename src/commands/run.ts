@@ -22,7 +22,7 @@ import { existsSync, statSync } from 'node:fs'
 import * as readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 
-import { readEvents } from '../state/events.ts'
+import { appendEvent, readEvents } from '../state/events.ts'
 import { isKnownPhaseEvent } from '../state/schemas.ts'
 
 import {
@@ -30,6 +30,7 @@ import {
   buildProviderRegistry,
   type ProviderOverride,
 } from '../cli/bootstrap.ts'
+import { canonicalRoleFromAgent } from '../agents/role.ts'
 import { loadConfig } from '../config/load.ts'
 import {
   initRun,
@@ -40,6 +41,17 @@ import {
 import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
 import { runPlan, type PlanResult } from '../phases/plan.ts'
+import { runBuild, type BuildResult, type WorktreeBinding } from '../phases/build.ts'
+import { deriveNextAttempt } from '../phases/restart-policy.ts'
+import { TASK_ID_PATTERN } from '../artifacts/plan.ts'
+import { projectTaskCursor } from '../state/task-cursor.ts'
+import { loadOrCreateRunWorktree } from '../worktree/load-or-create-run-worktree.ts'
+import {
+  EXIT_INTERVENTION,
+  EXIT_OK,
+  EXIT_USAGE,
+} from '../cli/exit-codes.ts'
+import { productionInvokePersona } from '../cli/production-seams.ts'
 import type { InvokeContext } from '../providers/invoke.ts'
 import {
   applyFakeScript,
@@ -48,6 +60,13 @@ import {
   loadFakeScript,
   type FakeScriptEntry,
 } from '../providers/fake-script.ts'
+import {
+  detectOpenBuildStarted,
+  formatInterventionRefusal,
+  loadPlanArtifact,
+  resolveBuildCarryForward,
+  tryReadNeedsInterventionGate,
+} from './dispatch-build-helpers.ts'
 
 // --- public CLI entrypoint -----------------------------------------
 
@@ -109,8 +128,19 @@ export async function runCommand(args: string[]): Promise<void> {
       active,
       parsed.providerOverride,
       fakeScriptEntries,
+      parsed.taskOverride,
     )
     return
+  }
+
+  // --task only makes sense once a run is active and BUILD is the next
+  // dispatched phase. Reject the flag pre-init so operators get a clear
+  // message instead of a silent no-op when starting a fresh run.
+  if (parsed.taskOverride !== undefined) {
+    process.stderr.write(
+      `code-oz run: --task ${parsed.taskOverride} requires an active run at the BUILD phase. Start a run with \`code-oz run\` first, then use --task on the BUILD invocation.\n`,
+    )
+    process.exit(EXIT_USAGE)
   }
 
   const ba = ctx.registry.getByName('ba')
@@ -226,6 +256,10 @@ interface ParsedOk {
   /** M16 C2 — path to a JSONL fake-replay fixture. Gated by both
    *  `providerOverride === 'fake'` and the FAKE_SCRIPT_ENV_VAR env var. */
   readonly fakeScriptPath?: string
+  /** M16 C6 — explicit task override for `dispatchBuild`. Validated
+   *  against PLAN.md's TASK_ID_PATTERN at parse time; the dispatcher
+   *  rejects with EXIT_USAGE if the id is not present in PLAN.md. */
+  readonly taskOverride?: string
 }
 interface ParsedError {
   readonly kind: 'error'
@@ -247,6 +281,7 @@ export function parseRunArgs(
   let requestFile: string | null = null
   let providerOverride: ProviderOverride | undefined
   let fakeScriptPath: string | null = null
+  let taskOverride: string | null = null
   let help = false
 
   for (let i = 0; i < args.length; i++) {
@@ -312,6 +347,19 @@ export function parseRunArgs(
       fakeScriptPath = a.slice('--fake-script='.length)
       continue
     }
+    if (a === '--task') {
+      const value = args[i + 1]
+      if (value === undefined) {
+        return { kind: 'error', message: '--task requires a T-NNN id', help: true }
+      }
+      taskOverride = value
+      i++
+      continue
+    }
+    if (a.startsWith('--task=')) {
+      taskOverride = a.slice('--task='.length)
+      continue
+    }
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
   }
 
@@ -356,12 +404,24 @@ export function parseRunArgs(
       }
     }
   }
+  // M16 C6 — validate --task at parse time so the failure is uniform
+  // and the dispatcher receives a value matching PLAN.md's id grammar.
+  if (taskOverride !== null) {
+    if (!TASK_ID_PATTERN.test(taskOverride)) {
+      return {
+        kind: 'error',
+        message: `--task must be a PLAN task id matching ${TASK_ID_PATTERN.source} (got ${JSON.stringify(taskOverride)})`,
+        help: false,
+      }
+    }
+  }
   const base = (input: InputMode): ParsedOk => {
     const out: ParsedOk = { kind: 'ok', input }
     return Object.freeze({
       ...out,
       ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(fakeScriptPath !== null ? { fakeScriptPath } : {}),
+      ...(taskOverride !== null ? { taskOverride } : {}),
     })
   }
 
@@ -515,6 +575,7 @@ async function handleActiveRun(
   activeRunId: string,
   providerOverride?: ProviderOverride,
   fakeScriptEntries?: readonly FakeScriptEntry[],
+  taskOverride?: string,
 ): Promise<void> {
   const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
 
@@ -581,8 +642,31 @@ async function handleActiveRun(
 
   // Phase advanced past DEFINE: dispatch to the right runner.
   if (phase === 'plan') {
+    if (taskOverride !== undefined) {
+      process.stderr.write(
+        `code-oz run: --task ${taskOverride} only applies to the BUILD phase (current phase: plan).\n`,
+      )
+      process.exit(EXIT_USAGE)
+    }
     await dispatchPlan(stateDir, artifactRoot, activeRunId, providerOverride, fakeScriptEntries)
     return
+  }
+  if (phase === 'build') {
+    const result = await dispatchBuild({
+      stateDir,
+      artifactRoot,
+      runId: activeRunId,
+      providerOverride,
+      fakeScriptEntries,
+      taskOverride,
+    })
+    if (result.stdout !== undefined && result.stdout.length > 0) {
+      process.stdout.write(result.stdout)
+    }
+    if (result.stderr !== undefined && result.stderr.length > 0) {
+      process.stderr.write(result.stderr)
+    }
+    process.exit(result.exitCode)
   }
 
   process.stderr.write(
@@ -668,6 +752,274 @@ async function dispatchPlan(
   )
 }
 
+// --- BUILD dispatch (M16 C6) --------------------------------------
+
+export interface DispatchBuildOptions {
+  readonly stateDir: string
+  readonly artifactRoot: string
+  readonly runId: string
+  readonly providerOverride?: ProviderOverride
+  readonly fakeScriptEntries?: readonly FakeScriptEntry[]
+  readonly taskOverride?: string
+  readonly cwd?: string
+  readonly now?: () => string
+}
+
+export interface DispatchResult {
+  readonly exitCode: 0 | 1 | 2
+  readonly stdout?: string
+  readonly stderr?: string
+}
+
+/**
+ * Production CLI dispatch for the BUILD phase. Mirrors `dispatchPlan`'s
+ * shape (lines 598-669) but returns a structured result so tests can
+ * assert against exit codes + stdout/stderr without spawning. The
+ * `handleActiveRun` caller routes the result onto `process.exit` +
+ * stdout/stderr writes.
+ *
+ * Codex M16 C6 pre-design review pinned the following invariants
+ * (`docs/design/SESSION_M16_C6_C13_LOOP_PLAN.md` § C6 + the inline
+ * brief sent before implementation):
+ *
+ *   1. NEEDS_INTERVENTION refusal happens BEFORE bootstrap and persona
+ *      lookup so an unresolved run does not consume provider quota.
+ *   2. Attempt counter via `deriveNextAttempt` (max + 1, scoped to
+ *      runId+taskId), never raw count of build_completed events.
+ *   3. Open `build_started` without a terminal pair → refuse.
+ *   4. Carry-forward resolver gates attempt > 1: drift on missing
+ *      restart signal, awaiting-approve when build_completed exists
+ *      without a restart signal, present when verify_restart_initiated
+ *      + parseable VERIFY.md align.
+ *   5. `task_started` emitted EXACTLY once per task (attempt 1 only).
+ *   6. Worktree wrapper result mapped explicitly onto `WorktreeBinding`
+ *      with `dirtyAtBase: false` (clean-base policy guarantees it).
+ *   7. `currentPhase === 'build'` with a prior `build_completed` and no
+ *      restart signal → operator runs `code-oz approve build`; never
+ *      silently produces attempt N+1.
+ *   8. `role` field on the persona request comes from
+ *      `canonicalRoleFromAgent(builder)`.
+ */
+export async function dispatchBuild(
+  opts: DispatchBuildOptions,
+): Promise<DispatchResult> {
+  const cwd = opts.cwd ?? process.cwd()
+  const now = opts.now ?? (() => new Date().toISOString())
+  const runPaths = runPathsFor(opts.stateDir, opts.artifactRoot, opts.runId)
+
+  // 1. NEEDS_INTERVENTION refusal at the very top — before any config
+  //    or persona lookup. Codex Mod #3.
+  const intervention = await tryReadNeedsInterventionGate(runPaths)
+  if (intervention !== null) {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: formatInterventionRefusal(intervention, opts.runId),
+    })
+  }
+
+  const config = await loadConfig({ cwd })
+  const ctx = await bootstrap({ cwd, config })
+  const builder = ctx.registry.getByName('builder')
+  const scientist = ctx.registry.getByName('scientist')
+  if (builder === undefined || scientist === undefined) {
+    return Object.freeze({
+      exitCode: EXIT_USAGE as 2,
+      stderr:
+        'code-oz run: BUILD requires the bundled `builder` and `scientist` personas.\n  Reinitialize the project (`code-oz init --force`) or restore .code-oz/agents/.\n',
+    })
+  }
+
+  // Read events + parse PLAN.md.
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  let plan
+  try {
+    plan = await loadPlanArtifact(runPaths.artifactRoot)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: BUILD requires PLAN.md but the file could not be loaded.\n  ${detail}\n`,
+    })
+  }
+
+  // Resolve task: --task override OR cursor.pending.
+  const cursorResult = projectTaskCursor(plan, events)
+  let taskId: string
+  let taskIndex: number
+  if (opts.taskOverride !== undefined) {
+    const entry = cursorResult.cursor.entries.find(
+      (e) => e.taskId === opts.taskOverride,
+    )
+    if (entry === undefined) {
+      const available = cursorResult.cursor.entries
+        .map((e) => e.taskId)
+        .join(', ')
+      return Object.freeze({
+        exitCode: EXIT_USAGE as 2,
+        stderr: `code-oz run: --task ${opts.taskOverride} not found in PLAN.md.\n  Tasks: ${available || '(none parsed)'}\n`,
+      })
+    }
+    if (entry.status === 'completed') {
+      return Object.freeze({
+        exitCode: EXIT_USAGE as 2,
+        stderr: `code-oz run: --task ${opts.taskOverride} is already completed; pick a pending task.\n`,
+      })
+    }
+    taskId = entry.taskId
+    taskIndex = entry.taskIndex
+  } else {
+    if (cursorResult.cursor.pending === null) {
+      return Object.freeze({
+        exitCode: EXIT_USAGE as 2,
+        stderr:
+          'code-oz run: PLAN.md has no pending tasks; the run should have advanced past BUILD.\n  Inspect .code-oz/state/runs/<runId>/ for state drift.\n',
+      })
+    }
+    taskId = cursorResult.cursor.pending.taskId
+    taskIndex = cursorResult.cursor.pending.taskIndex
+  }
+
+  // Derive next attempt (Codex Mod #1 — max + 1, not raw count).
+  const attempt = deriveNextAttempt({
+    events,
+    runId: opts.runId,
+    taskId,
+  })
+
+  // Detect open build_started without a terminal pair (Codex Mod #1
+  // continuation — half-finished crash).
+  const openInFlight = detectOpenBuildStarted(events, opts.runId, taskId)
+  if (openInFlight !== null) {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: BUILD attempt ${openInFlight.attempt} for ${taskId} has an open build_started without a build_completed/build_failed pair.\n  A prior process likely crashed mid-attempt.\n  Inspect .code-oz/state/runs/${opts.runId}/events.jsonl and resolve the partial state before re-running.\n`,
+    })
+  }
+
+  // Carry-forward resolver (Codex Mod #4 + #7).
+  const cfResult = await resolveBuildCarryForward({
+    events,
+    runId: opts.runId,
+    taskId,
+    attempt,
+    artifactRoot: opts.artifactRoot,
+  })
+  if (cfResult.kind === 'awaiting-approve') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: BUILD attempt ${cfResult.priorAttempt} for ${taskId} completed but no approval / restart signal was found.\n  Run \`code-oz approve build\` after reviewing BUILD_REPORT.md, or inspect .code-oz/state/runs/${opts.runId}/ for drift.\n`,
+    })
+  }
+  if (cfResult.kind === 'drift') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: BUILD restart drift — ${cfResult.reason}.\n  Inspect .code-oz/state/runs/${opts.runId}/ before retrying.\n`,
+    })
+  }
+
+  // Worktree (idempotent on existing dir per C4).
+  const worktreeResult = await loadOrCreateRunWorktree({
+    cwd,
+    runId: opts.runId,
+    runPaths,
+    phase: 'build',
+    agent: builder.name,
+  })
+  if (worktreeResult.status === 'intervention') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: BUILD worktree setup failed (${worktreeResult.code}).\n  ${worktreeResult.rule}${worktreeResult.detail !== undefined ? `\n  ${worktreeResult.detail}` : ''}\n`,
+    })
+  }
+  // Codex Mod #6 — explicit WorktreeBinding mapping. clean-base policy
+  // (the wrapper's default) guarantees `dirtyAtBase: false`.
+  const worktree: WorktreeBinding = Object.freeze({
+    worktreePath: worktreeResult.worktreePath,
+    baseCommitSha: worktreeResult.baseCommitSha,
+    dirtyAtBase: false,
+  })
+
+  // Provider registry + fake-script application.
+  const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
+    providerOverride: opts.providerOverride,
+  })
+  if (opts.fakeScriptEntries !== undefined && fakeProvider !== undefined) {
+    applyFakeScript(fakeProvider, opts.fakeScriptEntries)
+  }
+
+  // Emit task_started exactly once per task — attempt 1 only (Codex
+  // Mod #5 + schema comment at src/state/schemas.ts:251).
+  if (attempt === 1) {
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_started',
+        ts: now(),
+        runId: opts.runId,
+        taskId,
+        taskIndex,
+      },
+    )
+  }
+
+  const invokeCtx: InvokeContext = {
+    registry: providerRegistry,
+    runPaths,
+    projectRoot: cwd,
+    config,
+  }
+
+  // Codex Mod #8 — canonicalRoleFromAgent for the role field.
+  const role = canonicalRoleFromAgent(builder)
+  const invokePersona = productionInvokePersona(invokeCtx, builder, {
+    phase: 'build',
+    runId: opts.runId,
+    ...(role !== undefined ? { role } : {}),
+  })
+
+  const result: BuildResult = await runBuild({
+    runPaths,
+    runId: opts.runId,
+    cwd,
+    builderAgent: builder,
+    scientistAgent: scientist,
+    taskId,
+    worktree,
+    invokeCtx,
+    invokePersona,
+    attempt,
+    ...(cfResult.kind === 'present' ? { carryForward: cfResult.cf } : {}),
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  })
+
+  if (result.status === 'complete') {
+    return Object.freeze({
+      exitCode: EXIT_OK as 0,
+      stdout: [
+        `BUILD phase complete (attempt ${attempt}, task ${taskId}).`,
+        `  Review: ${result.buildReportPath}`,
+        `  Patch: ${result.patchPath}`,
+        '  Then run: code-oz approve build',
+        '',
+      ].join('\n'),
+    })
+  }
+  return Object.freeze({
+    exitCode: EXIT_INTERVENTION as 1,
+    stderr: [
+      `code-oz run: BUILD paused (${result.code}).`,
+      `  ${result.rule}`,
+      ...(result.draftPath !== undefined ? [`  Draft: ${result.draftPath}`] : []),
+      '  Inspect .code-oz/state/runs/<runId>/ and resolve before re-running.',
+      '',
+    ].join('\n'),
+  })
+}
+
 const RUN_HELP = `
 Usage: code-oz run [options]
 
@@ -683,6 +1035,9 @@ Options:
                            cycle. Each line: {"matcher": {phase, agent}, "response": {content}}.
                            Requires --provider fake AND CODE_OZ_TEST_FAKE_SCRIPT_OK=1.
                            See src/providers/fake-script.ts for the loader contract.
+  --task <T-NNN>           Override the BUILD task selection. Defaults to the first
+                           pending task in PLAN.md. Validated against PLAN.md's
+                           TASK_ID_PATTERN; only applies to the BUILD phase.
   -h, --help               Show this help.
 
 --request and --request-file are mutually exclusive.

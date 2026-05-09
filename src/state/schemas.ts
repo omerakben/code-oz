@@ -248,9 +248,10 @@ export const EVENT_TYPES = [
   // attempt N+1 should target, and `approve review` for task T-001
   // would advance currentPhase to `ship` while T-002 / T-003 were
   // never built. The three events form a strict ordering per task:
-  //   task_started — emitted by runBuild at the start of attempt 1 for
-  //     a task. Subsequent attempts (BUILD-restart from VERIFY-fail) do
-  //     NOT re-emit; the build_started event already carries attempt N.
+  //   task_started — emitted by `dispatchBuild` (src/commands/run.ts)
+  //     before the first BUILD attempt for a task. Subsequent attempts
+  //     (BUILD-restart from VERIFY-fail) do NOT re-emit; the
+  //     `build_started` event already carries attempt N.
   //   task_review_passed — emitted by runReview when the review verdict
   //     resolves to 'ready' for the task. Mirrors review_resolved but
   //     carries the taskIndex so the cursor projection is O(1).
