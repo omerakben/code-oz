@@ -42,8 +42,10 @@ import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
 import { runPlan, type PlanResult } from '../phases/plan.ts'
 import { runBuild, type BuildResult, type WorktreeBinding } from '../phases/build.ts'
+import { runVerify, type VerifyResult } from '../phases/verify.ts'
+import { scheduleAttemptNPlus1 } from '../phases/schedule-attempt.ts'
 import { deriveNextAttempt } from '../phases/restart-policy.ts'
-import { TASK_ID_PATTERN } from '../artifacts/plan.ts'
+import { TASK_ID_PATTERN, type PlanArtifact } from '../artifacts/plan.ts'
 import { projectTaskCursor } from '../state/task-cursor.ts'
 import { loadOrCreateRunWorktree } from '../worktree/load-or-create-run-worktree.ts'
 import {
@@ -51,7 +53,11 @@ import {
   EXIT_OK,
   EXIT_USAGE,
 } from '../cli/exit-codes.ts'
-import { productionInvokePersona } from '../cli/production-seams.ts'
+import {
+  productionInvokePersona,
+  productionRevertSeam,
+  productionRunner,
+} from '../cli/production-seams.ts'
 import type { InvokeContext } from '../providers/invoke.ts'
 import {
   applyFakeScript,
@@ -67,6 +73,12 @@ import {
   resolveBuildCarryForward,
   tryReadNeedsInterventionGate,
 } from './dispatch-build-helpers.ts'
+import {
+  findLatestVerifyCompleted,
+  hasGateRequired,
+  resolveVerifyArtifacts,
+  shouldRouteToBuildRestart,
+} from './dispatch-verify-helpers.ts'
 
 // --- public CLI entrypoint -----------------------------------------
 
@@ -668,6 +680,56 @@ async function handleActiveRun(
     }
     process.exit(result.exitCode)
   }
+  if (phase === 'verify') {
+    if (taskOverride !== undefined) {
+      process.stderr.write(
+        `code-oz run: --task ${taskOverride} only applies to the BUILD phase (current phase: verify).\n`,
+      )
+      process.exit(EXIT_USAGE)
+    }
+    // Codex M16 C7 Mod #2 — verify_restart_initiated does not change
+    // currentPhase via the reducer. When the BUILD/VERIFY restart loop
+    // is mid-step (latest restart signal = 'restart' for the cursor's
+    // pending task), route back to dispatchBuild for attempt N+1
+    // instead of looping into dispatchVerify.
+    let plan: PlanArtifact | null = null
+    try {
+      plan = await loadPlanArtifact(artifactRoot)
+    } catch {
+      // dispatchVerify will surface the parse error with operator
+      // guidance; stay on the verify path.
+    }
+    if (plan !== null && shouldRouteToBuildRestart(events, plan, activeRunId)) {
+      const result = await dispatchBuild({
+        stateDir,
+        artifactRoot,
+        runId: activeRunId,
+        providerOverride,
+        fakeScriptEntries,
+      })
+      if (result.stdout !== undefined && result.stdout.length > 0) {
+        process.stdout.write(result.stdout)
+      }
+      if (result.stderr !== undefined && result.stderr.length > 0) {
+        process.stderr.write(result.stderr)
+      }
+      process.exit(result.exitCode)
+    }
+    const result = await dispatchVerify({
+      stateDir,
+      artifactRoot,
+      runId: activeRunId,
+      providerOverride,
+      fakeScriptEntries,
+    })
+    if (result.stdout !== undefined && result.stdout.length > 0) {
+      process.stdout.write(result.stdout)
+    }
+    if (result.stderr !== undefined && result.stderr.length > 0) {
+      process.stderr.write(result.stderr)
+    }
+    process.exit(result.exitCode)
+  }
 
   process.stderr.write(
     [
@@ -1015,6 +1077,254 @@ export async function dispatchBuild(
       `  ${result.rule}`,
       ...(result.draftPath !== undefined ? [`  Draft: ${result.draftPath}`] : []),
       '  Inspect .code-oz/state/runs/<runId>/ and resolve before re-running.',
+      '',
+    ].join('\n'),
+  })
+}
+
+// --- VERIFY dispatch (M16 C7) -------------------------------------
+
+export interface DispatchVerifyOptions {
+  readonly stateDir: string
+  readonly artifactRoot: string
+  readonly runId: string
+  readonly providerOverride?: ProviderOverride
+  readonly fakeScriptEntries?: readonly FakeScriptEntry[]
+  readonly cwd?: string
+  readonly now?: () => string
+}
+
+/**
+ * Production CLI dispatch for the VERIFY phase. Mirrors `dispatchBuild`
+ * but operates on the just-completed BUILD attempt N (no attempt
+ * derivation; the attempt comes from the latest `build_completed`
+ * event for the cursor's pending task).
+ *
+ * Codex M16 C7 pre-design review pinned the following invariants:
+ *
+ *   1. `runVerify` does NOT emit `verify_restart_initiated`. The
+ *      finalization (worktree removal + worktree_destroyed +
+ *      verify_restart_initiated) is `scheduleAttemptNPlus1`'s job.
+ *      dispatchVerify calls it on `result.status === 'failed'`.
+ *   2. After a VERIFY-fail, currentPhase stays at `verify`. The
+ *      handleActiveRun pre-route to `dispatchBuild` (when
+ *      `shouldRouteToBuildRestart` is true) closes the loop.
+ *   3. preApproveBuildHook validates BUILD artifact shas at approve
+ *      time, but operator hand-edits between approve-build and
+ *      run-verify would silently run with edited bytes.
+ *      `resolveVerifyArtifacts` re-validates BUILD_REPORT.md /
+ *      patch / prompt shas before invoking runVerify.
+ *   4. Missing patch / prompt / build_completed → drift refusal,
+ *      not reconstruction.
+ *   5. `--task` is BUILD-only — handleActiveRun rejects it for
+ *      VERIFY before dispatch.
+ *   6. `verify_completed` exists but `gate_required(verify)` does
+ *      not is the crash-window state; refuse as drift rather than
+ *      re-running runVerify.
+ */
+export async function dispatchVerify(
+  opts: DispatchVerifyOptions,
+): Promise<DispatchResult> {
+  const cwd = opts.cwd ?? process.cwd()
+  const runPaths = runPathsFor(opts.stateDir, opts.artifactRoot, opts.runId)
+
+  // 1. NEEDS_INTERVENTION refusal.
+  const intervention = await tryReadNeedsInterventionGate(runPaths)
+  if (intervention !== null) {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: formatInterventionRefusal(intervention, opts.runId),
+    })
+  }
+
+  const config = await loadConfig({ cwd })
+  const ctx = await bootstrap({ cwd, config })
+  const verifier = ctx.registry.getByName('verifier')
+  const scientist = ctx.registry.getByName('scientist')
+  if (verifier === undefined || scientist === undefined) {
+    return Object.freeze({
+      exitCode: EXIT_USAGE as 2,
+      stderr:
+        'code-oz run: VERIFY requires the bundled `verifier` and `scientist` personas.\n  Reinitialize the project (`code-oz init --force`) or restore .code-oz/agents/.\n',
+    })
+  }
+
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  let plan: PlanArtifact
+  try {
+    plan = await loadPlanArtifact(runPaths.artifactRoot)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: VERIFY requires PLAN.md but the file could not be loaded.\n  ${detail}\n`,
+    })
+  }
+
+  // Resolve task: VERIFY uses the cursor's pending task; --task is
+  // BUILD-only and was rejected upstream by handleActiveRun.
+  const cursorResult = projectTaskCursor(plan, events)
+  if (cursorResult.cursor.pending === null) {
+    return Object.freeze({
+      exitCode: EXIT_USAGE as 2,
+      stderr:
+        'code-oz run: PLAN.md has no pending tasks; the run should have advanced past VERIFY.\n  Inspect .code-oz/state/runs/<runId>/ for state drift.\n',
+    })
+  }
+  const taskId = cursorResult.cursor.pending.taskId
+
+  // Codex Mod #6 — crash window: verify_completed without gate_required.
+  // runVerify emits verify_completed BEFORE gate_required(verify) on
+  // success; if a crash landed between those two emissions, currentPhase
+  // is still 'verify' and gate_required(verify) is missing. Refuse as
+  // drift — re-running runVerify against the same patch would
+  // double-emit verify_completed.
+  const verifyDone = findLatestVerifyCompleted(events, opts.runId, taskId)
+  if (verifyDone !== null && !hasGateRequired(events, opts.runId, 'verify')) {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: VERIFY attempt ${verifyDone.attempt} for ${taskId} emitted verify_completed but no gate_required(verify).\n  A prior process likely crashed between event emissions.\n  Inspect .code-oz/state/runs/${opts.runId}/events.jsonl and resolve the partial state before re-running.\n`,
+    })
+  }
+
+  // Codex Mod #3 + #4 — re-validate BUILD artifact shas + bytes.
+  const artifacts = await resolveVerifyArtifacts({
+    events,
+    runId: opts.runId,
+    taskId,
+    cwd,
+    artifactRoot: opts.artifactRoot,
+  })
+  if (artifacts.kind === 'drift') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: VERIFY pre-flight failed — ${artifacts.reason}.\n  Inspect .code-oz/state/runs/${opts.runId}/ before retrying. The next code-oz run will re-attempt only after the drift is resolved.\n`,
+    })
+  }
+
+  // Worktree (idempotent — should already exist from BUILD).
+  const worktreeResult = await loadOrCreateRunWorktree({
+    cwd,
+    runId: opts.runId,
+    runPaths,
+    phase: 'verify',
+    agent: verifier.name,
+  })
+  if (worktreeResult.status === 'intervention') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: VERIFY worktree setup failed (${worktreeResult.code}).\n  ${worktreeResult.rule}${worktreeResult.detail !== undefined ? `\n  ${worktreeResult.detail}` : ''}\n`,
+    })
+  }
+
+  const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
+    providerOverride: opts.providerOverride,
+  })
+  if (opts.fakeScriptEntries !== undefined && fakeProvider !== undefined) {
+    applyFakeScript(fakeProvider, opts.fakeScriptEntries)
+  }
+
+  const invokeCtx: InvokeContext = {
+    registry: providerRegistry,
+    runPaths,
+    projectRoot: cwd,
+    config,
+  }
+  const role = canonicalRoleFromAgent(verifier)
+  const invokePersona = productionInvokePersona(invokeCtx, verifier, {
+    phase: 'verify',
+    runId: opts.runId,
+    ...(role !== undefined ? { role } : {}),
+  })
+
+  const result: VerifyResult = await runVerify({
+    runPaths,
+    runId: opts.runId,
+    cwd,
+    verifierAgent: verifier,
+    scientistAgent: scientist,
+    taskId,
+    attempt: artifacts.artifacts.attempt,
+    attemptPatchContent: artifacts.artifacts.patchText,
+    buildPromptSnapshot: artifacts.artifacts.promptText,
+    invokeCtx,
+    invokePersona,
+    runner: productionRunner(),
+    revertSeam: productionRevertSeam(worktreeResult.worktreePath),
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  })
+
+  if (result.status === 'completed') {
+    return Object.freeze({
+      exitCode: EXIT_OK as 0,
+      stdout: [
+        `VERIFY phase complete (attempt ${artifacts.artifacts.attempt}, task ${taskId}).`,
+        `  Review: ${result.verifyReportPath}`,
+        '  Then run: code-oz approve verify',
+        '',
+      ].join('\n'),
+    })
+  }
+  if (result.status === 'intervention') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: [
+        `code-oz run: VERIFY paused (${result.code}).`,
+        `  ${result.rule}`,
+        '  Inspect .code-oz/state/runs/<runId>/ and resolve before re-running.',
+        '',
+      ].join('\n'),
+    })
+  }
+
+  // result.status === 'failed' — finalize via scheduleAttemptNPlus1.
+  // This emits worktree_destroyed + verify_restart_initiated and
+  // removes the failed worktree. The next `code-oz run` will be
+  // routed to dispatchBuild for attempt N+1 by the
+  // shouldRouteToBuildRestart pre-check in handleActiveRun.
+  const scheduled = await scheduleAttemptNPlus1({
+    runPaths,
+    runId: opts.runId,
+    cwd,
+    verifierAgent: verifier.name,
+    verifyFailed: result,
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  })
+
+  if (!scheduled.ok) {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: [
+        `code-oz run: VERIFY failed and post-fail teardown could not finish (${scheduled.code}).`,
+        `  ${scheduled.reason}`,
+        '  Inspect .code-oz/state/runs/<runId>/ and the failed worktree manually.',
+        '',
+      ].join('\n'),
+    })
+  }
+
+  if (scheduled.nextAction === 'restart') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: [
+        `VERIFY attempt ${result.attempt} for ${taskId} failed.`,
+        `  Forensics: ${result.forensicsPath}`,
+        `  Carry-forward prepared for attempt ${scheduled.nextAttempt ?? result.nextAttempt ?? '?'}.`,
+        '  Re-run `code-oz run` to dispatch the next BUILD attempt.',
+        '',
+      ].join('\n'),
+    })
+  }
+  // intervention path: 4-attempt cap reached.
+  return Object.freeze({
+    exitCode: EXIT_INTERVENTION as 1,
+    stderr: [
+      `VERIFY attempt ${result.attempt} for ${taskId} failed and the 4-attempt cap was reached.`,
+      `  Forensics: ${result.forensicsPath}`,
+      '  NEEDS_INTERVENTION.json was written; manual resolution required before continuing.',
       '',
     ].join('\n'),
   })
