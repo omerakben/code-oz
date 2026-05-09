@@ -82,6 +82,18 @@ describe('loadFakeScript — happy paths', () => {
     expect(Object.isFrozen(entries[0]?.response)).toBe(true)
   })
 
+  test('nested arrays in response are deep-frozen', async () => {
+    // The shallow-spread copy left chunks + toolCalls mutable; the
+    // tightening fix freezes them too. A future reducer that consumes
+    // script entries can rely on the immutability guarantee end-to-end.
+    const path = await writeScript(
+      '{"matcher": {"phase": "define"}, "response": {"chunks": ["a", "b"], "toolCalls": []}}',
+    )
+    const entries = await loadFakeScript(path)
+    expect(Object.isFrozen(entries[0]?.response.chunks)).toBe(true)
+    expect(Object.isFrozen(entries[0]?.response.toolCalls)).toBe(true)
+  })
+
   test('matcher with only phase is accepted', async () => {
     const path = await writeScript(
       '{"matcher": {"phase": "build"}, "response": {"content": "phase-only"}}',
@@ -249,6 +261,56 @@ describe('loadFakeScript — failure paths', () => {
       const e = err as FakeScriptError
       expect(e.issues[0]?.code).toBe('fake_script_invalid_response')
       expect(e.issues[0]?.rule).toContain('at least one')
+    }
+  })
+
+  test('response.chunks not an array rejected', async () => {
+    const path = await writeScript(
+      '{"matcher": {"phase": "define"}, "response": {"chunks": "not-an-array"}}',
+    )
+    try {
+      await loadFakeScript(path)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as FakeScriptError
+      expect(e.issues[0]?.code).toBe('fake_script_invalid_response')
+      expect(e.issues[0]?.rule).toContain('chunks')
+    }
+  })
+
+  test('response.chunks containing non-string entry rejected', async () => {
+    const path = await writeScript(
+      '{"matcher": {"phase": "define"}, "response": {"chunks": ["ok", 42, "ok2"]}}',
+    )
+    try {
+      await loadFakeScript(path)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as FakeScriptError
+      expect(e.issues[0]?.code).toBe('fake_script_invalid_response')
+      expect(e.issues[0]?.rule).toContain('chunks[1]')
+    }
+  })
+
+  test('response.chunks valid string array accepted', async () => {
+    const path = await writeScript(
+      '{"matcher": {"phase": "define"}, "response": {"chunks": ["a", "b", "c"]}}',
+    )
+    const entries = await loadFakeScript(path)
+    expect(entries[0]?.response.chunks).toEqual(['a', 'b', 'c'])
+  })
+
+  test('response.toolCalls not an array rejected', async () => {
+    const path = await writeScript(
+      '{"matcher": {"phase": "define"}, "response": {"toolCalls": "not-an-array"}}',
+    )
+    try {
+      await loadFakeScript(path)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as FakeScriptError
+      expect(e.issues[0]?.code).toBe('fake_script_invalid_response')
+      expect(e.issues[0]?.rule).toContain('toolCalls')
     }
   })
 

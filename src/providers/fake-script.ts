@@ -200,11 +200,24 @@ function validateScriptEntry(
   if (responseIssue !== null) {
     return { kind: 'error', issues: [responseIssue] }
   }
+  // Deep-freeze nested arrays inside the response so the frozen-result
+  // invariant holds end-to-end. Object.freeze on a shallow spread leaves
+  // chunks/toolCalls arrays mutable; that's a footgun for any future
+  // reducer that consumes script entries. Cost is one freeze call per
+  // present array.
+  const responseRaw = obj.response as Record<string, unknown>
+  const responseCopy: Record<string, unknown> = { ...responseRaw }
+  if (Array.isArray(responseCopy.chunks)) {
+    responseCopy.chunks = Object.freeze([...(responseCopy.chunks as readonly unknown[])])
+  }
+  if (Array.isArray(responseCopy.toolCalls)) {
+    responseCopy.toolCalls = Object.freeze([...(responseCopy.toolCalls as readonly unknown[])])
+  }
   return {
     kind: 'ok',
     entry: Object.freeze({
       matcher: Object.freeze({ ...(obj.matcher as FakeMatch) }) as FakeMatch,
-      response: Object.freeze({ ...(obj.response as FakeResponse) }) as FakeResponse,
+      response: Object.freeze(responseCopy) as FakeResponse,
     }),
   }
 }
@@ -276,6 +289,43 @@ function validateResponse(raw: unknown, line: number): FakeScriptIssue | null {
       code: 'fake_script_invalid_response',
       rule: 'response.content must be a string when present',
       detail: `got ${JSON.stringify(r.content)}`,
+    }
+  }
+  // chunks: if present, must be an array of strings. The FakeProvider
+  // emits each chunk as a content_chunk event before turn_completed, so
+  // a non-array or non-string entry would crash at invoke-time. Catch
+  // the malformation at load-time so the operator sees the line number
+  // instead of a runtime stack trace.
+  if (r.chunks !== undefined) {
+    if (!Array.isArray(r.chunks)) {
+      return {
+        line,
+        code: 'fake_script_invalid_response',
+        rule: 'response.chunks must be an array of strings when present',
+        detail: `got ${JSON.stringify(r.chunks)}`,
+      }
+    }
+    for (let i = 0; i < r.chunks.length; i++) {
+      if (typeof r.chunks[i] !== 'string') {
+        return {
+          line,
+          code: 'fake_script_invalid_response',
+          rule: `response.chunks[${i}] must be a string`,
+          detail: `got ${JSON.stringify(r.chunks[i])}`,
+        }
+      }
+    }
+  }
+  // toolCalls: if present, must be an array. We don't validate the shape
+  // of each entry — that's the FakeProvider's contract and the v0.1 test
+  // surface doesn't author tool calls from scripts. Reject non-array to
+  // catch hand-edits.
+  if (r.toolCalls !== undefined && !Array.isArray(r.toolCalls)) {
+    return {
+      line,
+      code: 'fake_script_invalid_response',
+      rule: 'response.toolCalls must be an array when present',
+      detail: `got ${JSON.stringify(r.toolCalls)}`,
     }
   }
   // FakeResponse permits content-empty entries (uses the FakeProvider's
