@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-const VERSION = '0.14.0-alpha.0'
+const VERSION = '0.16.0-alpha.0'
 const tempDirs: string[] = []
 
 afterEach(async () => {
