@@ -34,8 +34,13 @@ describe('finding #1: versions report consistently across all surfaces', () => {
   // `0.10.0-alpha.0`); M12 commit 6 catches up to `0.12.0-alpha.0`.
   // PE-1 (xAI direct HTTP adapter) bumps to `0.13.0-alpha.0`. M13
   // (Role-cost policy under budgets.global) shifts to `0.14.0-alpha.0`
-  // per CODEX_RESPONSE_M13.md commit-7 lock.
-  const CURRENT = '0.14.0-alpha.0'
+  // per CODEX_RESPONSE_M13.md commit-7 lock. M14 and M15 BOTH shipped
+  // tags (`v0.15.0-alpha.0`, `v0.16.0-alpha.0`) without bumping these
+  // three sources — the post-M15 release-polish commit catches all
+  // three up to `0.16.0-alpha.0` in one chore on `main`. The lesson:
+  // bump these three together in the SAME milestone-close commit, not
+  // in a separate post-tag chore.
+  const CURRENT = '0.16.0-alpha.0'
 
   test('PKG_VERSION', () => {
     expect(PKG_VERSION).toBe(CURRENT)

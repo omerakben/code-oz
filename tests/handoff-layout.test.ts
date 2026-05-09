@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { renderHandoffReadme } from '../scripts/build-binaries.ts'
 import { validateHandoffLayout } from '../scripts/smoke-test.ts'
 
-const VERSION = '0.14.0-alpha.0'
+const VERSION = '0.16.0-alpha.0'
 const tempDirs: string[] = []
 
 afterEach(async () => {
@@ -62,7 +62,7 @@ describe('validateHandoffLayout', () => {
 
     expect(result.ok).toBe(false)
     expect(result.errors).toContain(
-      'manifest version 0.0.0-test does not match package version 0.14.0-alpha.0',
+      'manifest version 0.0.0-test does not match package version 0.16.0-alpha.0',
     )
   })
 
