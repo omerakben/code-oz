@@ -41,6 +41,13 @@ import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
 import { runPlan, type PlanResult } from '../phases/plan.ts'
 import type { InvokeContext } from '../providers/invoke.ts'
+import {
+  applyFakeScript,
+  FAKE_SCRIPT_ENV_VAR,
+  FakeScriptError,
+  loadFakeScript,
+  type FakeScriptEntry,
+} from '../providers/fake-script.ts'
 
 // --- public CLI entrypoint -----------------------------------------
 
@@ -72,6 +79,28 @@ export async function runCommand(args: string[]): Promise<void> {
     process.exit(2)
   }
 
+  // M16 C2 — pre-load the fake-replay script (gated in parseRunArgs).
+  // Loaded once per `code-oz run` invocation so resumed runs (handleActiveRun
+  // → dispatchPlan) and fresh runs (DEFINE below) apply the same entries.
+  let fakeScriptEntries: readonly FakeScriptEntry[] | undefined
+  if (parsed.fakeScriptPath !== undefined) {
+    try {
+      fakeScriptEntries = await loadFakeScript(parsed.fakeScriptPath)
+    } catch (err) {
+      if (err instanceof FakeScriptError) {
+        process.stderr.write(`code-oz run: ${err.message}\n`)
+        for (const issue of err.issues) {
+          const where = issue.line > 0 ? `${err.path}:${issue.line}` : err.path
+          process.stderr.write(
+            `  ${where} ${issue.code} — ${issue.rule}${issue.detail ? ` (${issue.detail})` : ''}\n`,
+          )
+        }
+        process.exit(2)
+      }
+      throw err
+    }
+  }
+
   const active = await readActiveRun(ctx.paths.activeRun)
   if (active !== null) {
     await handleActiveRun(
@@ -79,6 +108,7 @@ export async function runCommand(args: string[]): Promise<void> {
       ctx.paths.artifacts,
       active,
       parsed.providerOverride,
+      fakeScriptEntries,
     )
     return
   }
@@ -112,6 +142,14 @@ export async function runCommand(args: string[]): Promise<void> {
   const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
     providerOverride: parsed.providerOverride,
   })
+  // M16 C2 — apply the fake-replay script (gated in parseRunArgs +
+  // pre-loaded above). Applied BEFORE the --request-file BA scripting
+  // so authored scripts can override transcript-derived expectations
+  // (most-specific match wins; later registrations on the same matcher
+  // queue FIFO behind earlier ones).
+  if (fakeScriptEntries !== undefined && fakeProvider !== undefined) {
+    applyFakeScript(fakeProvider, fakeScriptEntries)
+  }
   // When both --provider fake and --request-file are set, pre-script BA
   // replies from the same fixture file so the runner replays deterministically.
   if (
@@ -185,6 +223,9 @@ interface ParsedOk {
   readonly kind: 'ok'
   readonly input: InputMode
   readonly providerOverride?: ProviderOverride
+  /** M16 C2 — path to a JSONL fake-replay fixture. Gated by both
+   *  `providerOverride === 'fake'` and the FAKE_SCRIPT_ENV_VAR env var. */
+  readonly fakeScriptPath?: string
 }
 interface ParsedError {
   readonly kind: 'error'
@@ -192,10 +233,20 @@ interface ParsedError {
   readonly help: boolean
 }
 
-function parseRunArgs(args: string[]): ParsedOk | ParsedError {
+/**
+ * Parse `code-oz run` CLI arguments. Test-only export — production
+ * code paths consume this through runCommand. Tests inject `env` to
+ * exercise the FAKE_SCRIPT_ENV_VAR gate without polluting the
+ * runner's process.env.
+ */
+export function parseRunArgs(
+  args: string[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ParsedOk | ParsedError {
   let request: string | null = null
   let requestFile: string | null = null
   let providerOverride: ProviderOverride | undefined
+  let fakeScriptPath: string | null = null
   let help = false
 
   for (let i = 0; i < args.length; i++) {
@@ -248,6 +299,19 @@ function parseRunArgs(args: string[]): ParsedOk | ParsedError {
       providerOverride = result.value
       continue
     }
+    if (a === '--fake-script') {
+      const value = args[i + 1]
+      if (value === undefined) {
+        return { kind: 'error', message: '--fake-script requires a path', help: true }
+      }
+      fakeScriptPath = value
+      i++
+      continue
+    }
+    if (a.startsWith('--fake-script=')) {
+      fakeScriptPath = a.slice('--fake-script='.length)
+      continue
+    }
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
   }
 
@@ -263,10 +327,43 @@ function parseRunArgs(args: string[]): ParsedOk | ParsedError {
       help: false,
     }
   }
-  const base = (input: InputMode): ParsedOk =>
-    providerOverride !== undefined
-      ? { kind: 'ok', input, providerOverride }
-      : { kind: 'ok', input }
+  // M16 C2 — gate `--fake-script` behind both `--provider fake` AND the
+  // env var `CODE_OZ_TEST_FAKE_SCRIPT_OK=1`. Two gates because:
+  //   1. The script only makes sense when routing through the shared
+  //      FakeProvider (with --provider fake).
+  //   2. `--provider fake` IS a real production CLI flag; without the
+  //      env var, a user could accidentally script fake artifacts onto
+  //      a real project. The env-var gate makes "I know this is a test
+  //      seam" explicit (Codex R0 Risk #9 — fake-provider contamination).
+  if (fakeScriptPath !== null) {
+    if (fakeScriptPath.length === 0) {
+      return { kind: 'error', message: '--fake-script path must be non-empty', help: false }
+    }
+    if (providerOverride !== 'fake') {
+      return {
+        kind: 'error',
+        message:
+          '--fake-script requires --provider fake (the script applies expectations to the shared FakeProvider only)',
+        help: false,
+      }
+    }
+    const envValue = env[FAKE_SCRIPT_ENV_VAR]
+    if (envValue !== '1' && envValue !== 'true') {
+      return {
+        kind: 'error',
+        message: `--fake-script is a test-only seam; set ${FAKE_SCRIPT_ENV_VAR}=1 to enable`,
+        help: false,
+      }
+    }
+  }
+  const base = (input: InputMode): ParsedOk => {
+    const out: ParsedOk = { kind: 'ok', input }
+    return Object.freeze({
+      ...out,
+      ...(providerOverride !== undefined ? { providerOverride } : {}),
+      ...(fakeScriptPath !== null ? { fakeScriptPath } : {}),
+    })
+  }
 
   if (request !== null) {
     if (request.trim().length === 0) {
@@ -417,6 +514,7 @@ async function handleActiveRun(
   artifactRoot: string,
   activeRunId: string,
   providerOverride?: ProviderOverride,
+  fakeScriptEntries?: readonly FakeScriptEntry[],
 ): Promise<void> {
   const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
 
@@ -483,7 +581,7 @@ async function handleActiveRun(
 
   // Phase advanced past DEFINE: dispatch to the right runner.
   if (phase === 'plan') {
-    await dispatchPlan(stateDir, artifactRoot, activeRunId, providerOverride)
+    await dispatchPlan(stateDir, artifactRoot, activeRunId, providerOverride, fakeScriptEntries)
     return
   }
 
@@ -502,6 +600,7 @@ async function dispatchPlan(
   artifactRoot: string,
   activeRunId: string,
   providerOverride?: ProviderOverride,
+  fakeScriptEntries?: readonly FakeScriptEntry[],
 ): Promise<void> {
   const cwd = process.cwd()
   // M12: same flip as runCommand. Load config BEFORE bootstrap so the
@@ -523,7 +622,14 @@ async function dispatchPlan(
   }
   // Carry --provider fake (or other override) through DEFINE -> approve -> PLAN.
   // Per Codex M6 review block-next-milestone #7.
-  const { registry: providerRegistry } = buildProviderRegistry({ providerOverride })
+  const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({ providerOverride })
+  // M16 C2 — apply the fake-replay script entries on resumed dispatches
+  // too, so the same scripted responses cover DEFINE → PLAN → BUILD → ...
+  // across spawned-process boundaries (each `code-oz run` invocation
+  // re-loads the script from disk and registers its expectations).
+  if (fakeScriptEntries !== undefined && fakeProvider !== undefined) {
+    applyFakeScript(fakeProvider, fakeScriptEntries)
+  }
   const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
@@ -572,6 +678,11 @@ Options:
   --provider <id>          Runtime provider override. v0.1 accepts only 'fake':
                            every ProviderId routes to a single shared FakeProvider
                            instance. Useful for offline tests and CI replays.
+  --fake-script <path>     Test-only: load a JSONL fake-replay fixture and pre-script
+                           FakeProvider expectations across the full DEFINE→REVIEW
+                           cycle. Each line: {"matcher": {phase, agent}, "response": {content}}.
+                           Requires --provider fake AND CODE_OZ_TEST_FAKE_SCRIPT_OK=1.
+                           See src/providers/fake-script.ts for the loader contract.
   -h, --help               Show this help.
 
 --request and --request-file are mutually exclusive.
