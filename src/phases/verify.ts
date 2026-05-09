@@ -74,6 +74,7 @@ import {
   type EventLogPaths,
 } from '../state/events.ts'
 import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
+import { LockBusyError, withLock } from '../state/lock.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import { writeVerifyForensicsBundle } from '../worktree/forensics.ts'
 
@@ -250,7 +251,39 @@ function actionableSuggestionsFor(code: string): readonly string[] {
   }
 }
 
+/**
+ * Mkdir-as-mutex over the runVerify orchestration (M16 C4). Two concurrent
+ * runVerify calls for the same runId would otherwise both read
+ * BUILD_REPORT.md, both invoke the verifier persona, both run the
+ * validation command, and both write verify_completed events with
+ * divergent results. The orchestration body is held for the duration of
+ * the persona + runner invocation (seconds to minutes); this is a
+ * SEPARATE dir from runPaths.lockDir (which serializes appendEvent /
+ * writeGate) so concurrent status reads and gate writes for unrelated
+ * phases stay unblocked.
+ *
+ * On `LockBusyError`, the function returns `verify_already_in_flight`
+ * intervention without writing a gate file — mirrors review.ts:560-572
+ * and the runBuild lock at build.ts. The lock-busy case has not changed
+ * run state, so there is no durable orchestration outcome to record.
+ */
 export async function runVerify(opts: RunVerifyOptions): Promise<VerifyResult> {
+  const verifyLockDir = join(opts.runPaths.runDir, '.verify.lock')
+  try {
+    return await withLock(verifyLockDir, () => runVerifyInner(opts))
+  } catch (err) {
+    if (err instanceof LockBusyError) {
+      return Object.freeze({
+        status: 'intervention' as const,
+        code: 'verify_already_in_flight',
+        rule: `another runVerify is in progress for run ${opts.runId} (lock at ${verifyLockDir})`,
+      })
+    }
+    throw err
+  }
+}
+
+async function runVerifyInner(opts: RunVerifyOptions): Promise<VerifyResult> {
   const now = opts.now ?? (() => new Date().toISOString())
   const eventPaths = eventPathsFor(opts.runPaths)
   const interventionCtx: InterventionContext = {

@@ -39,7 +39,7 @@ import {
   type EventLogPaths,
 } from '../state/events.ts'
 import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
-import { withLock } from '../state/lock.ts'
+import { LockBusyError, withLock } from '../state/lock.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import { computeManifest } from '../worktree/manifest.ts'
 import { runPaths as worktreeRunPaths, buildDraftsAttemptPath } from '../worktree/paths.ts'
@@ -264,7 +264,38 @@ function errResult(code: string, reason: string): BuildResponseError {
 
 // --- runBuild ------------------------------------------------------
 
+/**
+ * Mkdir-as-mutex over the runBuild orchestration (M16 C4). Two concurrent
+ * runBuild calls for the same runId would otherwise both load PLAN, both
+ * invoke the builder persona, both apply patches against the worktree,
+ * and both write build_completed events with divergent shas. The
+ * orchestration body is held for the duration of the persona invocation
+ * (seconds to minutes); this is a SEPARATE dir from runPaths.lockDir
+ * (which serializes appendEvent / writeGate) so concurrent status reads
+ * and gate writes for unrelated phases stay unblocked.
+ *
+ * On `LockBusyError`, the function returns `build_already_in_flight`
+ * intervention without writing a gate file — mirrors review.ts:560-572.
+ * The lock-busy case has not changed run state, so there is no durable
+ * orchestration outcome to record beyond the in-memory result.
+ */
 export async function runBuild(opts: RunBuildOptions): Promise<BuildResult> {
+  const buildLockDir = join(opts.runPaths.runDir, '.build.lock')
+  try {
+    return await withLock(buildLockDir, () => runBuildInner(opts))
+  } catch (err) {
+    if (err instanceof LockBusyError) {
+      return Object.freeze({
+        status: 'intervention' as const,
+        code: 'build_already_in_flight',
+        rule: `another runBuild is in progress for run ${opts.runId} (lock at ${buildLockDir})`,
+      })
+    }
+    throw err
+  }
+}
+
+async function runBuildInner(opts: RunBuildOptions): Promise<BuildResult> {
   const now = opts.now ?? (() => new Date().toISOString())
   const attempt = opts.attempt ?? 1
   const eventPaths = eventPathsFor(opts.runPaths)
