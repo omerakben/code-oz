@@ -18,7 +18,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  PanelistResponseParseError,
   productionInvokePersona,
+  productionPanelistInvoker,
   productionRevertSeam,
   productionRunner,
   type ProductionRevertSeamOptions,
@@ -675,5 +677,234 @@ describe('productionRevertSeam — snapshot / revert / restore', () => {
     await seam.restore(snap)
     const st = await stat(join(worktreeRoot, 'leaf.txt'))
     expect(st.isFile()).toBe(true)
+  })
+})
+
+// --- productionPanelistInvoker (M16 C8) ----------------------------
+
+function makeReviewerAgent(): AgentDefinition {
+  return Object.freeze({
+    file: '/tmp/reviewer.md',
+    name: 'reviewer',
+    type: 'agent' as const,
+    phase: 'review' as const,
+    provider: 'fake' as const,
+    modelPolicy: 'any' as const,
+    permissions: {
+      read: '*' as const,
+      write: ['./out.md'] as readonly string[],
+      bash: 'deny' as const,
+    },
+    description: 'reviewer stub',
+    body: '## reviewer persona',
+  })
+}
+
+function panelistResponseJson(opts: {
+  score?: number
+  verdict?: 'ready' | 'needs-revision' | 'block'
+  manifestHash?: string
+  findings?: readonly {
+    file: string
+    line: string
+    title: string
+    severity: 'block' | 'fix-first' | 'nit' | 'fyi'
+    recommendation: string
+  }[]
+} = {}): string {
+  return JSON.stringify({
+    score: opts.score ?? 8,
+    verdict: opts.verdict ?? 'ready',
+    findings: opts.findings ?? [],
+    manifestHash: opts.manifestHash ?? '0'.repeat(64),
+    stagingContent: '# panelist staging\n\nstub draft.\n',
+  })
+}
+
+describe('productionPanelistInvoker — happy path', () => {
+  test('parses persona JSON response into PanelistInvocationResult', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: panelistResponseJson({ score: 7, verdict: 'needs-revision', manifestHash: 'a'.repeat(64) }),
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'panel review prompt',
+    })
+    const result = await invoker(
+      { id: 'reviewer-A', provider: 'fake', role: 'voter' },
+      1,
+    )
+    expect(result.panelistId).toBe('reviewer-A')
+    expect(result.providerId).toBe('fake')
+    expect(result.providerFamily).toBe('fake')
+    expect(result.role).toBe('voter')
+    expect(result.score).toBe(7)
+    expect(result.verdict).toBe('needs-revision')
+    expect(result.manifestHash).toBe('a'.repeat(64))
+    expect(result.stagingContent).toContain('panelist staging')
+    expect(result.findings).toHaveLength(0)
+  })
+
+  test('parses findings array from persona response', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: panelistResponseJson({
+        findings: [
+          {
+            file: 'src/foo.ts',
+            line: 'L42',
+            title: 'short title',
+            severity: 'fix-first',
+            recommendation: 'do the right thing',
+          },
+        ],
+      }),
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'p',
+    })
+    const result = await invoker(
+      { id: 'reviewer-B', provider: 'fake', role: 'voter' },
+      1,
+    )
+    expect(result.findings).toHaveLength(1)
+    expect(result.findings[0]!.severity).toBe('fix-first')
+    expect(result.findings[0]!.title).toBe('short title')
+  })
+
+  test('defaults modelPolicy to agent.modelPolicy ?? "any" when cfg.model absent', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: panelistResponseJson(),
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'p',
+    })
+    const result = await invoker(
+      { id: 'reviewer-A', provider: 'fake', role: 'voter' },
+      1,
+    )
+    // modelPolicy resolves to agent.model (undefined) ?? 'any'
+    expect(result.modelPolicy).toBe('any')
+  })
+
+  test('uses cfg.model when supplied', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: panelistResponseJson(),
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'p',
+    })
+    const result = await invoker(
+      { id: 'reviewer-A', provider: 'fake', role: 'voter', model: 'grok-3' },
+      1,
+    )
+    expect(result.modelPolicy).toBe('grok-3')
+  })
+})
+
+describe('productionPanelistInvoker — parse failures', () => {
+  test('throws PanelistResponseParseError on non-JSON content', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: 'not json at all',
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'p',
+    })
+    await expect(
+      invoker({ id: 'reviewer-A', provider: 'fake', role: 'voter' }, 1),
+    ).rejects.toThrow(PanelistResponseParseError)
+  })
+
+  test('throws on missing required fields (no score)', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: JSON.stringify({
+        verdict: 'ready',
+        findings: [],
+        manifestHash: '0'.repeat(64),
+        stagingContent: 'x',
+      }),
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'p',
+    })
+    await expect(
+      invoker({ id: 'reviewer-A', provider: 'fake', role: 'voter' }, 1),
+    ).rejects.toThrow(/score must be an integer/)
+  })
+
+  test('throws on invalid manifestHash (not 64-hex)', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: panelistResponseJson({ manifestHash: 'too-short' }),
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'p',
+    })
+    await expect(
+      invoker({ id: 'reviewer-A', provider: 'fake', role: 'voter' }, 1),
+    ).rejects.toThrow(/manifestHash must be a 64-char/)
+  })
+
+  test('throws on invalid finding severity', async () => {
+    fake.expect({ phase: 'review', agent: 'reviewer' }).respondWith({
+      content: JSON.stringify({
+        score: 8,
+        verdict: 'ready',
+        findings: [
+          {
+            file: 'src/foo.ts',
+            line: 'L1',
+            title: 't',
+            severity: 'invalid-sev',
+            recommendation: 'r',
+          },
+        ],
+        manifestHash: '0'.repeat(64),
+        stagingContent: 'x',
+      }),
+    })
+    const invoker = productionPanelistInvoker({
+      registry,
+      invokeCtx: makeInvokeCtx(),
+      agents: new Map(),
+      defaultAgent: makeReviewerAgent(),
+      runId: RUN,
+      composePrompt: async () => 'p',
+    })
+    await expect(
+      invoker({ id: 'reviewer-A', provider: 'fake', role: 'voter' }, 1),
+    ).rejects.toThrow(/severity must be one of/)
   })
 })

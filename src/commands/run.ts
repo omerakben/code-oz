@@ -19,6 +19,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import * as readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 
@@ -43,6 +44,8 @@ import { runDefine, type DefineResult } from '../phases/define.ts'
 import { runPlan, type PlanResult } from '../phases/plan.ts'
 import { runBuild, type BuildResult, type WorktreeBinding } from '../phases/build.ts'
 import { runVerify, type VerifyResult } from '../phases/verify.ts'
+import { runReview, type ReviewResult } from '../phases/review.ts'
+import { shouldUseReviewPanel } from '../phases/review-panel.ts'
 import { scheduleAttemptNPlus1 } from '../phases/schedule-attempt.ts'
 import { deriveNextAttempt } from '../phases/restart-policy.ts'
 import { TASK_ID_PATTERN, type PlanArtifact } from '../artifacts/plan.ts'
@@ -55,6 +58,7 @@ import {
 } from '../cli/exit-codes.ts'
 import {
   productionInvokePersona,
+  productionPanelistInvoker,
   productionRevertSeam,
   productionRunner,
 } from '../cli/production-seams.ts'
@@ -79,6 +83,13 @@ import {
   resolveVerifyArtifacts,
   shouldRouteToBuildRestart,
 } from './dispatch-verify-helpers.ts'
+import {
+  detectSchedulerFireOneLine,
+  readPriorReviewMd,
+  resolveNextReviewRound,
+  resolveReviewArtifacts,
+} from './dispatch-review-helpers.ts'
+import { exitCodeForPhaseResult } from '../cli/exit-codes.ts'
 
 // --- public CLI entrypoint -----------------------------------------
 
@@ -730,6 +741,29 @@ async function handleActiveRun(
     }
     process.exit(result.exitCode)
   }
+  if (phase === 'review') {
+    // Codex M16 C8 Mod #9 — `--task` is BUILD-only.
+    if (taskOverride !== undefined) {
+      process.stderr.write(
+        `code-oz run: --task ${taskOverride} only applies to the BUILD phase (current phase: review).\n`,
+      )
+      process.exit(EXIT_USAGE)
+    }
+    const result = await dispatchReview({
+      stateDir,
+      artifactRoot,
+      runId: activeRunId,
+      providerOverride,
+      fakeScriptEntries,
+    })
+    if (result.stdout !== undefined && result.stdout.length > 0) {
+      process.stdout.write(result.stdout)
+    }
+    if (result.stderr !== undefined && result.stderr.length > 0) {
+      process.stderr.write(result.stderr)
+    }
+    process.exit(result.exitCode)
+  }
 
   process.stderr.write(
     [
@@ -1327,6 +1361,353 @@ export async function dispatchVerify(
       '  NEEDS_INTERVENTION.json was written; manual resolution required before continuing.',
       '',
     ].join('\n'),
+  })
+}
+
+// --- REVIEW dispatch (M16 C8) -------------------------------------
+
+export interface DispatchReviewOptions {
+  readonly stateDir: string
+  readonly artifactRoot: string
+  readonly runId: string
+  readonly providerOverride?: ProviderOverride
+  readonly fakeScriptEntries?: readonly FakeScriptEntry[]
+  readonly cwd?: string
+  readonly now?: () => string
+}
+
+/**
+ * Production CLI dispatch for the REVIEW phase. Mirrors `dispatchVerify`
+ * but operates on the just-passed VERIFY artifact (no attempt
+ * derivation; the attempt comes from the latest `build_completed`
+ * event for the cursor's pending task — REVIEW reads the same attempt
+ * BUILD/VERIFY agreed on).
+ *
+ * Codex M16 C8 pre-design review pinned the following invariants
+ * (5 block-push + 4 fix-soon + 1 nit, all closed inline):
+ *
+ *   1. `nextReviewRound` is persisted via a new
+ *      `review_remediation_recorded` event — emitted on every
+ *      `needs_revision` REVIEW return so resumed dispatches resolve
+ *      round N+1 from durable state, not derivation. (Mod #1)
+ *   2. The dispatcher does NOT acquire `.review.lock`. `runReview`
+ *      self-locks at src/phases/review.ts:560-572 (mirroring
+ *      runBuild/runVerify). (Mod #2)
+ *   3. `resolveReviewArtifacts` re-validates BUILD_REPORT.md /
+ *      VERIFY.md shas against the latest build_completed /
+ *      verify_completed events — closes the approve-verify →
+ *      run-review hand-edit window. (Mod #3)
+ *   4. `needs_revision` exits with EXIT_INTERVENTION (NOT EXIT_OK):
+ *      the review-debate loop's expected non-gate-ready outcome.
+ *      `exitCodeForPhaseResult` is the single mapping authority. (Mod #4)
+ *   5. `productionPanelistInvoker` is wired whenever `panel.length
+ *      >= 2`; without it, panel mode raises `review_panel_invoker_missing`
+ *      intervention at src/phases/review.ts:2475-2481. (Mod #5)
+ *   6. `runReview` owns panel-vs-single branching via
+ *      `shouldUseReviewPanel` (src/phases/review-panel.ts:202-206);
+ *      cross-family enforcement stays inside runReview. (Mod #6)
+ *   7. Panel-mode capability gating is a panelist eligibility check
+ *      added to the config loader (src/config/load.ts mergeReviewerPanel),
+ *      not a branch-selection check. (Mod #7)
+ *   8. Scheduler one-liner reads from the events.jsonl delta (events
+ *      appended by runReview); no new replay event added; no field
+ *      added to ReviewResult. (Mod #8)
+ *   9. `handleActiveRun` REVIEW branch rejects `--task` (BUILD-only)
+ *      with EXIT_USAGE before dispatch. (Mod #9)
+ *  10. `--provider fake` aliases preserve provider id family per
+ *      src/cli/bootstrap.ts:176-194 + src/providers/fake.ts:92-95;
+ *      tests configure distinct ids. (Mod #10)
+ */
+export async function dispatchReview(
+  opts: DispatchReviewOptions,
+): Promise<DispatchResult> {
+  const cwd = opts.cwd ?? process.cwd()
+  const now = opts.now ?? (() => new Date().toISOString())
+  const runPaths = runPathsFor(opts.stateDir, opts.artifactRoot, opts.runId)
+
+  // 1. NEEDS_INTERVENTION refusal at the very top (mirror C6/C7).
+  const intervention = await tryReadNeedsInterventionGate(runPaths)
+  if (intervention !== null) {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: formatInterventionRefusal(intervention, opts.runId),
+    })
+  }
+
+  const config = await loadConfig({ cwd })
+  const ctx = await bootstrap({ cwd, config })
+  const reviewer = ctx.registry.getByName('reviewer')
+  const scientist = ctx.registry.getByName('scientist')
+  if (reviewer === undefined || scientist === undefined) {
+    return Object.freeze({
+      exitCode: EXIT_USAGE as 2,
+      stderr:
+        'code-oz run: REVIEW requires the bundled `reviewer` and `scientist` personas.\n  Reinitialize the project (`code-oz init --force`) or restore .code-oz/agents/.\n',
+    })
+  }
+
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  let plan: PlanArtifact
+  try {
+    plan = await loadPlanArtifact(runPaths.artifactRoot)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: REVIEW requires PLAN.md but the file could not be loaded.\n  ${detail}\n`,
+    })
+  }
+
+  // Resolve task: REVIEW uses the cursor's pending task; --task is
+  // BUILD-only and was rejected upstream by handleActiveRun.
+  const cursorResult = projectTaskCursor(plan, events)
+  if (cursorResult.cursor.pending === null) {
+    return Object.freeze({
+      exitCode: EXIT_USAGE as 2,
+      stderr:
+        'code-oz run: PLAN.md has no pending tasks; the run should have advanced past REVIEW.\n  Inspect .code-oz/state/runs/<runId>/ for state drift.\n',
+    })
+  }
+  const taskId = cursorResult.cursor.pending.taskId
+
+  // Codex Mod #3 — re-validate BUILD/VERIFY artifact shas + bytes.
+  const artifacts = await resolveReviewArtifacts({
+    events,
+    runId: opts.runId,
+    taskId,
+    artifactRoot: opts.artifactRoot,
+  })
+  if (artifacts.kind === 'drift') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: REVIEW pre-flight failed — ${artifacts.reason}.\n  Inspect .code-oz/state/runs/${opts.runId}/ before retrying. The next code-oz run will re-attempt only after the drift is resolved.\n`,
+    })
+  }
+  const attempt = artifacts.artifacts.attempt
+
+  // Codex Mod #1 — resolve the round number from persisted remediation.
+  // Round 1 when no prior `review_remediation_recorded` event exists for
+  // this (runId, taskId, attempt). The find lookup keys off the
+  // build_completed.attempt the artifacts agreed on.
+  const round = resolveNextReviewRound(events, opts.runId, taskId, attempt)
+
+  // Read prior REVIEW.md when round > 1 (the canonical artifact at
+  // <artifactRoot>/REVIEW.md, NOT a draft).
+  const priorReviewMd = round > 1 ? await readPriorReviewMd(opts.artifactRoot) : null
+  if (round > 1 && priorReviewMd === null) {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: REVIEW round ${round} requires the prior REVIEW.md but the file is missing.\n  Expected at ${join(opts.artifactRoot, 'REVIEW.md')}.\n  Inspect .code-oz/state/runs/${opts.runId}/ for state drift.\n`,
+    })
+  }
+
+  // Worktree (idempotent — should already exist from BUILD/VERIFY).
+  const worktreeResult = await loadOrCreateRunWorktree({
+    cwd,
+    runId: opts.runId,
+    runPaths,
+    phase: 'review',
+    agent: reviewer.name,
+  })
+  if (worktreeResult.status === 'intervention') {
+    return Object.freeze({
+      exitCode: EXIT_INTERVENTION as 1,
+      stderr: `code-oz run: REVIEW worktree setup failed (${worktreeResult.code}).\n  ${worktreeResult.rule}${worktreeResult.detail !== undefined ? `\n  ${worktreeResult.detail}` : ''}\n`,
+    })
+  }
+
+  // Provider registry + fake-script.
+  const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
+    providerOverride: opts.providerOverride,
+  })
+  if (opts.fakeScriptEntries !== undefined && fakeProvider !== undefined) {
+    applyFakeScript(fakeProvider, opts.fakeScriptEntries)
+  }
+
+  const invokeCtx: InvokeContext = {
+    registry: providerRegistry,
+    runPaths,
+    projectRoot: cwd,
+    config,
+  }
+  const role = canonicalRoleFromAgent(reviewer)
+  const invokePersona = productionInvokePersona(invokeCtx, reviewer, {
+    phase: 'review',
+    runId: opts.runId,
+    ...(role !== undefined ? { role } : {}),
+  })
+
+  // Codex Mod #6 — runReview owns panel-vs-single. Wire panelistInvoker
+  // whenever the company config declares panel mode (panel.length >= 2);
+  // shouldUseReviewPanel inside runReview owns the branch decision.
+  let panelistInvoker: ReturnType<typeof productionPanelistInvoker> | undefined
+  if (shouldUseReviewPanel(config.company)) {
+    panelistInvoker = productionPanelistInvoker({
+      registry: providerRegistry,
+      invokeCtx,
+      agents: new Map(),
+      defaultAgent: reviewer,
+      runId: opts.runId,
+      // The composed prompt for panel mode is supplied by the
+      // dispatcher; v0.1 reuses the single-mode review prompt
+      // composition path. The orchestrator feeds the persona's
+      // composed-prompt closure separately for panel vs single,
+      // but at the dispatch level the composed prompt for each
+      // panelist is simply the reviewer prompt body (manifest equality
+      // is enforced inside runReviewPanel).
+      composePrompt: async () => '',
+    })
+  }
+
+  // Read events again right before the call so the post-runReview
+  // delta diff (Codex Mod #8) has a sharp pre-cut.
+  const eventsBefore = events.length
+
+  const result: ReviewResult = await runReview({
+    runPaths,
+    runId: opts.runId,
+    cwd,
+    reviewerAgent: reviewer,
+    scientistAgent: scientist,
+    taskId,
+    invokeCtx,
+    invokePersona,
+    ...(panelistInvoker !== undefined ? { panelistInvoker } : {}),
+    round,
+    priorReviewMd,
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  })
+
+  // Codex Mod #8 — post-runReview event delta: read events.jsonl again
+  // and inspect ONLY the new entries for scheduler fire/postreview events
+  // matching this (runId, taskId, attempt, round). If matched, emit a
+  // one-liner to stdout. No new replay event is created.
+  const eventsAfter = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  const newEvents = eventsAfter.slice(eventsBefore)
+  const fireSummary = detectSchedulerFireOneLine(newEvents, {
+    runId: opts.runId,
+    taskId,
+    attempt,
+    reviewRound: round,
+  })
+  let schedulerLine: string | undefined
+  if (fireSummary !== null) {
+    schedulerLine = `[scheduler] grey-zone fire → debate vs ${fireSummary.opposingProvider} → ${fireSummary.verdict} (${fireSummary.actionableFindingsAddedCount} actionable added)`
+  }
+
+  // Codex Mod #1 — persist the remediation decision when REVIEW returns
+  // needs_revision with action='continue'. The event carries
+  // nextReviewRound resolved by review-remediation.ts so the next
+  // `code-oz run` resolves round N+1 without re-deriving it.
+  if (
+    result.status === 'needs_revision' &&
+    result.remediation.action === 'continue'
+  ) {
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'review_remediation_recorded',
+        ts: now(),
+        runId: opts.runId,
+        phase: 'review',
+        agent: reviewer.name,
+        attempt,
+        taskId,
+        reviewRound: round,
+        nextReviewRound: result.remediation.nextReviewRound,
+        decisionId: generateUlid(),
+        reviewMdSha256: result.reviewReportSha256,
+        remediationIntent: 'continue',
+        refsTo: {
+          type: 'review_round_completed',
+          reviewReportSha256: result.reviewReportSha256,
+        },
+      },
+    )
+  }
+
+  const exitCode = exitCodeForPhaseResult(result)
+  const baseOut = (msg: string): string => (schedulerLine !== undefined ? `${schedulerLine}\n${msg}` : msg)
+  const baseErr = (msg: string): string => (schedulerLine !== undefined ? `${schedulerLine}\n${msg}` : msg)
+
+  if (result.status === 'resolved') {
+    return Object.freeze({
+      exitCode: exitCode as 0,
+      stdout: baseOut(
+        [
+          `REVIEW phase complete (round ${result.round}, score ${result.score}, task ${taskId}).`,
+          `  Review: ${result.reviewReportPath}`,
+          '  Then run: code-oz approve review',
+          '',
+        ].join('\n'),
+      ),
+    })
+  }
+  if (result.status === 'needs_revision') {
+    const remediation = result.remediation
+    let guidance: string
+    if (remediation.action === 'continue') {
+      guidance = [
+        `REVIEW round ${result.round} returned needs-revision (score ${result.score}, task ${taskId}).`,
+        `  Carry-forward prepared for BUILD attempt ${remediation.nextBuildAttempt} → REVIEW round ${remediation.nextReviewRound}.`,
+        `  Review: ${result.reviewReportPath}`,
+        '  Re-run `code-oz run` to dispatch the next BUILD attempt.',
+        '',
+      ].join('\n')
+    } else if (remediation.action === 'review_cap_exhausted') {
+      guidance = [
+        `REVIEW round ${result.round} returned needs-revision and the 4-round cap is exhausted (task ${taskId}).`,
+        `  Reason: ${remediation.reason}`,
+        `  Review: ${result.reviewReportPath}`,
+        '  NEEDS_INTERVENTION.json was written; manual resolution required.',
+        '',
+      ].join('\n')
+    } else {
+      guidance = [
+        `REVIEW round ${result.round} returned needs-revision but the BUILD attempt cap is exhausted (task ${taskId}).`,
+        `  Reason: ${remediation.reason}`,
+        `  Review: ${result.reviewReportPath}`,
+        '  Inspect .code-oz/state/runs/<runId>/ for VERIFY-owned intervention.',
+        '',
+      ].join('\n')
+    }
+    return Object.freeze({
+      exitCode: exitCode as 1,
+      stderr: baseErr(guidance),
+    })
+  }
+  if (result.status === 'blocked') {
+    return Object.freeze({
+      exitCode: exitCode as 1,
+      stderr: baseErr(
+        [
+          `REVIEW round ${result.round} blocked (verdict=${result.verdict}, score ${result.score}, task ${taskId}).`,
+          `  Review: ${result.reviewReportPath}`,
+          '  NEEDS_INTERVENTION.json was written; manual resolution required.',
+          '',
+        ].join('\n'),
+      ),
+    })
+  }
+  // result.status === 'intervention'
+  return Object.freeze({
+    exitCode: exitCode as 1,
+    stderr: baseErr(
+      [
+        `code-oz run: REVIEW paused (${result.code}).`,
+        `  ${result.rule}`,
+        ...(result.draftPath !== undefined ? [`  Draft: ${result.draftPath}`] : []),
+        '  Inspect .code-oz/state/runs/<runId>/ and resolve before re-running.',
+        '',
+      ].join('\n'),
+    ),
   })
 }
 

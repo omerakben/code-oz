@@ -34,6 +34,7 @@ import {
 } from './schema.ts'
 import { AGENT_PROVIDERS, type AgentProvider } from '../agents/schema.ts'
 import { familyOf } from '../providers/families.ts'
+import { capabilityOf } from '../providers/capabilities.ts'
 import type { ProviderId } from '../providers/types.ts'
 import type { Phase, Profile } from '../state/schemas.ts'
 
@@ -438,6 +439,34 @@ function mergeReviewerPanel(
             `'${buildFamily}' (build provider='${buildProvider}'). Use a different family or change role to advisory.`,
         })
       }
+    }
+
+    // M16 C8 (Codex Mod #7): panelist eligibility — every panelist's
+    // provider must have 'review' in its static eligiblePhases. This is a
+    // load-time fail-fast that mirrors the agent loader's eligibility
+    // check (src/agents/loader.ts:202-265) but runs at config-load time
+    // for the panel config specifically. Without this, a panel containing
+    // (e.g.) `provider: gemini` (eligiblePhases=[]) would only fail at
+    // runtime inside runReviewPanel; rule 20 says capability gating is a
+    // boot-time concern. Branch selection (single-vs-panel) still belongs
+    // to runReviewPanel via shouldUseReviewPanel — this check ONLY
+    // governs panelist eligibility.
+    const panelistCap = capabilityOf(provider as ProviderId)
+    if (!panelistCap.eligiblePhases.includes('review')) {
+      issues.push({
+        file,
+        code: 'panel_provider_phase_not_eligible',
+        rule:
+          "company.reviewer.panel panelist provider must declare 'review' in its " +
+          'eligiblePhases (M11 capability contract; CLAUDE.md rule 20). Eligible-phase ' +
+          'gating is a boot-time invariant — runtime invocation would otherwise fail ' +
+          'mid-round inside runReviewPanel.',
+        detail:
+          `panel[${i}] provider='${provider}' role='${panelistRole}' eligible phases=` +
+          (panelistCap.eligiblePhases.length === 0
+            ? '[]'
+            : `[${panelistCap.eligiblePhases.join(', ')}]`),
+      })
     }
 
     panelists.push(

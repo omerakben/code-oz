@@ -164,6 +164,15 @@ export const EVENT_TYPES = [
   'review_round_completed',
   'review_resolved',
   'review_blocked',
+  // M16 C8 — REVIEW remediation persistence. Emitted by `dispatchReview`
+  // when `runReview` returns `status: 'needs_revision'`. Persists the
+  // resolved `nextReviewRound` so the next `code-oz run` can pick up
+  // round N+1 without re-deriving it from `priorRound + 1` (which would
+  // race with concurrent BUILD restarts in the carry-forward chain).
+  // Joins to the just-emitted `review_round_completed` event via
+  // `refsTo.reviewReportSha256` so audit trails can reconstruct the
+  // remediation chain without trusting attempt/round arithmetic alone.
+  'review_remediation_recorded',
   // M10 — Debate runtime (per docs/contracts/DEBATE.md § "Event types").
   // Two events cover the lifecycle: debate_started (BRIEFING.md +
   // MANIFEST.preview.md atomically written; opposing-party invocation
@@ -905,6 +914,52 @@ export type PhaseEvent =
       /** 64-char lower-case hex of the canonical REVIEW.md content
        *  (REVIEW.md is written even on block / cap-exhausted exits). */
       readonly reviewReportSha256: string
+    }
+  // M16 C8 — REVIEW remediation persistence. `dispatchReview` emits this
+  // event once per `needs_revision` REVIEW round (single-mode AND panel-
+  // mode), immediately after the round-completed / resolution event the
+  // round produced. Carries `nextReviewRound` resolved by the orchestrator
+  // (via `ReviewRemediationDecision.nextReviewRound`) so resumed runs can
+  // pick up the next round without re-running the remediation decision.
+  // The `refsTo` field joins back to the round just completed; `decisionId`
+  // is a run-scoped ULID minted at emit time and is opaque to the schema.
+  | {
+      readonly version: 1
+      readonly type: 'review_remediation_recorded'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      readonly attempt: number
+      readonly taskId: string
+      /** Round just completed (1..4); same value as the upstream
+       *  `review_round_completed.round` this remediation references. */
+      readonly reviewRound: number
+      /** Next REVIEW round to drive after BUILD attempt N+1 lands a
+       *  passing VERIFY (2..4 — never 1 since round 1 produces the FIRST
+       *  needs-revision; round-cap rejection is `review_blocked` instead). */
+      readonly nextReviewRound: number
+      /** Run-scoped ULID minted at emit time. Lets future sweepers join
+       *  remediation events to follow-up restart signals without
+       *  trusting attempt arithmetic. */
+      readonly decisionId: string
+      /** sha256 of the canonical REVIEW.md the remediation refers to.
+       *  Equals the upstream `review_round_completed.reviewReportSha256`
+       *  so resume probes can verify event/artifact agreement. */
+      readonly reviewMdSha256: string
+      /** The remediation decision's `action` value: `'continue'` for
+       *  carry-forward, `'review_cap_exhausted'` / `'build_cap_blocked'`
+       *  for terminal cap paths. v0.1 `dispatchReview` only emits this
+       *  event on `'continue'`; cap paths surface as `review_blocked`
+       *  (REVIEW-owned) or BUILD-owned interventions. */
+      readonly remediationIntent: 'continue' | 'review_cap_exhausted' | 'build_cap_blocked'
+      /** Reference to the upstream `review_round_completed` event the
+       *  remediation chains off. Joins by canonical sha so the audit
+       *  trail does not depend on attempt arithmetic. */
+      readonly refsTo: {
+        readonly type: 'review_round_completed'
+        readonly reviewReportSha256: string
+      }
     }
   // M10 Debate runtime events. Two events cover one debate lifecycle.
   // Both events bind the calling phase via `phase`; both tie the artifact

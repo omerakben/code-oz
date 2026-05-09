@@ -363,3 +363,93 @@ describe('review_* events — envelope checks', () => {
     expect(issue?.code).toBe('event_invalid_phase')
   })
 })
+
+// M16 C8: review_remediation_recorded — emitted by dispatchReview on
+// `needs_revision` REVIEW returns. Persists `nextReviewRound` so resumed
+// dispatches resolve round N+1 without re-deriving it.
+describe('review_remediation_recorded — validator', () => {
+  const DECISION_ID = generateUlid({ now: 1_000_000_006_000, random: new Uint8Array(10) })
+
+  function valid(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      version: 1,
+      type: 'review_remediation_recorded',
+      ts: TS,
+      runId: RUN,
+      phase: 'review',
+      agent: 'reviewer',
+      attempt: 1,
+      taskId: 'T-001',
+      reviewRound: 1,
+      nextReviewRound: 2,
+      decisionId: DECISION_ID,
+      reviewMdSha256: SHA64D,
+      remediationIntent: 'continue',
+      refsTo: { type: 'review_round_completed', reviewReportSha256: SHA64D },
+      ...overrides,
+    }
+  }
+
+  test('valid event passes', () => {
+    expect(validateEvent(valid(), 'events.jsonl')).toBeNull()
+  })
+
+  test('rejects nextReviewRound <= reviewRound', () => {
+    const issue = validateEvent(
+      valid({ reviewRound: 2, nextReviewRound: 2 }),
+      'events.jsonl',
+    )
+    expect(issue?.rule).toContain('nextReviewRound')
+  })
+
+  test('rejects nextReviewRound > REVIEW_ROUND_CAP (4)', () => {
+    const issue = validateEvent(
+      valid({ reviewRound: 4, nextReviewRound: 5 }),
+      'events.jsonl',
+    )
+    expect(issue?.rule).toContain('nextReviewRound')
+  })
+
+  test('rejects malformed decisionId (not a ULID)', () => {
+    const issue = validateEvent(valid({ decisionId: 'short' }), 'events.jsonl')
+    expect(issue?.rule).toContain('decisionId must be a 26-char Crockford ULID')
+  })
+
+  test('rejects malformed reviewMdSha256 (not 64 hex)', () => {
+    const issue = validateEvent(valid({ reviewMdSha256: 'too-short' }), 'events.jsonl')
+    expect(issue?.rule).toContain('reviewMdSha256')
+  })
+
+  test('rejects unsupported remediationIntent', () => {
+    const issue = validateEvent(valid({ remediationIntent: 'bogus' }), 'events.jsonl')
+    expect(issue?.rule).toContain('remediationIntent')
+  })
+
+  test('rejects missing refsTo.reviewReportSha256', () => {
+    const issue = validateEvent(
+      valid({ refsTo: { type: 'review_round_completed' } }),
+      'events.jsonl',
+    )
+    expect(issue?.rule).toContain('refsTo.reviewReportSha256')
+  })
+
+  test("rejects refsTo.type !== 'review_round_completed'", () => {
+    const issue = validateEvent(
+      valid({ refsTo: { type: 'review_resolved', reviewReportSha256: SHA64D } }),
+      'events.jsonl',
+    )
+    expect(issue?.rule).toContain('review_round_completed')
+  })
+
+  test('accepts other intent values (review_cap_exhausted / build_cap_blocked) for forward compat', () => {
+    expect(validateEvent(valid({ remediationIntent: 'review_cap_exhausted' }), 'events.jsonl')).toBeNull()
+    expect(validateEvent(valid({ remediationIntent: 'build_cap_blocked' }), 'events.jsonl')).toBeNull()
+  })
+
+  test('rejects missing taskId', () => {
+    const evt = valid()
+    delete evt.taskId
+    const issue = validateEvent(evt, 'events.jsonl')
+    expect(issue?.rule).toContain('taskId')
+  })
+})

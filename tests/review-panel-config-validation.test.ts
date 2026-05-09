@@ -44,18 +44,21 @@ company:
   })
 
   test('valid 2-voter cross-family panel parses', async () => {
+    // M16 C8: panel voters must be review-eligible per
+    // capabilityOf(provider).eligiblePhases. `gemini` is a stub
+    // (eligiblePhases=[]) so the canonical second voter family is `xai`.
     await writeConfig(`
 defaultProvider: claude
 company:
   reviewer:
     panel:
       - { provider: codex, role: voter }
-      - { provider: gemini, role: voter }
+      - { provider: xai, role: voter }
 `)
     const cfg = await loadConfig({ cwd: tmp })
     expect(cfg.company?.reviewer?.panel).toEqual([
       { provider: 'codex', role: 'voter' },
-      { provider: 'gemini', role: 'voter' },
+      { provider: 'xai', role: 'voter' },
     ])
   })
 
@@ -66,7 +69,7 @@ company:
   reviewer:
     panel:
       - { provider: codex, role: voter }
-      - { provider: gemini, role: voter }
+      - { provider: xai, role: voter }
       - { provider: claude, role: advisory }
 `)
     const cfg = await loadConfig({ cwd: tmp })
@@ -84,7 +87,7 @@ company:
   reviewer:
     panel:
       - { provider: codex, role: voter, model: gpt-5.5 }
-      - { provider: gemini, role: voter, model: gemini-2.5-pro }
+      - { provider: xai, role: voter, model: grok-3 }
 `)
     const cfg = await loadConfig({ cwd: tmp })
     expect(cfg.company?.reviewer?.panel?.[0]).toEqual({
@@ -92,7 +95,7 @@ company:
       role: 'voter',
       model: 'gpt-5.5',
     })
-    expect(cfg.company?.reviewer?.panel?.[1]?.model).toBe('gemini-2.5-pro')
+    expect(cfg.company?.reviewer?.panel?.[1]?.model).toBe('grok-3')
   })
 
   test('panel coexists with reviewer.provider/model (panel takes precedence at runtime)', async () => {
@@ -103,7 +106,7 @@ company:
     provider: codex
     panel:
       - { provider: codex, role: voter }
-      - { provider: gemini, role: voter }
+      - { provider: xai, role: voter }
 `)
     const cfg = await loadConfig({ cwd: tmp })
     expect(cfg.company?.reviewer?.provider).toBe('codex')
@@ -121,7 +124,7 @@ company:
   reviewer:
     panel:
       - { provider: claude, role: voter }
-      - { provider: gemini, role: voter }
+      - { provider: xai, role: voter }
 `)
     const cfg = await loadConfig({ cwd: tmp })
     expect(cfg.company?.reviewer?.panel).toHaveLength(2)
@@ -256,7 +259,7 @@ company:
   reviewer:
     panel:
       - { provider: codex, role: voter }
-      - { provider: gemini, role: voter }
+      - { provider: xai, role: voter }
       - { provider: claude, role: advisory }
 `)
     const cfg = await loadConfig({ cwd: tmp })

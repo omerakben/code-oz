@@ -1076,6 +1076,103 @@ export function validateEvent(
       break
     }
 
+    case 'review_remediation_recorded': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'review_remediation_recorded', e.phase, line)
+      const agentIssue = nonEmptyString(
+        file, e.agent, 'review_remediation_recorded.agent', line,
+      )
+      if (agentIssue) return agentIssue
+      const aIssue = positiveInteger(
+        file, e.attempt, 'review_remediation_recorded.attempt', line,
+      )
+      if (aIssue) return aIssue
+      const tIssue = idMatches(
+        file, e.taskId, /^T-\d{3,}$/, 'review_remediation_recorded.taskId', line,
+      )
+      if (tIssue) return tIssue
+      if (
+        typeof e.reviewRound !== 'number' ||
+        !Number.isInteger(e.reviewRound) ||
+        e.reviewRound < REVIEW_ROUND_MIN ||
+        e.reviewRound > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_remediation_recorded.reviewRound must be an integer in [${REVIEW_ROUND_MIN}, ${REVIEW_ROUND_CAP}]`,
+          detail: `got ${JSON.stringify(e.reviewRound)}`,
+          line,
+        }
+      }
+      // nextReviewRound must be in (reviewRound, REVIEW_ROUND_CAP]: a
+      // remediation decision always points at the NEXT round; round-cap
+      // overflow is `review_blocked` instead.
+      if (
+        typeof e.nextReviewRound !== 'number' ||
+        !Number.isInteger(e.nextReviewRound) ||
+        e.nextReviewRound <= e.reviewRound ||
+        e.nextReviewRound > REVIEW_ROUND_CAP
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `review_remediation_recorded.nextReviewRound must be an integer in (reviewRound, ${REVIEW_ROUND_CAP}]`,
+          detail: `got reviewRound=${JSON.stringify(e.reviewRound)} nextReviewRound=${JSON.stringify(e.nextReviewRound)}`,
+          line,
+        }
+      }
+      if (!isUlid(e.decisionId)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_remediation_recorded.decisionId must be a 26-char Crockford ULID',
+          detail: `got ${JSON.stringify(e.decisionId)}`,
+          line,
+        }
+      }
+      const shaIssue = idMatches(
+        file, e.reviewMdSha256, SHA256_REGEX, 'review_remediation_recorded.reviewMdSha256', line,
+      )
+      if (shaIssue) return shaIssue
+      const intentValues = ['continue', 'review_cap_exhausted', 'build_cap_blocked'] as const
+      if (
+        typeof e.remediationIntent !== 'string' ||
+        !(intentValues as readonly string[]).includes(e.remediationIntent)
+      ) {
+        return enumInvalid(
+          file, 'review_remediation_recorded.remediationIntent', intentValues, e.remediationIntent, line,
+        )
+      }
+      if (e.refsTo === null || typeof e.refsTo !== 'object') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'review_remediation_recorded.refsTo must be an object with `type` and `reviewReportSha256`',
+          detail: `got ${JSON.stringify(e.refsTo)}`,
+          line,
+        }
+      }
+      const refsTo = e.refsTo as Record<string, unknown>
+      if (refsTo.type !== 'review_round_completed') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: "review_remediation_recorded.refsTo.type must equal 'review_round_completed'",
+          detail: `got ${JSON.stringify(refsTo.type)}`,
+          line,
+        }
+      }
+      const refsShaIssue = idMatches(
+        file,
+        refsTo.reviewReportSha256,
+        SHA256_REGEX,
+        'review_remediation_recorded.refsTo.reviewReportSha256',
+        line,
+      )
+      if (refsShaIssue) return refsShaIssue
+      break
+    }
+
     case 'debate_started': {
       if (!isPhase(e.phase)) return phaseInvalid(file, 'debate_started', e.phase, line)
       const stringIssue =

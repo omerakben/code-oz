@@ -355,6 +355,257 @@ export function productionRevertSeam(
   })
 }
 
+// --- productionPanelistInvoker (M16 C8) ---------------------------
+
+/**
+ * Production-side per-panelist invocation seam used by `dispatchReview`
+ * when `company.reviewer.panel.length >= 2`. Mirrors
+ * `productionInvokePersona` but constructs a single `PanelistInvocationResult`
+ * from the persona's structured JSON response.
+ *
+ * The contract: each panelist persona, when invoked, returns a JSON object
+ * with the shape:
+ *
+ *   {
+ *     "score": <0..10 integer>,
+ *     "verdict": "ready" | "needs-revision" | "block",
+ *     "findings": [
+ *       { "file": "<path>", "line": "<grammar string>", "title": "<≤120>",
+ *         "severity": "block"|"fix-first"|"nit"|"fyi",
+ *         "recommendation": "<≤500>" },
+ *       ...
+ *     ],
+ *     "manifestHash": "<64-hex>",
+ *     "stagingContent": "<full Markdown for staging draft>"
+ *   }
+ *
+ * Per Codex M14 R1 finding #3, `runReviewPanel` re-resolves the panelist's
+ * runtime family via `registry.familyOf`; this seam reports an advisory
+ * `providerFamily` value derived from the same registry but the orchestrator
+ * never trusts it for verdict computation.
+ *
+ * Throws on malformed responses (the orchestrator surfaces the throw as
+ * `panel_invocation_failed` intervention). Provider errors propagate
+ * unchanged; `runReviewPanel` already maps them to a typed intervention.
+ */
+export interface ProductionPanelistInvokerOptions {
+  /** Provider registry for the run; family resolution comes from
+   *  `registry.familyOf(providerId)`. */
+  readonly registry: import('../providers/registry.ts').ProviderRegistry
+  /** Invoke context shared with the orchestrator (provider registry +
+   *  runPaths + projectRoot + config). */
+  readonly invokeCtx: InvokeContext
+  /** Persona definition for each panelist. The orchestrator passes
+   *  `cfg.id` / `cfg.provider` / `cfg.role` per call; the seam looks up
+   *  the corresponding `AgentDefinition` here. v0.1 ships a single
+   *  bundled `reviewer` persona shared across panelists; this map lets a
+   *  future profile differentiate per-panelist personas without changing
+   *  the seam shape. Falls back to `defaultAgent` when the panelist id
+   *  is not in the map. */
+  readonly agents: ReadonlyMap<string, AgentDefinition>
+  /** Default panelist persona when `agents.get(panelistId)` returns
+   *  undefined. Required because the `PanelistInvoker` callback does not
+   *  receive the AgentDefinition directly. */
+  readonly defaultAgent: AgentDefinition
+  /** Run identity threaded onto each ProviderRequest. */
+  readonly runId: string
+  /** Composed prompt builder for the panelist. The orchestrator (single-
+   *  mode) holds the prompt composer for review; for the seam, the
+   *  builder is supplied by the dispatcher and may share scaffolding
+   *  with `composeReviewPrompt`. */
+  readonly composePrompt: (
+    panelistConfig: {
+      readonly id: string
+      readonly provider: string
+      readonly role: 'voter' | 'advisory'
+      readonly model?: string
+    },
+    round: number,
+  ) => Promise<string>
+  /** File manifest threaded onto every panelist's ProviderRequest. v0.1
+   *  uses a single shared manifest (M14 manifest equality invariant). */
+  readonly files?: readonly ProviderFileRef[]
+  /** Optional max-output-tokens cap. */
+  readonly maxOutputTokens?: number
+  /** Streaming callback (mirrors productionInvokePersona). */
+  readonly onChunk?: (panelistId: string, text: string) => void
+}
+
+class PanelistResponseParseError extends Error {
+  constructor(panelistId: string, reason: string) {
+    super(`productionPanelistInvoker: panelist '${panelistId}' response parse failed — ${reason}`)
+    this.name = 'PanelistResponseParseError'
+  }
+}
+
+const SHA256_HEX_REGEX = /^[0-9a-f]{64}$/
+const PANELIST_SCORE_MIN = 0
+const PANELIST_SCORE_MAX = 10
+const PANELIST_VERDICTS = ['ready', 'needs-revision', 'block'] as const
+const PANELIST_SEVERITIES = ['block', 'fix-first', 'nit', 'fyi'] as const
+
+interface ParsedPanelistResponse {
+  readonly score: number
+  readonly verdict: 'ready' | 'needs-revision' | 'block'
+  readonly findings: readonly {
+    readonly file: string
+    readonly line: string
+    readonly title: string
+    readonly severity: 'block' | 'fix-first' | 'nit' | 'fyi'
+    readonly recommendation: string
+  }[]
+  readonly manifestHash: string
+  readonly stagingContent: string
+}
+
+function parsePanelistResponse(
+  panelistId: string,
+  raw: string,
+): ParsedPanelistResponse {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    throw new PanelistResponseParseError(
+      panelistId,
+      `not valid JSON (${err instanceof Error ? err.message : String(err)})`,
+    )
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new PanelistResponseParseError(panelistId, 'top-level value is not a JSON object')
+  }
+  const obj = parsed as Record<string, unknown>
+  if (typeof obj.score !== 'number' || !Number.isInteger(obj.score) || obj.score < PANELIST_SCORE_MIN || obj.score > PANELIST_SCORE_MAX) {
+    throw new PanelistResponseParseError(panelistId, `score must be an integer in [${PANELIST_SCORE_MIN}, ${PANELIST_SCORE_MAX}]`)
+  }
+  if (typeof obj.verdict !== 'string' || !(PANELIST_VERDICTS as readonly string[]).includes(obj.verdict)) {
+    throw new PanelistResponseParseError(panelistId, `verdict must be one of: ${PANELIST_VERDICTS.join(' | ')}`)
+  }
+  if (!Array.isArray(obj.findings)) {
+    throw new PanelistResponseParseError(panelistId, 'findings must be an array')
+  }
+  const findings = obj.findings.map((f, i) => {
+    if (f === null || typeof f !== 'object' || Array.isArray(f)) {
+      throw new PanelistResponseParseError(panelistId, `findings[${i}] must be an object`)
+    }
+    const finding = f as Record<string, unknown>
+    if (typeof finding.file !== 'string' || finding.file.length === 0) {
+      throw new PanelistResponseParseError(panelistId, `findings[${i}].file must be a non-empty string`)
+    }
+    if (typeof finding.line !== 'string') {
+      throw new PanelistResponseParseError(panelistId, `findings[${i}].line must be a string`)
+    }
+    if (typeof finding.title !== 'string' || finding.title.length === 0) {
+      throw new PanelistResponseParseError(panelistId, `findings[${i}].title must be a non-empty string`)
+    }
+    if (
+      typeof finding.severity !== 'string' ||
+      !(PANELIST_SEVERITIES as readonly string[]).includes(finding.severity)
+    ) {
+      throw new PanelistResponseParseError(panelistId, `findings[${i}].severity must be one of: ${PANELIST_SEVERITIES.join(' | ')}`)
+    }
+    if (typeof finding.recommendation !== 'string') {
+      throw new PanelistResponseParseError(panelistId, `findings[${i}].recommendation must be a string`)
+    }
+    return Object.freeze({
+      file: finding.file,
+      line: finding.line,
+      title: finding.title,
+      severity: finding.severity as 'block' | 'fix-first' | 'nit' | 'fyi',
+      recommendation: finding.recommendation,
+    })
+  })
+  if (typeof obj.manifestHash !== 'string' || !SHA256_HEX_REGEX.test(obj.manifestHash)) {
+    throw new PanelistResponseParseError(panelistId, 'manifestHash must be a 64-char lowercase hex string')
+  }
+  if (typeof obj.stagingContent !== 'string' || obj.stagingContent.length === 0) {
+    throw new PanelistResponseParseError(panelistId, 'stagingContent must be a non-empty string')
+  }
+  return Object.freeze({
+    score: obj.score,
+    verdict: obj.verdict as 'ready' | 'needs-revision' | 'block',
+    findings: Object.freeze(findings),
+    manifestHash: obj.manifestHash,
+    stagingContent: obj.stagingContent,
+  })
+}
+
+/**
+ * Build a `PanelistInvoker` shim suitable for `runReview({ panelistInvoker })`.
+ * Production dispatchReview composes this once per panel-mode invocation; the
+ * closure captures `invokeCtx` + the per-panelist persona registry so the
+ * panel runtime can iterate over panelists without re-resolving each time.
+ *
+ * Each call:
+ *   1. Resolves the panelist's persona via `agents.get(id)` or
+ *      `defaultAgent`.
+ *   2. Composes the panelist-specific prompt via `composePrompt(cfg, round)`.
+ *   3. Invokes the persona via `invokeAgent` and drains the stream.
+ *   4. Parses the persona's structured JSON response.
+ *   5. Returns a `PanelistInvocationResult` with the registry-resolved
+ *      `providerFamily` (advisory only — `runReviewPanel` re-resolves).
+ *
+ * Throws `PanelistResponseParseError` on malformed responses; throws the
+ * underlying `ProviderError` on provider failures. `runReviewPanel`
+ * surfaces both as a typed intervention.
+ */
+export function productionPanelistInvoker(
+  opts: ProductionPanelistInvokerOptions,
+): import('../phases/review-panel.ts').PanelistInvoker {
+  return async (cfg, round) => {
+    const agent = opts.agents.get(cfg.id) ?? opts.defaultAgent
+    const composedPrompt = await opts.composePrompt(cfg, round)
+    const req: ProviderRequest = {
+      agent,
+      phase: 'review',
+      runId: opts.runId,
+      prompt: composedPrompt,
+      files: opts.files ?? [],
+      ...(cfg.model !== undefined ? { model: cfg.model } : {}),
+      ...(opts.maxOutputTokens !== undefined ? { maxOutputTokens: opts.maxOutputTokens } : {}),
+    }
+    let final: ProviderResponse | null = null
+    const stream: AsyncIterable<ProviderEvent> = invokeAgent(opts.invokeCtx, req)
+    for await (const ev of stream) {
+      if (ev.type === 'content_chunk' && opts.onChunk !== undefined) {
+        opts.onChunk(cfg.id, ev.text)
+      }
+      if (ev.type === 'turn_completed') {
+        final = ev.response
+      }
+    }
+    if (final === null) {
+      throw new Error(
+        `productionPanelistInvoker: panelist '${cfg.id}' stream ended without turn_completed event`,
+      )
+    }
+    const parsed = parsePanelistResponse(cfg.id, final.content)
+    let providerFamily: import('../providers/types.ts').ProviderFamily
+    try {
+      providerFamily = opts.registry.familyOf(cfg.provider)
+    } catch (err) {
+      throw new Error(
+        `productionPanelistInvoker: registry.familyOf('${cfg.provider}') failed — ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    return Object.freeze({
+      panelistId: cfg.id,
+      providerId: cfg.provider,
+      providerFamily,
+      modelPolicy: cfg.model ?? agent.model ?? 'any',
+      role: cfg.role,
+      score: parsed.score,
+      verdict: parsed.verdict,
+      findings: parsed.findings,
+      manifestHash: parsed.manifestHash,
+      stagingContent: parsed.stagingContent,
+    })
+  }
+}
+
+// Exported for tests so they can assert the parser surface independently.
+export { PanelistResponseParseError }
+
 // Re-exports so consumers import seam types from one location.
 export type {
   ChangedFileEntry,
