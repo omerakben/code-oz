@@ -146,6 +146,17 @@ export async function doctorCommand(args: string[]): Promise<void> {
     return
   }
 
+  // M16 C10 — `code-oz doctor run` read-only run inspector. Prints the
+  // active runId, currentPhase, task cursor, recent events, intervention
+  // state, worktree existence, and scheduler events for the current
+  // REVIEW round. No state mutation, no file writes, no network. Always
+  // exits 0.
+  if (subcommand === 'run') {
+    const { runDoctorRunCommand } = await import('./doctor-run.ts')
+    await runDoctorRunCommand(args.slice(1))
+    return
+  }
+
   if (subcommand === 'tools') {
     const subArgs = args.slice(1)
     const json = subArgs.includes('--json')
@@ -452,6 +463,11 @@ Subcommands:
   providers              Probe each provider adapter (auth + CLI presence)
   tools                  Probe required external tools (rg / ripgrep)
   git                    Probe git version (>= 2.40 required for M7+ worktree subsystem)
+  run                    Read-only run inspector: prints active runId,
+                         currentPhase, task cursor, last 10 events,
+                         intervention state, worktree presence, and
+                         scheduler events for the current REVIEW round.
+                         Never mutates state. Always exits 0.
   --panel-baseline <p>   Run M14 reviewer-panel baseline measurement against
                          the JSON fixture at <p>; prints rule-21 ship-gate
                          report and exits 0 on PASS, 1 on FAIL

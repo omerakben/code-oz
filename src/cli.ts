@@ -18,6 +18,7 @@ Commands:
   doctor           Probe environment health
                      'doctor providers' — provider auth + CLI presence
                      'doctor tools'     — required external tools (rg)
+                     'doctor run'       — read-only run inspector
   help             Show this help
 
 Run 'code-oz <command> --help' for command-specific options.
