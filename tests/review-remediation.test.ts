@@ -50,6 +50,7 @@ function buildCompleted(attempt: number): LoggedEvent {
     taskId: TASK_ID,
     changedFileCount: 1,
     buildReportSha256: 'b'.repeat(64),
+    promptSnapshotSha256: 'c'.repeat(64),
   })
 }
 

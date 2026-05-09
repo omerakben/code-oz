@@ -724,6 +724,10 @@ export function validateEvent(
         file, e.buildReportSha256, /^[0-9a-f]{64}$/, 'build_completed.buildReportSha256', line,
       )
       if (reportIssue) return reportIssue
+      const promptIssue = idMatches(
+        file, e.promptSnapshotSha256, /^[0-9a-f]{64}$/, 'build_completed.promptSnapshotSha256', line,
+      )
+      if (promptIssue) return promptIssue
       break
     }
 

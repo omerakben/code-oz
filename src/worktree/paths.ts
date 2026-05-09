@@ -111,3 +111,27 @@ export function buildDraftsAttemptPath(
   }
   return join(runPaths(cwd, runId).buildDrafts, `${taskId}-attempt-${attempt}`)
 }
+
+/**
+ * Persisted BUILD prompt snapshot for attempt N (M16 C5). Path is absolute.
+ *
+ * Layout: `.code-oz/runs/<runId>/build-attempt-<N>.prompt.txt`.
+ *
+ * Future consumers (VERIFY forensics, M16 C8 dispatcher, the C12 e2e binary)
+ * MUST read this file by path. They MUST NOT re-compose via composeBuildPrompt
+ * and compare: even though composeBuildPrompt is deterministic over its inputs
+ * today, those inputs (bundled prompt assets, agent body, available tools) are
+ * not guaranteed stable across attempts or releases. The persisted bytes are
+ * the source of truth; recomposing is a soft contract that breaks silently.
+ */
+export function buildPromptSnapshotPath(
+  cwd: string,
+  runId: string,
+  attempt: number,
+): string {
+  assertValidRunId(runId)
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new Error(`invalid attempt: ${attempt} (must be a positive integer)`)
+  }
+  return join(runPaths(cwd, runId).run, `build-attempt-${attempt}.prompt.txt`)
+}

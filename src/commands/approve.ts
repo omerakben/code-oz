@@ -43,6 +43,7 @@ import { GateLoadError } from '../state/errors.ts'
 import { _validateArtifactSyncPath } from '../state/gates.ts'
 import { appendEvent, readEvents } from '../state/events.ts'
 import { parseSpec } from '../artifacts/spec.ts'
+import { parseBuildReport, BuildReportLoadError } from '../artifacts/build-report.ts'
 import { parseVerifyReport, VerifyReportLoadError } from '../artifacts/verify-report.ts'
 import {
   parseReviewReport,
@@ -53,7 +54,10 @@ import {
 import { SpecLoadError } from '../artifacts/errors.ts'
 import { createHash } from 'node:crypto'
 import { removeRunWorktree } from '../worktree/remove-run-worktree.ts'
-import { runPaths as worktreeRunPaths } from '../worktree/paths.ts'
+import {
+  runPaths as worktreeRunPaths,
+  buildPromptSnapshotPath,
+} from '../worktree/paths.ts'
 import { access } from 'node:fs/promises'
 
 export interface RunApproveOptions {
@@ -222,6 +226,23 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     }
   }
 
+  // BUILD-specific approval (M16 C5): validate BUILD_REPORT.md, confirm the
+  // matching build_completed event exists, cross-check both the report sha
+  // and the BUILD prompt snapshot sha. Refuse stale-attempt approvals
+  // (operator reverted BUILD_REPORT.md to attempt N-1 after attempt N ran)
+  // by binding the artifact's task.attempt to the latest build_completed
+  // event for the (runId, taskId). Mirrors preApproveReviewHook's sha+event
+  // contract — preApproveVerifyHook does NOT do event lookup, so it is the
+  // wrong precedent for sha-bound post-edit detection.
+  if (targetPhase === 'build') {
+    await preApproveBuildHook({
+      cwd: opts.cwd ?? process.cwd(),
+      runId,
+      runPaths,
+      buildReportPath: join(ctx.paths.artifacts, artifactPath),
+    })
+  }
+
   // VERIFY-specific approval: validate VERIFY.md and confirm verdict=pass
   // BEFORE approveGate writes GATE_VERIFY_PASSED.json. Worktree removal moved
   // to REVIEW-approve (preApproveReviewHook) per CODEX_RESPONSE_M9.md
@@ -332,6 +353,154 @@ export async function preApproveVerifyHook(input: PreApproveVerifyHookInput): Pr
       ].join('\n'),
     )
   }
+}
+
+/**
+ * BUILD-specific pre-approval hook (M16 C5):
+ *
+ *   1. Read BUILD_REPORT.md from disk; reject malformed (mirrors
+ *      preApproveReviewHook's contract for REVIEW.md).
+ *   2. Find the latest `build_completed` event for the (runId, taskId)
+ *      pair from the parsed artifact. Refuse if none exists.
+ *   3. Refuse with `build_attempt_stale` when BUILD_REPORT.md's
+ *      task.attempt does not equal the latest event's attempt — this
+ *      catches the operator-reverted-the-report case where attempt N+1
+ *      ran but the on-disk report is from attempt N.
+ *   4. Refuse with `build_report_post_edit` when sha256(BUILD_REPORT.md)
+ *      does not match `build_completed.buildReportSha256` — same
+ *      structural shape as preApproveReviewHook line 520.
+ *   5. Refuse with `build_prompt_snapshot_missing` when the prompt
+ *      snapshot file at
+ *      `.code-oz/runs/<runId>/build-attempt-<N>.prompt.txt` is absent.
+ *   6. Refuse with `build_prompt_post_edit` when sha256(prompt) does
+ *      not match `build_completed.promptSnapshotSha256`.
+ *
+ * Exported for direct testing.
+ */
+export interface PreApproveBuildHookInput {
+  readonly cwd: string
+  readonly runId: string
+  readonly runPaths: { readonly eventsFile: string; readonly lockDir: string }
+  /** Absolute path to .code-oz/artifacts/BUILD_REPORT.md; passed by runApprove
+   *  via canonical-artifacts mapping. */
+  readonly buildReportPath: string
+}
+
+export async function preApproveBuildHook(input: PreApproveBuildHookInput): Promise<void> {
+  // 1. Read + parse BUILD_REPORT.md.
+  let buildReportText: string
+  try {
+    buildReportText = await readFile(input.buildReportPath, 'utf8')
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `cannot approve build: ${input.buildReportPath} does not exist. Run BUILD first.`,
+      )
+    }
+    throw err
+  }
+  let reportData: ReturnType<typeof parseBuildReport>
+  try {
+    reportData = parseBuildReport(buildReportText)
+  } catch (err) {
+    if (err instanceof BuildReportLoadError) {
+      const summary = err.issues
+        .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+        .join('\n')
+      throw new Error(
+        [
+          `cannot approve build: ${input.buildReportPath} is not a valid BUILD_REPORT.md.`,
+          summary,
+          'Re-run BUILD or repair the artifact before approving.',
+        ].join('\n'),
+      )
+    }
+    throw err
+  }
+  const taskId = reportData.task.taskId
+  const reportAttempt = reportData.task.attempt
+
+  // 2 + 3. Find the latest build_completed for (runId, taskId) and assert
+  //         attempt parity with the on-disk report.
+  const events = await readEvents({
+    file: input.runPaths.eventsFile,
+    lockDir: input.runPaths.lockDir,
+  })
+  const latest = findLatestBuildCompletedFor(events, input.runId, taskId)
+  if (latest === null) {
+    throw new Error(
+      [
+        `cannot approve build: events.jsonl has no build_completed event for taskId=${taskId}.`,
+        'BUILD must complete and emit build_completed before approval.',
+      ].join('\n'),
+    )
+  }
+  if (latest.attempt !== reportAttempt) {
+    throw new Error(
+      [
+        `cannot approve build: BUILD_REPORT.md task.attempt is ${reportAttempt}, but the latest build_completed event for taskId=${taskId} is attempt=${latest.attempt}.`,
+        'A stale BUILD_REPORT.md cannot be approved. Re-run BUILD to produce a fresh report or restore the canonical attempt-N report.',
+      ].join('\n'),
+    )
+  }
+
+  // 4. Cross-check BUILD_REPORT.md sha against the event.
+  const buildReportSha = sha256Of(buildReportText)
+  if (latest.buildReportSha256 !== buildReportSha) {
+    throw new Error(
+      [
+        `cannot approve build: BUILD_REPORT.md sha256 (${buildReportSha}) does not match the build_completed event sha (${latest.buildReportSha256}).`,
+        'The artifact on disk diverged from what BUILD emitted. Re-run BUILD or restore the canonical artifact.',
+      ].join('\n'),
+    )
+  }
+
+  // 5 + 6. Cross-check the prompt snapshot.
+  const promptPath = buildPromptSnapshotPath(input.cwd, input.runId, latest.attempt)
+  let promptText: string
+  try {
+    promptText = await readFile(promptPath, 'utf8')
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        [
+          `cannot approve build: BUILD prompt snapshot ${promptPath} does not exist.`,
+          'BUILD must persist the composed prompt at <runId>/build-attempt-<N>.prompt.txt before approval.',
+        ].join('\n'),
+      )
+    }
+    throw err
+  }
+  const promptSha = sha256Of(promptText)
+  if (latest.promptSnapshotSha256 !== promptSha) {
+    throw new Error(
+      [
+        `cannot approve build: BUILD prompt snapshot sha256 (${promptSha}) does not match the build_completed event sha (${latest.promptSnapshotSha256}).`,
+        'The persisted prompt diverged from what BUILD emitted. Re-run BUILD or restore the canonical snapshot.',
+      ].join('\n'),
+    )
+  }
+}
+
+type BuildCompletedEventShape = Extract<PhaseEvent, { readonly type: 'build_completed' }>
+
+function findLatestBuildCompletedFor(
+  events: readonly LoggedEvent[],
+  runId: string,
+  taskId: string,
+): BuildCompletedEventShape | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (
+      isKnownPhaseEvent(e) &&
+      e.type === 'build_completed' &&
+      e.runId === runId &&
+      e.taskId === taskId
+    ) {
+      return e
+    }
+  }
+  return null
 }
 
 /**

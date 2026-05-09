@@ -12,7 +12,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { runApprove } from '../src/commands/approve.ts'
 import { initProject } from '../src/commands/init.ts'
 import {
@@ -26,6 +26,8 @@ import { generateUlid, type Phase, CANONICAL_ARTIFACTS } from '../src/state/sche
 import { writeGate } from '../src/state/gates.ts'
 import { appendEvent } from '../src/state/events.ts'
 import { serializeReviewReport, type ReviewReportData } from '../src/artifacts/review-report.ts'
+import { serializeBuildReport, type BuildReportData } from '../src/artifacts/build-report.ts'
+import { buildPromptSnapshotPath } from '../src/worktree/paths.ts'
 import { createHash } from 'node:crypto'
 
 let cwd: string
@@ -126,6 +128,43 @@ const MINIMAL_VALID_VERIFY = `# VERIFY
 - None (verdict pass).
 `
 
+// Minimal-valid BUILD_REPORT.md fixture (M16 C5: preApproveBuildHook now
+// validates the report grammar + cross-checks build_completed sha + prompt
+// snapshot before binding the gate). Built once via serializeBuildReport so
+// the on-disk bytes round-trip cleanly through parseBuildReport.
+function minimalBuildReportData(): BuildReportData {
+  return Object.freeze({
+    task: Object.freeze({
+      taskId: 'T-001',
+      title: 'stub',
+      planSha: 'd'.repeat(64),
+      attempt: 1,
+    }),
+    base: Object.freeze({
+      worktreePath: '.code-oz/runs/abc/worktree/',
+      baseCommitSha: 'b'.repeat(40),
+      dirtyAtBase: false,
+    }),
+    patch: Object.freeze({
+      patchPath: '.code-oz/runs/abc/patches/T-001-attempt-1.patch',
+      patchSha256: 'c'.repeat(64),
+      patchBytes: 100,
+    }),
+    changedFiles: Object.freeze([
+      Object.freeze({ path: 'src/stub.ts', sha256: 'a'.repeat(64), change: 'added' as const }),
+    ]),
+    validationCommand: Object.freeze({
+      command: 'bun test',
+      workingDirectory: '.code-oz/runs/abc/worktree/',
+      timeoutMs: 60000,
+      expectedExitCode: 0,
+    }),
+    failureCarryForward: null,
+    notes: Object.freeze(['stub fixture for state-regression.']),
+  })
+}
+const MINIMAL_VALID_BUILD_REPORT = serializeBuildReport(minimalBuildReportData())
+
 function minimalReadyReviewMd(): string {
   const data: ReviewReportData = Object.freeze({
     upstreamRefs: Object.freeze({
@@ -165,12 +204,48 @@ async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Prom
   for (const p of phases) {
     let body: string
     if (p === 'define') body = MINIMAL_VALID_SPEC
+    else if (p === 'build') body = MINIMAL_VALID_BUILD_REPORT
     else if (p === 'verify') body = MINIMAL_VALID_VERIFY
     else if (p === 'review') body = minimalReadyReviewMd()
     else body = `${p} body`
     await writeFile(join(artifactRoot, CANONICAL_ARTIFACTS[p]), body, 'utf8')
   }
   void runDir
+}
+
+/**
+ * BUILD-approve prereqs (M16 C5): preApproveBuildHook requires a
+ * build_completed event for (runId, taskId) whose buildReportSha256 matches
+ * the on-disk BUILD_REPORT.md AND whose promptSnapshotSha256 matches a
+ * file at buildPromptSnapshotPath(cwd, runId, attempt).
+ */
+async function stageBuildApprovalPrereqs(runId: string): Promise<void> {
+  const stateDir = join(cwd, '.code-oz', 'state')
+  const artifactRoot = join(cwd, '.code-oz', 'artifacts')
+  const paths = runPathsFor(stateDir, artifactRoot, runId)
+  const buildReportText = await readFile(join(artifactRoot, 'BUILD_REPORT.md'), 'utf8')
+  const buildReportSha = createHash('sha256').update(buildReportText, 'utf8').digest('hex')
+  const promptText = 'stub composed prompt for state-regression\n'
+  const promptPath = buildPromptSnapshotPath(cwd, runId, 1)
+  await mkdir(dirname(promptPath), { recursive: true })
+  await writeFile(promptPath, promptText, 'utf8')
+  const promptSha = createHash('sha256').update(promptText, 'utf8').digest('hex')
+  await appendEvent(
+    { file: paths.eventsFile, lockDir: paths.lockDir },
+    {
+      version: 1,
+      type: 'build_completed',
+      ts: FIXED_TS,
+      runId,
+      phase: 'build',
+      agent: 'builder',
+      attempt: 1,
+      taskId: 'T-001',
+      changedFileCount: 1,
+      buildReportSha256: buildReportSha,
+      promptSnapshotSha256: promptSha,
+    },
+  )
 }
 
 /**
@@ -239,6 +314,7 @@ describe('end-to-end greenfield walk (M2-persona-supported phases)', () => {
     const { runId, paths } = await setupProject()
     await writeArtifactsFor(GREENFIELD_APPROVABLE, paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+    await stageBuildApprovalPrereqs(runId)
     await stageReviewApprovalPrereqs(runId)
 
     for (const phase of GREENFIELD_APPROVABLE) {
@@ -273,6 +349,7 @@ describe('end-to-end greenfield walk (M2-persona-supported phases)', () => {
     const { runId, paths } = await setupProject()
     await writeArtifactsFor([...GREENFIELD_APPROVABLE, 'ship'], paths.runDir)
     await initRun({ paths, profile: 'greenfield', runId, now: () => FIXED_TS })
+    await stageBuildApprovalPrereqs(runId)
     await stageReviewApprovalPrereqs(runId)
 
     for (const phase of GREENFIELD_APPROVABLE) {

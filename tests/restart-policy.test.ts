@@ -28,6 +28,7 @@ function buildCompletedEvent(over: {
     taskId: over.taskId ?? TASK,
     changedFileCount: 1,
     buildReportSha256: 'a'.repeat(64),
+    promptSnapshotSha256: 'c'.repeat(64),
   } as LoggedEvent
 }
 

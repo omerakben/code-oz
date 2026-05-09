@@ -15,6 +15,7 @@ The worktree subsystem owns the lifecycle of `.code-oz/runs/<runId>/`. It create
 ├── worktree/                          # detached git worktree (BUILD's working area)
 ├── patches/                           # one patch per BUILD attempt, never deleted
 │   └── <T-NNN>-attempt-<N>.patch
+├── build-attempt-<N>.prompt.txt       # M16 C5: persisted BUILD prompt (one per attempt)
 ├── forensics/                         # populated only on failure; empty on success
 │   └── <N>/                           # frozen evidence from failed attempt N
 │       ├── diff.patch
@@ -33,6 +34,7 @@ This tree is distinct from `.code-oz/state/runs/<runId>/`, which holds `events.j
 |---|---|---|
 | `worktree/` | orchestrator (created), BUILD persona (writes via patch) | destroyed at run end (success or hard cap) |
 | `patches/<T-NNN>-attempt-<N>.patch` | orchestrator | retained until `code-oz prune` (W2) |
+| `build-attempt-<N>.prompt.txt` | orchestrator (atomic-written before persona invoke; sha256 bound into `build_completed.promptSnapshotSha256`) | retained until `code-oz prune` (W2) |
 | `forensics/<N>/` | orchestrator (preserve step) | retained until `code-oz prune` (W2) |
 | `base.txt` | orchestrator (worktree_created) | retained for the run's lifetime |
 | `README.md` | orchestrator (worktree_created); refreshed on each event | retained for the run's lifetime |

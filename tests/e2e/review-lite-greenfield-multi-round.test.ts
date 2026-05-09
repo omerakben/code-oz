@@ -629,6 +629,7 @@ describe('M9 REVIEW-lite multi-round e2e — round 1 needs-revision → BUILD at
         ts: FIXED_NOW, runId: RUN, phase: 'build',
         agent: 'builder', attempt: 2, taskId: 'T-001',
         changedFileCount: 1, buildReportSha256: buildReport2Sha,
+        promptSnapshotSha256: buildReport2Sha,
       },
     )
 

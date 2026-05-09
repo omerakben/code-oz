@@ -248,6 +248,7 @@ async function seedRound(round: number, attempt: number): Promise<void> {
       taskId: 'T-001',
       changedFileCount: 1,
       buildReportSha256: BUILD_REPORT_SHA,
+      promptSnapshotSha256: BUILD_REPORT_SHA,
     },
   )
   // review_round_completed for round N

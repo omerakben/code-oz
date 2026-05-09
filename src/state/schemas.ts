@@ -693,6 +693,13 @@ export type PhaseEvent =
       readonly changedFileCount: number
       /** 64-char lower-case hex sha of the canonical BUILD_REPORT.md content. */
       readonly buildReportSha256: string
+      /**
+       * 64-char lower-case hex sha of the BUILD prompt snapshot persisted at
+       * `.code-oz/runs/<runId>/build-attempt-<N>.prompt.txt` (M16 C5). Required
+       * since C5 — every `build_completed` event after the schema bump carries
+       * it. Pre-C5 runs are not resumable across the schema change.
+       */
+      readonly promptSnapshotSha256: string
     }
   | {
       readonly version: 1

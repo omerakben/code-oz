@@ -42,7 +42,11 @@ import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
 import { LockBusyError, withLock } from '../state/lock.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import { computeManifest } from '../worktree/manifest.ts'
-import { runPaths as worktreeRunPaths, buildDraftsAttemptPath } from '../worktree/paths.ts'
+import {
+  runPaths as worktreeRunPaths,
+  buildDraftsAttemptPath,
+  buildPromptSnapshotPath,
+} from '../worktree/paths.ts'
 import type { ProviderId } from '../providers/types.ts'
 
 // --- public API ----------------------------------------------------
@@ -422,6 +426,35 @@ async function runBuildInner(opts: RunBuildOptions): Promise<BuildResult> {
     availableTools,
   })
 
+  // Persist the composed prompt to disk BEFORE persona invocation so VERIFY
+  // forensics + the M16 C8 dispatcher + the C12 e2e binary can read the
+  // exact bytes the persona saw, even on resume after a crash. Atomic write
+  // first, sha second (computed from the canonical bytes the validator will
+  // bind into build_completed.promptSnapshotSha256). The contract is "future
+  // consumers read this file by path; they MUST NOT re-compose" — see
+  // src/worktree/paths.ts buildPromptSnapshotPath docstring.
+  const promptSnapshotPath = buildPromptSnapshotPath(opts.cwd, opts.runId, attempt)
+  try {
+    await atomicWriteFile(promptSnapshotPath, composedPrompt)
+  } catch (err) {
+    // Atomic-write failure (EACCES, ENOSPC, parent dir missing). build_started
+    // is already on the log; closing it via recordBuildFailure prevents the
+    // run from sitting half-open. Persona is NOT invoked on this path.
+    const reason = (err as Error).message.slice(0, 200)
+    await recordBuildFailure({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.builderAgent.name,
+      attempt,
+      taskId: task.id,
+      code: 'build_prompt_snapshot_write_failed',
+      reason,
+      now,
+    })
+    return interventionResult('build_prompt_snapshot_write_failed', reason)
+  }
+  const promptSnapshotSha = createHash('sha256').update(composedPrompt, 'utf8').digest('hex')
+
   let responseText: string
   try {
     responseText = await opts.invokePersona(composedPrompt)
@@ -695,6 +728,7 @@ async function runBuildInner(opts: RunBuildOptions): Promise<BuildResult> {
     taskId: task.id,
     changedFileCount: manifest.entries.length,
     buildReportSha256: buildReportSha,
+    promptSnapshotSha256: promptSnapshotSha,
   })
 
   // M9 substrate (CODEX_RESPONSE_M9.md decision 5 + commit 13 bp#4):

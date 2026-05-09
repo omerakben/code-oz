@@ -112,6 +112,7 @@ const BUILD_COMPLETED: PhaseEvent = {
   taskId: TASK,
   changedFileCount: 3,
   buildReportSha256: SHA64,
+  promptSnapshotSha256: SHA64,
 }
 
 const BUILD_FAILED: PhaseEvent = {
