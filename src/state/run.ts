@@ -442,10 +442,14 @@ export async function approveGate(opts: ApproveGateOptions): Promise<ApproveGate
  *      and asserts the matching `reviewReportSha256`. (Mod #1)
  *   2. The reducer never emits `phase_entered(ship)` unconditionally on
  *      review approve — the cursor decides. After appending
- *      `task_completed`, the cursor is recomputed; only when
- *      `cursor.allCompleted === true` do we transition to ship.
- *      Mid-PLAN approvals stop at `phase_exited(review)` and the next
- *      `code-oz run` invocation routes to BUILD for the next task. (Mod #2)
+ *      `task_completed`, the cursor is recomputed; when
+ *      `cursor.allCompleted === true` we transition to ship; when a
+ *      pending task remains we transition to build for the next task's
+ *      BUILD attempt 1 (M16 C9 follow-on (2) Bug 3 fix; symmetric
+ *      counterpart to the terminal-half ship transition). The next
+ *      `code-oz run` invocation routes to BUILD for the pending task,
+ *      and `code-oz approve build` for that task is unblocked because
+ *      `currentPhase` is now `build`. (Mod #2)
  *   3. `task_completed` emission is idempotent under the lock. If a
  *      `task_completed` event for `(runId, taskId)` already exists in
  *      events.jsonl, the append is skipped and the call is a no-op
@@ -497,9 +501,12 @@ export interface ApproveReviewTaskGateOptions {
 
 export interface ApproveReviewTaskGateResult {
   readonly gateExisted: boolean
-  /** When all PLAN tasks have completed, this is `'ship'`; otherwise
-   *  `null` (the run remains at `currentPhase: 'review'` until the next
-   *  `code-oz run` dispatches BUILD for the next task). */
+  /** The phase emitted via `phase_entered` after the just-approved task:
+   *  `'ship'` when all PLAN tasks have completed (terminal half), or
+   *  `'build'` when a pending task remains (iterate half — task-loop
+   *  advancement; M16 C9 follow-on (2) Bug 3 fix). `null` only when there
+   *  is no `nextPhase('review', profile)` configured (defensive — the
+   *  greenfield/brownfield sequences both have ship after review). */
   readonly nextPhase: Phase | null
   readonly state: RunState
   readonly taskCompletedExisted: boolean
@@ -676,28 +683,61 @@ export async function approveReviewTaskGate(
 
     // 6. Recompute the cursor with the just-appended task_completed.
     //    Mod #2 — only emit phase_entered(ship) when allCompleted.
+    //    M16 C9 follow-on (2) — Bug 3: when not allCompleted but a pending
+    //    task remains, emit phase_entered(build) so currentPhase advances
+    //    to `build` for the next task. Without this, `code-oz approve build`
+    //    for the next task fails at src/commands/approve.ts:117 with
+    //    `current phase is 'review', not 'build'`. This is the symmetric
+    //    counterpart to Bug 1's terminal-half (review→ship); together they
+    //    close the cursor-aware phase-boundary semantics on task transition.
+    //
+    //    Idempotency: when `taskCompletedExisted=true`, the transition was
+    //    already emitted by the prior call. Skip the entire block so a
+    //    second call after the next task's lifecycle has progressed does
+    //    NOT bump currentPhase backwards (e.g., from `verify` back to
+    //    `build`). The result still reports the canonical next phase for
+    //    the original transition (build for iterate, ship for terminal),
+    //    which is what the caller cares about.
     const postEvents = await readEvents(eventPaths)
     const postCursor = projectTaskCursor(opts.plan, postEvents)
     let nextPhaseEntered: Phase | null = null
+    let targetNext: Phase | null = null
     if (postCursor.cursor.allCompleted) {
-      const next = nextPhase('review', opts.profile)
-      if (next !== null) {
-        const hasPhaseEntered = postEvents
-          .filter(isKnownPhaseEvent)
-          .some((e) => e.type === 'phase_entered' && e.phase === next)
-        if (!hasPhaseEntered) {
-          const ev: PhaseEvent = {
-            version: 1,
-            type: 'phase_entered',
-            ts: now(),
-            runId: opts.gate.runId,
-            phase: next,
-          }
-          await appendEvent(eventPaths, ev, { skipLock: true })
-          nextPhaseEntered = next
-        } else {
-          nextPhaseEntered = next
+      // Terminal half: review → ship.
+      targetNext = nextPhase('review', opts.profile)
+    } else if (postCursor.cursor.pending !== null) {
+      // Iterate half: review → build for the next task's BUILD attempt 1.
+      // dispatchBuild assumes currentPhase==='build' and never emits
+      // phase_entered itself; the transition must land here.
+      targetNext = 'build'
+    } else {
+      // Defensive: not allCompleted AND no pending — should be impossible
+      // because the cursor is allCompleted iff there's no pending entry.
+      // Surface an internal-error intervention rather than silently doing
+      // nothing.
+      throw new ApproveReviewTaskGateError(
+        'task_cursor_internal_inconsistency',
+        'approveReviewTaskGate: cursor is not allCompleted and has no pending task',
+        `entries=${postCursor.cursor.entries.length} — internal projection bug`,
+      )
+    }
+
+    if (targetNext !== null) {
+      if (taskCompletedExisted) {
+        // Idempotent re-call: transition was emitted by the original
+        // call. Do NOT re-emit — the next task may have progressed past
+        // build, and re-emitting would bump currentPhase backwards.
+        nextPhaseEntered = targetNext
+      } else {
+        const ev: PhaseEvent = {
+          version: 1,
+          type: 'phase_entered',
+          ts: now(),
+          runId: opts.gate.runId,
+          phase: targetNext,
         }
+        await appendEvent(eventPaths, ev, { skipLock: true })
+        nextPhaseEntered = targetNext
       }
     }
 
@@ -1086,19 +1126,22 @@ async function recoverOrphanGates(
  * transition append. Combined with recoverOrphanGates above, the recovery
  * step deterministically advances to the same end state as a clean approval.
  *
- * M16 C9 follow-on (Bug 1): the review→ship transition is cursor-aware.
- * `approveReviewTaskGate` only emits `phase_entered(ship)` when the cursor
- * has `allCompleted=true` (Mod #2). Without the same gate here, every
+ * M16 C9 follow-on (Bug 1 + Bug 3): the review→{ship,build} transition
+ * is cursor-aware. `approveReviewTaskGate` emits `phase_entered(ship)`
+ * when `cursor.allCompleted=true` (Bug 1) and `phase_entered(build)`
+ * when a pending task remains (Bug 3). Without the same gate here, every
  * `loadRun` after T-001 approve-review would walk the `gate_written(review)`
  * event and unconditionally append `phase_entered(ship)`, defeating the
  * task-loop and advancing currentPhase to `ship` while T-002+ are still
- * pending. The fix: when the next phase computed for a `gate_written(review)`
- * is `ship`, project the cursor against PLAN.md and skip the
- * `phase_entered(ship)` emission unless `cursor.allCompleted=true`. PLAN.md
- * may not be present (early phases / drift / brownfield AUDIT-only); when
- * it cannot be loaded, we conservatively skip the ship transition and defer
- * the authority to `approveReviewTaskGate`. All other transitions
- * (define→plan, plan→build, build→verify, verify→review) stay unchanged.
+ * pending; OR (post Bug 1 fix) skip emission entirely, leaving
+ * `currentPhase=review` so `code-oz approve build` for T-002 fails the
+ * approve.ts:117 assertion. The fix: when the next phase computed for a
+ * `gate_written(review)` is `ship`, project the cursor against PLAN.md
+ * and emit `phase_entered(ship)` only when `cursor.allCompleted=true`,
+ * `phase_entered(build)` when a pending task remains, otherwise (PLAN.md
+ * missing / unparseable) defer authority to `approveReviewTaskGate` and
+ * skip the transition. All other transitions (define→plan, plan→build,
+ * build→verify, verify→review) stay unchanged.
  */
 async function completeIncompleteTransitions(
   paths: RunPaths,
@@ -1141,7 +1184,7 @@ async function completeIncompleteTransitions(
     return plan
   }
 
-  for (const { e } of gateWrittenList) {
+  for (const { e, i: gateIndex } of gateWrittenList) {
     if (e.type !== 'gate_written') continue
     const runId = e.runId
     const phase = e.phase
@@ -1165,35 +1208,67 @@ async function completeIncompleteTransitions(
     }
 
     if (next !== null) {
-      const hasPhaseEntered = working.some(
-        (x) => x.type === 'phase_entered' && x.phase === next,
-      )
-      if (!hasPhaseEntered) {
-        // M16 C9 follow-on (Bug 1) — cursor-aware ship transition.
-        // Only `approveReviewTaskGate` is authoritative for advancing
-        // past the last task; this completion step must mirror the same
-        // gate or it will silently undo the cursor decision on the next
-        // loadRun.
-        if (phase === 'review' && next === 'ship') {
-          const planForCursor = await tryLoadPlan()
-          if (planForCursor === null) {
-            // PLAN missing / unparseable — defer authority. Skip the
-            // ship transition; approveReviewTaskGate owns the decision.
-            continue
-          }
-          const { cursor } = projectTaskCursor(planForCursor, working)
-          if (!cursor.allCompleted) {
-            // Mid-PLAN approve-review — currentPhase stays at `review`
-            // until the last task's approve-review fires. Skip emission.
-            continue
-          }
+      // M16 C9 follow-on — cursor-aware review→{ship,build} transition.
+      // Only `approveReviewTaskGate` is authoritative for advancing past
+      // the just-approved task; this completion step must mirror the
+      // same gate or it will silently undo the cursor decision on the
+      // next loadRun. Bug 1 covers the terminal half (ship); Bug 3
+      // covers the iterate half (build, for the next pending task).
+      let emittedPhase: Phase = next
+      let isIterateHalf = false
+      if (phase === 'review' && next === 'ship') {
+        const planForCursor = await tryLoadPlan()
+        if (planForCursor === null) {
+          // PLAN missing / unparseable — defer authority. Skip the
+          // transition; approveReviewTaskGate owns the decision.
+          continue
         }
+        const { cursor } = projectTaskCursor(planForCursor, working)
+        if (cursor.allCompleted) {
+          // Last-task approve-review — terminal-half: emit ship.
+          emittedPhase = 'ship'
+        } else if (cursor.pending !== null) {
+          // Mid-PLAN approve-review — iterate-half (Bug 3): emit build
+          // so currentPhase advances for the next task. Without this,
+          // `code-oz approve build` for the next task fails at
+          // approve.ts:117 because currentPhase stays at 'review'.
+          emittedPhase = 'build'
+          isIterateHalf = true
+        } else {
+          // Defensive: cursor is not allCompleted AND has no pending —
+          // structurally impossible. Skip emission rather than corrupt
+          // the event log; approveReviewTaskGate will surface a typed
+          // intervention if the operator hits this path live.
+          continue
+        }
+      }
+
+      // Idempotency. For the linear FSM transitions (define→plan,
+      // plan→build, build→verify, verify→review) and the terminal-half
+      // ship transition, each phase appears at most once in the log so
+      // a global `working.some(...)` check is correct. For the iterate
+      // half (review→build for the next task), the original task's
+      // BUILD already produced a `phase_entered(build)` event upstream
+      // — we need to dedupe only against `phase_entered(build)` events
+      // that come AFTER this `gate_written(review)` index, which would
+      // indicate a prior loadRun already filled the iterate transition.
+      const hasPhaseEntered = isIterateHalf
+        ? working.some(
+            (x, idx) =>
+              idx > gateIndex &&
+              x.type === 'phase_entered' &&
+              x.phase === emittedPhase,
+          )
+        : working.some(
+            (x) => x.type === 'phase_entered' && x.phase === emittedPhase,
+          )
+      if (!hasPhaseEntered) {
         const ev: PhaseEvent = {
           version: 1,
           type: 'phase_entered',
           ts: now(),
           runId,
-          phase: next,
+          phase: emittedPhase,
         }
         await appendEvent(eventPaths, ev, { skipLock: true })
         working.push(ev)

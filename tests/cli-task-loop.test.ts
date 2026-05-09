@@ -419,8 +419,8 @@ describe('approveReviewTaskGate — Mod #1: task_completed sourced from review_r
 
 // --- approveReviewTaskGate: Mod #2 (cursor decides ship) -----------
 
-describe('approveReviewTaskGate — Mod #2: cursor decides phase_entered(ship)', () => {
-  test('mid-PLAN approval (T-001 of T-001+T-002): NO phase_entered(ship); currentPhase stays at review', async () => {
+describe('approveReviewTaskGate — Mod #2: cursor decides phase_entered(ship|build)', () => {
+  test('mid-PLAN approval (T-001 of T-001+T-002): NO phase_entered(ship); phase_entered(build) emitted for next task; currentPhase=build', async () => {
     await initFreshRun()
     await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
     // Walk the FSM from define → plan → build → verify → review BEFORE approve-review
@@ -477,9 +477,11 @@ describe('approveReviewTaskGate — Mod #2: cursor decides phase_entered(ship)',
       now: () => FIXED_TS,
     })
 
-    // Mod #2: cursor.allCompleted=false → no phase_entered(ship).
-    expect(result.nextPhase).toBeNull()
-    expect(result.state.currentPhase).toBe('review')
+    // Mod #2: cursor.allCompleted=false → no phase_entered(ship). The
+    // iterate half (M16 C9 follow-on (2) Bug 3) emits phase_entered(build)
+    // instead so currentPhase advances for the next task's BUILD attempt 1.
+    expect(result.nextPhase).toBe('build')
+    expect(result.state.currentPhase).toBe('build')
 
     const events = await readEvents({
       file: runPaths.eventsFile,
@@ -489,6 +491,14 @@ describe('approveReviewTaskGate — Mod #2: cursor decides phase_entered(ship)',
       .filter(isKnownPhaseEvent)
       .filter((e) => e.type === 'phase_entered' && e.phase === 'ship')
     expect(phaseEnteredShip).toHaveLength(0)
+
+    // The iterate-half phase_entered(build) for the next task lands AFTER
+    // the just-emitted task_completed(T-001). The original BUILD's
+    // phase_entered(build) is also still present from the FSM walk.
+    const phaseEnteredBuild = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'build')
+    expect(phaseEnteredBuild.length).toBeGreaterThanOrEqual(2)
 
     // task_completed for T-001 IS appended.
     const taskCompleted = events
@@ -968,7 +978,9 @@ describe('multi-task scenario: T-001 approve-review → cursor advances → T-00
       upstreamTaskId: 'T-001',
       now: () => FIXED_TS,
     })
-    expect(first.nextPhase).toBeNull()
+    // Mid-PLAN approval (Bug 3): iterate half emits phase_entered(build).
+    expect(first.nextPhase).toBe('build')
+    expect(first.state.currentPhase).toBe('build')
 
     // Now overwrite REVIEW.md for T-002 and emit a fresh review_resolved.
     // Production-flow parity (M16 C9 follow-on Bug 2): the dispatchers
@@ -1081,7 +1093,7 @@ describe('approveReviewTaskGate — Mod #4: gate_written + task_completed appear
 // --- runApprove integration smoke test ----------------------------
 
 describe('runApprove (high-level) — REVIEW path routes through approveReviewTaskGate', () => {
-  test('mid-PLAN approve review: result.nextPhase=null; ship not entered', async () => {
+  test('mid-PLAN approve review: result.nextPhase=build; ship not entered; next task BUILD unblocks at runApprove', async () => {
     // We exercise runApprove via the same shape commands-approve.test.ts
     // uses but driving the REVIEW path with the C9 wiring. The setup
     // mirrors state-regression's stageReviewApprovalPrereqs, with two
@@ -1164,8 +1176,16 @@ describe('runApprove (high-level) — REVIEW path routes through approveReviewTa
 
       expect(result.approved).toBe(true)
       expect(result.phase).toBe('review')
-      // Mid-PLAN: cursor.allCompleted=false → no ship transition.
-      expect(result.nextPhase).toBeNull()
+      // Mid-PLAN: cursor.allCompleted=false → no ship transition. The
+      // iterate half (M16 C9 follow-on (2) Bug 3) emits
+      // phase_entered(build) so currentPhase advances for the next task.
+      expect(result.nextPhase).toBe('build')
+
+      // Regression for Bug 3: runApprove for the next task's build phase
+      // succeeds because currentPhase is now 'build'. Without the fix,
+      // approve.ts:117 rejects with "current phase is 'review', not 'build'".
+      const loaded = await loadRun(paths2)
+      expect(loaded?.state.currentPhase).toBe('build')
     } finally {
       await rm(tmp2, { recursive: true, force: true })
     }
@@ -1206,12 +1226,15 @@ describe('handleActiveRun-side: gate_required(review) is satisfied by gate_writt
     expect(knownTypes).toContain('gate_written')
     // The post-approval phase_exited(review) is also present.
     expect(knownTypes).toContain('phase_exited')
-    // No phase_entered(ship) (mid-PLAN of two-task plan).
+    // No phase_entered(ship) (mid-PLAN of two-task plan). The fixture
+    // setup uses initFreshRun which only emits phase_entered(define).
+    // The iterate-half (Bug 3) appends phase_entered(build) for the next
+    // task — so the canonical sequence is ['define', 'build'].
     const phaseEntered = events
       .filter(isKnownPhaseEvent)
       .filter((e) => e.type === 'phase_entered')
       .map((e) => (e.type === 'phase_entered' ? e.phase : ''))
-    expect(phaseEntered).toEqual(['define']) // only the initial entry
+    expect(phaseEntered).toEqual(['define', 'build'])
   })
 })
 
@@ -1331,11 +1354,16 @@ async function walkFsmToReview(): Promise<void> {
   }
 }
 
-describe('completeIncompleteTransitions — Bug 1: cursor-aware ship transition', () => {
-  test('mid-PLAN approve-review: subsequent loadRun does NOT auto-fill phase_entered(ship)', async () => {
-    // Repro for the bug C12 e2e flagged: every `loadRun` after T-001
-    // approve-review walked `gate_written(review)` and unconditionally
-    // appended `phase_entered(ship)` — defeating the C9 task-loop.
+describe('completeIncompleteTransitions — Bug 1 + Bug 3: cursor-aware review→{ship,build} transition', () => {
+  test('mid-PLAN approve-review: subsequent loadRun does NOT auto-fill phase_entered(ship); emits phase_entered(build) for next task instead', async () => {
+    // Repro for two related bugs the C12 e2e + C9 follow-on (1)
+    // implementation flagged: every `loadRun` after T-001 approve-review
+    // walked `gate_written(review)` and (Bug 1) unconditionally appended
+    // `phase_entered(ship)` — defeating the C9 task-loop. After Bug 1's
+    // initial fix, no transition was emitted at all (Bug 3) and
+    // currentPhase stayed at `review`, so `code-oz approve build` for
+    // T-002 failed at approve.ts:117. The full fix emits
+    // `phase_entered(build)` instead so currentPhase advances.
     await initFreshRun()
     await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
     await walkFsmToReview()
@@ -1355,16 +1383,16 @@ describe('completeIncompleteTransitions — Bug 1: cursor-aware ship transition'
       upstreamTaskId: 'T-001',
       now: () => FIXED_TS,
     })
-    expect(result.nextPhase).toBeNull()
-    expect(result.state.currentPhase).toBe('review')
+    expect(result.nextPhase).toBe('build')
+    expect(result.state.currentPhase).toBe('build')
 
     // The fix: loadRun walks gate_written(review), notices the next
-    // phase is 'ship', projects the cursor against PLAN.md, and skips
-    // the phase_entered(ship) emission because cursor.allCompleted is
-    // false.
+    // phase is 'ship', projects the cursor against PLAN.md, and (because
+    // cursor.allCompleted is false but cursor.pending exists) emits
+    // phase_entered(build) instead of phase_entered(ship).
     const loaded = await loadRun(runPaths)
     expect(loaded).not.toBeNull()
-    expect(loaded?.state.currentPhase).toBe('review')
+    expect(loaded?.state.currentPhase).toBe('build')
 
     const events = await readEvents({
       file: runPaths.eventsFile,
@@ -1435,9 +1463,11 @@ describe('completeIncompleteTransitions — Bug 1: cursor-aware ship transition'
     expect(loaded?.state.currentPhase).toBe('ship')
   })
 
-  test('idempotency: a second loadRun after the cursor advances does not retroactively emit phase_entered(ship)', async () => {
+  test('idempotency: a second loadRun after the cursor advances does not retroactively emit duplicate phase_entered(build|ship)', async () => {
     // After T-001 approve-review (mid-PLAN), running loadRun multiple
-    // times must not slowly accumulate phase_entered(ship) events.
+    // times must not accumulate duplicate phase_entered events nor
+    // spuriously emit phase_entered(ship). The iterate-half emission
+    // (Bug 3 fix) lands once.
     await initFreshRun()
     await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
     await walkFsmToReview()
@@ -1459,7 +1489,7 @@ describe('completeIncompleteTransitions — Bug 1: cursor-aware ship transition'
 
     for (let i = 0; i < 5; i++) {
       const loaded = await loadRun(runPaths)
-      expect(loaded?.state.currentPhase).toBe('review')
+      expect(loaded?.state.currentPhase).toBe('build')
     }
 
     const events = await readEvents({
@@ -1470,6 +1500,15 @@ describe('completeIncompleteTransitions — Bug 1: cursor-aware ship transition'
       .filter(isKnownPhaseEvent)
       .filter((e) => e.type === 'phase_entered' && e.phase === 'ship')
     expect(phaseEnteredShip).toHaveLength(0)
+
+    // Idempotency: walkFsmToReview emits one phase_entered(build) for
+    // the original FSM walk. The iterate-half (Bug 3) emits a SECOND
+    // one after task_completed(T-001). Five subsequent loadRun calls
+    // must not accumulate any further build-entry events.
+    const phaseEnteredBuild = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'build')
+    expect(phaseEnteredBuild).toHaveLength(2)
   })
 })
 
@@ -1785,5 +1824,283 @@ describe('validateRunIntegrity — Bug 2: cleared gates do not throw', () => {
     }
     expect(caught).toBeDefined()
     expect(String(caught)).toMatch(/sha256_mismatch|sha256/i)
+  })
+})
+
+// --- M16 C9 follow-on (2) Bug 3: cursor-aware iterate-half transition --
+// (review→build for the next pending task on mid-PLAN approve-review)
+//
+// Bug 1 (c262efd) closed the terminal half (review→ship) by gating
+// `phase_entered(ship)` emission on `cursor.allCompleted=true`. After that
+// fix, mid-PLAN approve-review correctly skipped the ship transition, but
+// also emitted no `phase_entered(build)` for the next task — leaving
+// `currentPhase=review`. The next task's `code-oz approve build` then
+// failed at src/commands/approve.ts:117 with the currentPhase mismatch.
+//
+// Bug 3 closes the iterate half: when `cursor.allCompleted=false` and
+// `cursor.pending !== null`, emit `phase_entered(build)` instead of
+// `phase_entered(ship)`. The same gate lives in `approveReviewTaskGate`
+// and `completeIncompleteTransitions` so loadRun stays idempotent.
+
+describe('approveReviewTaskGate — Bug 3: iterate-half emits phase_entered(build) for next task', () => {
+  test('mid-PLAN approve-review: phase_entered(build) lands AFTER task_completed(T-001)', async () => {
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body T-001',
+    })
+
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    const taskCompletedIdx = known.findIndex(
+      (e) => e.type === 'task_completed' && e.taskId === 'T-001',
+    )
+    expect(taskCompletedIdx).toBeGreaterThanOrEqual(0)
+    // The iterate-half phase_entered(build) is the LAST phase_entered in
+    // the log and lands at an index strictly greater than task_completed.
+    const lastBuildEntryIdx = known.reduce(
+      (acc: number, e, i) =>
+        e.type === 'phase_entered' && e.phase === 'build' ? i : acc,
+      -1,
+    )
+    expect(lastBuildEntryIdx).toBeGreaterThan(taskCompletedIdx)
+  })
+
+  test('mid-PLAN: currentPhase advances to build; subsequent runApprove(build) for T-002 is unblocked', async () => {
+    // The actual operator-facing regression: after `code-oz approve review`
+    // for T-001, `code-oz approve build` for T-002 must succeed.
+    // approve.ts:117 asserts `candidate === loaded.state.currentPhase`,
+    // so currentPhase must be 'build' for the assertion to pass.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    const result = await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    // Result-level: the iterate half reports build, not null.
+    expect(result.nextPhase).toBe('build')
+    expect(result.state.currentPhase).toBe('build')
+
+    // loadRun-level: the assertion that approve.ts:117 evaluates against.
+    const loaded = await loadRun(runPaths)
+    expect(loaded?.state.currentPhase).toBe('build')
+
+    // Simulate approve.ts:117: candidate === loaded.state.currentPhase.
+    expect('build' === loaded?.state.currentPhase).toBe(true)
+  })
+
+  test('idempotency: re-calling approveReviewTaskGate emits no duplicate phase_entered(build)', async () => {
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    const opts = {
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield' as const,
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    }
+
+    await approveReviewTaskGate(opts)
+    await approveReviewTaskGate(opts)
+    await approveReviewTaskGate(opts)
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    // Original walkFsmToReview emits one phase_entered(build); the
+    // iterate-half emits a second after task_completed(T-001). Three
+    // approve calls must accumulate exactly one iterate-half entry, so
+    // total phase_entered(build) === 2.
+    const phaseEnteredBuild = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'build')
+    expect(phaseEnteredBuild).toHaveLength(2)
+
+    const phaseEnteredShip = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'ship')
+    expect(phaseEnteredShip).toHaveLength(0)
+  })
+
+  test('last-task approval (single-task PLAN): emits phase_entered(ship), NOT phase_entered(build)', async () => {
+    // Sanity: the terminal half (Bug 1) is preserved. When the just-
+    // approved task is the last, allCompleted=true → ship, not build.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    const result = await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    expect(result.nextPhase).toBe('ship')
+    expect(result.state.currentPhase).toBe('ship')
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const phaseEnteredShip = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'ship')
+    expect(phaseEnteredShip).toHaveLength(1)
+  })
+})
+
+describe('completeIncompleteTransitions — Bug 3: iterate-half on loadRun recovery', () => {
+  test('loadRun on a run halted between approveReviewTaskGate steps fills phase_entered(build) for the next task', async () => {
+    // Repro: drive approveReviewTaskGate to its full happy path (which
+    // already emits phase_entered(build)), then surgically excise that
+    // tail event from events.jsonl to simulate a crash between
+    // task_completed and the iterate-half emission. loadRun must then
+    // re-emit phase_entered(build) via completeIncompleteTransitions.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    // Excise the iterate-half phase_entered(build) (last line in
+    // events.jsonl after approveReviewTaskGate) to simulate a crash
+    // between task_completed and the iterate-half emission.
+    const raw = await readFile(runPaths.eventsFile, 'utf8')
+    const lines = raw.split('\n').filter((l) => l.length > 0)
+    const lastLine = lines[lines.length - 1]
+    expect(lastLine).toBeDefined()
+    const lastEvent = JSON.parse(lastLine!) as {
+      type: string
+      phase?: string
+    }
+    expect(lastEvent.type).toBe('phase_entered')
+    expect(lastEvent.phase).toBe('build')
+    await writeFile(
+      runPaths.eventsFile,
+      lines.slice(0, -1).join('\n') + '\n',
+      'utf8',
+    )
+
+    // loadRun runs completeIncompleteTransitions and fills the missing
+    // iterate-half transition.
+    const loaded = await loadRun(runPaths)
+    expect(loaded?.state.currentPhase).toBe('build')
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const phaseEnteredBuild = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'build')
+    // walkFsmToReview wrote one + completeIncompleteTransitions wrote one.
+    expect(phaseEnteredBuild).toHaveLength(2)
+
+    const phaseEnteredShip = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'ship')
+    expect(phaseEnteredShip).toHaveLength(0)
+  })
+
+  test('loadRun idempotency: a second loadRun does not duplicate the iterate-half emission', async () => {
+    // After approveReviewTaskGate emits the iterate-half transition,
+    // subsequent loadRun calls must NOT re-emit it. The completion
+    // step's idempotency check uses post-gate-index dedup so the
+    // existing phase_entered(build) from the original FSM walk does
+    // not mask the just-added iterate-half entry.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    await loadRun(runPaths)
+    await loadRun(runPaths)
+    await loadRun(runPaths)
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const phaseEnteredBuild = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'build')
+    expect(phaseEnteredBuild).toHaveLength(2)
   })
 })
