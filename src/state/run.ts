@@ -53,7 +53,7 @@ import {
   findLatestReviewResolved,
   projectTaskCursor,
 } from './task-cursor.ts'
-import type { PlanArtifact } from '../artifacts/plan.ts'
+import { parsePlan, type PlanArtifact } from '../artifacts/plan.ts'
 
 // --- paths ---------------------------------------------------------
 
@@ -1085,6 +1085,20 @@ async function recoverOrphanGates(
  * This handles every crash window between gate rename and the final
  * transition append. Combined with recoverOrphanGates above, the recovery
  * step deterministically advances to the same end state as a clean approval.
+ *
+ * M16 C9 follow-on (Bug 1): the review→ship transition is cursor-aware.
+ * `approveReviewTaskGate` only emits `phase_entered(ship)` when the cursor
+ * has `allCompleted=true` (Mod #2). Without the same gate here, every
+ * `loadRun` after T-001 approve-review would walk the `gate_written(review)`
+ * event and unconditionally append `phase_entered(ship)`, defeating the
+ * task-loop and advancing currentPhase to `ship` while T-002+ are still
+ * pending. The fix: when the next phase computed for a `gate_written(review)`
+ * is `ship`, project the cursor against PLAN.md and skip the
+ * `phase_entered(ship)` emission unless `cursor.allCompleted=true`. PLAN.md
+ * may not be present (early phases / drift / brownfield AUDIT-only); when
+ * it cannot be loaded, we conservatively skip the ship transition and defer
+ * the authority to `approveReviewTaskGate`. All other transitions
+ * (define→plan, plan→build, build→verify, verify→review) stay unchanged.
  */
 async function completeIncompleteTransitions(
   paths: RunPaths,
@@ -1108,6 +1122,24 @@ async function completeIncompleteTransitions(
   // Working copy that grows as we append.
   let working: PhaseEvent[] = [...known]
   let appendedAny = false
+
+  // Lazy PLAN load — only attempted when a review→ship cursor check is
+  // needed. A null result (missing or unparseable) makes the function
+  // conservatively skip the ship transition and defer to the
+  // approveReviewTaskGate primitive.
+  let planLoaded = false
+  let plan: PlanArtifact | null = null
+  const tryLoadPlan = async (): Promise<PlanArtifact | null> => {
+    if (planLoaded) return plan
+    planLoaded = true
+    try {
+      const raw = await readFile(join(paths.artifactRoot, 'PLAN.md'), 'utf8')
+      plan = parsePlan(raw, join(paths.artifactRoot, 'PLAN.md'))
+    } catch {
+      plan = null
+    }
+    return plan
+  }
 
   for (const { e } of gateWrittenList) {
     if (e.type !== 'gate_written') continue
@@ -1137,6 +1169,25 @@ async function completeIncompleteTransitions(
         (x) => x.type === 'phase_entered' && x.phase === next,
       )
       if (!hasPhaseEntered) {
+        // M16 C9 follow-on (Bug 1) — cursor-aware ship transition.
+        // Only `approveReviewTaskGate` is authoritative for advancing
+        // past the last task; this completion step must mirror the same
+        // gate or it will silently undo the cursor decision on the next
+        // loadRun.
+        if (phase === 'review' && next === 'ship') {
+          const planForCursor = await tryLoadPlan()
+          if (planForCursor === null) {
+            // PLAN missing / unparseable — defer authority. Skip the
+            // ship transition; approveReviewTaskGate owns the decision.
+            continue
+          }
+          const { cursor } = projectTaskCursor(planForCursor, working)
+          if (!cursor.allCompleted) {
+            // Mid-PLAN approve-review — currentPhase stays at `review`
+            // until the last task's approve-review fires. Skip emission.
+            continue
+          }
+        }
         const ev: PhaseEvent = {
           version: 1,
           type: 'phase_entered',
@@ -1299,8 +1350,43 @@ async function validateRunIntegrity(
 
   // Gate-written validation only applies to known PhaseEvent variants.
   const known = events.filter(isKnownPhaseEvent)
-  for (const e of known) {
+
+  // M16 C9 follow-on (Bug 2): identify gate_written events that have
+  // been superseded by a later `gate_file_cleared` for the same phase
+  // without a later `gate_written` re-affirming. Those events reference
+  // a gate file that has been deleted (or replaced with a new task's
+  // gate file) at the task boundary; validating them would falsely
+  // throw `gate_written_event_missing_file` (when the file is gone) or
+  // `gate_artifact_sha256_mismatch` (when the new task's gate file has
+  // a different sha). The dispatcher's `gate_file_cleared` event marks
+  // the prior gate_written as historical and the validator skips it.
+  const skipGateWrittenIndex = new Set<number>()
+  for (let i = 0; i < known.length; i++) {
+    const e = known[i]!
     if (e.type !== 'gate_written') continue
+    let supersededByClear = false
+    for (let j = i + 1; j < known.length; j++) {
+      const later = known[j]!
+      if (later.type === 'gate_written' && later.phase === e.phase) {
+        // A later gate_written for the same phase re-affirms the gate;
+        // any `gate_file_cleared` between i and j is historical.
+        supersededByClear = false
+        break
+      }
+      if (later.type === 'gate_file_cleared' && later.phase === e.phase) {
+        supersededByClear = true
+        // Keep walking — a later gate_written (currently impossible for
+        // the same phase post-cleanup, but the loop is robust to that
+        // ordering and breaks cleanly above) would un-supersede.
+      }
+    }
+    if (supersededByClear) skipGateWrittenIndex.add(i)
+  }
+
+  for (let i = 0; i < known.length; i++) {
+    const e = known[i]!
+    if (e.type !== 'gate_written') continue
+    if (skipGateWrittenIndex.has(i)) continue
     const filePath = join(paths.runDir, e.file)
     let gate: GateFile
     try {

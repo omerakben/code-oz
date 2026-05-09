@@ -43,13 +43,14 @@ import {
   approveReviewTaskGate,
   ApproveReviewTaskGateError,
   initRun,
+  loadRun,
   requireGate,
   runPathsFor,
   type RunPaths,
 } from '../src/state/run.ts'
 import { generateUlid } from '../src/state/schemas.ts'
 import { appendEvent, readEvents } from '../src/state/events.ts'
-import { isKnownPhaseEvent } from '../src/state/schemas.ts'
+import { isKnownPhaseEvent, type LoggedEvent } from '../src/state/schemas.ts'
 import { parsePlan } from '../src/artifacts/plan.ts'
 import {
   serializeReviewReport,
@@ -67,6 +68,7 @@ import {
   shouldRouteReviewToBuildRestart,
 } from '../src/commands/dispatch-review-helpers.ts'
 import {
+  clearStaleGateFile,
   resolveBuildCarryForward,
 } from '../src/commands/dispatch-build-helpers.ts'
 
@@ -969,14 +971,24 @@ describe('multi-task scenario: T-001 approve-review → cursor advances → T-00
     expect(first.nextPhase).toBeNull()
 
     // Now overwrite REVIEW.md for T-002 and emit a fresh review_resolved.
-    // The gate file persisted from the T-001 approval references the
-    // T-001 sha; we delete it so the T-002 approval writes a fresh one
-    // with the new artifact sha. Production's flow does the equivalent
-    // by running a full BUILD → VERIFY → REVIEW for the new task,
-    // overwriting REVIEW.md and re-emitting gate_required(review)
-    // before approve fires.
-    const { rm } = await import('node:fs/promises')
-    await rm(join(runPaths.runDir, 'GATE_REVIEW_PASSED.json'), { force: true })
+    // Production-flow parity (M16 C9 follow-on Bug 2): the dispatchers
+    // call `clearStaleGateFile` at the task boundary to remove the prior
+    // task's `GATE_REVIEW_PASSED.json` before the new task's
+    // approveReviewTaskGate writes a fresh gate file. We invoke the same
+    // helper here instead of a raw rm so the test stays aligned with the
+    // production cleanup path.
+    const eventsBeforeT002 = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const clearance = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'review',
+      events: eventsBeforeT002,
+      currentTaskId: 'T-002',
+    })
+    expect(clearance.cleared).toBe(true)
+    expect(clearance.priorTaskId).toBe('T-001')
     await writeFile(join(artifactRoot, 'REVIEW.md'), 'fixture body T-002\n', 'utf8')
     const t002Sha = SHA('fixture body T-002\n')
     await appendReviewResolved('T-002', 1, t002Sha)
@@ -1281,3 +1293,497 @@ function makeMinimalBuildReport(): string {
   })
   return serializeBuildReport(data)
 }
+
+// --- M16 C9 follow-on Bug 1: cursor-aware ship transition in -------
+// completeIncompleteTransitions (the completion step inside loadRun).
+
+// Minimal phase-event walker that brings the run from `define` to
+// `review` so loadRun's reducer derives currentPhase='review'. Mirrors
+// the inline walk used in the existing Mod #2 test (line 432-462).
+async function walkFsmToReview(): Promise<void> {
+  for (const [exit, enter] of [
+    ['define', 'plan'] as const,
+    ['plan', 'build'] as const,
+    ['build', 'verify'] as const,
+    ['verify', 'review'] as const,
+  ]) {
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'phase_exited',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: exit,
+        outcome: 'passed',
+      },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'phase_entered',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: enter,
+      },
+    )
+  }
+}
+
+describe('completeIncompleteTransitions — Bug 1: cursor-aware ship transition', () => {
+  test('mid-PLAN approve-review: subsequent loadRun does NOT auto-fill phase_entered(ship)', async () => {
+    // Repro for the bug C12 e2e flagged: every `loadRun` after T-001
+    // approve-review walked `gate_written(review)` and unconditionally
+    // appended `phase_entered(ship)` — defeating the C9 task-loop.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body T-001',
+    })
+
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    const result = await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+    expect(result.nextPhase).toBeNull()
+    expect(result.state.currentPhase).toBe('review')
+
+    // The fix: loadRun walks gate_written(review), notices the next
+    // phase is 'ship', projects the cursor against PLAN.md, and skips
+    // the phase_entered(ship) emission because cursor.allCompleted is
+    // false.
+    const loaded = await loadRun(runPaths)
+    expect(loaded).not.toBeNull()
+    expect(loaded?.state.currentPhase).toBe('review')
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const phaseEnteredShip = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'ship')
+    expect(phaseEnteredShip).toHaveLength(0)
+  })
+
+  test('last-task approve-review: subsequent loadRun honors phase_entered(ship) from approveReviewTaskGate', async () => {
+    // Companion: when the cursor IS allCompleted, the ship transition
+    // is preserved. The fix only blocks the spurious auto-fill case.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    const loaded = await loadRun(runPaths)
+    expect(loaded?.state.currentPhase).toBe('ship')
+  })
+
+  test('PLAN.md missing: completion step conservatively skips ship transition', async () => {
+    // Guard: when PLAN.md cannot be loaded, the completion step must
+    // not crash AND must not blindly append phase_entered(ship). The
+    // authority for the ship transition is approveReviewTaskGate; the
+    // completion step defers when it cannot project the cursor.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    // Approve via the task primitive — for a single-task PLAN this
+    // legitimately enters ship.
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    // Now remove PLAN.md and re-run loadRun. The state already holds
+    // phase_entered(ship); the completion step is idempotent.
+    await rm(join(artifactRoot, 'PLAN.md'), { force: true })
+    const loaded = await loadRun(runPaths)
+    expect(loaded?.state.currentPhase).toBe('ship')
+  })
+
+  test('idempotency: a second loadRun after the cursor advances does not retroactively emit phase_entered(ship)', async () => {
+    // After T-001 approve-review (mid-PLAN), running loadRun multiple
+    // times must not slowly accumulate phase_entered(ship) events.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body',
+    })
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    for (let i = 0; i < 5; i++) {
+      const loaded = await loadRun(runPaths)
+      expect(loaded?.state.currentPhase).toBe('review')
+    }
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const phaseEnteredShip = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'ship')
+    expect(phaseEnteredShip).toHaveLength(0)
+  })
+})
+
+// --- M16 C9 follow-on Bug 2: stale gate-file cleanup at task -------
+// boundary in dispatchers (helper-level coverage; full-dispatcher
+// coverage lives in the C12 e2e test).
+
+describe('clearStaleGateFile — Bug 2: helper unit coverage', () => {
+  test('no prior task_completed → no-op (first task)', async () => {
+    await initFreshRun()
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events: [],
+      currentTaskId: 'T-001',
+    })
+    expect(result.cleared).toBe(false)
+  })
+
+  test('prior task_completed for same task → no-op (resume, not boundary)', async () => {
+    await initFreshRun()
+    // Simulate a fresh dispatch that just emitted task_completed for T-001
+    // — but the dispatcher is now re-running for T-001 itself (resume).
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'task_completed' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        reviewGatePath: '.code-oz/state/runs/abc/GATE_REVIEW_PASSED.json',
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-001',
+    })
+    expect(result.cleared).toBe(false)
+  })
+
+  test('boundary + gate file absent → no-op', async () => {
+    await initFreshRun()
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'task_completed' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        reviewGatePath: '.code-oz/state/runs/abc/GATE_REVIEW_PASSED.json',
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-002',
+    })
+    expect(result.cleared).toBe(false)
+  })
+
+  test('boundary + gate file present → cleared with priorTaskId + priorArtifactSha256', async () => {
+    await initFreshRun()
+    // Plant a stale GATE_BUILD_PASSED.json with a synthetic sha.
+    const fakeSha = 'a'.repeat(64)
+    const gateContent = JSON.stringify(
+      {
+        version: 1,
+        runId: RUN,
+        phase: 'build',
+        artifact: 'BUILD_REPORT.md',
+        artifactSha256: fakeSha,
+        agent: 'builder',
+        approvedBy: 'test',
+        approvedAt: FIXED_TS,
+      },
+      null,
+      2,
+    )
+    await writeFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), gateContent + '\n')
+
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'task_completed' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        reviewGatePath: '.code-oz/state/runs/abc/GATE_REVIEW_PASSED.json',
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-002',
+    })
+    expect(result.cleared).toBe(true)
+    expect(result.priorTaskId).toBe('T-001')
+    expect(result.priorArtifactSha256).toBe(fakeSha)
+
+    // The file is gone.
+    let exists = true
+    try {
+      await readFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), 'utf8')
+    } catch {
+      exists = false
+    }
+    expect(exists).toBe(false)
+  })
+
+  test('current task already has build_started → no-op (resume guard)', async () => {
+    await initFreshRun()
+    // Plant a stale gate file AND a build_started for T-002. The helper
+    // must NOT delete because T-002 has already started — the prior
+    // dispatcher must have already cleaned up (or had nothing to clean).
+    const fakeSha = 'a'.repeat(64)
+    const gateContent = JSON.stringify(
+      {
+        version: 1,
+        runId: RUN,
+        phase: 'build',
+        artifact: 'BUILD_REPORT.md',
+        artifactSha256: fakeSha,
+        agent: 'builder',
+        approvedBy: 'test',
+        approvedAt: FIXED_TS,
+      },
+      null,
+      2,
+    )
+    await writeFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), gateContent + '\n')
+
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'task_completed' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        reviewGatePath: '.code-oz/state/runs/abc/GATE_REVIEW_PASSED.json',
+      }),
+      Object.freeze({
+        version: 1 as const,
+        type: 'build_started' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build' as const,
+        agent: 'builder',
+        attempt: 1,
+        baseCommitSha: 'a'.repeat(40),
+        taskId: 'T-002',
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-002',
+    })
+    expect(result.cleared).toBe(false)
+
+    // The file remains untouched.
+    const stillThere = await readFile(
+      join(runPaths.runDir, 'GATE_BUILD_PASSED.json'),
+      'utf8',
+    )
+    expect(stillThere.length).toBeGreaterThan(0)
+  })
+
+  test('all three phases share the same boundary semantics (verify, review)', async () => {
+    await initFreshRun()
+    // Plant stale gates for all three phases.
+    const sha = 'a'.repeat(64)
+    for (const phase of ['build', 'verify', 'review'] as const) {
+      const filename = `GATE_${phase.toUpperCase()}_PASSED.json`
+      const gateContent = JSON.stringify(
+        {
+          version: 1,
+          runId: RUN,
+          phase,
+          artifact:
+            phase === 'build'
+              ? 'BUILD_REPORT.md'
+              : phase === 'verify'
+                ? 'VERIFY.md'
+                : 'REVIEW.md',
+          artifactSha256: sha,
+          agent: phase === 'build' ? 'builder' : phase === 'verify' ? 'verifier' : 'reviewer',
+          approvedBy: 'test',
+          approvedAt: FIXED_TS,
+        },
+        null,
+        2,
+      )
+      await writeFile(join(runPaths.runDir, filename), gateContent + '\n')
+    }
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'task_completed' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        reviewGatePath: '.code-oz/state/runs/abc/GATE_REVIEW_PASSED.json',
+      }),
+    ]
+
+    for (const phase of ['build', 'verify', 'review'] as const) {
+      const result = await clearStaleGateFile({
+        runDir: runPaths.runDir,
+        phase,
+        events,
+        currentTaskId: 'T-002',
+      })
+      expect(result.cleared).toBe(true)
+      expect(result.priorTaskId).toBe('T-001')
+    }
+  })
+})
+
+// --- M16 C9 follow-on Bug 2: validateRunIntegrity tolerates ---------
+// gate_written events superseded by gate_file_cleared. This is the
+// state-level invariant the dispatchers rely on for the multi-task
+// flow to survive `loadRun`.
+
+describe('validateRunIntegrity — Bug 2: cleared gates do not throw', () => {
+  test('gate_written → gate_file_cleared sequence: loadRun succeeds without sha or missing-file errors', async () => {
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body T-001',
+    })
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    // Plant a gate_file_cleared event (as the dispatcher would emit at
+    // the T-001 → T-002 boundary).
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_file_cleared',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'review',
+        priorTaskId: 'T-001',
+        currentTaskId: 'T-002',
+        gateFile: 'GATE_REVIEW_PASSED.json',
+        priorArtifactSha256: 'a'.repeat(64),
+      },
+    )
+
+    // Delete the gate file (mirroring dispatcher cleanup) and replace
+    // the artifact with new bytes (mirroring runBuild for a new task).
+    await rm(join(runPaths.runDir, 'GATE_REVIEW_PASSED.json'), { force: true })
+    await writeFile(join(artifactRoot, 'REVIEW.md'), 'fresh T-002 bytes\n', 'utf8')
+
+    // loadRun must NOT throw. validateRunIntegrity skips the prior
+    // gate_written(review) event because gate_file_cleared(review)
+    // supersedes it.
+    const loaded = await loadRun(runPaths)
+    expect(loaded).not.toBeNull()
+  })
+
+  test('gate_written sequence WITHOUT a clear: validation still fires (regression guard)', async () => {
+    // The skip is conditional on a later gate_file_cleared for the
+    // same phase. Without the clear, validateRunIntegrity continues to
+    // throw when the gate file's recorded sha mismatches the artifact.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'fixture body T-001',
+    })
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    // Mutate REVIEW.md WITHOUT emitting a gate_file_cleared event.
+    await writeFile(join(artifactRoot, 'REVIEW.md'), 'tampered bytes\n', 'utf8')
+
+    let caught: Error | undefined
+    try {
+      await loadRun(runPaths)
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).toBeDefined()
+    expect(String(caught)).toMatch(/sha256_mismatch|sha256/i)
+  })
+})

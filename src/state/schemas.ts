@@ -283,6 +283,29 @@ export const EVENT_TYPES = [
   // runId-only-when-active-run discriminator — the banner fires before
   // initRun in greenfield invocations, so runId is optional.
   'fake_provider_warning_emitted',
+  // M16 C9 follow-on — task-boundary gate-file lifecycle. Per-phase
+  // GATE_<PHASE>_PASSED.json files are filename-keyed (one slot per
+  // phase) but task-keyed at the artifact-sha level. After T-001 ships
+  // a gate file with sha=S1 and T-002's BUILD/VERIFY/REVIEW writes new
+  // artifact bytes, the prior gate's artifactSha256 no longer matches
+  // the artifact on disk; the next `loadRun` would throw
+  // `gate_artifact_sha256_mismatch` from validateRunIntegrity. The
+  // dispatchers (`dispatchBuild` / `dispatchVerify` / `dispatchReview`)
+  // detect this at the task boundary (latest `task_completed` for a
+  // prior task + no `<phase>_started` for the new task) and clear the
+  // stale gate file before invoking the phase. The deletion is recorded
+  // here as an audit event so operators can grep events.jsonl for
+  // every cross-task gate-file replacement.
+  //   `phase` — which gate file was cleared (`build` / `verify` / `review`).
+  //   `priorTaskId` — the task whose approval wrote the just-cleared
+  //     gate file (sourced from the latest `task_completed` event).
+  //   `currentTaskId` — the task whose dispatcher is about to fire and
+  //     drove the cleanup.
+  //   `gateFile` — the canonical filename (`GATE_<PHASE>_PASSED.json`).
+  //   `priorArtifactSha256` — 64-char lowercase hex of the
+  //     artifactSha256 the deleted gate referenced. Operators can
+  //     correlate against the previous task's gate audit trail.
+  'gate_file_cleared',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -1377,6 +1400,27 @@ export type PhaseEvent =
       readonly providerAlias: 'fake'
       readonly providerFamily: 'fake'
       readonly fakeScriptPath?: string
+    }
+  // M16 C9 follow-on — task-boundary gate-file lifecycle audit event.
+  // Emitted by `dispatchBuild` / `dispatchVerify` / `dispatchReview` when
+  // a stale `GATE_<PHASE>_PASSED.json` file from a prior `task_completed`
+  // is deleted before the new task's dispatcher invokes `loadRun`. The
+  // deletion prevents `validateRunIntegrity` from throwing
+  // `gate_artifact_sha256_mismatch` against the prior task's recorded
+  // artifact sha when the new task has overwritten the artifact bytes.
+  // Idempotent on the dispatcher side — when the file does not exist or
+  // when the latest gate's recorded sha equals the current artifact's
+  // sha, no event is emitted.
+  | {
+      readonly version: 1
+      readonly type: 'gate_file_cleared'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly priorTaskId: string
+      readonly currentTaskId: string
+      readonly gateFile: string
+      readonly priorArtifactSha256: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

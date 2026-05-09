@@ -21,7 +21,7 @@
 //      crash; dispatchBuild refuses rather than racing with whatever
 //      wrote the half-event.
 
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
@@ -601,3 +601,157 @@ export function formatInterventionRefusal(
 // Re-export for symmetry with future C7/C8 dispatchers that share the
 // same Phase string union.
 export type { Phase }
+
+// --- task-boundary gate-file lifecycle (M16 C9 follow-on) ---------
+
+export interface ClearStaleGateFileResult {
+  /** Whether a stale gate file was deleted. False on the no-op paths
+   *  (file absent, no prior task_completed, prior task equals current). */
+  readonly cleared: boolean
+  /** When `cleared` is true, the artifactSha256 of the deleted gate.
+   *  Used by the dispatcher to construct the `gate_file_cleared` event
+   *  payload. */
+  readonly priorArtifactSha256?: string
+  /** When `cleared` is true, the priorTaskId sourced from the latest
+   *  `task_completed` event. */
+  readonly priorTaskId?: string
+}
+
+export interface ClearStaleGateFileInput {
+  readonly runDir: string
+  readonly phase: 'build' | 'verify' | 'review'
+  readonly events: readonly LoggedEvent[]
+  readonly currentTaskId: string
+}
+
+/**
+ * Resolve and (if stale) delete the per-phase `GATE_<PHASE>_PASSED.json`
+ * file at the boundary of a NEW task. Idempotent and safe to call on
+ * every dispatcher invocation; returns `{cleared: false}` on every
+ * non-boundary path:
+ *
+ *   1. No prior `task_completed` event for the run → first task, nothing
+ *      to clean. (`{cleared: false}`)
+ *   2. The latest `task_completed.taskId` equals `currentTaskId` →
+ *      same-task resume; the gate file from the prior approve is the
+ *      authoritative one for this task. (`{cleared: false}`)
+ *   3. A `<phase>_started` event already exists for `(runId, currentTaskId)`
+ *      → the dispatcher is resuming a partially-started phase, not
+ *      crossing a task boundary. (`{cleared: false}`)
+ *   4. The gate file does not exist on disk → already cleaned by a
+ *      prior dispatcher / operator. (`{cleared: false}`)
+ *
+ * On a true task boundary the gate file is read for its
+ * `artifactSha256` field (used in the audit event payload), then
+ * deleted. The dispatcher emits a `gate_file_cleared` event after this
+ * function returns so the audit trail captures the deletion.
+ *
+ * Why this lives here: per-phase gate files are filename-keyed
+ * (`GATE_<PHASE>_PASSED.json`) but task-keyed at the artifact-sha
+ * level. After T-001 ships and T-002 BUILD writes a fresh
+ * BUILD_REPORT.md, the prior gate's `artifactSha256` no longer matches
+ * the artifact on disk; the very next `loadRun` would throw
+ * `gate_artifact_sha256_mismatch` from `validateRunIntegrity`. The
+ * dispatchers detect this at the task boundary and clear the stale
+ * file before the new task's phase work can write fresh artifact bytes.
+ *
+ * Throws `NeedsInterventionReadError`-shaped errors only on truly
+ * unexpected conditions (gate file present but unreadable / unparseable
+ * JSON / no `artifactSha256` field) — these signal corruption rather
+ * than the routine task-boundary case the helper is designed for.
+ */
+export async function clearStaleGateFile(
+  input: ClearStaleGateFileInput,
+): Promise<ClearStaleGateFileResult> {
+  // Find the latest `task_completed` event in events.jsonl order.
+  let latestTaskCompletedTaskId: string | null = null
+  for (const e of input.events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type === 'task_completed') {
+      latestTaskCompletedTaskId = e.taskId
+    }
+  }
+  if (latestTaskCompletedTaskId === null) {
+    // First task: no prior boundary to cross.
+    return Object.freeze({ cleared: false })
+  }
+  if (latestTaskCompletedTaskId === input.currentTaskId) {
+    // Same-task resume: the prior gate file IS this task's gate file.
+    return Object.freeze({ cleared: false })
+  }
+
+  // Resume guard: if a `<phase>_started` event already exists for the
+  // current task, a prior dispatcher invocation must have run runBuild/
+  // runVerify/runReview at least once for this task. The gate file (if
+  // any) is still associated with the prior task, but a deletion here
+  // would race with whatever wrote the started event. Trust that the
+  // prior dispatcher already cleared (or had nothing to clear).
+  const startedEventType =
+    input.phase === 'build'
+      ? 'build_started'
+      : input.phase === 'verify'
+        ? 'verify_started'
+        : 'review_started'
+  const hasStartedForCurrentTask = input.events.some((e) => {
+    if (!isKnownPhaseEvent(e)) return false
+    if (e.type !== startedEventType) return false
+    if (e.type === 'build_started' || e.type === 'verify_started' || e.type === 'review_started') {
+      return e.taskId === input.currentTaskId
+    }
+    return false
+  })
+  if (hasStartedForCurrentTask) {
+    return Object.freeze({ cleared: false })
+  }
+
+  // Resolve the gate file path. The filename is canonical
+  // (GATE_<PHASE>_PASSED.json); we inline the construction here rather
+  // than importing `gateFilename` to keep this helper free of state-
+  // module coupling beyond the schemas types.
+  const gateFile = `GATE_${input.phase.toUpperCase()}_PASSED.json`
+  const gatePath = join(input.runDir, gateFile)
+  let raw: string
+  try {
+    raw = await readFile(gatePath, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return Object.freeze({ cleared: false })
+    }
+    throw err
+  }
+
+  // Parse just enough to extract `artifactSha256` for the audit event.
+  // A malformed JSON here means the gate file was corrupted, not a
+  // routine task-boundary state — surface to the caller.
+  let priorArtifactSha256: string | undefined
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>
+    if (typeof obj.artifactSha256 === 'string') {
+      priorArtifactSha256 = obj.artifactSha256
+    }
+  } catch {
+    // Treat as corruption: don't delete; let validateRunIntegrity
+    // surface the actual error to the operator.
+    return Object.freeze({ cleared: false })
+  }
+  if (priorArtifactSha256 === undefined) {
+    // Gate without artifactSha256 — pre-sha runs (or schema drift).
+    // Skip cleanup so the operator can inspect manually.
+    return Object.freeze({ cleared: false })
+  }
+
+  // Delete idempotently — a concurrent unlink between the readFile
+  // above and unlink here is harmless; the file would not exist for
+  // the next `loadRun`, which is the goal.
+  try {
+    await unlink(gatePath)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+
+  return Object.freeze({
+    cleared: true,
+    priorArtifactSha256,
+    priorTaskId: latestTaskCompletedTaskId,
+  })
+}

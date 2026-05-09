@@ -2086,6 +2086,58 @@ export function validateEvent(
       }
       break
     }
+
+    // M16 C9 follow-on — task-boundary gate-file lifecycle audit. Pins
+    // `phase` to a canonical phase, requires non-empty taskId/gateFile
+    // strings, and constrains `priorArtifactSha256` to a 64-char
+    // lowercase hex digest so operators can correlate cleared gates
+    // against the prior task's gate audit trail.
+    case 'gate_file_cleared': {
+      if (!isPhase(e.phase)) {
+        return phaseInvalid(file, 'gate_file_cleared', e.phase, line)
+      }
+      if (
+        typeof e.priorTaskId !== 'string' ||
+        !TASK_ID_PATTERN.test(e.priorTaskId)
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'gate_file_cleared.priorTaskId must match `T-NNN` (3+ digits)',
+          detail: `got ${JSON.stringify(e.priorTaskId)}`,
+          line,
+        }
+      }
+      if (
+        typeof e.currentTaskId !== 'string' ||
+        !TASK_ID_PATTERN.test(e.currentTaskId)
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'gate_file_cleared.currentTaskId must match `T-NNN` (3+ digits)',
+          detail: `got ${JSON.stringify(e.currentTaskId)}`,
+          line,
+        }
+      }
+      const fileIssue = nonEmptyString(
+        file, e.gateFile, 'gate_file_cleared.gateFile', line,
+      )
+      if (fileIssue) return fileIssue
+      if (
+        typeof e.priorArtifactSha256 !== 'string' ||
+        !SHA256_REGEX.test(e.priorArtifactSha256)
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'gate_file_cleared.priorArtifactSha256 must be a 64-char lowercase hex string',
+          detail: `got ${JSON.stringify(e.priorArtifactSha256)}`,
+          line,
+        }
+      }
+      break
+    }
   }
 
   return null

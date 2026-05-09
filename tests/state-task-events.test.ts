@@ -155,3 +155,97 @@ describe('task_completed — validator', () => {
     expect(issue?.code).toBe('event_invalid_value')
   })
 })
+
+// --- M16 C9 follow-on Bug 2: gate_file_cleared validator -----------
+
+describe('gate_file_cleared — validator', () => {
+  function valid(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      version: 1,
+      type: 'gate_file_cleared',
+      ts: TS,
+      runId: RUN,
+      phase: 'build',
+      priorTaskId: 'T-001',
+      currentTaskId: 'T-002',
+      gateFile: 'GATE_BUILD_PASSED.json',
+      priorArtifactSha256: SHA64,
+      ...overrides,
+    }
+  }
+
+  test('valid event passes', () => {
+    expect(validateEvent(valid(), 'events.jsonl')).toBeNull()
+  })
+
+  test('valid event for verify phase passes', () => {
+    expect(
+      validateEvent(
+        valid({ phase: 'verify', gateFile: 'GATE_VERIFY_PASSED.json' }),
+        'events.jsonl',
+      ),
+    ).toBeNull()
+  })
+
+  test('valid event for review phase passes', () => {
+    expect(
+      validateEvent(
+        valid({ phase: 'review', gateFile: 'GATE_REVIEW_PASSED.json' }),
+        'events.jsonl',
+      ),
+    ).toBeNull()
+  })
+
+  test('rejects non-canonical phase', () => {
+    const issue = validateEvent(valid({ phase: 'banana' }), 'events.jsonl')
+    expect(issue?.code).toBe('event_invalid_phase')
+  })
+
+  test('rejects priorTaskId without T- prefix', () => {
+    const issue = validateEvent(valid({ priorTaskId: '001' }), 'events.jsonl')
+    expect(issue?.code).toBe('event_invalid_value')
+    expect(issue?.rule).toContain('priorTaskId')
+  })
+
+  test('rejects currentTaskId without T- prefix', () => {
+    const issue = validateEvent(valid({ currentTaskId: 'task-002' }), 'events.jsonl')
+    expect(issue?.code).toBe('event_invalid_value')
+    expect(issue?.rule).toContain('currentTaskId')
+  })
+
+  test('rejects empty gateFile', () => {
+    const issue = validateEvent(valid({ gateFile: '' }), 'events.jsonl')
+    expect(issue?.code).toBe('event_invalid_value')
+    expect(issue?.rule).toContain('gateFile')
+  })
+
+  test('rejects missing gateFile', () => {
+    const issue = validateEvent(valid({ gateFile: undefined }), 'events.jsonl')
+    expect(issue?.code).toBe('event_invalid_value')
+  })
+
+  test('rejects priorArtifactSha256 with wrong length', () => {
+    const issue = validateEvent(
+      valid({ priorArtifactSha256: 'a'.repeat(63) }),
+      'events.jsonl',
+    )
+    expect(issue?.code).toBe('event_invalid_value')
+    expect(issue?.rule).toContain('priorArtifactSha256')
+  })
+
+  test('rejects priorArtifactSha256 with uppercase hex', () => {
+    const issue = validateEvent(
+      valid({ priorArtifactSha256: 'A'.repeat(64) }),
+      'events.jsonl',
+    )
+    expect(issue?.code).toBe('event_invalid_value')
+  })
+
+  test('rejects priorArtifactSha256 with non-hex characters', () => {
+    const issue = validateEvent(
+      valid({ priorArtifactSha256: 'g'.repeat(64) }),
+      'events.jsonl',
+    )
+    expect(issue?.code).toBe('event_invalid_value')
+  })
+})

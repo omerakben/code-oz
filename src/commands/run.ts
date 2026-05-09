@@ -75,6 +75,7 @@ import {
   recordFakeProviderWarning,
 } from '../cli/fake-provider-warning.ts'
 import {
+  clearStaleGateFile,
   detectOpenBuildStarted,
   formatInterventionRefusal,
   loadPlanArtifact,
@@ -1150,6 +1151,38 @@ export async function dispatchBuild(
     })
   }
 
+  // M16 C9 follow-on (Bug 2) — task-boundary gate-file cleanup. When
+  // crossing into a new task (latest `task_completed.taskId !==
+  // taskId`), the prior task's `GATE_BUILD_PASSED.json` references an
+  // artifactSha256 that no longer matches the BUILD_REPORT.md the new
+  // task is about to write. Delete it now so the next `loadRun` (in
+  // the operator's eventual `code-oz approve build`) does not throw
+  // `gate_artifact_sha256_mismatch`. The deletion is recorded as a
+  // `gate_file_cleared` event for audit. Idempotent on every non-
+  // boundary path.
+  const buildGateClearance = await clearStaleGateFile({
+    runDir: runPaths.runDir,
+    phase: 'build',
+    events,
+    currentTaskId: taskId,
+  })
+  if (buildGateClearance.cleared) {
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_file_cleared',
+        ts: now(),
+        runId: opts.runId,
+        phase: 'build',
+        priorTaskId: buildGateClearance.priorTaskId!,
+        currentTaskId: taskId,
+        gateFile: 'GATE_BUILD_PASSED.json',
+        priorArtifactSha256: buildGateClearance.priorArtifactSha256!,
+      },
+    )
+  }
+
   // Worktree (idempotent on existing dir per C4).
   const worktreeResult = await loadOrCreateRunWorktree({
     cwd,
@@ -1294,6 +1327,7 @@ export async function dispatchVerify(
   opts: DispatchVerifyOptions,
 ): Promise<DispatchResult> {
   const cwd = opts.cwd ?? process.cwd()
+  const now = opts.now ?? (() => new Date().toISOString())
   const runPaths = runPathsFor(opts.stateDir, opts.artifactRoot, opts.runId)
 
   // 1. NEEDS_INTERVENTION refusal.
@@ -1356,6 +1390,34 @@ export async function dispatchVerify(
       exitCode: EXIT_INTERVENTION as 1,
       stderr: `code-oz run: VERIFY attempt ${verifyDone.attempt} for ${taskId} emitted verify_completed but no gate_required(verify).\n  A prior process likely crashed between event emissions.\n  Inspect .code-oz/state/runs/${opts.runId}/events.jsonl and resolve the partial state before re-running.\n`,
     })
+  }
+
+  // M16 C9 follow-on (Bug 2) — task-boundary gate-file cleanup. Mirrors
+  // dispatchBuild for `GATE_VERIFY_PASSED.json`. Deletes the prior
+  // task's verify gate so the operator's eventual `code-oz approve
+  // verify` does not throw `gate_artifact_sha256_mismatch` against the
+  // freshly-overwritten VERIFY.md.
+  const verifyGateClearance = await clearStaleGateFile({
+    runDir: runPaths.runDir,
+    phase: 'verify',
+    events,
+    currentTaskId: taskId,
+  })
+  if (verifyGateClearance.cleared) {
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_file_cleared',
+        ts: now(),
+        runId: opts.runId,
+        phase: 'verify',
+        priorTaskId: verifyGateClearance.priorTaskId!,
+        currentTaskId: taskId,
+        gateFile: 'GATE_VERIFY_PASSED.json',
+        priorArtifactSha256: verifyGateClearance.priorArtifactSha256!,
+      },
+    )
   }
 
   // Codex Mod #3 + #4 — re-validate BUILD artifact shas + bytes.
@@ -1606,6 +1668,34 @@ export async function dispatchReview(
     })
   }
   const taskId = cursorResult.cursor.pending.taskId
+
+  // M16 C9 follow-on (Bug 2) — task-boundary gate-file cleanup. Mirrors
+  // dispatchBuild/dispatchVerify for `GATE_REVIEW_PASSED.json`. Deletes
+  // the prior task's review gate so the operator's eventual `code-oz
+  // approve review` does not throw `gate_artifact_sha256_mismatch`
+  // against the freshly-overwritten REVIEW.md.
+  const reviewGateClearance = await clearStaleGateFile({
+    runDir: runPaths.runDir,
+    phase: 'review',
+    events,
+    currentTaskId: taskId,
+  })
+  if (reviewGateClearance.cleared) {
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_file_cleared',
+        ts: now(),
+        runId: opts.runId,
+        phase: 'review',
+        priorTaskId: reviewGateClearance.priorTaskId!,
+        currentTaskId: taskId,
+        gateFile: 'GATE_REVIEW_PASSED.json',
+        priorArtifactSha256: reviewGateClearance.priorArtifactSha256!,
+      },
+    )
+  }
 
   // Codex Mod #3 — re-validate BUILD/VERIFY artifact shas + bytes.
   const artifacts = await resolveReviewArtifacts({
