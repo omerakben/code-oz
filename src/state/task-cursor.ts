@@ -214,3 +214,50 @@ export function nextPendingTaskId(
   const { cursor } = projectTaskCursor(plan, events)
   return cursor.pending === null ? null : cursor.pending.taskId
 }
+
+/**
+ * M16 C9 — read-only lookup for the latest `review_resolved` event for
+ * `(runId, taskId, attempt)`. Returns the event's
+ * `{ finalRound, reviewReportSha256, ts }` or `null` when none exists.
+ *
+ * Codex C9 Mod #10 — the cursor stays a pure projection; this helper
+ * does NOT mutate, write, or read disk. `approveReviewTaskGate`
+ * consumes it (Mod #1) to source `task_completed` from the canonical
+ * ready signal (`review_resolved`), not from `review_round_completed`
+ * (which fires for every round outcome including needs-revision).
+ *
+ * "Latest" is last-occurrence in event order (events.jsonl is
+ * append-only). Equal `(runId, taskId, attempt)` keeps last-wins;
+ * defensive against the (impossible-by-contract) duplicate emission.
+ */
+export interface ReviewResolvedRecord {
+  readonly finalRound: number
+  readonly finalScore: number
+  readonly reviewReportSha256: string
+  readonly ts: string
+}
+
+export function findLatestReviewResolved(
+  events: readonly LoggedEvent[],
+  runId: string,
+  taskId: string,
+  attempt: number,
+): ReviewResolvedRecord | null {
+  let latest: ReviewResolvedRecord | null = null
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'review_resolved') continue
+    if (e.runId !== runId) continue
+    if (e.taskId !== taskId) continue
+    if (e.attempt !== attempt) continue
+    latest = Object.freeze({
+      finalRound: e.finalRound,
+      finalScore: e.finalScore,
+      reviewReportSha256: e.reviewReportSha256,
+      ts: e.ts,
+    })
+    break
+  }
+  return latest
+}

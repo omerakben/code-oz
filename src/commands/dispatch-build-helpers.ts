@@ -22,6 +22,7 @@
 //      wrote the half-event.
 
 import { readFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 import {
@@ -33,6 +34,18 @@ import {
   VerifyReportLoadError,
   type VerifyReportData,
 } from '../artifacts/verify-report.ts'
+import {
+  parseBuildReport,
+  BuildReportLoadError,
+} from '../artifacts/build-report.ts'
+import {
+  parseReviewReport,
+  parseReviewPanelReport,
+  detectReviewReportMode,
+  ReviewReportLoadError,
+  serializeReviewCarryForward,
+  REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS,
+} from '../artifacts/review-report.ts'
 import {
   prepareCarryForward,
   type VerifiedFailedAttempt,
@@ -226,18 +239,24 @@ export interface ResolveCarryForwardInput {
  *     and parseable VERIFY.md showing verdict='fail' for the same
  *     `(taskId, attempt-1)` → `{ kind: 'present', cf, priorAttempt }`
  *     where `cf` is the structured carry-forward block runBuild
- *     consumes.
+ *     consumes (source='verify-fail').
+ *   - attempt > 1 with valid `review_remediation_recorded` for
+ *     `(taskId, attempt-1)` with `remediationIntent='continue'` and a
+ *     parseable REVIEW.md whose upstreamRefs match → carry-forward
+ *     with source='review-needs-revision'. (M16 C9 Mod #8 — extends
+ *     the existing M9 review-needs-revision shape `BuildReportCarryForward`
+ *     already supports.)
  *   - attempt > 1 with `build_completed` for `attempt-1` but neither a
- *     restart signal nor (the dispatcher's caller already checked for
- *     gate_required) → `{ kind: 'awaiting-approve' }` so the
- *     dispatcher can tell the operator to run `code-oz approve build`.
- *   - attempt > 1 with the restart signal but VERIFY.md is missing /
- *     malformed / mismatched → `{ kind: 'drift', reason }`.
+ *     verify-restart nor review-remediation signal → `{ kind:
+ *     'awaiting-approve' }` so the dispatcher can tell the operator
+ *     to run `code-oz approve build`.
+ *   - attempt > 1 with the restart signal but VERIFY.md / REVIEW.md is
+ *     missing / malformed / mismatched → `{ kind: 'drift', reason }`.
  *
- * Source-aware: today we honor `source: 'verify-fail'`. When M9
- * review-needs-revision starts producing carry-forward (BuildReport
- * already supports the source field), this resolver is the place to
- * extend.
+ * Source-aware: when both signals are present (e.g., a verify-fail
+ * happened earlier in the same task and was followed by a
+ * review-needs-revision later), the most recent matching signal wins
+ * — file order is the ordering authority (validation rule 8).
  */
 export async function resolveBuildCarryForward(
   input: ResolveCarryForwardInput,
@@ -248,28 +267,50 @@ export async function resolveBuildCarryForward(
 
   const priorAttempt = input.attempt - 1
 
-  // Find verify_restart_initiated for this (taskId, priorAttempt).
+  // Find verify_restart_initiated for this (taskId, priorAttempt) AND
+  // review_remediation_recorded for this (taskId, priorAttempt) with
+  // intent=continue. The latest event among the two wins (file order
+  // is the ordering authority per rule 8).
   let restartSignal:
     | Extract<LoggedEvent, { type: 'verify_restart_initiated' }>
     | undefined
-  for (const e of input.events) {
+  let restartSignalIdx = -1
+  let remediationSignal:
+    | Extract<LoggedEvent, { type: 'review_remediation_recorded' }>
+    | undefined
+  let remediationSignalIdx = -1
+  for (let i = 0; i < input.events.length; i++) {
+    const e = input.events[i]!
     if (!isKnownPhaseEvent(e)) continue
-    if (e.type !== 'verify_restart_initiated') continue
     if (e.runId !== input.runId) continue
-    const restart = e as Extract<LoggedEvent, { type: 'verify_restart_initiated' }>
-    if (restart.taskId !== input.taskId) continue
-    if (restart.attempt !== priorAttempt) continue
-    if (restart.nextAction !== 'restart') continue
-    if (restart.nextAttempt !== input.attempt) continue
-    restartSignal = restart
-    // Don't break — let later events overwrite earlier ones (last-wins).
+    if (e.type === 'verify_restart_initiated') {
+      const restart = e as Extract<LoggedEvent, { type: 'verify_restart_initiated' }>
+      if (restart.taskId !== input.taskId) continue
+      if (restart.attempt !== priorAttempt) continue
+      if (restart.nextAction !== 'restart') continue
+      if (restart.nextAttempt !== input.attempt) continue
+      restartSignal = restart
+      restartSignalIdx = i
+      continue
+    }
+    if (e.type === 'review_remediation_recorded') {
+      const remediation = e as Extract<
+        LoggedEvent,
+        { type: 'review_remediation_recorded' }
+      >
+      if (remediation.taskId !== input.taskId) continue
+      if (remediation.attempt !== priorAttempt) continue
+      if (remediation.remediationIntent !== 'continue') continue
+      remediationSignal = remediation
+      remediationSignalIdx = i
+    }
   }
 
-  if (restartSignal === undefined) {
+  if (restartSignal === undefined && remediationSignal === undefined) {
     // Either there's a build_completed for priorAttempt without any
-    // restart signal (awaiting-approve case) or there is no prior
-    // BUILD record at all (drift — caller bumped attempt without a
-    // completed prior attempt).
+    // restart / remediation signal (awaiting-approve case) or there is
+    // no prior BUILD record at all (drift — caller bumped attempt
+    // without a completed prior attempt).
     let priorCompleted = false
     for (const e of input.events) {
       if (!isKnownPhaseEvent(e)) continue
@@ -290,7 +331,29 @@ export async function resolveBuildCarryForward(
     }
     return Object.freeze({
       kind: 'drift' as const,
-      reason: `attempt=${input.attempt} but no build_completed or verify_restart_initiated for (taskId=${input.taskId}, attempt=${priorAttempt})`,
+      reason: `attempt=${input.attempt} but no build_completed, verify_restart_initiated, or review_remediation_recorded for (taskId=${input.taskId}, attempt=${priorAttempt})`,
+    })
+  }
+
+  // M16 C9 Mod #8 — when both signals exist, last-wins by file order.
+  // When only one is present, that one wins.
+  if (
+    remediationSignal !== undefined &&
+    (restartSignal === undefined || remediationSignalIdx > restartSignalIdx)
+  ) {
+    return await resolveReviewRemediationCarryForward({
+      input,
+      priorAttempt,
+      remediation: remediationSignal,
+    })
+  }
+  if (restartSignal === undefined) {
+    // Defensive — narrowed by the conditional above. Should be unreachable
+    // because the !restartSignal && !remediationSignal case is the early
+    // return above; this exists for the type narrower.
+    return Object.freeze({
+      kind: 'drift' as const,
+      reason: 'resolveBuildCarryForward: signal narrowing bug',
     })
   }
 
@@ -358,6 +421,150 @@ export async function resolveBuildCarryForward(
     cf,
     priorAttempt,
   })
+}
+
+// --- review-needs-revision carry-forward (M16 C9 Mod #8) ---------
+
+/**
+ * Build the `review-needs-revision` carry-forward block for BUILD
+ * attempt N+1. Reads the canonical REVIEW.md, validates it parses + the
+ * upstream refs match the dispatched taskId/attempt, validates the sha
+ * matches the `review_remediation_recorded.reviewMdSha256`, then maps
+ * onto BuildReportCarryForward via `serializeReviewCarryForward`.
+ *
+ * Mirrors the `verify-fail` path's strictness: every drift case
+ * surfaces with `kind: 'drift'` and a specific reason. The sha check
+ * is the operator-hand-edit detector for the REVIEW path.
+ */
+async function resolveReviewRemediationCarryForward(args: {
+  readonly input: ResolveCarryForwardInput
+  readonly priorAttempt: number
+  readonly remediation: Extract<
+    LoggedEvent,
+    { type: 'review_remediation_recorded' }
+  >
+}): Promise<ResolveCarryForwardResult> {
+  const { input, priorAttempt, remediation } = args
+  const reviewPath = join(input.artifactRoot, 'REVIEW.md')
+  let reviewText: string
+  try {
+    reviewText = await readFile(reviewPath, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return Object.freeze({
+        kind: 'drift' as const,
+        reason: `review_remediation_recorded present but REVIEW.md not found at ${reviewPath}`,
+      })
+    }
+    throw err
+  }
+  const actualSha = createHash('sha256').update(reviewText, 'utf8').digest('hex')
+  if (actualSha !== remediation.reviewMdSha256) {
+    return Object.freeze({
+      kind: 'drift' as const,
+      reason: `REVIEW.md sha ${actualSha.slice(0, 8)}… does not match review_remediation_recorded.reviewMdSha256 ${remediation.reviewMdSha256.slice(0, 8)}… (post-edit detected)`,
+    })
+  }
+
+  // Parse REVIEW.md — accept single OR panel mode (the panelist
+  // emits remediation events too via the panel-flatten path). Fail if
+  // the upstream refs disagree with our dispatched (taskId, attempt).
+  const mode = detectReviewReportMode(reviewText)
+  if (mode === 'unknown') {
+    return Object.freeze({
+      kind: 'drift' as const,
+      reason: `REVIEW.md is neither single nor panel mode (expected '## Reviewer' xor '## Reviewers')`,
+    })
+  }
+  let reviewData:
+    | ReturnType<typeof parseReviewReport>
+    | ReturnType<typeof parseReviewPanelReport>
+  try {
+    reviewData = mode === 'panel'
+      ? parseReviewPanelReport(reviewText, reviewPath)
+      : parseReviewReport(reviewText, reviewPath)
+  } catch (err) {
+    if (err instanceof ReviewReportLoadError) {
+      return Object.freeze({
+        kind: 'drift' as const,
+        reason: `REVIEW.md is malformed: ${err.message}`,
+      })
+    }
+    throw err
+  }
+  if (reviewData.upstreamRefs.taskId !== input.taskId) {
+    return Object.freeze({
+      kind: 'drift' as const,
+      reason: `REVIEW.md upstreamRefs.taskId='${reviewData.upstreamRefs.taskId}' does not match dispatched taskId='${input.taskId}'`,
+    })
+  }
+  if (reviewData.upstreamRefs.attempt !== priorAttempt) {
+    return Object.freeze({
+      kind: 'drift' as const,
+      reason: `REVIEW.md upstreamRefs.attempt=${reviewData.upstreamRefs.attempt} does not match priorAttempt=${priorAttempt}`,
+    })
+  }
+
+  // Read the prior BUILD_REPORT.md so we can copy its
+  // priorValidationCommand into the new carry-forward (the persona's
+  // existing snapshot is the source of truth for the validation
+  // command). Skip parsing — only the validation command is needed.
+  const buildReportPath = join(input.artifactRoot, 'BUILD_REPORT.md')
+  let priorValidationCommand: string
+  try {
+    const buildReportText = await readFile(buildReportPath, 'utf8')
+    const parsed = parseBuildReport(buildReportText, buildReportPath)
+    priorValidationCommand = parsed.validationCommand.command
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return Object.freeze({
+        kind: 'drift' as const,
+        reason: `review_remediation_recorded present but BUILD_REPORT.md not found at ${buildReportPath}`,
+      })
+    }
+    if (err instanceof BuildReportLoadError) {
+      return Object.freeze({
+        kind: 'drift' as const,
+        reason: `BUILD_REPORT.md is malformed: ${err.message}`,
+      })
+    }
+    throw err
+  }
+
+  // Build the typed carry-forward from REVIEW.md fields. The summary +
+  // constraint come from REVIEW.md's score field, which both single
+  // and panel parsers populate. v0.1: use the ready/needs-revision
+  // exit reason for the summary and a stub constraint when the
+  // artifact does not carry an operator-authored directive (the
+  // M9 review-remediation pipeline supplies one in production via
+  // serializeReviewCarryForward; we re-create that here).
+  const summary = truncateForCarryForward(
+    reviewData.score.exitReason,
+    REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS,
+  )
+  const constraint = truncateForCarryForward(
+    `Address REVIEW round ${remediation.reviewRound} findings; re-run validation command before BUILD attempt ${input.attempt} BUILD_REPORT.md.`,
+    REVIEW_CARRY_FORWARD_TEXT_MAX_CHARS,
+  )
+  const cf = serializeReviewCarryForward({
+    reviewReportPath: reviewPath,
+    reviewReportSha256: remediation.reviewMdSha256,
+    priorRound: remediation.reviewRound,
+    summary,
+    constraint,
+    priorAttempt,
+    priorValidationCommand,
+  })
+  return Object.freeze({
+    kind: 'present' as const,
+    cf,
+    priorAttempt,
+  })
+}
+
+function truncateForCarryForward(text: string, max: number): string {
+  if (text.length <= max) return text
+  return text.slice(0, max - 1) + '…'
 }
 
 // --- intervention formatter ---------------------------------------

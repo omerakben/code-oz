@@ -315,6 +315,130 @@ describe('loadOrCreateRunWorktree — worktree_created event missing', () => {
   })
 })
 
+// ---- Case 5 (M16 C9 Mod #6): post-task-completed re-creation ------
+//
+// After approve-review for task N, preApproveReviewHook destroys the
+// worktree subdir but `removeRunWorktree` preserves the run dir +
+// base.txt. The wrapper detects the post-task-completed pattern via
+// the latest `worktree_destroyed` event followed by a `task_completed`
+// (no later `worktree_created`) and re-creates the worktree from
+// the pinned base.txt sha.
+
+describe('loadOrCreateRunWorktree — post-task-completed re-creation', () => {
+  async function appendWorktreeDestroyed(attempt: number): Promise<void> {
+    const { appendEvent } = await import('../src/state/events.ts')
+    await appendEvent(
+      { file: stateRunPaths.eventsFile, lockDir: stateRunPaths.lockDir },
+      {
+        version: 1,
+        type: 'worktree_destroyed',
+        ts: FIXED_NOW,
+        runId: RUN,
+        phase: 'review',
+        attempt,
+        worktreePath: worktreeRunPaths(projectRoot, RUN).worktree,
+      },
+    )
+  }
+  async function appendTaskCompleted(taskId: string, taskIndex: number): Promise<void> {
+    const { appendEvent } = await import('../src/state/events.ts')
+    await appendEvent(
+      { file: stateRunPaths.eventsFile, lockDir: stateRunPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_completed',
+        ts: FIXED_NOW,
+        runId: RUN,
+        taskId,
+        taskIndex,
+        reviewGatePath: join(stateRunPaths.runDir, 'GATE_REVIEW_PASSED.json'),
+      },
+    )
+  }
+
+  test('re-creates the worktree subdir + emits a fresh worktree_created event when post-task-completed pattern matches', async () => {
+    const first = await callWrapper()
+    expect(first.status).toBe('ok')
+    if (first.status !== 'ok') return
+
+    // Simulate approve-review's worktree removal: rm via git + appendEvent(worktree_destroyed)
+    await runGit(projectRoot, ['worktree', 'remove', '--force', first.paths.worktree]).catch(
+      () => null,
+    )
+    await rm(first.paths.worktree, { recursive: true, force: true })
+    await appendWorktreeDestroyed(1)
+    // Then approveReviewTaskGate's task_completed lands.
+    await appendTaskCompleted('T-001', 0)
+
+    // Now the next dispatchBuild for task N+1 calls the wrapper. It
+    // should re-create the worktree from base.txt's sha.
+    const second = await callWrapper()
+    expect(second.status).toBe('ok')
+    if (second.status !== 'ok') return
+    expect(second.created).toBe(true)
+    expect(second.baseCommitSha).toBe(first.baseCommitSha)
+    expect(existsSync(first.paths.worktree)).toBe(true)
+
+    const created = await readWorktreeCreatedEvents()
+    expect(created).toHaveLength(2)
+    if (created[1]?.type !== 'worktree_created') return
+    expect(created[1].baseCommitSha).toBe(first.baseCommitSha)
+  })
+
+  test('does NOT recreate when worktree_destroyed has no following task_completed (treats as partial state)', async () => {
+    const first = await callWrapper()
+    expect(first.status).toBe('ok')
+    if (first.status !== 'ok') return
+
+    await runGit(projectRoot, ['worktree', 'remove', '--force', first.paths.worktree]).catch(
+      () => null,
+    )
+    await rm(first.paths.worktree, { recursive: true, force: true })
+    await appendWorktreeDestroyed(1)
+    // No task_completed appended — the destruction was caused by
+    // something OTHER than the post-review cleanup (e.g., manual
+    // operator removal). Wrapper must refuse rather than silently
+    // re-create.
+
+    const second = await callWrapper()
+    expect(second.status).toBe('intervention')
+    if (second.status !== 'intervention') return
+    expect(second.code).toBe('worktree_partial_state')
+    expect(second.rule).toContain('worktree subdir missing')
+  })
+
+  test('does NOT recreate when a later worktree_created already exists (idempotency through case-2 path)', async () => {
+    const first = await callWrapper()
+    expect(first.status).toBe('ok')
+    if (first.status !== 'ok') return
+
+    await runGit(projectRoot, ['worktree', 'remove', '--force', first.paths.worktree]).catch(
+      () => null,
+    )
+    await rm(first.paths.worktree, { recursive: true, force: true })
+    await appendWorktreeDestroyed(1)
+    await appendTaskCompleted('T-001', 0)
+
+    // First wrapper call after task boundary recreates → emits
+    // worktree_created.
+    const recreated = await callWrapper()
+    expect(recreated.status).toBe('ok')
+    if (recreated.status !== 'ok') return
+    expect(recreated.created).toBe(true)
+
+    // Now a subsequent wrapper call sees the worktree present and the
+    // latest worktree_created event ahead of any worktree_destroyed —
+    // case 2 (idempotent reload) with created: false.
+    const idempotent = await callWrapper()
+    expect(idempotent.status).toBe('ok')
+    if (idempotent.status !== 'ok') return
+    expect(idempotent.created).toBe(false)
+
+    const created = await readWorktreeCreatedEvents()
+    expect(created).toHaveLength(2) // initial + post-task-boundary recreate
+  })
+})
+
 // ---- Case 9: non-git cwd ------------------------------------------
 
 describe('loadOrCreateRunWorktree — non-git cwd', () => {

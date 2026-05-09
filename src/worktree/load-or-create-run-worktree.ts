@@ -38,6 +38,7 @@ import { access, readFile } from 'node:fs/promises'
 import { runPaths as worktreeRunPaths, type WorktreePaths } from './paths.ts'
 import {
   createRunWorktree,
+  runGit,
   type DirtyTreePolicy,
 } from './create-run-worktree.ts'
 import { appendEvent, type EventLogPaths, readEvents } from '../state/events.ts'
@@ -181,6 +182,28 @@ async function classifyExisting(
   const onDiskSha = baseRead.sha
 
   if (!(await pathExists(wtPaths.worktree))) {
+    // M16 C9 Mod #6 — task-boundary re-creation case (case #5).
+    // After approve-review for task N, preApproveReviewHook destroys
+    // the worktree subdir but `removeRunWorktree` preserves the run
+    // dir + base.txt + patches/. When task N+1's first BUILD calls
+    // this wrapper, the run dir is present but the worktree subdir
+    // is gone.
+    //
+    // Detect: latest `worktree_destroyed` event for this runId
+    // followed by a `task_completed` (and no subsequent
+    // `worktree_created` / `run_initialized` re-creation event). When
+    // matched, recreate the worktree from base.txt's sha (NOT a fresh
+    // capture — the run's base commit is already pinned).
+    //
+    // The detection scans events.jsonl once; ordering is enforced by
+    // file order (validation rule 8). When the post-task-completed
+    // pattern is NOT matched, we fall through to the original
+    // `worktree_partial_state` refusal (the dir was destroyed by
+    // something other than the post-review cleanup).
+    const events = await readEvents(eventPathsFor(opts.runPaths))
+    if (await isPostTaskCompletedRecreation(events, opts.runId)) {
+      return await recreateAfterTaskBoundary(opts, wtPaths, onDiskSha, now)
+    }
     return await refuseWithIntervention(opts, now, {
       code: 'worktree_partial_state',
       rule: `run dir present but worktree subdir missing (expected at ${wtPaths.worktree})`,
@@ -366,4 +389,97 @@ async function pathExists(p: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * M16 C9 Mod #6 — detect "the worktree subdir is missing because
+ * approve-review just destroyed it for the task boundary" pattern.
+ *
+ * The pattern: the latest `worktree_destroyed` event for this runId
+ * is followed by a `task_completed` event AND no later
+ * `worktree_created` event has re-created the worktree. The order
+ * matters because `task_completed` is appended AFTER worktree
+ * removal (preApproveReviewHook + approveReviewTaskGate sequence
+ * the writes inside the same approval transaction).
+ */
+async function isPostTaskCompletedRecreation(
+  events: readonly { readonly type: string; readonly runId?: string }[],
+  runId: string,
+): Promise<boolean> {
+  let latestDestroyedIdx = -1
+  let latestCreatedAfterIdx = -1
+  let taskCompletedAfterDestroyed = false
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!
+    if (e.runId !== runId) continue
+    if (e.type === 'worktree_destroyed') {
+      latestDestroyedIdx = i
+      latestCreatedAfterIdx = -1
+      taskCompletedAfterDestroyed = false
+      continue
+    }
+    if (latestDestroyedIdx === -1) continue
+    if (e.type === 'worktree_created') {
+      latestCreatedAfterIdx = i
+      continue
+    }
+    if (e.type === 'task_completed') {
+      taskCompletedAfterDestroyed = true
+    }
+  }
+  if (latestDestroyedIdx === -1) return false
+  if (latestCreatedAfterIdx > latestDestroyedIdx) return false
+  return taskCompletedAfterDestroyed
+}
+
+/**
+ * M16 C9 Mod #6 — re-create the worktree subdir from the pinned
+ * base.txt sha after a post-task-completed destruction. Emits a fresh
+ * `worktree_created` event so the audit trail records the
+ * re-creation; the new event re-uses the same `baseCommitSha` so the
+ * sha-equality check in `classifyExisting` (which the next call into
+ * this wrapper performs) remains satisfied.
+ *
+ * `git worktree add --detach` is the same primitive `createRunWorktree`
+ * uses; we re-use `runGit` for the call. The supporting dirs (patches
+ * /, forensics/, build-drafts/) are preserved by removeRunWorktree, so
+ * we only re-add the worktree subdir itself.
+ */
+async function recreateAfterTaskBoundary(
+  opts: LoadOrCreateRunWorktreeOptions,
+  wtPaths: WorktreePaths,
+  baseCommitSha: string,
+  now: () => string,
+): Promise<LoadOrCreateRunWorktreeResult> {
+  const addResult = await runGit(opts.cwd, [
+    'worktree',
+    'add',
+    '--detach',
+    wtPaths.worktree,
+    baseCommitSha,
+  ])
+  if (!addResult.ok) {
+    return await refuseWithIntervention(opts, now, {
+      code: 'worktree_add_failed',
+      rule: `task-boundary recreation: git worktree add failed for sha ${baseCommitSha}`,
+      detail: addResult.stderr.trim().slice(0, 200) || 'git worktree add returned non-zero',
+    })
+  }
+  await appendEvent(eventPathsFor(opts.runPaths), {
+    version: 1,
+    type: 'worktree_created',
+    ts: now(),
+    runId: opts.runId,
+    phase: opts.phase,
+    baseCommitSha,
+    worktreePath: wtPaths.worktree,
+    dirtyTreePolicy: 'clean-base',
+  })
+  return Object.freeze({
+    status: 'ok' as const,
+    created: true,
+    baseCommitSha,
+    worktreePath: wtPaths.worktree,
+    paths: wtPaths,
+  })
 }

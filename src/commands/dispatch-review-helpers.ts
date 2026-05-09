@@ -28,6 +28,8 @@ import { join } from 'node:path'
 
 import { isKnownPhaseEvent, type LoggedEvent } from '../state/schemas.ts'
 
+import type { PlanArtifact } from '../artifacts/plan.ts'
+
 // --- review remediation event lookup ------------------------------
 
 const SHA = (s: string): string =>
@@ -410,4 +412,98 @@ export function detectSchedulerFireOneLine(
     verdict,
     actionableFindingsAddedCount,
   })
+}
+
+// --- review-needs-revision → BUILD restart pre-route --------------
+
+/**
+ * M16 C9 Mod #7 — review-remediation → BUILD pre-route detector.
+ *
+ * Returns `true` when `handleActiveRun` should route a `currentPhase=review`
+ * dispatch to `dispatchBuild` for BUILD attempt N+1 instead of looping
+ * back into REVIEW. The signal is a `review_remediation_recorded` event
+ * for the cursor's pending task with `remediationIntent: 'continue'`
+ * AND no subsequent `build_started` for `(taskId, attempt+1)`.
+ *
+ * Mirrors `shouldRouteToBuildRestart` (the verify-restart pre-route
+ * landed in C7) — same shape, different signal source. Both pre-routes
+ * exist because the state-machine reducer treats `currentPhase` as
+ * phase-only; per-task / per-attempt routing is event-projection
+ * authority (M16 L1 lock).
+ *
+ * Returns false when:
+ *   - no pending task,
+ *   - no review_remediation_recorded for the pending task,
+ *   - the latest remediation has `remediationIntent !== 'continue'`
+ *     (cap-exhausted + build-cap-blocked are terminal — operator
+ *     intervention paths, not BUILD restart),
+ *   - a `build_started` event for `(taskId, attempt+1)` already
+ *     exists (the BUILD restart is mid-flight; let the build branch
+ *     run, NOT this pre-route — dispatchBuild's open-build detector
+ *     handles in-flight refusal).
+ *
+ * The "next attempt" is derived from the remediation's `attempt`
+ * field (the just-reviewed BUILD attempt) → `attempt + 1`.
+ */
+export function shouldRouteReviewToBuildRestart(
+  events: readonly LoggedEvent[],
+  plan: PlanArtifact,
+  runId: string,
+): boolean {
+  // Find the cursor's pending task (first non-completed in PLAN order).
+  // Mirrors the loop in shouldRouteToBuildRestart (kept inline so the
+  // helper has zero dependency on src/state/task-cursor.ts; events
+  // already carry taskIds, and we never hold task_completed against an
+  // unknown PLAN id here — that's the approve primitive's job).
+  const completedTaskIds = new Set<string>()
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'task_completed') continue
+    if (e.runId !== runId) continue
+    completedTaskIds.add(e.taskId)
+  }
+  let pendingTaskId: string | null = null
+  for (const t of plan.tasks) {
+    if (!completedTaskIds.has(t.id)) {
+      pendingTaskId = t.id
+      break
+    }
+  }
+  if (pendingTaskId === null) return false
+
+  // Find the latest remediation for this pending task across ANY attempt.
+  // The remediation event records the just-reviewed `attempt`; we use
+  // (attempt + 1) as the next BUILD attempt to detect.
+  let latestRemediation:
+    | Extract<LoggedEvent, { type: 'review_remediation_recorded' }>
+    | null = null
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'review_remediation_recorded') continue
+    if (e.runId !== runId) continue
+    if (e.taskId !== pendingTaskId) continue
+    latestRemediation = e as Extract<
+      LoggedEvent,
+      { type: 'review_remediation_recorded' }
+    >
+    break
+  }
+  if (latestRemediation === null) return false
+  if (latestRemediation.remediationIntent !== 'continue') return false
+
+  const nextBuildAttempt = latestRemediation.attempt + 1
+
+  // Has the next BUILD attempt already started? If so, the loop has
+  // moved past the restart point; let the build branch / dispatchBuild
+  // open-build detector handle in-flight refusal.
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'build_started') continue
+    if (e.runId !== runId) continue
+    const started = e as Extract<LoggedEvent, { type: 'build_started' }>
+    if (started.taskId !== pendingTaskId) continue
+    if (started.attempt >= nextBuildAttempt) return false
+  }
+  return true
 }

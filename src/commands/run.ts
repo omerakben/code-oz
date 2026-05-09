@@ -88,6 +88,7 @@ import {
   readPriorReviewMd,
   resolveNextReviewRound,
   resolveReviewArtifacts,
+  shouldRouteReviewToBuildRestart,
 } from './dispatch-review-helpers.ts'
 import { exitCodeForPhaseResult } from '../cli/exit-codes.ts'
 
@@ -624,11 +625,25 @@ async function handleActiveRun(
     file: runPaths.eventsFile,
     lockDir: runPaths.lockDir,
   }).catch(() => [])
-  const gateRequiredForPhase = events.some((e) => {
-    if (!isKnownPhaseEvent(e)) return false
-    if (e.type !== 'gate_required') return false
-    return e.phase === phase
-  })
+  // M16 C9: a `gate_required(phase)` event signals "awaiting approval"
+  // ONLY when no later `gate_written(phase)` event has satisfied it.
+  // Pre-C9 single-task runs never re-emitted gate_required(review) after
+  // approval, so the check was effectively last-event-wins anyway. With
+  // C9's task-loop dispatch, the run can re-enter the review branch on
+  // a fresh task while gate_required(review) from the prior task lingers
+  // in the log; the check must respect the gate_written signal that
+  // closed the prior require.
+  let gateRequiredForPhase = false
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type === 'gate_required' && e.phase === phase) {
+      gateRequiredForPhase = true
+      continue
+    }
+    if (e.type === 'gate_written' && e.phase === phase) {
+      gateRequiredForPhase = false
+    }
+  }
 
   if (phase === 'define') {
     if (gateRequiredForPhase) {
@@ -748,6 +763,67 @@ async function handleActiveRun(
         `code-oz run: --task ${taskOverride} only applies to the BUILD phase (current phase: review).\n`,
       )
       process.exit(EXIT_USAGE)
+    }
+    // Codex M16 C9 Mod #7 — review-remediation → BUILD pre-route.
+    // C8 emits `review_remediation_recorded` on every needs-revision
+    // exit with action='continue'. Without this pre-route, the next
+    // `code-oz run` would loop back into dispatchReview when BUILD
+    // attempt N+1 is what should run. Mirrors C7's verify_restart
+    // pre-route. Both bypass `currentPhase` for per-task / per-attempt
+    // routing per M16 L1 (multi-task semantics live in event
+    // projection, not the state machine).
+    let reviewPlan: PlanArtifact | null = null
+    try {
+      reviewPlan = await loadPlanArtifact(artifactRoot)
+    } catch {
+      // dispatchReview will surface PLAN.md errors; stay on review.
+    }
+    if (
+      reviewPlan !== null &&
+      shouldRouteReviewToBuildRestart(events, reviewPlan, activeRunId)
+    ) {
+      const result = await dispatchBuild({
+        stateDir,
+        artifactRoot,
+        runId: activeRunId,
+        providerOverride,
+        fakeScriptEntries,
+      })
+      if (result.stdout !== undefined && result.stdout.length > 0) {
+        process.stdout.write(result.stdout)
+      }
+      if (result.stderr !== undefined && result.stderr.length > 0) {
+        process.stderr.write(result.stderr)
+      }
+      process.exit(result.exitCode)
+    }
+    // M16 C9 Mod #2 — task-loop dispatch: when an earlier task's
+    // approve-review landed but `currentPhase` is still `review`
+    // (because allCompleted=false → no phase_entered(ship)), the next
+    // pending task's BUILD must run. Detect via cursor: if cursor.pending
+    // exists AND has status === 'not_started' (no task_started yet),
+    // route to dispatchBuild for the next task. Distinct from the
+    // review-remediation case above which routes for BUILD attempt N+1
+    // of the SAME task.
+    if (reviewPlan !== null) {
+      const cursorResult = projectTaskCursor(reviewPlan, events)
+      const pending = cursorResult.cursor.pending
+      if (pending !== null && pending.status === 'not_started') {
+        const result = await dispatchBuild({
+          stateDir,
+          artifactRoot,
+          runId: activeRunId,
+          providerOverride,
+          fakeScriptEntries,
+        })
+        if (result.stdout !== undefined && result.stdout.length > 0) {
+          process.stdout.write(result.stdout)
+        }
+        if (result.stderr !== undefined && result.stderr.length > 0) {
+          process.stderr.write(result.stderr)
+        }
+        process.exit(result.exitCode)
+      }
     }
     const result = await dispatchReview({
       stateDir,

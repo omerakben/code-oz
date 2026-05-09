@@ -49,6 +49,11 @@ import {
 } from './events.ts'
 import { gateFilename, readGate, writeGate, type GatePaths } from './gates.ts'
 import { LockBusyError, withLock } from './lock.ts'
+import {
+  findLatestReviewResolved,
+  projectTaskCursor,
+} from './task-cursor.ts'
+import type { PlanArtifact } from '../artifacts/plan.ts'
 
 // --- paths ---------------------------------------------------------
 
@@ -414,6 +419,349 @@ export async function approveGate(opts: ApproveGateOptions): Promise<ApproveGate
     }
     throw err
   })
+}
+
+// --- review approve + task-loop dispatch (M16 C9) ------------------
+
+/**
+ * REVIEW-specific approve primitive that integrates the task-loop
+ * dispatch atomically (M16 C9). Replaces `approveGate` for the REVIEW
+ * branch in `runApprove` so the entire transaction — write
+ * GATE_REVIEW_PASSED.json, append `gate_written` + `phase_exited(review)`,
+ * append `task_completed` for the just-approved task, and conditionally
+ * append `phase_entered(ship)` only when every PLAN task is complete —
+ * runs under a single per-run lock acquisition.
+ *
+ * Codex C9 pre-design review pinned the load-bearing invariants
+ * implemented inline (7 block-push + 2 fix-soon + 1 nit, all closed):
+ *
+ *   1. `task_completed` is sourced from the canonical `review_resolved`
+ *      ready signal, NOT `review_round_completed` (which fires for
+ *      every round outcome including needs-revision). The lookup uses
+ *      `findLatestReviewResolved(events, runId, taskId, attempt)`
+ *      and asserts the matching `reviewReportSha256`. (Mod #1)
+ *   2. The reducer never emits `phase_entered(ship)` unconditionally on
+ *      review approve — the cursor decides. After appending
+ *      `task_completed`, the cursor is recomputed; only when
+ *      `cursor.allCompleted === true` do we transition to ship.
+ *      Mid-PLAN approvals stop at `phase_exited(review)` and the next
+ *      `code-oz run` invocation routes to BUILD for the next task. (Mod #2)
+ *   3. `task_completed` emission is idempotent under the lock. If a
+ *      `task_completed` event for `(runId, taskId)` already exists in
+ *      events.jsonl, the append is skipped and the call is a no-op
+ *      with respect to that event. The full transaction is still safe
+ *      to call multiple times. (Mod #3)
+ *   4. The task-event emission lives INSIDE the locked primitive, not
+ *      in a separate post-approveGate function call. Concurrent
+ *      `code-oz run` invocations cannot observe the gate file before
+ *      the task event lands; the audit trail is atomic per phase
+ *      transition. (Mod #4)
+ *   5. We never emit `task_started` for task N+1 here. `dispatchBuild`
+ *      is the sole `task_started` emitter; the next `code-oz run`
+ *      invocation routes through `handleActiveRun` and appends
+ *      `task_started` for the new task as part of its first BUILD
+ *      attempt. (Mod #5)
+ *   8. PLAN.md drift is rejected before any state change. If the
+ *      cursor projection surfaces issues whose codes include
+ *      `task_cursor_unknown_id` for the just-approved taskId, the
+ *      primitive throws an actionable intervention before writing the
+ *      gate. (Mod #8)
+ *   9. Defense-in-depth: the matching `review_resolved` event MUST
+ *      exist for `(runId, taskId, attempt)`. `preApproveReviewHook`
+ *      already enforces this upstream; the assertion here catches
+ *      developer error if a future caller path bypasses the hook. (Mod #9)
+ *  10. The cursor stays a pure projection. `findLatestReviewResolved`
+ *      is the only new helper exposed — read-only, no mutation. (Mod #10)
+ *
+ * Mod #6 (worktree task-boundary recreation) and Mod #7
+ * (handleActiveRun review-remediation pre-route) live in their owning
+ * modules; this primitive is the state-machine + event-log glue.
+ */
+
+export interface ApproveReviewTaskGateOptions {
+  readonly paths: RunPaths
+  readonly gate: GateFile
+  readonly profile: Profile
+  /** PLAN.md parsed at the call site; the primitive uses it to compute
+   *  the cursor + decide whether the just-approved task is the last. */
+  readonly plan: PlanArtifact
+  /** Just-validated REVIEW.md upstream attempt (from
+   *  `preApproveReviewHook` via the artifact's upstreamRefs). The
+   *  primitive uses this to assert the matching `review_resolved`
+   *  event. */
+  readonly upstreamAttempt: number
+  /** REVIEW.md upstream taskId. Must match the cursor's pending task. */
+  readonly upstreamTaskId: string
+  readonly now?: () => string
+}
+
+export interface ApproveReviewTaskGateResult {
+  readonly gateExisted: boolean
+  /** When all PLAN tasks have completed, this is `'ship'`; otherwise
+   *  `null` (the run remains at `currentPhase: 'review'` until the next
+   *  `code-oz run` dispatches BUILD for the next task). */
+  readonly nextPhase: Phase | null
+  readonly state: RunState
+  readonly taskCompletedExisted: boolean
+}
+
+export class ApproveReviewTaskGateError extends Error {
+  readonly code: string
+  readonly detail: string | undefined
+  constructor(code: string, message: string, detail?: string) {
+    super(detail !== undefined ? `${message} (${detail})` : message)
+    this.name = 'ApproveReviewTaskGateError'
+    this.code = code
+    this.detail = detail
+  }
+}
+
+export async function approveReviewTaskGate(
+  opts: ApproveReviewTaskGateOptions,
+): Promise<ApproveReviewTaskGateResult> {
+  if (opts.gate.phase !== 'review') {
+    throw new GateLoadError([
+      {
+        file: opts.paths.runDir,
+        code: 'gate_invalid_phase',
+        rule: 'approveReviewTaskGate.gate.phase must be "review"',
+        detail: String(opts.gate.phase),
+      },
+    ])
+  }
+
+  const eventPaths = eventPathsFor(opts.paths)
+  const gatePaths = gatePathsFor(opts.paths)
+  const now = opts.now ?? (() => new Date().toISOString())
+
+  return await withLock(opts.paths.lockDir, async () => {
+    // 1. Defense-in-depth (Mod #9): preApproveReviewHook already validated
+    //    the matching review_resolved event at the artifact level (or the
+    //    panel-mode review_panel_completed fallback). Re-assert here
+    //    inside the lock so a developer-error path that bypasses the
+    //    hook surfaces cleanly. The runtime contract is the hook is
+    //    always called first; this assertion is unreachable in practice.
+    const preEvents = await readEvents(eventPaths)
+    const resolved = findLatestReviewResolved(
+      preEvents,
+      opts.gate.runId,
+      opts.upstreamTaskId,
+      opts.upstreamAttempt,
+    )
+    const panelFallback = resolved === null
+      ? findReviewPanelReady(
+          preEvents,
+          opts.gate.runId,
+          opts.upstreamTaskId,
+          opts.upstreamAttempt,
+        )
+      : null
+    if (resolved === null && panelFallback === null) {
+      throw new ApproveReviewTaskGateError(
+        'review_resolved_event_missing',
+        `approveReviewTaskGate: no review_resolved or panel-ready event for taskId=${opts.upstreamTaskId} attempt=${opts.upstreamAttempt}`,
+        'preApproveReviewHook should have refused before reaching this primitive',
+      )
+    }
+
+    // 2. PLAN.md drift refusal (Mod #8). Compute the cursor against the
+    //    pre-write event set; reject if the just-approved taskId is
+    //    unknown to current PLAN.md (operator re-ordered or removed the
+    //    task between BUILD and approve review).
+    const preCursor = projectTaskCursor(opts.plan, preEvents)
+    const planTaskIds = new Set(preCursor.cursor.entries.map((e) => e.taskId))
+    if (!planTaskIds.has(opts.upstreamTaskId)) {
+      throw new ApproveReviewTaskGateError(
+        'task_cursor_unknown_id',
+        `approveReviewTaskGate: REVIEW.md upstream taskId=${opts.upstreamTaskId} is not in current PLAN.md`,
+        `current PLAN tasks: ${[...planTaskIds].join(', ') || '(none)'} — operator likely edited PLAN.md between BUILD and approve review`,
+      )
+    }
+    const unknownIssue = preCursor.issues.find(
+      (i) => i.code === 'task_cursor_unknown_id',
+    )
+    if (unknownIssue !== undefined) {
+      throw new ApproveReviewTaskGateError(
+        'task_cursor_unknown_id',
+        `approveReviewTaskGate: events.jsonl references taskIds not in current PLAN.md`,
+        unknownIssue.detail ?? unknownIssue.rule,
+      )
+    }
+
+    // 3. Write GATE_REVIEW_PASSED.json (idempotent on identical content).
+    const writeResult = await writeGate({
+      paths: gatePaths,
+      gate: opts.gate,
+      skipLock: true,
+    })
+
+    // 4. Append the standard transition events (gate_written +
+    //    phase_exited(review)). Idempotent. Mirrors approveGate's
+    //    completeTransitionForPhase but stops short of phase_entered —
+    //    the cursor decides whether to enter ship.
+    let events = await readEvents(eventPaths)
+    let working: PhaseEvent[] = [...events.filter(isKnownPhaseEvent)]
+
+    const hasGateWritten = working.some(
+      (e) => e.type === 'gate_written' && e.phase === 'review',
+    )
+    if (!hasGateWritten) {
+      const ev: PhaseEvent = {
+        version: 1,
+        type: 'gate_written',
+        ts: now(),
+        runId: opts.gate.runId,
+        phase: 'review',
+        file: writeResult.filename,
+      }
+      await appendEvent(eventPaths, ev, { skipLock: true })
+      working.push(ev)
+    }
+
+    const hasPhaseExited = working.some(
+      (e) =>
+        e.type === 'phase_exited' &&
+        e.phase === 'review' &&
+        e.outcome === 'passed',
+    )
+    if (!hasPhaseExited) {
+      const ev: PhaseEvent = {
+        version: 1,
+        type: 'phase_exited',
+        ts: now(),
+        runId: opts.gate.runId,
+        phase: 'review',
+        outcome: 'passed',
+      }
+      await appendEvent(eventPaths, ev, { skipLock: true })
+      working.push(ev)
+    }
+
+    // 5. Append `task_completed` for the just-approved task — Mod #1
+    //    (sourced from review_resolved, not review_round_completed).
+    //    Mod #3: idempotent under the lock.
+    let taskCompletedExisted = false
+    const existingTaskCompleted = working.find(
+      (e) =>
+        e.type === 'task_completed' &&
+        e.runId === opts.gate.runId &&
+        e.taskId === opts.upstreamTaskId,
+    )
+    if (existingTaskCompleted !== undefined) {
+      taskCompletedExisted = true
+    } else {
+      const taskEntry = preCursor.cursor.entries.find(
+        (e) => e.taskId === opts.upstreamTaskId,
+      )
+      if (taskEntry === undefined) {
+        // Already filtered above via planTaskIds; re-throw as a guard.
+        throw new ApproveReviewTaskGateError(
+          'task_cursor_unknown_id',
+          `approveReviewTaskGate: cursor entry for ${opts.upstreamTaskId} disappeared between drift check and emission`,
+        )
+      }
+      const reviewGatePath = join(opts.paths.runDir, writeResult.filename)
+      const ev: PhaseEvent = {
+        version: 1,
+        type: 'task_completed',
+        ts: now(),
+        runId: opts.gate.runId,
+        taskId: opts.upstreamTaskId,
+        taskIndex: taskEntry.taskIndex,
+        reviewGatePath,
+      }
+      await appendEvent(eventPaths, ev, { skipLock: true })
+      working.push(ev)
+    }
+
+    // 6. Recompute the cursor with the just-appended task_completed.
+    //    Mod #2 — only emit phase_entered(ship) when allCompleted.
+    const postEvents = await readEvents(eventPaths)
+    const postCursor = projectTaskCursor(opts.plan, postEvents)
+    let nextPhaseEntered: Phase | null = null
+    if (postCursor.cursor.allCompleted) {
+      const next = nextPhase('review', opts.profile)
+      if (next !== null) {
+        const hasPhaseEntered = postEvents
+          .filter(isKnownPhaseEvent)
+          .some((e) => e.type === 'phase_entered' && e.phase === next)
+        if (!hasPhaseEntered) {
+          const ev: PhaseEvent = {
+            version: 1,
+            type: 'phase_entered',
+            ts: now(),
+            runId: opts.gate.runId,
+            phase: next,
+          }
+          await appendEvent(eventPaths, ev, { skipLock: true })
+          nextPhaseEntered = next
+        } else {
+          nextPhaseEntered = next
+        }
+      }
+    }
+
+    const finalEvents = await readEvents(eventPaths)
+    const state = reduceEvents(finalEvents)
+    if (state === null) {
+      throw new GateLoadError([
+        {
+          file: opts.paths.eventsFile,
+          code: 'gate_io_error',
+          rule: 'no run_started in event log; cannot derive run state',
+        },
+      ])
+    }
+    await writeCurrentUnlocked(opts.paths, state)
+
+    return Object.freeze({
+      gateExisted: writeResult.existed,
+      nextPhase: nextPhaseEntered,
+      state,
+      taskCompletedExisted,
+    })
+  }).catch((err: unknown) => {
+    if (err instanceof LockBusyError) {
+      throw new GateLoadError([
+        {
+          file: opts.paths.runDir,
+          code: 'gate_lock_busy',
+          rule: 'per-run lock is busy during approveReviewTaskGate',
+          detail: err.lockDir,
+        },
+      ])
+    }
+    throw err
+  })
+}
+
+/**
+ * Internal helper: panel-mode fallback for the review_resolved
+ * existence check. Mirrors the panel-mode fallback in
+ * preApproveReviewHook (src/commands/approve.ts:644-680). Returns the
+ * latest matching `review_panel_completed` with `panelVerdict='ready'`
+ * for `(runId, taskId, attempt)`, or `null`.
+ */
+function findReviewPanelReady(
+  events: readonly LoggedEvent[],
+  runId: string,
+  taskId: string,
+  attempt: number,
+): { readonly reviewReportSha256: string; readonly ts: string } | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'review_panel_completed') continue
+    if (e.runId !== runId) continue
+    if (e.taskId !== taskId) continue
+    if (e.attempt !== attempt) continue
+    if (e.panelVerdict !== 'ready') continue
+    return Object.freeze({
+      reviewReportSha256: e.reviewReportSha256,
+      ts: e.ts,
+    })
+  }
+  return null
 }
 
 // --- gate-required helper ------------------------------------------

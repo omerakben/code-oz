@@ -25,6 +25,7 @@ import { readFile } from 'node:fs/promises'
 import { bootstrap } from '../cli/bootstrap.ts'
 import {
   approveGate,
+  approveReviewTaskGate,
   loadRun,
   readActiveRun,
   runPathsFor,
@@ -43,6 +44,7 @@ import { GateLoadError } from '../state/errors.ts'
 import { _validateArtifactSyncPath } from '../state/gates.ts'
 import { appendEvent, readEvents } from '../state/events.ts'
 import { parseSpec } from '../artifacts/spec.ts'
+import { parsePlan, type PlanArtifact } from '../artifacts/plan.ts'
 import { parseBuildReport, BuildReportLoadError } from '../artifacts/build-report.ts'
 import { parseVerifyReport, VerifyReportLoadError } from '../artifacts/verify-report.ts'
 import {
@@ -260,8 +262,9 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   // The hook fails the gate write on artifact validation failure or
   // removal failure; the user can repair the artifact / fs state and
   // retry. Idempotent when the worktree was already destroyed.
+  let reviewHookResult: PreApproveReviewHookResult | undefined
   if (targetPhase === 'review') {
-    await preApproveReviewHook({
+    reviewHookResult = await preApproveReviewHook({
       cwd: opts.cwd ?? process.cwd(),
       runId,
       runPaths,
@@ -283,6 +286,31 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     ...(opts.notes ? { notes: opts.notes } : {}),
   }
 
+  // M16 C9: REVIEW-phase approval routes through approveReviewTaskGate
+  // so the gate-write transaction is atomic with the task-loop event
+  // emission. Mod #2: do NOT emit `phase_entered(ship)` until every
+  // PLAN task has a matching `task_completed`. The cursor decides.
+  if (targetPhase === 'review' && reviewHookResult !== undefined) {
+    const planArtifact = await loadPlanForReviewApprove(ctx.paths.artifacts)
+    const reviewResult = await approveReviewTaskGate({
+      paths: runPaths,
+      gate,
+      profile: loaded.state.profile,
+      plan: planArtifact,
+      upstreamAttempt: reviewHookResult.upstreamRefs.attempt,
+      upstreamTaskId: reviewHookResult.upstreamRefs.taskId,
+      now,
+    })
+
+    return Object.freeze({
+      approved: true,
+      phase: targetPhase,
+      runId,
+      nextPhase: reviewResult.nextPhase,
+      gateExisted: reviewResult.gateExisted,
+    })
+  }
+
   const result = await approveGate({
     paths: runPaths,
     gate,
@@ -297,6 +325,29 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     nextPhase: result.nextPhase,
     gateExisted: result.gateExisted,
   })
+}
+
+/**
+ * M16 C9 — load PLAN.md from the canonical artifact path for the
+ * REVIEW-approve transaction. Re-uses the same loader the dispatcher
+ * uses (kept thin so the import surface stays small). Throws on
+ * malformed PLAN.md so the operator gets a specific failure rather
+ * than a silent miscount.
+ */
+async function loadPlanForReviewApprove(artifactRoot: string): Promise<PlanArtifact> {
+  const planPath = join(artifactRoot, 'PLAN.md')
+  let raw: string
+  try {
+    raw = await readFile(planPath, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `cannot approve review: PLAN.md is required to compute the task cursor but ${planPath} does not exist.`,
+      )
+    }
+    throw err
+  }
+  return parsePlan(raw, planPath)
 }
 
 /**
@@ -530,6 +581,13 @@ function findLatestBuildCompletedFor(
  *
  * Real removal failures (dirty fs, permission) throw and block gate
  * write. Exported for direct testing.
+ *
+ * M16 C9: returns the validated `upstreamRefs` (taskId, attempt) +
+ * the REVIEW.md sha so `runApprove` can pass them to the new
+ * `approveReviewTaskGate` primitive without re-parsing the artifact.
+ * The primitive uses the refs to assert the matching `review_resolved`
+ * event AND to source `task_completed` from the canonical task
+ * coordinates.
  */
 export interface PreApproveReviewHookInput {
   readonly cwd: string
@@ -541,7 +599,14 @@ export interface PreApproveReviewHookInput {
   readonly now: () => string
 }
 
-export async function preApproveReviewHook(input: PreApproveReviewHookInput): Promise<void> {
+export interface PreApproveReviewHookResult {
+  readonly upstreamRefs: { readonly taskId: string; readonly attempt: number }
+  readonly reviewReportSha256: string
+}
+
+export async function preApproveReviewHook(
+  input: PreApproveReviewHookInput,
+): Promise<PreApproveReviewHookResult> {
   // 1. Validate REVIEW.md (mirror preApproveVerifyHook).
   let reviewText: string
   try {
@@ -727,8 +792,17 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
   } catch {
     worktreeExists = false
   }
+
+  const result: PreApproveReviewHookResult = Object.freeze({
+    upstreamRefs: Object.freeze({
+      taskId: upstreamRefs.taskId,
+      attempt: upstreamRefs.attempt,
+    }),
+    reviewReportSha256: reviewSha256,
+  })
+
   if (!worktreeExists) {
-    return
+    return result
   }
   const removed = await removeRunWorktree({ cwd: input.cwd, runId: input.runId })
   if (!removed.ok) {
@@ -744,7 +818,7 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
     }
     // Race: directory existed at pre-check but was gone by removal call.
     // Idempotent return.
-    return
+    return result
   }
 
   await appendEvent(
@@ -759,6 +833,8 @@ export async function preApproveReviewHook(input: PreApproveReviewHookInput): Pr
       worktreePath: removed.worktreePath,
     },
   )
+
+  return result
 }
 
 function sha256Of(text: string): string {

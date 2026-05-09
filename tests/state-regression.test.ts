@@ -83,6 +83,39 @@ const MINIMAL_VALID_SPEC = [
   '',
 ].join('\n')
 
+// M16 C9: review-approve now loads PLAN.md to compute the task cursor
+// + decide whether the just-approved task is the last (allCompleted).
+// The fixtures emit a single-task PLAN.md so the regression's REVIEW
+// approval is the last-task case → currentPhase advances to ship.
+const MINIMAL_VALID_PLAN = `# PLAN
+
+## Goals
+
+- One atomic slice for the regression fixture.
+
+## Tasks
+
+### T-001: stub task for state-regression
+
+- Files: src/stub.ts
+- Validation: bun test
+- Risk: low
+- Hypotheses: none
+- Sources: SC-SPEC-001
+
+## Sources
+
+- SPEC.md acceptance criteria 1.
+
+## Out of scope
+
+- Anything beyond the one slice.
+
+## Open questions
+
+- None known at plan time.
+`
+
 // Minimal-valid VERIFY.md fixture — needed since M8 fix 4: preApproveVerifyHook
 // validates VERIFY.md schema + verdict=pass before removing the worktree.
 // Other phases still use stub bodies because their approve flow doesn't yet
@@ -204,6 +237,7 @@ async function writeArtifactsFor(phases: readonly Phase[], runDir: string): Prom
   for (const p of phases) {
     let body: string
     if (p === 'define') body = MINIMAL_VALID_SPEC
+    else if (p === 'plan') body = MINIMAL_VALID_PLAN
     else if (p === 'build') body = MINIMAL_VALID_BUILD_REPORT
     else if (p === 'verify') body = MINIMAL_VALID_VERIFY
     else if (p === 'review') body = minimalReadyReviewMd()
