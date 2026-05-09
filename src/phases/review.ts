@@ -115,6 +115,26 @@ import {
   type RunReviewPanelResult,
 } from './review-panel.ts'
 import {
+  runReviewSchedulerHook,
+  type SchedulerFirePathExecutor,
+  type SchedulerFirePathResult,
+} from './review-scheduler-hook.ts'
+import {
+  selectEligibleOpponent,
+  buildDebateTopicForReview,
+  buildDebateBriefingSections,
+  buildDebatePanelBriefingSections,
+  diffFindingsForPostDebate,
+  mapProviderErrorToFireResult,
+  buildSchedulerPreflightInputForSingle,
+  buildSchedulerPreflightInputForPanel,
+  buildDebateFilesManifest,
+  detectSchedulerResumeMismatch,
+} from './review-fire-path.ts'
+import { requestDebate } from '../tools/debate-request.ts'
+import { aggregateDebateSchedulerPreflight } from '../providers/cost.ts'
+import type { PanelistVerdictSnapshot } from '../policy/debate-scheduler.ts'
+import {
   parseReviewPanelReport,
   detectReviewReportMode,
   type ReviewReportPanelData,
@@ -169,6 +189,36 @@ export interface RunReviewOptions {
   readonly round: number
   /** Prior canonical REVIEW.md content when round > 1. `null` for round 1. */
   readonly priorReviewMd?: string | null
+  /**
+   * M15 Phase 2 C13b: post-debate REVIEW round evidence carrier.
+   * Populated by the production fire-path executor when it re-invokes
+   * `runReviewRoundLocked` for the post-debate round on the same round
+   * number. Surfaces DECISION.md content + the pre-debate REVIEW state
+   * into the persona prompt so the reviewer can reconsider their verdict.
+   * Production callers never set this; only the executor closure does.
+   */
+  readonly postDebateEvidence?: PostDebateEvidence | null
+}
+
+/**
+ * M15 Phase 2 C13b: evidence the post-debate REVIEW round receives so the
+ * persona can reconsider their pre-debate verdict in light of the cross-
+ * family debate. Authored mechanically by the fire-path executor; the
+ * persona never sees the raw event log — only the canonical artifacts +
+ * this block.
+ */
+export interface PostDebateEvidence {
+  /** Repo-relative path to DECISION.md (for reference; the persona's
+   *  prompt embeds the full content). */
+  readonly decisionPath: string
+  /** Full DECISION.md content. Surfaced inline in REVIEW_CONTEXT. */
+  readonly decisionMd: string
+  /** The pre-debate verdict the persona authored before the debate. */
+  readonly preReviewVerdict: 'ready' | 'needs-revision' | 'block'
+  /** The pre-debate Final score the persona authored. */
+  readonly preReviewScore: number
+  /** The pre-debate findings carried in the canonical REVIEW.md. */
+  readonly preReviewFindings: readonly ReviewFinding[]
 }
 
 export type ReviewStatus = 'resolved' | 'needs_revision' | 'blocked' | 'intervention'
@@ -419,6 +469,49 @@ function actionableSuggestionsFor(code: string): readonly string[] {
         'Another runReview is in progress for this run (.review.lock present).',
         'Wait for it to complete; if it crashed, inspect and remove .code-oz/runs/<runId>/.review.lock manually.',
       ])
+    case 'debate_scheduler_auth_missing':
+      return Object.freeze([
+        'The opposing provider for the scheduler-fired debate could not authenticate.',
+        'Configure the provider credentials (CLI OAuth or API-key env var) before re-running.',
+        'Inspect events.jsonl for the underlying provider_auth_missing or provider_auth_expired code.',
+      ])
+    case 'debate_scheduler_permissions_violation':
+      return Object.freeze([
+        'requestDebate rejected the scheduler-fired debate at runtime: the cross-family invariant or persona permission check failed.',
+        "Verify the reviewer persona's tool_use.debate.opposingProviders entries and that none equal the reviewer's own family.",
+      ])
+    case 'debate_scheduler_concurrent_limit':
+      return Object.freeze([
+        'Another debate is in flight for this run, exceeding maxConcurrent=1.',
+        'Wait for the in-flight debate to resolve or inspect events.jsonl for an orphaned debate_started without debate_resolved.',
+      ])
+    case 'debate_scheduler_topic_collision':
+      return Object.freeze([
+        'The scheduler chose a debate topic that collides with an existing per-run debate dir or events.jsonl entry.',
+        'Inspect .code-oz/runs/<runId>/artifacts/debates/ and remove the conflicting topic dir, or restart the run.',
+      ])
+    case 'debate_scheduler_manifest_blocked':
+      return Object.freeze([
+        'The debate file manifest was blocked by .code-ozignore policy or path-safety.',
+        "Inspect the persona's tool_use.debate.maxFiles cap and the manifest preview at .code-oz/runs/<runId>/artifacts/debates/<topic>/MANIFEST.preview.md.",
+        'Adjust .code-ozignore exclusions or raise maxFiles only after explicit operator approval.',
+      ])
+    case 'debate_scheduler_resume_after_fire':
+      return Object.freeze([
+        'A prior session emitted debate_scheduler_fired but never started the debate (no debate_started event).',
+        'Re-firing risks cost double-charge and topic collision — confirm the prior debate has not partially completed before re-running.',
+        'Inspect events.jsonl for the orphan decisionId and clear .code-oz/runs/<runId>/artifacts/debates/<topic>/ if no work was committed.',
+      ])
+    case 'debate_scheduler_resume_after_resolve':
+      return Object.freeze([
+        'A prior session completed the cross-family debate (debate_resolved emitted) but the post-debate REVIEW round did not record its outcome.',
+        'Inspect .code-oz/runs/<runId>/artifacts/debates/<topic>/DECISION.md and the canonical REVIEW.md, then either re-run the round or restore the post-debate REVIEW.md from forensics before retrying.',
+      ])
+    case 'debate_scheduler_resume_evaluate_orphan':
+      return Object.freeze([
+        'A prior session ran the pure scheduler (debate_scheduler_evaluated emitted) but the orchestrator crashed before recording a decision.',
+        'Inspect events.jsonl for the orphan decisionId. The earlier event is preserved in append-only events.jsonl; restart the run cleanly to re-evaluate.',
+      ])
     default:
       return Object.freeze(['Inspect REVIEW.md, events.jsonl, and the relevant draft directory.'])
   }
@@ -479,10 +572,85 @@ export async function runReview(opts: RunReviewOptions): Promise<ReviewResult> {
   }
 }
 
+/**
+ * Scheduler-hook activation flag for the lock-free round body.
+ *
+ * 'enabled' (default): the post-verdict scheduler hook (step 14b) runs.
+ *   This is the only flag value used today; M15 Phase 2 commit C13b will
+ *   pass 'disabled_post_debate' for the post-debate REVIEW round invoked
+ *   by the production fire-path executor, so a grey-zone post-debate
+ *   verdict does not recursively schedule another debate.
+ *
+ * 'disabled_post_debate': the scheduler hook is skipped on this round.
+ *   Reserved for the post-debate REVIEW round (C13b). Today no caller
+ *   passes this value; the flag exists for forward compatibility.
+ */
+type SchedulerEnabledFlag = 'enabled' | 'disabled_post_debate'
+
+interface RunReviewRoundLockedOptions extends RunReviewOptions {
+  readonly schedulerEnabled: SchedulerEnabledFlag
+}
+
+/** Successful round completion. Carries the locals step 15 (terminal
+ *  branching: ready / block / needs-revision) consumes. The locked body
+ *  never writes terminal events itself — `finalizeReviewRound` is the
+ *  authority for `review_resolved`, `review_blocked`, scientist-tail,
+ *  gate-required, and remediation. */
+interface RoundCompleteOutcome {
+  readonly kind: 'round_complete'
+  readonly attempt: number
+  readonly verdict: 'ready' | 'needs-revision' | 'block'
+  readonly personaScore: number
+  readonly reviewReportPath: string
+  readonly reviewReportSha256: string
+  readonly canonical: {
+    readonly findings: readonly ReviewFinding[]
+    readonly reopenedIds: readonly string[]
+  }
+  readonly buildReportValidationCommand: string
+  readonly interventionCtx: InterventionContext
+}
+
+/** Result of the lock-free round body. Either a successful round
+ *  (`RoundCompleteOutcome`, narrowed by `kind: 'round_complete'`) that
+ *  the caller passes to `finalizeReviewRound`, or a `ReviewResult` that
+ *  the caller returns unchanged (intervention from steps 1-13, or the
+ *  panel-branch's terminal status). */
+type RoundLockedResult = RoundCompleteOutcome | ReviewResult
+
 async function runReviewInner(
   opts: RunReviewOptions,
   now: () => string,
 ): Promise<ReviewResult> {
+  const round = await runReviewRoundLocked(
+    { ...opts, schedulerEnabled: 'enabled' },
+    now,
+  )
+  if (!('kind' in round)) return round
+  return finalizeReviewRound(round, opts, now)
+}
+
+/**
+ * Lock-free single-mode REVIEW round body (steps 1-14b + draft cleanup).
+ *
+ * Authority: produces the canonical REVIEW.md artifact and emits the
+ * `review_round_completed` event for this round. Optionally invokes the
+ * post-verdict scheduler hook (step 14b) when `schedulerEnabled` is
+ * 'enabled'. NEVER writes terminal events (`review_resolved`,
+ * `review_blocked`), never invokes the scientist phase-tail, never
+ * writes the operator-facing gate. Those effects live in
+ * `finalizeReviewRound` so the M15 fire path (commit C13b) can settle
+ * the scheduler decision before the gate result is locked in.
+ *
+ * The function presumes `runReview` already holds `.review.lock`. It
+ * does not acquire any lock state itself, so the production fire-path
+ * executor (C13b) can re-invoke it for the post-debate REVIEW round
+ * without colliding on `.review.lock` (Codex R0 Risk #4 closure).
+ */
+async function runReviewRoundLocked(
+  opts: RunReviewRoundLockedOptions,
+  now: () => string,
+): Promise<RoundLockedResult> {
   const interventionCtx: InterventionContext = {
     runPaths: opts.runPaths,
     runId: opts.runId,
@@ -646,6 +814,33 @@ async function runReviewInner(
       probe.draftPath,
     )
   }
+
+  // 4b. M15 Phase 2 C18 — minimal scheduler-resume mismatch detection.
+  // When `schedulerEnabled === 'enabled'`, scan events.jsonl for the
+  // three crash points named in `docs/contracts/DEBATE_POLICY.md` §
+  // "Resume semantics" and halt with NEEDS_INTERVENTION when one is
+  // detected. Conservative: re-firing risks cost double-charge and topic
+  // collision; we surface for operator inspection rather than auto-
+  // resuming. The post-debate round (`disabled_post_debate`) is itself
+  // resume territory — skip the detection there.
+  if (opts.schedulerEnabled === 'enabled') {
+    const schedulerMismatch = detectSchedulerResumeMismatch(events, {
+      runId: opts.runId,
+      taskId: opts.taskId,
+      attempt,
+      round: opts.round,
+    })
+    if (schedulerMismatch !== null) {
+      const code =
+        schedulerMismatch.kind === 'fired_no_debate_started'
+          ? 'debate_scheduler_resume_after_fire'
+          : schedulerMismatch.kind === 'debate_resolved_no_postreview'
+            ? 'debate_scheduler_resume_after_resolve'
+            : 'debate_scheduler_resume_evaluate_orphan'
+      return recordReviewIntervention(ictx, code, schedulerMismatch.detail)
+    }
+  }
+
   const draftAttempt1Path = reviewDraftPath(opts.runPaths.runDir, opts.round, 1)
   const draftAttempt2Path = reviewDraftPath(opts.runPaths.runDir, opts.round, 2)
 
@@ -754,6 +949,7 @@ async function runReviewInner(
     verifyRationale: verifyReport.verdict.rationale,
     mutationStatus: verifyReport.mutation.status,
     priorReport,
+    postDebateEvidence: opts.postDebateEvidence ?? null,
   })
   const composed = await composeReviewPrompt({
     agentBody: opts.reviewerAgent.body,
@@ -937,9 +1133,327 @@ async function runReviewInner(
     reviewReportSha256,
   })
 
+  // The pre-debate RoundCompleteOutcome the round body produced. When the
+  // M15 fire path runs and converges on a `success` post-debate REVIEW
+  // round, the executor closure overwrites this reference so the value
+  // returned from `runReviewRoundLocked` reflects the post-debate state.
+  let outcome: RoundCompleteOutcome = {
+    kind: 'round_complete',
+    attempt,
+    verdict,
+    personaScore,
+    reviewReportPath,
+    reviewReportSha256,
+    canonical: {
+      findings: canonical.findings,
+      reopenedIds: canonical.reopenedIds,
+    },
+    buildReportValidationCommand: buildReport.validationCommand.command,
+    interventionCtx: ictx,
+  }
+
+  // 14b. Post-verdict scheduler hook (single mode).
+  //
+  // Phase 1 (commit 4a) shipped the evaluate-only hook: always emits
+  // `debate_scheduler_evaluated`, plus `debate_scheduler_skipped` for skip
+  // decisions; fire decisions degraded to no-op because no executor was
+  // wired. M15 Phase 2 C13b wires the production executor here. The
+  // executor closure selects the opposing provider, builds the debate
+  // request, calls `requestDebate`, then re-invokes
+  // `runReviewRoundLocked` recursively with
+  // `schedulerEnabled: 'disabled_post_debate'` so the post-debate REVIEW
+  // round runs inside the same outer `.review.lock` envelope (Codex R0
+  // Risk #4 closure) and cannot itself trigger another debate (Codex
+  // replan Risk #5 closure).
+  //
+  // The recursive call replaces the canonical `REVIEW.md` for this same
+  // round number and emits a SECOND `review_round_completed` event for
+  // the same round (per `m15_phase2_replan.md` § "Locked semantic
+  // decision"). Reducers distinguish via the `debate_scheduler_postreview`
+  // event's `preReviewReportSha256 → postReviewReportSha256` link.
+  //
+  // schedulerEnabled === 'disabled_post_debate' callers skip this hook
+  // entirely so a grey-zone post-debate verdict does not recursively
+  // schedule another debate.
+  if (opts.schedulerEnabled === 'enabled') {
+    const eventsForScheduler = await readEvents(eventPathsFor(opts.runPaths))
+
+    // Aggregate budget preflight (Codex R1 #2 closure). Refuses-before-
+    // fire when the full scheduler transaction (opposing turn + synthesis
+    // turn + post-debate REVIEW round) would tip a `budgets.global` cap.
+    // The mid-debate `assertWithinBudget` chokepoints stay as the per-
+    // call backstop; this is the gate.
+    const preflightInput = buildSchedulerPreflightInputForSingle()
+    const preflight = aggregateDebateSchedulerPreflight(
+      opts.invokeCtx.config,
+      preflightInput,
+      eventsForScheduler,
+      new Date(now()),
+    )
+
+    // Closure-captured pre-debate state. The opposing provider reads the
+    // canonical REVIEW.md path from disk via the wrapper's manifest
+    // resolution; that read happens BEFORE the recursive runReview round
+    // overwrites the file. The pre-debate findings + verdict + score are
+    // surfaced to the post-debate persona via `postDebateEvidence` and
+    // the diff helper compares them against the post-debate findings.
+    const preDebateFindings: readonly ReviewFinding[] = canonical.findings
+    const preDebateVerdict = verdict
+    const preDebateScore = personaScore
+    const preDebateReviewSha = reviewReportSha256
+
+    // Closure-captured post-debate outcome. The hook's executor seam
+    // returns a `SchedulerFirePathResult` (success / error_degrade /
+    // intervention); when status==='success', the executor stashes the
+    // post-debate `RoundCompleteOutcome` here so the caller can swap it
+    // for the pre-debate outcome before returning to `finalizeReviewRound`.
+    let postDebateOutcome: RoundCompleteOutcome | null = null
+
+    const executor: SchedulerFirePathExecutor = async (input, hooks) => {
+      // 1. Eligibility filter (M11). The pure decision function only
+      //    checks `length > 0` on opposingProviders; runtime capability
+      //    + cross-family vs reviewer-family filtering happens here.
+      const opposing = selectEligibleOpponent(opts.reviewerAgent, opts.invokeCtx.registry)
+      if (opposing === null) {
+        return {
+          status: 'error_degrade',
+          opposingProvider: 'unknown',
+          debateTopic: 'unknown',
+          errorReason: 'other',
+          underlyingErrorCode: 'no_eligible_opponent',
+        } satisfies SchedulerFirePathResult
+      }
+
+      // 2. Topic + briefing + manifest. Authored mechanically from the
+      //    pre-debate REVIEW state (rule-21 reproducibility).
+      const debateTopic = buildDebateTopicForReview({
+        taskId: opts.taskId,
+        attempt: input.attempt,
+        round: opts.round,
+      })
+      const briefingSections = buildDebateBriefingSections({
+        reviewerAgent: opts.reviewerAgent,
+        opposingProvider: opposing,
+        round: opts.round,
+        attempt: input.attempt,
+        taskId: opts.taskId,
+        preReviewVerdict: preDebateVerdict,
+        preReviewScore: preDebateScore,
+        preReviewFindings: preDebateFindings,
+        buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+        verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+        reviewReportPath: '.code-oz/artifacts/REVIEW.md',
+        changedFilePaths: changedFilePaths as readonly string[],
+        fireReason: input.fireReason,
+      })
+      const personaDebatePerm = opts.reviewerAgent.permissions.tool_use?.debate
+      const filesPaths = buildDebateFilesManifest({
+        buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+        verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+        reviewReportPath: '.code-oz/artifacts/REVIEW.md',
+        changedFilePaths: changedFilePaths as readonly string[],
+        maxFiles: personaDebatePerm?.maxFiles ?? 16,
+      })
+
+      // 3. C13a contract: emit `fired` BEFORE invoking `requestDebate`.
+      //    `requestDebate` synchronously appends `debate_started` inside
+      //    its body, so without this seam the trace would be
+      //    `evaluated → debate_started → fired`, breaking the resume
+      //    contract in `docs/contracts/DEBATE_POLICY.md` § "Resume
+      //    semantics".
+      await hooks.emitFired({ opposingProvider: opposing, debateTopic })
+
+      // 4. Run the debate. Drain all yielded ProviderEvents (they flow
+      //    through invokeAgent's appendEvent chokepoint already).
+      let runner
+      try {
+        runner = requestDebate(opts.invokeCtx, {
+          caller: opts.reviewerAgent,
+          phase: 'review',
+          topic: debateTopic,
+          opposingProvider: opposing,
+          question: 'Did the cross-family REVIEW miss a bug or misweight a finding? Reconsider the verdict given the changed-file manifest.',
+          files: filesPaths.map((p) => ({ path: p })),
+          runId: opts.runId,
+          date: now().slice(0, 10),
+          callerLabel: opts.reviewerAgent.name,
+          targetLabel: opposing,
+          cycle: 'review',
+          status: 'review',
+          briefingSections,
+          projectRoot: opts.invokeCtx.projectRoot,
+          resolvedBy: `${opts.reviewerAgent.name} (REVIEW debate scheduler, round ${opts.round})`,
+          readySignal: REVIEW_READY_SIGNAL,
+        })
+        for await (const _ev of runner) {
+          // ProviderEvents already flow through invokeAgent's
+          // appendEvent chokepoint; the orchestrator does not mirror.
+        }
+      } catch (err) {
+        return mapProviderErrorToFireResult(err, opposing, debateTopic)
+      }
+
+      const debateResult = runner.result()
+      if (debateResult === null) {
+        return {
+          status: 'error_degrade',
+          opposingProvider: opposing,
+          debateTopic,
+          errorReason: 'other',
+          underlyingErrorCode: 'debate_runtime_no_result',
+        } satisfies SchedulerFirePathResult
+      }
+
+      // 5. Read DECISION.md (the synthesis turn wrote it atomically).
+      let decisionMd: string
+      try {
+        decisionMd = await readFile(debateResult.decisionPath, 'utf8')
+      } catch (err) {
+        return {
+          status: 'error_degrade',
+          opposingProvider: opposing,
+          debateTopic,
+          errorReason: 'artifact_invalid',
+          underlyingErrorCode: errorDetail(err),
+        } satisfies SchedulerFirePathResult
+      }
+
+      // 6. Recursively run the post-debate REVIEW round. The recursive
+      //    call MUST NOT acquire `.review.lock` (it stays inside this
+      //    invocation's outer lock envelope) and MUST NOT itself trigger
+      //    the scheduler hook (Codex replan Risk #5). The DECISION.md
+      //    + pre-debate findings/score/verdict are passed through
+      //    `postDebateEvidence` so the persona can reconsider.
+      const postDebateOpts: RunReviewRoundLockedOptions = {
+        ...opts,
+        schedulerEnabled: 'disabled_post_debate',
+        postDebateEvidence: {
+          decisionPath: debateResult.decisionPath,
+          decisionMd,
+          preReviewVerdict: preDebateVerdict,
+          preReviewScore: preDebateScore,
+          preReviewFindings: preDebateFindings,
+        },
+      }
+      const postRound = await runReviewRoundLocked(postDebateOpts, now)
+      if (!('kind' in postRound) || postRound.kind !== 'round_complete') {
+        // The post-debate round produced an intervention (e.g. validation
+        // failure on the persona's response). Surface as error_degrade so
+        // the gate writes from the pre-debate verdict; the post-debate
+        // intervention itself is already recorded via
+        // `recordReviewIntervention` and surfaces in events.jsonl.
+        return {
+          status: 'error_degrade',
+          opposingProvider: opposing,
+          debateTopic,
+          errorReason: 'other',
+          underlyingErrorCode: 'post_debate_round_intervention',
+        } satisfies SchedulerFirePathResult
+      }
+
+      // 7. Stash the post-debate outcome for the outer caller and report
+      //    finding deltas to the hook so it can emit
+      //    `debate_scheduler_postreview` with non-zero scalars.
+      postDebateOutcome = postRound
+      const diff = diffFindingsForPostDebate(
+        preDebateFindings,
+        postRound.canonical.findings,
+      )
+      return {
+        status: 'success',
+        opposingProvider: opposing,
+        debateTopic,
+        newReviewReportSha256: postRound.reviewReportSha256,
+        verdictPost: postRound.verdict,
+        findingsAddedCount: diff.findingsAddedCount,
+        actionableFindingsAddedCount: diff.actionableFindingsAddedCount,
+      } satisfies SchedulerFirePathResult
+    }
+
+    const hookResult = await runReviewSchedulerHook({
+      runId: opts.runId,
+      taskId: opts.taskId,
+      attempt,
+      reviewRound: opts.round,
+      phase: 'review',
+      agent: opts.reviewerAgent.name,
+      reviewerAgent: opts.reviewerAgent,
+      preReviewReportSha256: preDebateReviewSha,
+      reviewState: {
+        mode: 'single',
+        score: personaScore,
+        verdict,
+      },
+      debatePolicyFromConfig: opts.invokeCtx.config.debatePolicy,
+      buildReportChangedFileCount: buildReport.changedFiles.length,
+      events: eventsForScheduler,
+      eventPaths: eventPathsFor(opts.runPaths),
+      now,
+      firePathExecutor: executor,
+      aggregatePreflightWouldTip: preflight.wouldTip,
+      ...(preflight.tipReason !== undefined
+        ? { aggregatePreflightTipReason: preflight.tipReason }
+        : {}),
+    })
+
+    // Post-hook branch:
+    //   - intervention: clean up drafts + write NEEDS_INTERVENTION + return
+    //     ReviewIntervention immediately. Pre-debate REVIEW.md remains
+    //     canonical, but no gate write happens (caller halts the run).
+    //   - success: the recursive call already replaced REVIEW.md and
+    //     emitted a second `review_round_completed`; swap `outcome` for
+    //     the post-debate one so `finalizeReviewRound` consumes the
+    //     post-debate verdict for gate writes.
+    //   - error_degrade or no fire: keep the pre-debate `outcome` so
+    //     gate writes proceed from the pre-debate verdict (DEBATE_POLICY
+    //     § "Failure surface" guarantees: degraded fires fall back).
+    if (hookResult.fireOutcome.fired && hookResult.fireOutcome.result?.status === 'intervention') {
+      const r = hookResult.fireOutcome.result
+      await cleanupReviewDraftsForRound([draftAttempt1Path, draftAttempt2Path])
+      return recordReviewIntervention(
+        ictx,
+        r.interventionCode,
+        r.interventionRule,
+        r.underlyingErrorCode,
+      )
+    }
+    if (hookResult.fireOutcome.fired && hookResult.fireOutcome.result?.status === 'success' && postDebateOutcome !== null) {
+      outcome = postDebateOutcome
+    }
+  }
+
   // Clean up the round's draft directory now that the canonical write
   // succeeded — drafts only have value when there is no canonical output.
   await cleanupReviewDraftsForRound([draftAttempt1Path, draftAttempt2Path])
+
+  return outcome
+}
+
+/**
+ * Step 15 — terminal branching for a successfully completed REVIEW round.
+ *
+ * Owns the `review_resolved` / `review_blocked` events, the scientist
+ * phase-tail invocation, the gate-preflight + `requireGate` write, and
+ * the remediation coordinator dispatch for needs-revision verdicts.
+ * Separated from the round body (M15 Phase 2 C12) so the scheduler
+ * fire-path executor (C13b) can run a post-debate REVIEW round and
+ * settle its result before the terminal effects lock in.
+ */
+async function finalizeReviewRound(
+  round: RoundCompleteOutcome,
+  opts: RunReviewOptions,
+  now: () => string,
+): Promise<ReviewResult> {
+  const {
+    attempt,
+    verdict,
+    personaScore,
+    reviewReportPath,
+    reviewReportSha256,
+    canonical,
+    buildReportValidationCommand,
+    interventionCtx: ictx,
+  } = round
 
   // 15. Branch on verdict.
   if (verdict === 'ready') {
@@ -1074,7 +1588,7 @@ async function runReviewInner(
     priorFindings: canonical.findings,
     reviewReportPath,
     reviewReportSha256,
-    priorValidationCommand: buildReport.validationCommand.command,
+    priorValidationCommand: buildReportValidationCommand,
     reopenedIds: canonical.reopenedIds,
   })
   if (remediation.action === 'review_cap_exhausted') {
@@ -1783,6 +2297,10 @@ interface RenderReviewContextInput {
   readonly verifyRationale: string
   readonly mutationStatus: string
   readonly priorReport: ReviewReportData | null
+  /** M15 Phase 2 C13b: when present, the post-debate REVIEW round prompt
+   *  surfaces DECISION.md content + the pre-debate verdict the persona
+   *  is being asked to reconsider. */
+  readonly postDebateEvidence: PostDebateEvidence | null
 }
 
 function renderReviewContext(input: RenderReviewContextInput): string {
@@ -1828,6 +2346,42 @@ function renderReviewContext(input: RenderReviewContextInput): string {
         )
       }
     }
+    lines.push('')
+  }
+  if (input.postDebateEvidence !== null) {
+    // M15 Phase 2 C13b: post-debate REVIEW round. The orchestrator's
+    // debate-policy scheduler fired a cross-family debate after the
+    // pre-debate verdict landed in this same round number. The persona is
+    // re-invoked with the debate's DECISION.md as evidence and may revise
+    // their findings + score. REVIEW remains the gate authority; DECISION
+    // is evidence, not a vote.
+    const ev = input.postDebateEvidence
+    lines.push('### Pre-debate verdict (your prior take this round)')
+    lines.push(
+      `- Verdict: ${ev.preReviewVerdict} | Final score: ${ev.preReviewScore}`,
+    )
+    if (ev.preReviewFindings.length === 0) {
+      lines.push('- Findings: (none)')
+    } else {
+      lines.push('- Findings:')
+      for (const f of ev.preReviewFindings) {
+        const status =
+          f.roundResolved === 'unresolved' ? 'unresolved' : `resolved round ${f.roundResolved}`
+        lines.push(
+          `  - ${f.id} | ${f.severity} | ${f.file}:${f.line} | ${status} | ${f.title}`,
+        )
+      }
+    }
+    lines.push('')
+    lines.push('### Cross-family debate evidence (DECISION.md)')
+    lines.push(`- Source: ${ev.decisionPath}`)
+    lines.push(
+      'The orchestrator ran a cross-family debate against your pre-debate verdict. The opposing provider authored RESPONSE.<side>.md, and the caller persona synthesized DECISION.md below. Reconsider your findings + score in light of this evidence. You may revise the verdict; you may also stand by it. REVIEW remains the gate authority — DECISION is data, not a vote.',
+    )
+    lines.push('')
+    lines.push('```')
+    lines.push(ev.decisionMd.trimEnd())
+    lines.push('```')
     lines.push('')
   }
   lines.push('### What you must author')
@@ -2020,6 +2574,200 @@ async function runReviewPanelBranch(
     )
   }
   const findings: readonly ReviewFinding[] = panelData.findings
+
+  // M15 Phase 2 C14 — post-verdict scheduler hook (panel mode).
+  //
+  // Fires after `review_panel_completed` is on disk and panelData is
+  // parsed, before the resolved/needs_revision/blocked branch. Reuses
+  // the same fire-path executor pattern as single-mode (C13b) with
+  // panel-aware preflight (postReviewProviderCalls = panel.length).
+  //
+  // v0.1 panel post-debate REVIEW round semantics: the executor runs
+  // the cross-family debate end-to-end (opposing turn + synthesis +
+  // DECISION.md authoring), but does NOT recursively re-run
+  // `runReviewPanel` with DECISION.md surfaced to all panelists. Per
+  // the locked replan in `docs/research/CODEX_RESPONSE_M15_REPLAN.md`:
+  // "panel can contribute new-actionable + no-signal telemetry in M15;
+  // a real panel correctness oracle can wait." DECISION.md is in
+  // events.jsonl + on disk for operator inspection; the panel verdict
+  // remains unchanged. A full panel re-run with `postDebateEvidence`
+  // plumbed through `PanelistInvoker` is deferred to M16+ (requires
+  // extending the panelistInvoker contract through the CLI bootstrap
+  // wiring).
+  const panelistVerdictsForScheduler: readonly PanelistVerdictSnapshot[] =
+    panelData.reviewers.map((r) => ({
+      id: r.id,
+      verdict: r.verdict,
+      authorityImpact: r.role,
+    }))
+  const eventsForPanelScheduler = await readEvents(eventPathsFor(opts.runPaths))
+
+  const panelPreflightInput = buildSchedulerPreflightInputForPanel({
+    panelSize: panel.length,
+  })
+  const panelPreflight = aggregateDebateSchedulerPreflight(
+    opts.invokeCtx.config,
+    panelPreflightInput,
+    eventsForPanelScheduler,
+    new Date(now()),
+  )
+
+  // Closure-captured pre-debate panel state for the executor's briefing
+  // and finding-diff helpers. Findings list is the panelData's
+  // synthesized findings (the panel orchestrator's canonical artifact).
+  const preDebatePanelVerdict = panelResult.panelVerdict
+  const preDebatePanelFindings: readonly ReviewFinding[] = findings
+  const preDebatePanelReviewSha = panelResult.reviewReportSha256
+  const panelistVerdictsForBriefing = panelData.reviewers.map((r) => ({
+    id: r.id,
+    verdict: r.verdict,
+    authorityImpact: r.role,
+  }))
+
+  // Build a stable changedFilePaths reference for the executor closure.
+  const panelChangedFilePaths: readonly string[] = Object.freeze(
+    buildReport.changedFiles.map((f) => f.path),
+  )
+
+  const panelExecutor: SchedulerFirePathExecutor = async (input, hooks) => {
+    const opposing = selectEligibleOpponent(opts.reviewerAgent, opts.invokeCtx.registry)
+    if (opposing === null) {
+      return {
+        status: 'error_degrade',
+        opposingProvider: 'unknown',
+        debateTopic: 'unknown',
+        errorReason: 'other',
+        underlyingErrorCode: 'no_eligible_opponent',
+      } satisfies SchedulerFirePathResult
+    }
+
+    const debateTopic = buildDebateTopicForReview({
+      taskId: opts.taskId,
+      attempt: input.attempt,
+      round: opts.round,
+    })
+    const briefingSections = buildDebatePanelBriefingSections({
+      reviewerAgent: opts.reviewerAgent,
+      opposingProvider: opposing,
+      round: opts.round,
+      attempt: input.attempt,
+      taskId: opts.taskId,
+      panelistVerdicts: panelistVerdictsForBriefing,
+      panelVerdict: preDebatePanelVerdict,
+      preReviewFindings: preDebatePanelFindings,
+      buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+      verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+      reviewReportPath: '.code-oz/artifacts/REVIEW.md',
+      changedFilePaths: panelChangedFilePaths,
+    })
+    const personaDebatePerm = opts.reviewerAgent.permissions.tool_use?.debate
+    const filesPaths = buildDebateFilesManifest({
+      buildReportPath: '.code-oz/artifacts/BUILD_REPORT.md',
+      verifyReportPath: '.code-oz/artifacts/VERIFY.md',
+      reviewReportPath: '.code-oz/artifacts/REVIEW.md',
+      changedFilePaths: panelChangedFilePaths,
+      maxFiles: personaDebatePerm?.maxFiles ?? 16,
+    })
+
+    await hooks.emitFired({ opposingProvider: opposing, debateTopic })
+
+    let runner
+    try {
+      runner = requestDebate(opts.invokeCtx, {
+        caller: opts.reviewerAgent,
+        phase: 'review',
+        topic: debateTopic,
+        opposingProvider: opposing,
+        question: 'The voter panel disagreed on the verdict. Steel-man the dissenting panelist or argue the consensus is correct, citing specific files in the changed-file manifest.',
+        files: filesPaths.map((p) => ({ path: p })),
+        runId: opts.runId,
+        date: now().slice(0, 10),
+        callerLabel: opts.reviewerAgent.name,
+        targetLabel: opposing,
+        cycle: 'review',
+        status: 'review',
+        briefingSections,
+        projectRoot: opts.invokeCtx.projectRoot,
+        resolvedBy: `${opts.reviewerAgent.name} (REVIEW panel debate scheduler, round ${opts.round})`,
+        readySignal: REVIEW_READY_SIGNAL,
+      })
+      for await (const _ev of runner) {
+        // ProviderEvents already flow through invokeAgent's appendEvent
+        // chokepoint.
+      }
+    } catch (err) {
+      return mapProviderErrorToFireResult(err, opposing, debateTopic)
+    }
+
+    const debateResult = runner.result()
+    if (debateResult === null) {
+      return {
+        status: 'error_degrade',
+        opposingProvider: opposing,
+        debateTopic,
+        errorReason: 'other',
+        underlyingErrorCode: 'debate_runtime_no_result',
+      } satisfies SchedulerFirePathResult
+    }
+
+    // v0.1 panel postreview: the panel verdict remains unchanged; the
+    // post-debate event records that the cross-family debate ran and
+    // DECISION.md is in events.jsonl + on disk for operator inspection.
+    // Findings diff is zero (no panel re-run). Once the panelistInvoker
+    // contract is extended in M16+ to accept postDebateEvidence, the
+    // success branch here will mirror the single-mode flow with a
+    // recursive runReviewPanel call.
+    return {
+      status: 'success',
+      opposingProvider: opposing,
+      debateTopic,
+      newReviewReportSha256: preDebatePanelReviewSha,
+      verdictPost: 'panel',
+      findingsAddedCount: 0,
+      actionableFindingsAddedCount: 0,
+    } satisfies SchedulerFirePathResult
+  }
+
+  const panelHookResult = await runReviewSchedulerHook({
+    runId: opts.runId,
+    taskId: opts.taskId,
+    attempt,
+    reviewRound: opts.round,
+    phase: 'review',
+    agent: opts.reviewerAgent.name,
+    reviewerAgent: opts.reviewerAgent,
+    preReviewReportSha256: panelResult.reviewReportSha256,
+    reviewState: {
+      mode: 'panel',
+      panelistVerdicts: panelistVerdictsForScheduler,
+    },
+    debatePolicyFromConfig: opts.invokeCtx.config.debatePolicy,
+    buildReportChangedFileCount: buildReport.changedFiles.length,
+    events: eventsForPanelScheduler,
+    eventPaths: eventPathsFor(opts.runPaths),
+    now,
+    firePathExecutor: panelExecutor,
+    aggregatePreflightWouldTip: panelPreflight.wouldTip,
+    ...(panelPreflight.tipReason !== undefined
+      ? { aggregatePreflightTipReason: panelPreflight.tipReason }
+      : {}),
+  })
+
+  // Panel post-hook branch: intervention surfaces NEEDS_INTERVENTION and
+  // halts the run; success/error_degrade/no-fire continue to the panel
+  // terminal branching below (resolved / blocked / needs_revision).
+  if (
+    panelHookResult.fireOutcome.fired &&
+    panelHookResult.fireOutcome.result?.status === 'intervention'
+  ) {
+    const r = panelHookResult.fireOutcome.result
+    return recordReviewIntervention(
+      ictx,
+      r.interventionCode,
+      r.interventionRule,
+      r.underlyingErrorCode,
+    )
+  }
 
   if (panelResult.status === 'resolved') {
     // Emit review_resolved so preApproveReviewHook (single source of

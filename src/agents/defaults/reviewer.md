@@ -24,6 +24,12 @@ permissions:
       maxRounds: 4
       timeoutMsPerRound: 120000
       network: provider-only
+    debate:
+      opposingProviders: ['claude']
+      maxConcurrent: 1
+      previewBeforeSend: true
+      maxFiles: 16
+      timeoutMs: 600000
 description: |
   Cross-family code reviewer. Reads tests first, walks the five axes (correctness / readability /
   architecture / security / performance), authors Findings + Score for one REVIEW round. The

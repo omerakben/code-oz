@@ -745,3 +745,210 @@ export function detectPanelBudgetSoftWarnings(
   }
   return Object.freeze(out)
 }
+
+// =====================================================================
+// M15 (Codex Q6 strict-aggregate-preflight + kickoff §2.5 + §7):
+// debate-scheduler aggregate budget preflight.
+//
+// Unlike assertWithinBudget / assertPanelWithinBudget which THROW on
+// breach, the scheduler preflight is a PURE PREDICATE that returns
+// `{ wouldTip, tipReason }`. The scheduler hook (commit 4a) supplies
+// the result to SchedulerInput.budget.aggregatePreflightWouldTip; the
+// pure decision function emits debate_scheduler_skipped reason
+// 'budget_exhausted' with the optional budgetTipReason discriminator
+// (commit 1 schemas).
+//
+// Aggregate cost = opposing turn + synthesis turn + post-debate REVIEW
+// round (panel-aware: postReviewProviderCalls = 1 single, N panel).
+// Mid-debate kill is the chokepoint backup (assertWithinBudget still
+// fires on individual turns) — never the gate. Aggregate preflight
+// is the gate.
+// =====================================================================
+
+/**
+ * M15: scheduler aggregate preflight tip reasons. Mirrors the union in
+ * SchedulerBudgetTipReason exported from src/state/schemas.ts so the
+ * call site can pass the value straight through to the typed event.
+ */
+export type SchedulerPreflightTipReason =
+  | 'maxTokensEstimate'
+  | 'maxProviderCalls'
+  | 'maxTurns'
+  | 'maxWallTimeMinutes'
+
+export interface SchedulerPreflightInput {
+  /** Phase the scheduler runs in. v0.1 always 'review' (rule 20 single
+   *  call site); future-proof so M16+ multi-call-site policy can pass
+   *  whatever phase the scheduler fires from. */
+  readonly phase: Phase
+  /** Optional role attribution; v0.1 reviewers are the 'reviewer' role.
+   *  Per-role caps under budgets.global.byRole are checked when present. */
+  readonly role?: string
+  /** Max tokens for the opposing-turn debate call (persona's
+   *  tool_use.debate.maxTokens or equivalent). */
+  readonly opposingMaxTokens: number
+  /** Max tokens for the synthesis-turn debate call (the calling persona
+   *  authors DECISION.md). */
+  readonly synthesisMaxTokens: number
+  /** Aggregate max tokens for the post-debate REVIEW round. Single mode:
+   *  reviewer's maxTokens. Panel mode: sum across panelists (manifest
+   *  equality means each panelist sees the same files; the per-panelist
+   *  values are typically identical). */
+  readonly postReviewMaxTokens: number
+  /** Provider-call count for the post-debate REVIEW round. 1 in single
+   *  mode; N in panel mode (where N is the panelist count). */
+  readonly postReviewProviderCalls: number
+}
+
+/** Aggregate preflight result. `wouldTip: true` means firing the scheduler
+ *  WOULD tip at least one cap; `tipReason` names the most-upstream cap
+ *  that breached (per-phase tokens beats global tokens beats turns beats
+ *  provider-calls beats wall-time, mirroring assertWithinBudget order).
+ *  `projectedExtraTokens` and `projectedExtraCalls` are surfaced for
+ *  telemetry (rule-21 baseline can record them per-fire decision). */
+export interface SchedulerPreflightResult {
+  readonly wouldTip: boolean
+  readonly tipReason?: SchedulerPreflightTipReason
+  readonly projectedExtraTokens: number
+  readonly projectedExtraCalls: number
+}
+
+const SCHEDULER_DEBATE_TURN_COUNT = 2
+
+/**
+ * Pure predicate: would firing the scheduler push any cumulative spend
+ * cap past its limit? The function reuses summarizeBudgetUse for the
+ * existing reducer authority (rule 1 + rule 19 — events.jsonl is the
+ * source of truth for cumulative spend; no parallel state).
+ *
+ * Order of checks (first breach wins, mirroring assertWithinBudget):
+ *   1. perPhase tokens
+ *   2. byRole tokens (when role + cap configured)
+ *   3. global tokens
+ *   4. perPhase turns (already-tipped check; turns is event count not next)
+ *   5. global turns (already-tipped check)
+ *   6. perPhase provider calls
+ *   7. byRole provider calls (when role + cap configured)
+ *   8. global provider calls
+ *   9. wall-time (already-tipped check)
+ *
+ * For turns + wall-time, the check is "already tipped" rather than
+ * "would tip" because a debate doesn't change `phase_entered` events
+ * and wall-time accumulates regardless of fire decision.
+ */
+export function aggregateDebateSchedulerPreflight(
+  config: CodeOzConfig,
+  input: SchedulerPreflightInput,
+  events: readonly LoggedEvent[],
+  now: Date = new Date(),
+): SchedulerPreflightResult {
+  const counts = summarizeBudgetUse(events, input.phase, now)
+  const perPhase = config.budgets.perPhase[input.phase]
+  const global = config.budgets.global
+
+  const projectedExtraTokens =
+    input.opposingMaxTokens + input.synthesisMaxTokens + input.postReviewMaxTokens
+  const projectedExtraCalls = SCHEDULER_DEBATE_TURN_COUNT + input.postReviewProviderCalls
+
+  const role = input.role
+  const byRoleRow =
+    role !== undefined ? global.byRole?.[role as keyof typeof global.byRole] : undefined
+
+  // 1. Per-phase tokens
+  if (counts.perPhaseTokens + projectedExtraTokens > perPhase.maxTokensEstimate) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxTokensEstimate',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 2. By-role tokens
+  if (
+    role !== undefined &&
+    byRoleRow?.maxTokensEstimate !== undefined &&
+    (counts.byRoleTokens[role] ?? 0) + projectedExtraTokens > byRoleRow.maxTokensEstimate
+  ) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxTokensEstimate',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 3. Global tokens
+  if (counts.globalTokens + projectedExtraTokens > global.maxTokensEstimate) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxTokensEstimate',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 4. Per-phase turns (already-tipped)
+  if (counts.perPhaseTurns > perPhase.maxTurns) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxTurns',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 5. Global turns (already-tipped)
+  if (counts.globalTurns > global.maxTurns) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxTurns',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 6. Per-phase provider calls
+  if (counts.perPhaseProviderCalls + projectedExtraCalls > perPhase.maxProviderCalls) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxProviderCalls',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 7. By-role provider calls
+  if (
+    role !== undefined &&
+    byRoleRow?.maxProviderCalls !== undefined &&
+    (counts.byRoleProviderCalls[role] ?? 0) + projectedExtraCalls > byRoleRow.maxProviderCalls
+  ) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxProviderCalls',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 8. Global provider calls
+  if (counts.globalProviderCalls + projectedExtraCalls > global.maxProviderCalls) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxProviderCalls',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  // 9. Wall-time (already-tipped)
+  if (
+    counts.wallTimeMinutes !== null &&
+    counts.wallTimeMinutes > global.maxWallTimeMinutes
+  ) {
+    return {
+      wouldTip: true,
+      tipReason: 'maxWallTimeMinutes',
+      projectedExtraTokens,
+      projectedExtraCalls,
+    }
+  }
+  return {
+    wouldTip: false,
+    projectedExtraTokens,
+    projectedExtraCalls,
+  }
+}

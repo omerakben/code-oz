@@ -9,7 +9,9 @@ import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import { paths as codeOzPaths } from '../paths.ts'
 import {
+  DEBATE_SCHEDULER_MODE_VALUES,
   DEFAULT_CONFIG,
+  DEFAULT_DEBATE_POLICY,
   M12_COMPANY_ROLES,
   PANELIST_ROLES,
   type ByRoleBudget,
@@ -17,6 +19,10 @@ import {
   type CompanyConfig,
   type CompanyRole,
   type CompanyRoleOverride,
+  type DebatePolicyConfig,
+  type DebatePolicyCooldown,
+  type DebatePolicyTriggers,
+  type DebateSchedulerModeConfig,
   type Panelist,
   type PhaseBudget,
   type GlobalBudget,
@@ -147,6 +153,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   const permissions = mergePermissions(raw.permissions, file, issues)
   const phases = mergePhases(raw.phases, file, issues)
   const company = mergeCompany(raw.company, defaultProvider, file, issues)
+  const debatePolicy = mergeDebatePolicy(raw.debatePolicy, file, issues)
 
   if (issues.length > 0) {
     throw new ConfigLoadError(issues)
@@ -161,6 +168,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
     permissions,
     phases,
     ...(company !== undefined ? { company } : {}),
+    ...(debatePolicy !== undefined ? { debatePolicy } : {}),
   })
 }
 
@@ -958,6 +966,269 @@ function mergeAskMe(
       a.maxRepairTurns,
       def.maxRepairTurns,
       'phases.define.askMe.maxRepairTurns',
+      file,
+      issues,
+    ),
+  }
+}
+
+// M15 (rule 20: debate-policy scheduler config surface). Returns undefined
+// when raw is absent — runtime callers resolve via `cfg.debatePolicy ??
+// DEFAULT_DEBATE_POLICY`. When present, validates every field strictly:
+// unknown row keys raise `config_invalid_value`; out-of-range numbers raise
+// `config_invalid_value` with detail naming the violated bound. The default
+// `mode: manual` preserves M10 behavior.
+const DEBATE_POLICY_FIELDS = [
+  'mode',
+  'maxPerRun',
+  'maxPerTask',
+  'triggers',
+  'cooldown',
+] as const
+const DEBATE_POLICY_TRIGGER_FIELDS = [
+  'reviewScoreGreyZone',
+  'panelVoterDisagreement',
+  'needsRevisionWithHighScore',
+] as const
+const DEBATE_POLICY_COOLDOWN_FIELDS = ['dedupByFingerprint'] as const
+const DEBATE_POLICY_GREY_ZONE_FIELDS = ['min', 'max'] as const
+const DEBATE_POLICY_SCORE_MIN = 0
+const DEBATE_POLICY_SCORE_MAX = 10
+
+function mergeDebatePolicy(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): DebatePolicyConfig | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'debatePolicy must be a mapping',
+    })
+    return undefined
+  }
+  const r = raw as Record<string, unknown>
+
+  // Reject unknown row keys (bundling guard).
+  for (const key of Object.keys(r)) {
+    if (!(DEBATE_POLICY_FIELDS as readonly string[]).includes(key)) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `debatePolicy.${key} is not a recognized field`,
+        detail: `allowed: ${DEBATE_POLICY_FIELDS.join(' | ')}`,
+      })
+    }
+  }
+
+  const mode = enumOrDefault<DebateSchedulerModeConfig>(
+    r.mode,
+    DEFAULT_DEBATE_POLICY.mode,
+    DEBATE_SCHEDULER_MODE_VALUES,
+    'debatePolicy.mode',
+    file,
+    issues,
+  )
+
+  const maxPerRun = nonNegIntOrDefault(
+    r.maxPerRun,
+    DEFAULT_DEBATE_POLICY.maxPerRun,
+    'debatePolicy.maxPerRun',
+    file,
+    issues,
+  )
+
+  const maxPerTask = nonNegIntOrDefault(
+    r.maxPerTask,
+    DEFAULT_DEBATE_POLICY.maxPerTask,
+    'debatePolicy.maxPerTask',
+    file,
+    issues,
+  )
+
+  const triggers = mergeDebatePolicyTriggers(r.triggers, file, issues)
+  const cooldown = mergeDebatePolicyCooldown(r.cooldown, file, issues)
+
+  return {
+    mode,
+    maxPerRun,
+    maxPerTask,
+    triggers,
+    cooldown,
+  }
+}
+
+function mergeDebatePolicyTriggers(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): DebatePolicyTriggers {
+  const def = DEFAULT_DEBATE_POLICY.triggers
+  if (raw === undefined || raw === null) {
+    return {
+      reviewScoreGreyZone: { ...def.reviewScoreGreyZone },
+      panelVoterDisagreement: def.panelVoterDisagreement,
+      needsRevisionWithHighScore: def.needsRevisionWithHighScore,
+    }
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'debatePolicy.triggers must be a mapping',
+    })
+    return {
+      reviewScoreGreyZone: { ...def.reviewScoreGreyZone },
+      panelVoterDisagreement: def.panelVoterDisagreement,
+      needsRevisionWithHighScore: def.needsRevisionWithHighScore,
+    }
+  }
+  const t = raw as Record<string, unknown>
+
+  for (const key of Object.keys(t)) {
+    if (!(DEBATE_POLICY_TRIGGER_FIELDS as readonly string[]).includes(key)) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `debatePolicy.triggers.${key} is not a recognized field`,
+        detail: `allowed: ${DEBATE_POLICY_TRIGGER_FIELDS.join(' | ')}`,
+      })
+    }
+  }
+
+  return {
+    reviewScoreGreyZone: mergeGreyZone(t.reviewScoreGreyZone, file, issues),
+    panelVoterDisagreement: booleanOrDefault(
+      t.panelVoterDisagreement,
+      def.panelVoterDisagreement,
+      'debatePolicy.triggers.panelVoterDisagreement',
+      file,
+      issues,
+    ),
+    needsRevisionWithHighScore: booleanOrDefault(
+      t.needsRevisionWithHighScore,
+      def.needsRevisionWithHighScore,
+      'debatePolicy.triggers.needsRevisionWithHighScore',
+      file,
+      issues,
+    ),
+  }
+}
+
+function mergeGreyZone(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): { min: number; max: number } {
+  const def = DEFAULT_DEBATE_POLICY.triggers.reviewScoreGreyZone
+  if (raw === undefined || raw === null) return { ...def }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'debatePolicy.triggers.reviewScoreGreyZone must be a mapping',
+    })
+    return { ...def }
+  }
+  const z = raw as Record<string, unknown>
+
+  for (const key of Object.keys(z)) {
+    if (!(DEBATE_POLICY_GREY_ZONE_FIELDS as readonly string[]).includes(key)) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `debatePolicy.triggers.reviewScoreGreyZone.${key} is not a recognized field`,
+        detail: `allowed: ${DEBATE_POLICY_GREY_ZONE_FIELDS.join(' | ')}`,
+      })
+    }
+  }
+
+  const min = scoreOrDefault(
+    z.min,
+    def.min,
+    'debatePolicy.triggers.reviewScoreGreyZone.min',
+    file,
+    issues,
+  )
+  const max = scoreOrDefault(
+    z.max,
+    def.max,
+    'debatePolicy.triggers.reviewScoreGreyZone.max',
+    file,
+    issues,
+  )
+  if (min > max) {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: 'debatePolicy.triggers.reviewScoreGreyZone.min must be <= reviewScoreGreyZone.max',
+      detail: `min=${min}, max=${max}`,
+    })
+    return { ...def }
+  }
+  return { min, max }
+}
+
+function scoreOrDefault(
+  v: unknown,
+  fallback: number,
+  field: string,
+  file: string,
+  issues: ConfigLoadIssue[],
+): number {
+  if (v === undefined) return fallback
+  if (
+    typeof v !== 'number' ||
+    !Number.isInteger(v) ||
+    v < DEBATE_POLICY_SCORE_MIN ||
+    v > DEBATE_POLICY_SCORE_MAX
+  ) {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: `${field} must be an integer in [${DEBATE_POLICY_SCORE_MIN}, ${DEBATE_POLICY_SCORE_MAX}]`,
+      detail: `got ${JSON.stringify(v)}`,
+    })
+    return fallback
+  }
+  return v
+}
+
+function mergeDebatePolicyCooldown(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): DebatePolicyCooldown {
+  const def = DEFAULT_DEBATE_POLICY.cooldown
+  if (raw === undefined || raw === null) return { ...def }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_shape',
+      rule: 'debatePolicy.cooldown must be a mapping',
+    })
+    return { ...def }
+  }
+  const c = raw as Record<string, unknown>
+
+  for (const key of Object.keys(c)) {
+    if (!(DEBATE_POLICY_COOLDOWN_FIELDS as readonly string[]).includes(key)) {
+      issues.push({
+        file,
+        code: 'config_invalid_value',
+        rule: `debatePolicy.cooldown.${key} is not a recognized field`,
+        detail: `allowed: ${DEBATE_POLICY_COOLDOWN_FIELDS.join(' | ')}`,
+      })
+    }
+  }
+
+  return {
+    dedupByFingerprint: booleanOrDefault(
+      c.dedupByFingerprint,
+      def.dedupByFingerprint,
+      'debatePolicy.cooldown.dedupByFingerprint',
       file,
       issues,
     ),

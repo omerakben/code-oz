@@ -117,7 +117,12 @@ describe('bootstrap with company config — load-time validation surfaces', () =
   test('override that triggers cross-family violation fails at bootstrap', async () => {
     await initProject({ cwd })
     // Override reviewer to claude. Builder stays at claude (bundled).
-    // Cross-family check fails: builder.family === reviewer.family.
+    // Either the cross-family REVIEW check OR the M15 reviewer-debate
+    // opposingProviders re-check fires first; both signal the same
+    // operator-actionable condition (reviewer must stay cross-family
+    // from BUILD, AND reviewer's opposingProviders must not include
+    // its own resolved family). M15 added the second check via
+    // tool_use.debate=['claude'] on the bundled reviewer.
     await writeConfig(`
 company:
   reviewer:
@@ -125,7 +130,7 @@ company:
 `)
     const config = await loadConfig({ cwd })
     await expect(bootstrap({ cwd, config })).rejects.toThrow(
-      /cross.family|REVIEW agent provider family must differ/i,
+      /cross.family|REVIEW agent provider family must differ|opposingProviders' must not include/i,
     )
   })
 

@@ -53,10 +53,12 @@ describe('lead persona has tool_use.debate (M10 default)', () => {
 
 describe('other bundled personas do NOT inherit tool_use.debate (D12 lock)', () => {
   // These personas exist in src/agents/defaults/. M10 grants debate to
-  // lead only; future milestones may extend (e.g., builder for design-
-  // time debate during BUILD), but those expansions need their own
+  // lead only; M15 commit 8 added reviewer (Path A — canonical-fixture-
+  // friendly so the rule-21 baseline measures on the bundled product
+  // path). Future milestones may extend (e.g., builder for design-time
+  // debate during BUILD), but those expansions need their own
   // pre-implementation Codex debate per CLAUDE.md rule 7.
-  const NON_DEBATE_DEFAULTS = ['ba', 'builder', 'verifier', 'reviewer', 'scientist']
+  const NON_DEBATE_DEFAULTS = ['ba', 'builder', 'verifier', 'scientist']
 
   for (const name of NON_DEBATE_DEFAULTS) {
     test(`${name}.md does NOT declare tool_use.debate`, async () => {

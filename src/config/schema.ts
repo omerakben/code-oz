@@ -170,6 +170,65 @@ export interface PhasesConfig {
   scientist: ScientistPhaseConfig
 }
 
+// M15 (rule 20: orchestrator-side automatic-trigger policy for the existing
+// single-opponent requestDebate() runtime built in M10). Optional. Absent =
+// effective `mode: manual` (M10 behavior preserved). When present, validates
+// every field against the locked defaults from
+// docs/design/SESSION_M15_IMPL_KICKOFF.md §2.12 + §11.3. The decision
+// function in src/policy/debate-scheduler.ts is the algorithm; this block
+// is the surface users see in `.code-oz/config.yaml`.
+export type DebateSchedulerModeConfig = 'off' | 'manual' | 'auto'
+
+export interface DebatePolicyTriggers {
+  /** Single-mode REVIEW score band that fires `score_in_grey_zone`. Bounds
+   *  are inclusive. Validation: `min <= max`, both in [0, 10] (matches the
+   *  REVIEW.md Score.Final range). Panel-mode REVIEW does NOT consult this
+   *  (Codex Risk #1). */
+  reviewScoreGreyZone: { min: number; max: number }
+  /** Panel-mode trigger: at least two eligible voters return distinct
+   *  verdicts. Advisory voters NEVER count (Codex Q5). */
+  panelVoterDisagreement: boolean
+  /** Single-mode trigger: verdict='needs-revision' AND score>=6. Boundary
+   *  case — almost ready. */
+  needsRevisionWithHighScore: boolean
+}
+
+export interface DebatePolicyCooldown {
+  /** When true, dedup by `(taskId, attempt, preReviewReportSha256)`
+   *  fingerprint — the same scheduler decision context cannot re-fire on
+   *  the same task in the same run. */
+  dedupByFingerprint: boolean
+}
+
+export interface DebatePolicyConfig {
+  mode: DebateSchedulerModeConfig
+  maxPerRun: number
+  maxPerTask: number
+  triggers: DebatePolicyTriggers
+  cooldown: DebatePolicyCooldown
+}
+
+/** Locked defaults from kickoff §2.12. Runtime callers that observe an
+ *  absent `debatePolicy` field resolve via `cfg.debatePolicy ?? DEFAULT_DEBATE_POLICY`.
+ *  Default mode='manual' preserves M10 behavior unchanged. */
+export const DEFAULT_DEBATE_POLICY: Readonly<DebatePolicyConfig> = Object.freeze({
+  mode: 'manual',
+  maxPerRun: 2,
+  maxPerTask: 1,
+  triggers: Object.freeze({
+    reviewScoreGreyZone: Object.freeze({ min: 5, max: 7 }),
+    panelVoterDisagreement: true,
+    needsRevisionWithHighScore: true,
+  }),
+  cooldown: Object.freeze({ dedupByFingerprint: true }),
+}) as DebatePolicyConfig
+
+export const DEBATE_SCHEDULER_MODE_VALUES: readonly DebateSchedulerModeConfig[] = [
+  'off',
+  'manual',
+  'auto',
+] as const
+
 export interface CodeOzConfig {
   version: string
   profile: Profile
@@ -191,6 +250,11 @@ export interface CodeOzConfig {
   // eligibility, debate-opposing-family, and runtime invocation. See
   // docs/contracts/COMPANY.md.
   company?: CompanyConfig
+  // M15 (rule 20: automatic-trigger policy for M10 single-opponent
+  // requestDebate). Optional. Absent = `mode: manual` (M10 behavior).
+  // Runtime callers resolve via `cfg.debatePolicy ?? DEFAULT_DEBATE_POLICY`.
+  // See docs/contracts/DEBATE_POLICY.md.
+  debatePolicy?: DebatePolicyConfig
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {
