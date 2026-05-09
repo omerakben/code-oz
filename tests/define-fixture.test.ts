@@ -73,7 +73,11 @@ describe('e2e: code-oz run --provider fake --request-file', () => {
       ['--provider', 'fake', '--request-file', FIXTURE_TRANSCRIPT],
       tmp,
     )
-    expect(r.stderr).toBe('')
+    // M16 C11 — `--provider fake` prints the LOUD warning banner to
+    // stderr exactly once per invocation. Assert stderr contains only
+    // that banner (no error output, no other warnings).
+    expect(r.stderr).toContain('--provider fake is active')
+    expect(r.stderr).toContain('TEST-ONLY')
     expect(r.exitCode).toBe(0)
     expect(r.stdout).toContain('DEFINE phase complete')
     expect(r.stdout).toContain('code-oz approve define')

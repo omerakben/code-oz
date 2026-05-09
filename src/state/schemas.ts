@@ -275,6 +275,14 @@ export const EVENT_TYPES = [
   'task_started',
   'task_review_passed',
   'task_completed',
+  // M16 C11 — `--provider fake` warning event. Loud stderr banner + this
+  // event fire once per `code-oz run` invocation when the fake provider
+  // override is active. Surfaces accidental fake-provider runs in
+  // production logs (CI safety net). Schema-light: envelope plus the
+  // overrideAlias and the optional fake-script path. No phase / agent /
+  // runId-only-when-active-run discriminator — the banner fires before
+  // initRun in greenfield invocations, so runId is optional.
+  'fake_provider_warning_emitted',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -1347,6 +1355,28 @@ export type PhaseEvent =
        *  signal — emitted ONLY after the gate file write succeeds, so
        *  rule 1 (file-based gate signals) is honored. */
       readonly reviewGatePath: string
+    }
+  // M16 C11 — `--provider fake` warning event. CI safety net: surfaces
+  // accidental fake-provider runs in production logs. Banner stderr text
+  // + this event fire ONCE per `code-oz run` invocation (not once per
+  // dispatcher) when the runtime override resolves to the shared
+  // FakeProvider. Tests assert both signals.
+  //   `providerAlias` — the override value passed on the CLI (`'fake'`).
+  //   `providerFamily` — `'fake'`. Carried for log-search ergonomics
+  //     even though it equals providerAlias today; keeps the event shape
+  //     symmetric with debate-scheduler events that distinguish alias /
+  //     family.
+  //   `fakeScriptPath` — present only when `--fake-script <path>` was
+  //     supplied alongside `--provider fake`. Operators can grep the
+  //     event log to find which fixture script ran.
+  | {
+      readonly version: 1
+      readonly type: 'fake_provider_warning_emitted'
+      readonly ts: string
+      readonly runId: string
+      readonly providerAlias: 'fake'
+      readonly providerFamily: 'fake'
+      readonly fakeScriptPath?: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

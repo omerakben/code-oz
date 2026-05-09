@@ -71,6 +71,10 @@ import {
   type FakeScriptEntry,
 } from '../providers/fake-script.ts'
 import {
+  printFakeProviderBanner,
+  recordFakeProviderWarning,
+} from '../cli/fake-provider-warning.ts'
+import {
   detectOpenBuildStarted,
   formatInterventionRefusal,
   loadPlanArtifact,
@@ -100,6 +104,16 @@ export async function runCommand(args: string[]): Promise<void> {
     process.stderr.write(`code-oz run: ${parsed.message}\n`)
     if (parsed.help) process.stderr.write(RUN_HELP + '\n')
     process.exit(2)
+  }
+
+  // M16 C11 — `--provider fake` warning banner. LOUD stderr banner fires
+  // before anything else: failed preflight or `.code-oz/` missing must
+  // still surface the warning so CI logs reflect the override regardless
+  // of where the run aborts. The companion `fake_provider_warning_emitted`
+  // event fires AFTER runId resolution (per-run scope; the event log
+  // belongs to a run) — see the active-run + fresh-run branches below.
+  if (parsed.providerOverride === 'fake') {
+    printFakeProviderBanner()
   }
 
   const cwd = process.cwd()
@@ -146,6 +160,31 @@ export async function runCommand(args: string[]): Promise<void> {
 
   const active = await readActiveRun(ctx.paths.activeRun)
   if (active !== null) {
+    // M16 C11 — emit the `fake_provider_warning_emitted` event for the
+    // active-run branch: appendEvent acquires the per-run lock, so the
+    // event lands in the correct events.jsonl. Best-effort: if the
+    // append fails (corrupt run dir, lock busy), the banner has already
+    // surfaced the warning to stderr — we surface the append error and
+    // continue, never blocking a run on the warning event.
+    if (parsed.providerOverride === 'fake') {
+      try {
+        const activeRunPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, active)
+        await recordFakeProviderWarning({
+          eventPaths: {
+            file: activeRunPaths.eventsFile,
+            lockDir: activeRunPaths.lockDir,
+          },
+          runId: active,
+          ...(parsed.fakeScriptPath !== undefined
+            ? { fakeScriptPath: parsed.fakeScriptPath }
+            : {}),
+        })
+      } catch (err) {
+        process.stderr.write(
+          `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
+        )
+      }
+    }
     await handleActiveRun(
       ctx.paths.state,
       ctx.paths.artifacts,
@@ -224,6 +263,25 @@ export async function runCommand(args: string[]): Promise<void> {
   const runId = generateUlid()
   const runPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, runId)
   await initRun({ paths: runPaths, profile: 'greenfield', runId })
+  // M16 C11 — companion event for the fresh-run branch. Emitted after
+  // initRun so the per-run events.jsonl exists. Mirrors the active-run
+  // branch above; both surfaces guarantee the banner + event fire once
+  // per `code-oz run` invocation.
+  if (parsed.providerOverride === 'fake') {
+    try {
+      await recordFakeProviderWarning({
+        eventPaths: { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        runId,
+        ...(parsed.fakeScriptPath !== undefined
+          ? { fakeScriptPath: parsed.fakeScriptPath }
+          : {}),
+      })
+    } catch (err) {
+      process.stderr.write(
+        `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
+      )
+    }
+  }
 
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,

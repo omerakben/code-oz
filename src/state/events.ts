@@ -2053,6 +2053,39 @@ export function validateEvent(
       if (pathIssue) return pathIssue
       break
     }
+
+    // M16 C11 — `--provider fake` warning event. Validates the fixed-
+    // alias envelope: `providerAlias` and `providerFamily` are pinned
+    // to `'fake'` (the only override v0.1 accepts); `fakeScriptPath` is
+    // optional and, when present, must be a non-empty string.
+    case 'fake_provider_warning_emitted': {
+      if (e.providerAlias !== 'fake') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: "fake_provider_warning_emitted.providerAlias must be 'fake'",
+          detail: `got ${JSON.stringify(e.providerAlias)}`,
+          line,
+        }
+      }
+      if (e.providerFamily !== 'fake') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: "fake_provider_warning_emitted.providerFamily must be 'fake'",
+          detail: `got ${JSON.stringify(e.providerFamily)}`,
+          line,
+        }
+      }
+      if (e.fakeScriptPath !== undefined) {
+        const pathIssue = nonEmptyString(
+          file, e.fakeScriptPath,
+          'fake_provider_warning_emitted.fakeScriptPath', line,
+        )
+        if (pathIssue) return pathIssue
+      }
+      break
+    }
   }
 
   return null
