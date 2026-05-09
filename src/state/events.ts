@@ -59,6 +59,15 @@ export interface EventLogPaths {
 }
 
 const SHA256_REGEX = /^[0-9a-f]{64}$/
+// M16 — mirror of src/artifacts/plan.ts TASK_ID_PATTERN. The plan parser is
+// the source of truth at parse time; events.ts owns the event-log contract,
+// so it carries its own copy rather than importing across the artifacts/state
+// boundary.
+const TASK_ID_PATTERN = /^T-\d{3,}$/
+// M9 REVIEW_ROUND_CAP mirror — task_review_passed.finalRound must be in
+// [1, REVIEW_ROUND_CAP_FOR_VALIDATION]. The runtime cap lives in
+// src/phases/review.ts; events.ts mirrors it for the event-log contract.
+const REVIEW_ROUND_CAP_FOR_VALIDATION = 4
 const REVIEW_ROUND_MIN = 1
 const REVIEW_ROUND_CAP = 4
 const REVIEW_SCORE_MIN = 0
@@ -1856,6 +1865,91 @@ export function validateEvent(
           if (issue) return issue
         }
       }
+      break
+    }
+
+    // M16 — Per-task lifecycle cursor events (Codex R0 Risk #1 closure).
+    // Each variant validates `taskId` against TASK_ID_PATTERN and
+    // `taskIndex` as a non-negative integer; the per-event extras add
+    // their own field-level rules.
+    case 'task_started': {
+      if (typeof e.taskId !== 'string' || !TASK_ID_PATTERN.test(e.taskId)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'task_started.taskId must match `T-NNN` (3+ digits)',
+          detail: `got ${JSON.stringify(e.taskId)}`,
+          line,
+        }
+      }
+      const indexIssue = nonNegativeInteger(
+        file, e.taskIndex, 'task_started.taskIndex', line,
+      )
+      if (indexIssue) return indexIssue
+      break
+    }
+
+    case 'task_review_passed': {
+      if (typeof e.taskId !== 'string' || !TASK_ID_PATTERN.test(e.taskId)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'task_review_passed.taskId must match `T-NNN` (3+ digits)',
+          detail: `got ${JSON.stringify(e.taskId)}`,
+          line,
+        }
+      }
+      const indexIssue = nonNegativeInteger(
+        file, e.taskIndex, 'task_review_passed.taskIndex', line,
+      )
+      if (indexIssue) return indexIssue
+      if (
+        typeof e.finalRound !== 'number' ||
+        !Number.isInteger(e.finalRound) ||
+        e.finalRound < 1 ||
+        e.finalRound > REVIEW_ROUND_CAP_FOR_VALIDATION
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `task_review_passed.finalRound must be an integer in [1, ${REVIEW_ROUND_CAP_FOR_VALIDATION}]`,
+          detail: `got ${JSON.stringify(e.finalRound)}`,
+          line,
+        }
+      }
+      if (
+        typeof e.reviewReportSha256 !== 'string' ||
+        !SHA256_REGEX.test(e.reviewReportSha256)
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'task_review_passed.reviewReportSha256 must be a 64-char lowercase hex string',
+          detail: `got ${JSON.stringify(e.reviewReportSha256)}`,
+          line,
+        }
+      }
+      break
+    }
+
+    case 'task_completed': {
+      if (typeof e.taskId !== 'string' || !TASK_ID_PATTERN.test(e.taskId)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'task_completed.taskId must match `T-NNN` (3+ digits)',
+          detail: `got ${JSON.stringify(e.taskId)}`,
+          line,
+        }
+      }
+      const indexIssue = nonNegativeInteger(
+        file, e.taskIndex, 'task_completed.taskIndex', line,
+      )
+      if (indexIssue) return indexIssue
+      const pathIssue = nonEmptyString(
+        file, e.reviewGatePath, 'task_completed.reviewGatePath', line,
+      )
+      if (pathIssue) return pathIssue
       break
     }
   }

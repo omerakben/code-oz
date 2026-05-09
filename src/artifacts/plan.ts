@@ -897,3 +897,15 @@ export function hasMinimumContent(plan: PlanArtifact): boolean {
     plan.openQuestions.length >= 1
   )
 }
+
+/**
+ * M16 — return PLAN tasks' `T-NNN` ids in the order they appear in the
+ * artifact. The order is canonical: it pins (a) `taskIndex` in
+ * `task_started`/`task_review_passed`/`task_completed` events, and (b)
+ * the order `dispatchBuild` walks looking for the next pending task.
+ *
+ * Pure: takes a parsed PlanArtifact, returns a frozen array of ids.
+ */
+export function listPlanTaskIds(plan: PlanArtifact): readonly string[] {
+  return Object.freeze(plan.tasks.map((t) => t.id))
+}

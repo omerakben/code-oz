@@ -5,6 +5,7 @@ import {
   hasMinimumContent,
   allocateTaskId,
   adaptYamlStylePlan,
+  listPlanTaskIds,
   PLAN_SECTION_KEYS,
   TASK_BULLET_KEYS,
   type PlanArtifact,
@@ -306,6 +307,52 @@ describe('hasMinimumContent', () => {
       openQuestions: ['Q'],
     }
     expect(hasMinimumContent(plan)).toBe(false)
+  })
+})
+
+describe('listPlanTaskIds (M16 C1)', () => {
+  function planWithTaskIds(ids: readonly string[]): PlanArtifact {
+    return Object.freeze({
+      title: 'PLAN',
+      goals: Object.freeze(['x']),
+      tasks: Object.freeze(
+        ids.map(
+          (id, i): PlanTask =>
+            Object.freeze({
+              id,
+              title: `task ${i + 1}`,
+              files: Object.freeze([]),
+              fileChanges: Object.freeze([]),
+              validation: 'bun test',
+              risk: 'none',
+              hypotheses: Object.freeze([]),
+              sources: Object.freeze(['SC-SPEC-001']),
+            }),
+        ),
+      ),
+      sources: Object.freeze(['SC-SPEC-001']),
+      outOfScope: Object.freeze(['none']),
+      openQuestions: Object.freeze(['none']),
+    })
+  }
+
+  test('returns ids in declared order', () => {
+    const plan = planWithTaskIds(['T-001', 'T-002', 'T-003'])
+    expect(listPlanTaskIds(plan)).toEqual(['T-001', 'T-002', 'T-003'])
+  })
+
+  test('returns empty array on zero-task plan', () => {
+    expect(listPlanTaskIds(planWithTaskIds([]))).toEqual([])
+  })
+
+  test('preserves non-sequential ids in declared order', () => {
+    const plan = planWithTaskIds(['T-005', 'T-002', 'T-099'])
+    expect(listPlanTaskIds(plan)).toEqual(['T-005', 'T-002', 'T-099'])
+  })
+
+  test('result is frozen', () => {
+    const ids = listPlanTaskIds(planWithTaskIds(['T-001']))
+    expect(Object.isFrozen(ids)).toBe(true)
   })
 })
 

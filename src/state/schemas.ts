@@ -241,6 +241,30 @@ export const EVENT_TYPES = [
   'debate_scheduler_error',
   'debate_scheduler_postreview',
   'debate_policy_baseline_completed',
+  // M16 — Per-task lifecycle cursor (per docs/research/CODEX_RESPONSE_M16.md
+  // Risk #1 closure). PLAN.md supports multiple `T-NNN` tasks; the
+  // state machine only knows phases. Without these events, the cursor
+  // helper at src/state/task-cursor.ts cannot tell which task BUILD
+  // attempt N+1 should target, and `approve review` for task T-001
+  // would advance currentPhase to `ship` while T-002 / T-003 were
+  // never built. The three events form a strict ordering per task:
+  //   task_started — emitted by runBuild at the start of attempt 1 for
+  //     a task. Subsequent attempts (BUILD-restart from VERIFY-fail) do
+  //     NOT re-emit; the build_started event already carries attempt N.
+  //   task_review_passed — emitted by runReview when the review verdict
+  //     resolves to 'ready' for the task. Mirrors review_resolved but
+  //     carries the taskIndex so the cursor projection is O(1).
+  //   task_completed — emitted by preApproveReviewHook AFTER the
+  //     GATE_REVIEW_PASSED.json gate write succeeds. This is the
+  //     durable "task is fully done" signal; `code-oz run` reads this
+  //     to decide whether to advance to BUILD for task N+1 or to SHIP.
+  // No state-machine change in C1 — this commit defines the events +
+  // the projection helper. Runtime emit sites land in C5 (BUILD prompt
+  // snapshot + preApproveBuildHook), C6 (dispatchBuild), C8 (dispatchReview),
+  // and C9 (task-loop dispatch) per docs/design/SESSION_M16_KICKOFF.md.
+  'task_started',
+  'task_review_passed',
+  'task_completed',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -1215,6 +1239,51 @@ export type PhaseEvent =
       readonly latencyOverheadAvgMs: number
       /** `correctiveDeltaRate >= 0.10 && newActionableFindingRate >= 0.30`. */
       readonly passedRuleTwentyOne: boolean
+    }
+  // M16 — Per-task lifecycle cursor events (Codex R0 Risk #1 closure).
+  // `taskIndex` is 0-based position in PLAN.md tasks declared order;
+  // `taskId` is the canonical `T-NNN` id (validated against
+  // src/artifacts/plan.ts TASK_ID_PATTERN). Both fields are carried so
+  // the cursor projection can validate consistency between event log
+  // and current PLAN.md without re-parsing PLAN per event.
+  | {
+      readonly version: 1
+      readonly type: 'task_started'
+      readonly ts: string
+      readonly runId: string
+      /** PLAN.md task id (`T-NNN`). */
+      readonly taskId: string
+      /** 0-based index in PLAN.md tasks declared order at time of emit. */
+      readonly taskIndex: number
+    }
+  | {
+      readonly version: 1
+      readonly type: 'task_review_passed'
+      readonly ts: string
+      readonly runId: string
+      readonly taskId: string
+      readonly taskIndex: number
+      /** REVIEW round that resolved with verdict='ready' (1..4 per
+       *  REVIEW_ROUND_CAP). Mirrors review_resolved.finalRound for the
+       *  same task; carried here so the cursor projection does not need
+       *  to re-correlate review_resolved events. */
+      readonly finalRound: number
+      /** 64-char lower-case hex of the canonical REVIEW.md content for
+       *  the round that resolved as ready. */
+      readonly reviewReportSha256: string
+    }
+  | {
+      readonly version: 1
+      readonly type: 'task_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly taskId: string
+      readonly taskIndex: number
+      /** Path to GATE_REVIEW_PASSED.json that was written by approve
+       *  review. The cursor consumes this as the durable "task done"
+       *  signal — emitted ONLY after the gate file write succeeds, so
+       *  rule 1 (file-based gate signals) is honored. */
+      readonly reviewGatePath: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)
