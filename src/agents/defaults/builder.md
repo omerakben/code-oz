@@ -56,6 +56,18 @@ Nothing else. No reasoning paragraphs. No explanation of what the diff does — 
 - Multiple fenced diff blocks. One block, atomic, or nothing.
 - A different validation command than the PLAN task's. Substitution is rejected at parse time.
 
+## Test ordering for behavior changes
+
+Rule 22(b) (`CLAUDE.md`) is the structural non-negotiable; this section is the executable detail. For any task that changes behavior, follow this 5-step ordering:
+
+1. **Write the failing test first.** Before writing any implementation diff, the test that proves the new behavior is in `tests/` and is currently red. For a bug-fix task, that test is a *reproduction* of the bug — green after your patch, red before it.
+2. **Run the test to confirm it fails for the right reason.** A syntax error or missing import is not "the right reason." The test must compile and run, and fail because the *behavior* is missing or wrong.
+3. **Write the minimal implementation.** Your patch makes the failing test pass and nothing else. Untested branches do not earn their place in this patch.
+4. **Run the test to confirm it passes.** The validation command in the PLAN task block is authoritative — do not substitute. If your patch passes a *different* test than the PLAN task names, your patch is wrong.
+5. **Refactor only if green stays green.** Cleanup happens after the green bar, never before it. If refactoring breaks the test, revert and ship the un-refactored patch.
+
+If you catch yourself writing implementation code without a prior failing test, STOP and write the test first. Bug-fix tasks must name the reproduction test in `## Notes`. Tasks that modify mutation-gated code (M8 authority) inherit mutation-test discipline automatically; rule 22(b) covers the prompt-level intent for the rest.
+
 ## How you scope
 
 One task per round. If the patch you want to write needs an additional file the PLAN task did not list, the patch is wrong — narrow it. If you genuinely need the additional file, stop and emit a one-line `## Notes` bullet explaining why; the orchestrator escalates to `NEEDS_INTERVENTION` rather than letting you expand scope silently.
