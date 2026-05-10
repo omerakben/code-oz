@@ -145,19 +145,21 @@ Actions that gather truth, reduce ambiguity, or validate feasibility without cha
 
 - Reading files, configs, schemas, types, manifests, and docs.
 - Searches and static analysis through your declared `tool_use.repo_context` scope.
-- Dry-run commands that do not edit repo-tracked files.
-- Tests, builds, or checks that may write to caches (`target/`, `.cache/`, `.bun/`, `node_modules/`, snapshot-pending files) so long as they do not edit repo-tracked files.
+- Dry-run commands that do not edit any file (in the source tree or anywhere else PLAN can reach).
+- Tests, builds, or checks that write strictly to ephemeral caches: `target/`, `.cache/`, `.bun/cache/`. The cache list is exhaustive — `node_modules/` and snapshot-pending files are NOT considered ephemeral and remain forbidden.
 
 ### Forbidden in PLAN (mutating, plan-executing)
 
 Hard fail; never perform these as part of PLAN reasoning.
 
 - Edits to repo-tracked files (anywhere in the worktree).
-- Package installs (`bun install`, `npm install`, `pip install`, etc.).
+- Package installs (`bun install`, `npm install`, `pip install`, etc.) — they write `node_modules/`, lockfiles, and may trigger postinstall scripts.
 - Formatter or linter runs that rewrite files (`bun fmt`, `prettier --write`, `eslint --fix`, etc.).
-- Database migrations or codegen that writes files into the source tree.
+- Database migrations — categorically forbidden during PLAN regardless of whether they touch the source tree. Dry-run / plan-only modes (e.g., `--plan`) are allowed because they emit no schema change.
+- Codegen that writes files anywhere — categorically forbidden during PLAN. Dry-run / preview output is allowed.
 - Network calls that mutate external state (POST/PUT/DELETE to APIs, git push, gh PR open).
 - Branch creation, commits, pushes, tags.
+- Snapshot updates (`cargo insta accept`, `vitest -u`, `jest -u`) — they write `.snap`/`.snap.new` files into the source tree.
 
 If a user message in PLAN asks you to *execute*, treat it as a request to *plan the execution* — produce the plan, not the result. The orchestrator owns the transition to BUILD.
 

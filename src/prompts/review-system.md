@@ -32,7 +32,7 @@ Beyond the universal table above, three failure modes recur for REVIEW personas.
 
 ## Specialist rubric (after universal rules, before five-axis pass)
 
-The five universal rules above are PRIMARY. The specialist checks below add scope-specific lenses adapted from the openai/codex `code-review-*` skill family (session 06 borrow B1 + missed-borrow M2; see `docs/comparison/06-codex/SYNTHESIS.md`). They are **diagnostic prompts you walk through in your own reasoning** — not separate provider sub-passes by default. Run them as in-prompt checks; escalate to a specialist sub-pass only when (a) the diff touches state-machine reducers, locks, contracts, or persisted artifacts, or (b) `events.jsonl` shows the same bug class slipping through across runs. Sub-passes always count under `budgets.global` (CLAUDE.md rule 19).
+The universal rules above (the 20-item rule sheet from CLAUDE.md rule 16) are PRIMARY. The specialist checks below add scope-specific lenses adapted from the openai/codex `code-review-*` skill family (session 06 borrow B1 + missed-borrow M2; see `docs/comparison/06-codex/SYNTHESIS.md`). They are **diagnostic prompts you walk through in your own reasoning** — not separate provider sub-passes by default. Run them as in-prompt checks; escalate to a specialist sub-pass only when (a) the diff touches state-machine reducers, locks, contracts, or persisted artifacts, or (b) `events.jsonl` shows the same bug class slipping through across runs. Sub-passes always count under `budgets.global` (CLAUDE.md rule 19).
 
 ### Specialist 1 — Context discipline
 

@@ -117,7 +117,7 @@ description: |
 - **`phase`** — non-negotiable rule 1 (file-based gate signals only) requires a typed phase tag so `state/GATE_<PHASE>_PASSED.json` can be schema-validated against the agent that produced it.
 - **`provider`** — non-negotiable rule 2 (cross-family review) requires REVIEW agents to be in a different provider family from BUILD. The loader enforces this; provider must be a frontmatter field, not inferred.
 - **`modelPolicy`** — non-negotiable rule 4 (Opus default; warn on downgrade). Encoding the policy per agent (rather than globally) lets the M3 state machine warn or error at run time.
-- **`permissions`** — non-negotiable rule 9 (permission manifest required for any `.ts` escape hatch). The frontmatter is the manifest; default-deny is the safe posture.
+- **`permissions`** — non-negotiable rule 9 (permission manifest required for any executable runner; generalized 2026-05-10 from `.ts` to any `.ts` / `.py` / `.sh` / native binary per session 06 borrow B2). The frontmatter is the manifest; default-deny is the safe posture. When a skill bundles its own runner under `skills/<name>/scripts/`, the manifest lists the runner's `command`, `interpreter`, `cwd`, `file_roots`, `network`, `env`, `secrets`, `timeout`, and `output_caps` — see `## Skill format extension` below.
 
 ### Permissions semantics: upper bound, not glob expansion
 
@@ -125,18 +125,20 @@ This is load-bearing for non-negotiable rule 13 (privacy by default). `permissio
 
 - `read: '*'` means "this agent is allowed to receive any file the runtime decides to send." It does **not** mean "expand the glob and send the entire repository on every turn." The bundled BA, Lead, Builder, Verifier, and Reviewer personas all declare `read: '*'` because their legitimate scope is broad — but the runtime sends an explicit, per-phase manifest of files to the provider, never a silent recursive context.
 - `write: ['./docs/**']` means "if the agent attempts to write outside `./docs/**`, the runtime rejects the write." It does not pre-create files or pre-load anything.
-- `bash: deny` is the default and the only legal value in v0.1. Any other value requires an explicit per-file permission manifest contract (rule 9), which v0.1 deliberately does not implement.
+- `bash: deny` is the default and the only legal value in v0.1. Any other value requires an explicit per-file permission manifest contract (rule 9 — generalized in session 06 borrow B2 to cover any executable runner, not only `.ts`), which v0.1 deliberately does not implement at the runtime layer. The manifest fields are pinned in CLAUDE.md rule 9 for when the runtime lands.
 
 Concrete consequence for the M3 phase machinery: when assembling the file manifest sent to a provider for a turn, M3 must check that every file in the manifest is *allowed* by the agent's `permissions.read` (i.e., matches the glob or `'*'` is set), but the manifest's *contents* come from explicit phase logic (e.g., DEFINE sends the user's request transcript; PLAN sends `SPEC.md`; REVIEW sends the changed file paths from BUILD). Treat permissions as a check, never as a generator.
 
 ## File layout in code-oz
 
-`code-oz` does not use the `skills/<name>/SKILL.md` convention from upstream. It uses the simpler `agents/<name>.md` convention from upstream, applied to all artifact types:
+`code-oz` uses the simpler `agents/<name>.md` convention from upstream as the default for personas, applied to all artifact types:
 
 ```
 src/agents/defaults/<name>.md        # bundled defaults shipped in the binary
 .code-oz/agents/<name>.md            # project-local overrides (project-local wins on collision)
 ```
+
+The `skills/<name>/SKILL.md` convention from upstream is permitted as an *optional* extension (session 06 borrow B2; see `## Skill format extension` below) when a skill needs to bundle a runner script or reference docs alongside its prompt. Personas remain on the flat `agents/<name>.md` shape; `skills/<name>/SKILL.md` is only for skill-typed artifacts that need the subdirectory layout.
 
 Naming:
 
@@ -158,6 +160,31 @@ The M2 loader enforces:
 6. The body has at least an `Overview` section (skill-style) or a top-level role declaration (persona-style). Empty bodies are rejected.
 
 Any violation produces a typed error citing the file path and the violated rule. The loader never accepts a partially-valid file (rule 1: no LLM-text-parsed pass/fail; the same discipline applies to artifact loading).
+
+## Skill format extension (session 06 borrow B2)
+
+Adopted 2026-05-10 from the codex template comparison (`docs/comparison/06-codex/SYNTHESIS.md` B2, Codex thread `019e12ec`). Optional per-skill subdirectory layout for skill-typed artifacts that need to ship a runner, reference docs, or sub-agent prompts:
+
+```
+src/agents/defaults/skills/<name>/
+├── SKILL.md            # required — the skill prompt (same frontmatter as agents/<name>.md)
+├── references/         # optional — markdown the SKILL.md cites by relative path
+│   └── *.md
+├── scripts/            # optional — executable runners; each requires a permission manifest per rule 9
+│   ├── <runner>        # e.g., gh_pr_watch.py, validate.sh
+│   └── MANIFEST.json   # per-runner manifest (command, interpreter, cwd, file_roots, network, env, secrets, timeout, output_caps)
+└── agents/             # optional — sub-agent persona prompts the SKILL.md spawns
+    └── <subagent>.md   # MUST start by importing src/prompts/universal-rules.md (rule 16 invariant)
+```
+
+Validation (loader contract for v0.2+, deferred from v0.1):
+
+1. `SKILL.md` frontmatter is the same shape as `agents/<name>.md` — see "Field reference" above.
+2. Every executable in `scripts/` has a matching entry in `scripts/MANIFEST.json` with the rule-9 fields.
+3. Every prompt under `agents/` imports `src/prompts/universal-rules.md` first; the loader rejects subagent prompts that try to relax universal rules (rule 16 stays load-bearing in subagent context).
+4. `references/` files have no frontmatter requirement — they are referenced from `SKILL.md` by relative path.
+
+The flat `agents/<name>.md` layout (above) remains the default; personas don't need a subdirectory. Skills that don't bundle a runner or sub-agents stay on the flat layout too — the subdirectory layout is opt-in for skills that need it.
 
 ## What this file is not
 
