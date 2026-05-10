@@ -1024,6 +1024,26 @@ describe('lintSpecQuality', () => {
     expect(issues.some((issue) => issue.code === 'spec_goals_underspecified')).toBe(false)
   })
 
+  test('QH2: Goals with 2 bullets but combined <15 words does NOT warn (AND condition)', () => {
+    const text = VALID.replace(
+      [
+        '## Goals',
+        '',
+        '- Help a parent name their newborn.',
+        '- Suggest names balanced across given-name and surname pairings.',
+      ].join('\n'),
+      [
+        '## Goals',
+        '',
+        '- Go.',
+        '- Do.',
+      ].join('\n'),
+    )
+    const issues = lintSpecQuality(parseSpec(text))
+    const goalsUnder = issues.filter((i) => i.code === 'spec_goals_underspecified')
+    expect(goalsUnder.length).toBe(0)
+  })
+
   test('Goals with 1 bullet and at least 15 words do not trigger goals underspecified', () => {
     const issues = lintSpecQuality(specForLint({
       goals: [

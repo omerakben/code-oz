@@ -632,7 +632,7 @@ function findVagueTerms(bullet: string): readonly string[] {
   // then any of the 15 terms as a whole word, case-insensitive.
   const pattern = new RegExp(
     String.raw`\b(?:should\s+be\s+|must\s+be\s+|needs?\s+to\s+be\s+)?(` +
-      VAGUE_TERMS.map((t) => t.replace(/-/g, '\\-')).join('|') +
+      VAGUE_TERMS.join('|') +
       String.raw`)\b`,
     'gi',
   )

@@ -7,7 +7,8 @@
 //   - On success: serialize the validated SpecArtifact to canonical
 //     Markdown, atomically write `<artifactRoot>/SPEC.md`, then call
 //     requireGate(define, ...) to record a gate_required event and rebuild
-//     current.json. NEVER a SPEC.draft.md on the success path.
+//     current.json, then add diagnostic SPEC quality warnings to the CLI
+//     message. NEVER a SPEC.draft.md on the success path.
 //
 //   - On validation_failed: write the unvalidated draft to
 //     `<artifactRoot>/SPEC.draft.md`, write NEEDS_INTERVENTION.json
