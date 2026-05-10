@@ -14,7 +14,7 @@ decision: YES, with selective borrows; original single-M17 proposal replaced by 
 
 ## What ACE is, in one paragraph
 
-ACE (Agentic Context Engineering, Zhang et al., arXiv:2510.04618, 2025) is a Python research framework that turns an LLM context into an evolving structured playbook. Three roles run in a loop: **Generator** answers a question using the playbook; **Reflector** diagnoses errors and tags each used bullet `helpful`, `harmful`, or `neutral`; **Curator** mutates the playbook through delta operations (`ADD`, `UPDATE`, `MERGE`, `DELETE`, `CREATE_META`). The playbook stores bullets as `[sec-00001] helpful=4 harmful=1 :: <content>` under named sections (strategies, formulas, code snippets, common mistakes, heuristics, context clues, others). An optional `BulletpointAnalyzer` runs sentence-transformer embeddings + FAISS to dedup near-duplicates above a similarity threshold. The published claims are +10.6% on AppWorld agent tasks and +8.6% on FiNER finance, with -82.3% latency and -75.1% rollouts vs GEPA.
+ACE (Agentic Context Engineering, Zhang et al., arXiv:2510.04618, 2025) is a Python research framework that turns an LLM context into an evolving structured playbook. Three roles run in a loop: **Generator** answers a question using the playbook; **Reflector** diagnoses errors and tags each used bullet `helpful`, `harmful`, or `neutral`; **Curator** mutates the playbook through delta operations whose schema accepts `ADD`, `UPDATE`, `MERGE`, `DELETE`, and `CREATE_META`, but whose published applier at `playbook_utils.py:96-216` only implements `ADD` — the other four are TODO comments at lines 100-104 and 130-141. The playbook stores bullets as `[sec-00001] helpful=4 harmful=1 :: <content>` under named sections (strategies, formulas, code snippets, common mistakes, heuristics, context clues, others). An optional `BulletpointAnalyzer` runs sentence-transformer embeddings + FAISS to dedup near-duplicates above a similarity threshold. The published claims are +10.6% on AppWorld agent tasks and +8.6% on FiNER finance, with -82.3% latency and -75.1% rollouts vs GEPA.
 
 ## What code-oz is, restated for contrast
 
@@ -32,11 +32,11 @@ ACE's published evaluations are narrow: financial information extraction (FiNER)
 | Phases | 1 loop (run → reflect → curate) | 6 phases with hard gates | code-oz's gates have no analog in ACE. |
 | Cross-family review | None (single provider in published config) | Mandatory at REVIEW gate (rule 2) | ACE uses one model family for all three roles; code-oz forbids that at REVIEW. |
 | Multi-provider | Provider abstraction over OpenAI-compatible (sambanova, together, openai, commonstack) | `IAgentProvider` with 4 SDK adapters + capability contract (M11) | Both have abstraction; code-oz declares capabilities and fails closed if missing. |
-| Persistent learning across runs | Playbook with bullet-IDs, helpful/harmful counts, delta ops, FAISS dedup | Documented in maestro 4-layer FS memory (`docs/research/01-maestro-rule-checker.md` lines 295-330); not implemented | **The gap.** code-oz has the design, ACE has the runtime. |
+| Persistent learning across runs | Playbook with bullet-IDs, helpful/harmful counts, ADD-only delta applier (UPDATE/MERGE/DELETE/CREATE_META are TODO at `playbook_utils.py:100-141`), FAISS dedup | Documented in maestro 4-layer FS memory (`docs/research/01-maestro-rule-checker.md` lines 300-330); not implemented | **The gap.** code-oz has the design; ACE has the runtime (partially — only the ADD op landed in the published source). |
 | Repo-aware | No (flat `context` + `question`) | Yes — `tool_use.repo_context` permission scope, file manifests, brownfield AUDIT | Different products. |
 | Gate signals | None — accuracy on dataset is the signal | File-based, schema-validated `GATE_<PHASE>_PASSED.json` (rule 1) | code-oz refuses to parse LLM text for pass/fail; ACE has no concept of "pass." |
 | Budgets | Playbook token budget (default 80k); per-call max_tokens | `budgets.global` with `maxTurns`, `maxProviderCalls`, `maxTokensEstimate`, `maxWallTimeMinutes`, `priceTable`; soft warnings at 0.75 ratio (rule 19) | ACE's budget is content-shape; code-oz's is run-shape. Different scopes — both useful. |
-| Failure handling | Skip curator op on JSON parse fail; log to `curator_failures.jsonl` | `NEEDS_INTERVENTION.json` with actionable suggestion (rule 11) | ACE silently degrades; code-oz halts and asks. |
+| Failure handling | Skip curator op on JSON parse fail or empty/sentinel LLM response; log to `curator_failures.txt` as free-text postmortem blocks (`logger.py:279`) | `NEEDS_INTERVENTION.json` with actionable suggestion (rule 11) | ACE silently degrades through two paths (`curator.py:109-113` empty response, `curator.py:145-153` JSON parse); code-oz halts and asks. |
 | Worktree isolation | None | `EnterWorktree` + per-run worktree (M7) | code-oz only. |
 | Permission manifest | None | Required for any `.ts` escape-hatch execution (rule 9) | code-oz only. |
 | Privacy | None documented | `.code-ozignore`, secret redaction, file-size caps, file-manifest preview (rule 13) | code-oz only. |
@@ -44,8 +44,8 @@ ACE's published evaluations are narrow: financial information extraction (FiNER)
 | Debate runtime | None | `requestDebate()` primitive (M10), reviewer panel (M14), policy scheduler (M15) | code-oz only. |
 | Self-improvement loop | Yes — playbook evolves across samples | Documented (Voyager / MemSkill / Memento-Skills lineage in `03-prompt-optimizer-front-door.md`); not implemented | **Same gap.** |
 | Online vs offline | Both modes documented and tested | Single mode (per-run); cross-run learning not yet built | code-oz has no "online mode" because there is no playbook to update. |
-| Distribution | `uv` Python package | `bun build --compile` single-file binary; npm + Homebrew + Scoop | code-oz only — different stacks. |
-| Auditability of curation | `curator_operations_diff.jsonl` per operation, `bullet_usage_log.jsonl` per generator call | `events.jsonl` event log + per-phase artifacts | Both have it. ACE's is finer-grained at the bullet level; code-oz's is finer-grained at the phase level. |
+| Distribution | `uv` Python package; hard deps include `openai`, `sentence-transformers`, `faiss`, `numpy` | `bun build --compile` single-file binary; npm + Homebrew + Scoop | Different stacks. Borrowing `BulletpointAnalyzer` to Bun is a dependency-graph reshape (JS embedding port + JS ANN library), not a re-implementation; deferred to M20+ behind a feature check per SYNTHESIS B5. |
+| Auditability of curation | `curator_operations_diff.jsonl` per operation, `bullet_usage_log.jsonl` per generator call (the log emits full bullet content + 500 chars of context + 200 chars of question per `logger.py:32-81` — privacy concern) | `events.jsonl` event log + per-phase artifacts | ACE's logger has diff branches for MERGE/UPDATE/CREATE_META at `logger.py:108-178` but the applier only emits ADD, so those branches are dead code. The fine grain is aspirational; code-oz's per-phase events are concrete today. |
 | Embedding-based dedup | Yes (sentence-transformers `all-mpnet-base-v2` + FAISS, threshold 0.9) | None | **Specific borrow candidate.** |
 
 ## What ACE has that code-oz lacks
@@ -60,9 +60,9 @@ A4. **Embedding-based similarity dedup at compaction time**. `BulletpointAnalyze
 
 A5. **Token-budget-aware curation**. The Curator prompt explicitly receives `token_budget`, `current_step`, `total_samples`, `playbook_stats`, and is told to keep the playbook within budget. This is a content-shape budget separate from the run-shape budgets in `budgets.global`. When the Reviewer Memory layer ships, it will need its own content budget for the same reason ACE does — to prevent unbounded growth.
 
-A6. **Bullet usage logs as training signal**. `bullet_usage_log.jsonl` records which bullets each Generator call consumed. This is exactly the "skill outcomes" the maestro doc describes for Layer 3 (`./.codeoz/skills/<skill>/outcomes.jsonl`), but for memory entries instead of skills. Same pattern, different target.
+A6. **Bullet usage logs as training signal**. `bullet_usage_log.jsonl` records which bullets each Generator call consumed. This is exactly the "skill outcomes" the maestro doc describes for Layer 3 (`./.codeoz/skills/<skill>/outcomes.jsonl`), but for memory entries instead of skills. Same pattern, different target. **Privacy caveat:** ACE's log also stores full bullet content, the first 500 characters of the question's context, and the first 200 characters of the question itself (`logger.py:32-81`). code-oz's borrow must log lesson ID + entry SHA only, with full content gated behind an explicit debug flag (rule 13). See `SYNTHESIS.md` finding 4.
 
-A7. **Self-supervised mode (`no_ground_truth`)**. ACE supports running without labels by relying on environment feedback (test pass/fail, lint, type check). code-oz has all of that environment feedback already (VERIFY phase, run logs in `events.jsonl`). The architecture for using it as a training signal for the Reviewer Memory layer is exactly ACE's `REFLECTOR_PROMPT_NO_GT`.
+A7. **`no_ground_truth` prompt mode**. ACE supports a flag that hides ground truth from the Reflector and Curator system prompts, encouraging the Reflector to reason from environment feedback only. **Caveat:** ACE's correctness signal is still `data_processor.answer_is_correct(final_answer, target)` at `ace/ace.py:477,542,622`, which runs regardless of the flag. ACE does not learn from noisy environment feedback; it just hides the labels from one of three prompts. code-oz running off VERIFY/REVIEW pass/fail is genuinely noisier and harder to attribute — the M19 attribution function must stay conservative (see SYNTHESIS M19 scope and finding F18).
 
 ## What code-oz has that ACE lacks
 
@@ -78,7 +78,7 @@ C5. **Multi-provider capability contract (M11)**. Each provider declares what it
 
 C6. **Run-level budget enforcement (rule 19)**. Cumulative spend tracked across the whole run, soft-warns at 0.75, hard-kills at 1.0, with `NEEDS_INTERVENTION` carrying the actionable suggestion.
 
-C7. **NEEDS_INTERVENTION over silent degradation (rule 11)**. ACE skips a curator operation on JSON parse failure and prints a warning. code-oz writes a structured intervention artifact and stops, because silent skip is the failure mode that produced "loss of conversation history" in the post-mortems cited in `docs/research/02-llm-failure-research.md`.
+C7. **NEEDS_INTERVENTION over silent degradation (rule 11)**. ACE has two silent-skip paths: empty/sentinel LLM response at `curator.py:109-113` and JSON parse failure at `curator.py:145-153`. Both return the unchanged playbook and log a free-text warning. code-oz writes a structured intervention artifact and stops, because silent skip is the failure mode that produced "loss of conversation history" in the post-mortems cited in `docs/research/02-llm-failure-research.md`. M18's deterministic applier acceptance criteria require both ACE paths to produce NEEDS_INTERVENTION in code-oz.
 
 C8. **Worktree-per-run isolation (M7)**. ACE has no equivalent because it has no concept of "the workspace."
 
@@ -92,15 +92,15 @@ C12. **Debate runtime + reviewer panel + policy scheduler (M10/M14/M15)**. Three
 
 C13. **One new authority boundary per milestone (rule 20)**. The empirical discipline that lets code-oz add capabilities without bundling bug surfaces. ACE is published as a single research drop.
 
-C14. **Universal anti-slop rules in every persona (rule 16)**. The 20-item list (10 prohibitions + 10 affirmations) imported into every system prompt. ACE prompts are clean and direct but specific to the bulletpoint task; they do not encode the LLM-failure research code-oz folds in.
+C14. **Universal anti-slop rules in every persona (rule 16)**. The 20-item list (10 prohibitions + 10 affirmations) lives at `src/prompts/universal-rules.md` and is imported into every persona system prompt. ACE prompts are clean and direct but specific to the bulletpoint task; they do not encode the LLM-failure research code-oz folds in.
 
 ## Decision
 
 **YES, with selective borrows.**
 
-ACE is a complement, not a competitor. It solves a problem code-oz already plans for — structured, evolving, persistent learning across runs — with a runtime that maps cleanly onto code-oz's documented-but-unbuilt 4-layer FS memory and Reviewer Memory roadmap. ACE could not do code-oz's job; code-oz already does what ACE does *not* do. But ACE has shipped the bullet format, delta operations, helpful/harmful counters, FAISS dedup, and bullet usage logs that the maestro doc describes in prose. These are exactly the substrate code-oz will need at the moment Reviewer Memory v1 lands.
+ACE is a complement, not a competitor. It solves a problem code-oz already plans for: structured, evolving, persistent learning across runs. Its runtime maps cleanly onto code-oz's documented-but-unbuilt 4-layer FS memory and Reviewer Memory roadmap. ACE could not do code-oz's job; code-oz already does what ACE does not do. ACE has shipped the bullet format, an ADD-only delta applier, helpful/harmful counters, FAISS dedup, and bullet usage logs that the maestro doc describes in prose. These are the substrate code-oz will need when Reviewer Memory v1 lands.
 
-So the comparison is: code-oz is more complete on the SDLC dimension and ACE is more complete on the cross-run learning dimension. We are ahead overall for our market category (repo-native agentic SDLC) because the SDLC, gate, debate, panel, budget, and provider-capability machinery is load-bearing for that category and ACE has zero of it. But we have a gap in the Reviewer Memory layer that ACE makes concrete.
+code-oz is more complete on SDLC machinery; ACE is more complete on cross-run-learning machinery. The two systems do different things. The gap to close is the Reviewer Memory layer, which ACE makes concrete and code-oz has only sketched.
 
 ## Borrow set, ranked
 
@@ -130,14 +130,16 @@ This sequence respects the empirical lesson from the M7 row (rule 20 gloss: "pos
 
 - Do not import ACE's three-role decomposition (Generator/Reflector/Curator) over code-oz's six SDLC phases. ACE's three roles solve a different problem (context evolution); code-oz's phases solve software engineering. Both can coexist; one cannot replace the other.
 - Do not adopt ACE's prompt style. ACE prompts are clean but specific to the bulletpoint task; code-oz's universal anti-slop rules and persona system are richer and load-bearing for the LLM-failure-research gates.
-- Do not adopt ACE's silent-degradation pattern (skip on JSON parse fail). Rule 11 explicitly forbids it.
+- Do not adopt ACE's silent-degradation pattern (skip on JSON parse fail, skip on empty/sentinel LLM response). Rule 11 explicitly forbids it.
 - Do not migrate to Python. The Bun + native binary distribution is a key wedge for the repo-native CLI category.
+- Do not reset bullet IDs to 1 on warm-start. ACE's `ace.py:86-93` always sets `next_global_id = 1` even when loading from `initial_playbook`, which collides with loaded IDs on the next ADD. code-oz lesson IDs must be content-hash-derived or seeded from the loaded state at boot (see SYNTHESIS.md finding 5).
+- Do not mutate playbook content without an event-log entry. ACE's `update_bullet_counts` at `playbook_utils.py:50-93` mutates the file in place with no checksum, no event, and no drift detection. M19 derives outcome state from `events.jsonl`; if counters are ever materialized as a cache, they must carry `derivedFromEventSeq` and doctor must fail on drift.
 
 ## Open questions for Codex
 
 These are the points where the comparison is contested or under-evidenced. The Codex briefing in `CODEX_BRIEFING.md` asks Codex to pressure-test specifically these.
 
-1. Is "bullet format + delta operations + helpful/harmful counters" actually one authority boundary or three? If three, the milestone shape above understates the authority cost.
+1. Is "bullet format + delta operations + helpful/harmful counters" actually one authority boundary or three? If three, the milestone shape above understates the authority cost. *(Q1 wording note: this question paraphrases B1+B2+B6. The actual M17 scope sent to Codex in `CODEX_BRIEFING.md` was B1+B2+B3 (format + delta operations + usage log). Codex split it into M17-M20 in `SYNTHESIS.md` — that split is the canonical answer.)*
 2. Does the helpful/harmful counter add value above and beyond a simple "loaded N times, succeeded N times" log? ACE's counters are tagged by the Reflector at the bullet level; code-oz could derive the same numbers from `events.jsonl` without a per-entry counter — is the per-entry counter pulling its weight?
 3. Are there ACE features I have miscategorized as "code-oz already has this" when ACE's version is meaningfully better? Specifically: ACE's `curator_operations_diff.jsonl` is finer-grained than `events.jsonl`. Would that finer grain change any behavior?
 4. The published efficiency claims (-82.3% latency vs GEPA, -91.5% latency on FiNER) — how much of that translates to a software-engineering domain where the unit of work is a multi-file change rather than a benchmark question? My instinct is that almost none of it transfers, because the per-call latency in code-oz is dominated by tool use and verification, not playbook lookup. Is that right?

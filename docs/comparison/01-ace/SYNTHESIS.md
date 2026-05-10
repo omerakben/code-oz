@@ -54,9 +54,12 @@ Each milestone introduces exactly one new authority boundary (rule 20).
 **In scope:**
 - Lesson entry markdown format with frontmatter and bullet-shape body. Bullet line: `[<slug>-<5digit>] helpful=N harmful=M :: <content>` (counters are display-only in this milestone, set to 0 at write time).
 - Stable lesson ID generation. IDs derive from a content hash + collision-checked seed at boot. Never reset to 1 on warm-start (the ACE bug at `ace/ace.py:86-93`).
+- Explicit section header → slug mapping table. Adding a new section requires updating the mapping; the slug is never derived from initials at runtime. (ACE's `STRATEGIES & INSIGHTS` section falls through to a "first letters of words" branch in `utils.py:55-77` and produces slug `sai` — a drift between the header a user reads and the slug stored in IDs. code-oz's mapping must be explicit.)
 - Parser and validator. Parser failures produce `NEEDS_INTERVENTION.json` per rule 11; no silent skip.
 - Read-only retrieval API consumed by phase prompts (initial readers: REVIEW, BUILD).
 - New event type `lesson_consumed` in `events.jsonl` with fields: lesson ID, entry SHA, phase, agent, run/task ID. No content snippets. The event-type forward-compat path at `docs/references/file-based-gates.md:240` makes this additive.
+- Rule 19: `lesson_consumed` events ride existing `events.jsonl` telemetry. No new budget namespace at M17; the new namespace `memory.maxStoredTokens` arrives in M20.
+- Rule 21: does not apply at M17. Reviewer Memory is a sequential memory layer, not a parallel-provider surface. Rule 21 re-engages only if M20+ introduces competing memory updaters or curation panels.
 
 **Out of scope:** any LLM mutator, any UPDATE/MERGE/DELETE behavior, any helpful/harmful counter derivation, any compaction, any embedding work.
 
@@ -84,8 +87,9 @@ Each milestone introduces exactly one new authority boundary (rule 20).
 **In scope:**
 - Derivation function: given a lesson ID, scan `events.jsonl` for `lesson_consumed` followed by terminal phase results (`gate_passed`, `verify_failed`, `review_blocked`). Project to `(loaded, succeeded, failed)` triples.
 - Conservative attribution: a lesson is "helpful" only if it was consumed in a run that reached `gate_passed` and did not produce a `NEEDS_INTERVENTION` in any later phase; "harmful" only if explicitly cited by a Reviewer in a `review_blocked` artifact. Run-level VERIFY pass alone is not sufficient evidence (the Codex memory-poisoning risk).
-- Derivation is read-time. No materialized counters in M19. If counters are added later as a cache, they must carry `derivedFromEventSeq` and `doctor` must fail on drift.
-- `no_ground_truth` mode: VERIFY/REVIEW outcomes are the environment signal. The attribution function is the same in both modes; only the run-level signal source differs.
+- Derivation is read-time. No materialized counters in M19. If counters are added later as a cache, they must carry `derivedFromEventSeq` and `doctor` must fail on drift. (Drift detection is the discipline ACE skips: its `update_bullet_counts` at `playbook_utils.py:50-93` mutates the playbook in place with no checksum, no event entry, and no drift check.)
+- `no_ground_truth` mode: VERIFY/REVIEW outcomes are the environment signal. The attribution function is the same in both modes; only the run-level signal source differs. The mode name is borrowed from ACE for legibility; the actual semantics are different (ACE still calls `answer_is_correct` regardless; code-oz has no ground truth and relies entirely on terminal phase results).
+- Cross-check before tagging: ACE's `eval/<task>/data_processor.py` is the load-bearing correctness-signal extension point. Confirm no `eval/*` pattern in ACE uses a richer signal than `gate_passed && !NEEDS_INTERVENTION` that code-oz would want to mirror.
 
 **Out of scope:** mutators that act on the counters, compaction, dedup.
 

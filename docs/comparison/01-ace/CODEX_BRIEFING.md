@@ -82,7 +82,7 @@ I will save your reply as `CODEX_RESPONSE.md` in this folder. Please structure i
 
 5. **Risks**: top 3 risks of the M17 scope as written, ranked by severity.
 
-6. **Verdict on this whole comparison exercise** (separate from the M17 verdict): is this comparison series — one template per session, debated by Codex, archived in `docs/comparison/` — a good use of pre-finalization time, or are we polishing brass on the Titanic?
+6. **Verdict on this whole comparison exercise** (separate from the M17 verdict): is this comparison series (one template per session, debated by Codex, archived in `docs/comparison/`) a good use of pre-finalization time, or are we polishing brass on the Titanic?
 
 ## Operating notes
 
