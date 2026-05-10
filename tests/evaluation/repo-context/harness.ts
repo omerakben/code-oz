@@ -7,12 +7,16 @@
 //
 // Cases:
 //
-//   case-01 discovery        → can grep+glob find expected files?
+//   case-01 discovery        → can grep find expected files at recall@k = 1.0?
 //   case-02 usage            → can grep find expected call-site files
 //                              without saturating maxResults?
-//   case-03 budget pressure  → with many candidates, do selected-path
-//                              counts and result bytes stay below caps
-//                              while keeping recall ≥ threshold?
+//   case-03 budget pressure  → with many candidates, does grep saturate
+//                              the cap (anyTruncated === true), stay
+//                              inside the per-call byte envelope, and
+//                              honor precision (no decoy paths leak
+//                              through truncation)? Recall is NOT
+//                              asserted in case-03 because rg's
+//                              traversal order is platform-dependent.
 //
 // The harness drives `runRepoContextTool`, the same orchestrator used in
 // the spine, so the metrics reflect the production code path including
@@ -66,18 +70,20 @@ export interface CaseMetrics {
   /**
    * Distinct paths returned across all calls in event-encounter order
    * (deduplicated, but ordering preserved across events). The first
-   * `k = expectedPaths.length` entries of this array form the top-k
-   * window used for `recallAtK`.
+   * `k = new Set(expectedPaths).size` entries of this array form the
+   * top-k window used for `recallAtK`. Using the deduplicated set size
+   * keeps the metric well-defined even if a fixture lists the same
+   * expected path twice (current fixtures all have unique paths).
    */
   readonly orderedReturnedPaths: readonly string[]
   /**
-   * recall@k where k = expectedPaths.length. Computed by slicing the
-   * encounter-ordered returned-path stream to its first k entries and
-   * counting how many of those are in the expected set. 1.0 means every
-   * expected path appeared inside the first k distinct returned paths.
-   * A query that returns 50 files including the expected 4 outside the
-   * first k will score below 1.0 — exactly the regression we want the
-   * harness to catch.
+   * recall@k where k = `new Set(expectedPaths).size`. Computed by
+   * slicing the encounter-ordered returned-path stream to its first
+   * k entries and counting how many of those are in the expected set.
+   * 1.0 means every expected path appeared inside the first k distinct
+   * returned paths. A query that returns 50 files including the
+   * expected 4 outside the first k will score below 1.0 — exactly the
+   * regression we want the harness to catch.
    */
   readonly recallAtK: number
   /** Whether any call truncated against `maxResults`. */

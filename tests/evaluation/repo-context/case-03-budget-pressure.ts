@@ -41,8 +41,9 @@ import type { CaseSetup } from './harness.ts'
 const HEADER = `// Pattern match: TARGET_SYMBOL\n`
 
 function matching(name: string): readonly [string, string] {
-  // Two TARGET_SYMBOL occurrences per file ⇒ 80 grep match-lines for
-  // 40 files. With maxResults=25 this guarantees grep truncates.
+  // Three TARGET_SYMBOL occurrences per file (HEADER + return-line +
+  // guard-line) ⇒ 120 grep match-lines for 40 files. With
+  // maxResults=25 this guarantees grep truncates.
   return [
     `src/match/${name}.ts`,
     `${HEADER}export const ${name.replaceAll('-', '_')} = () => 'TARGET_SYMBOL'\n// guard: TARGET_SYMBOL must be set\n`,
@@ -56,10 +57,11 @@ function decoy(name: string): readonly [string, string] {
   ] as const
 }
 
-// 40 matching files (>> maxResults=25). The expected window for
-// recall@k is the first k = matchNames.length / 4 = 10 names — the
-// realistic recall denominator inside the truncated cap (25 / ~2
-// matches/file ≈ 12 files).
+// 40 matching files (>> maxResults=25 lines). With 3 match-lines per
+// file the cap saturates after roughly 8-9 files survive truncation
+// (rg's traversal order is platform-dependent). The full match-name
+// list serves as the expected set for the harness's recallAtK metric;
+// the case does not assert recall (see file header).
 const matchNames = [
   'alpha',
   'bravo',

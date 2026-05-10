@@ -13,10 +13,12 @@
 //     not saturate maxResults (proves the cap is not binding for a
 //     normal call-site query at default caps).
 //
-//   - case-03 budget pressure: recall must stay ≥ 0.8 under tight caps
-//     (proves the harness exercises real truncation behavior without
-//     letting the tool degrade silently). Total result bytes must stay
-//     under the per-call envelope.
+//   - case-03 budget pressure: grep must SATURATE the cap
+//     (anyTruncated === true) and the per-call byte envelope must
+//     hold. Recall is intentionally NOT asserted because rg's
+//     filesystem traversal order is platform-dependent. Precision is
+//     the regression we catch instead: every returned path must start
+//     with `src/match/` (no decoy paths leak through truncation).
 
 import { describe, test, expect } from 'bun:test'
 

@@ -40,6 +40,12 @@ interface CaseEntry {
      * depending on rg's traversal order.
      */
     readonly precisionPathPrefix?: string
+    /**
+     * If set, `orderedReturnedPaths.length` must be ≥ this value.
+     * Mirrors the `expect(...).toBeGreaterThan(0)` sanity check in
+     * the bun-test wrapper so `--strict` matches CI behavior.
+     */
+    readonly minReturnedPaths?: number
   }
 }
 
@@ -47,12 +53,17 @@ const CASES: readonly CaseEntry[] = Object.freeze([
   {
     name: 'case-01-discovery',
     setup: CASE_01_DISCOVERY,
-    thresholds: { minRecall: 1.0, maxToolCalls: 1, mustNotTruncate: true },
+    thresholds: {
+      minRecall: 1.0,
+      maxToolCalls: 1,
+      mustNotTruncate: true,
+      minReturnedPaths: 1,
+    },
   },
   {
     name: 'case-02-usage',
     setup: CASE_02_USAGE,
-    thresholds: { minRecall: 1.0, mustNotTruncate: true },
+    thresholds: { minRecall: 1.0, mustNotTruncate: true, minReturnedPaths: 1 },
   },
   {
     name: 'case-03-budget-pressure',
@@ -68,6 +79,7 @@ const CASES: readonly CaseEntry[] = Object.freeze([
       maxToolCalls: 1,
       mustTruncate: true,
       precisionPathPrefix: 'src/match/',
+      minReturnedPaths: 1,
     },
   },
 ])
@@ -139,6 +151,14 @@ async function main(): Promise<void> {
     }
     if (c.thresholds.mustTruncate === true && !r.metrics.anyTruncated) {
       failures.push('anyTruncated=false (mustTruncate — fixture not exercising cap)')
+    }
+    if (
+      c.thresholds.minReturnedPaths !== undefined &&
+      r.metrics.orderedReturnedPaths.length < c.thresholds.minReturnedPaths
+    ) {
+      failures.push(
+        `orderedReturnedPaths.length ${r.metrics.orderedReturnedPaths.length} < minReturnedPaths ${c.thresholds.minReturnedPaths}`,
+      )
     }
     findings.push({
       case: c.name,
