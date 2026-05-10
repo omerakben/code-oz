@@ -2244,9 +2244,10 @@ function validateDebateCorrelation(
 /**
  * 09-byterover-cli B3 — optional `parentTaskId` validator. The field is
  * absent on most agent_invoked / agent_completed events (project-local
- * personas, single-call phase invocations, synthetic debate opponents);
- * when present it must match the canonical `T-NNN` task-id pattern shared
- * with `src/artifacts/plan.ts`. Codex thread `019e1318` design memo.
+ * personas, single-call phase invocations, and PLAN-side debates where no
+ * T-NNN task is in scope); when present it must match the canonical
+ * `T-NNN` task-id pattern shared with `src/artifacts/plan.ts`. Codex
+ * thread `019e1318` design memo.
  */
 function validateOptionalTaskId(
   file: string,

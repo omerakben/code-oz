@@ -991,14 +991,12 @@ export function summarizeByParentTask(
 ): ParentTaskRollup {
   // Per-phase FIFO queues mirror summarizeBudgetUse's pairing semantics
   // so that crashed / unmatched agent_invoked entries still attribute
-  // their estimate to the parent task. Pending entries carry the
-  // estimate (Q3 token-only fallback) and the parent id snapshotted at
-  // invoke time. The matching agent_completed shifts the head and
-  // (when tokensUsed is reported) replaces the estimate before
-  // accumulating into the rollup.
+  // their estimate to the parent task. Queue every invocation, including
+  // unparented ones, so unparented completions cannot consume a later
+  // parented queue entry in mixed same-phase logs.
   interface PendingEntry {
     readonly estimate: number
-    readonly parentTaskId: string
+    readonly parentTaskId: string | undefined
   }
   const pendingByPhase = new Map<Phase, PendingEntry[]>()
   const tokensByParent: Record<string, number> = {}
@@ -1007,22 +1005,26 @@ export function summarizeByParentTask(
   for (const e of events) {
     if (!isKnownPhaseEvent(e)) continue
     if (e.type === 'agent_invoked') {
-      if (typeof e.parentTaskId !== 'string' || e.parentTaskId.length === 0) {
-        continue
-      }
       const queue = pendingByPhase.get(e.phase) ?? []
+      const parentTaskId =
+        typeof e.parentTaskId === 'string' && e.parentTaskId.length > 0
+          ? e.parentTaskId
+          : undefined
       queue.push(Object.freeze({
         estimate: e.tokensEstimate,
-        parentTaskId: e.parentTaskId,
+        parentTaskId,
       }))
       pendingByPhase.set(e.phase, queue)
-      callsByParent[e.parentTaskId] = (callsByParent[e.parentTaskId] ?? 0) + 1
+      if (parentTaskId !== undefined) {
+        callsByParent[parentTaskId] = (callsByParent[parentTaskId] ?? 0) + 1
+      }
       continue
     }
     if (e.type === 'agent_completed') {
       const queue = pendingByPhase.get(e.phase) ?? []
       const head = queue.shift()
       if (head === undefined) continue
+      if (head.parentTaskId === undefined) continue
       const cost = e.tokensUsed ?? head.estimate
       tokensByParent[head.parentTaskId] =
         (tokensByParent[head.parentTaskId] ?? 0) + cost
@@ -1035,6 +1037,7 @@ export function summarizeByParentTask(
   // counts" rule.
   for (const queue of pendingByPhase.values()) {
     for (const pending of queue) {
+      if (pending.parentTaskId === undefined) continue
       tokensByParent[pending.parentTaskId] =
         (tokensByParent[pending.parentTaskId] ?? 0) + pending.estimate
     }

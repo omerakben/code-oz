@@ -71,13 +71,13 @@ Adopted. R10 reclassified.
 Codex flagged two placement issues with one fix:
 
 1. Adding rules 22 (Outside-In) and 23 (TDD ordering) takes the non-negotiable list from 21 to 23 items. Risks turning the list into a style guide.
-2. `CLAUDE.md:7-9` still says "v0.13.0-alpha.0" and "1983 tests" while `package.json` says `0.17.0-alpha.0` and the test count is 3108 (M16 closed 2026-05-10). Stale canonical orientation file. The agent-skills round 2 SYNTHESIS already flagged this (commit 4 in that round's landing plan); the staleness has not been addressed since.
+2. `CLAUDE.md:7-9` still says "v0.13.0-alpha.0" and "1983 tests" while `package.json` says `0.17.0-alpha.0`; the M16 baseline is 3108 tests, and this branch raises the count to 3128 with the B3 coverage. Stale canonical orientation file. The agent-skills round 2 SYNTHESIS already flagged this (commit 4 in that round's landing plan); the staleness has not been addressed since.
 
 **Resolution (Claude's lean, decision point §4 below):**
 
 - Consolidate B1 + B4 into a single new rule 22: "Consumer-first design and proof-first implementation." Two bullets: (a) Outside-In feature design — every new code path starts from a concrete consumer, etc.; (b) Strict TDD ordering for behavior changes — failing test first, etc.
 - The detailed RED-first sequence (5-step ordering with the "if you catch yourself…" framing) lives in `src/agents/defaults/builder.md` (the agent-skills round 2 SYNTHESIS commit 3 already pointed there). Universal-rules.md keeps the universal anti-slop rules; rule 22 is structural, not stylistic.
-- Bundle the stale-status-line fix into the same docs commit. Update `CLAUDE.md:7-9` to v0.17.0-alpha.0 / 3108 tests / M16 closed.
+- Bundle the stale-status-line fix into the same docs commit. Update `CLAUDE.md:7-9` to v0.17.0-alpha.0 / 3128 offline tests / M16 closed.
 
 This collapses Briefing commits 1+2 into one commit while picking up the agent-skills round 2 carry-over.
 
@@ -123,9 +123,9 @@ In landing order, all four commits priced at zero rule-20 *new authority cost* (
 
 ### Commit 1: feat(state,cost,phases): B3 — thread parentTaskId through reviewer panel + debate fan-out
 
-- Files: `src/state/schemas.ts`, `src/providers/cost.ts`, `src/phases/review-panel.ts`, `src/phases/debate-runtime.ts` (M10/M15 fire path), tests in `tests/state/`, `tests/providers/`, `tests/phases/`.
+- Files: `src/providers/types.ts`, `src/state/schemas.ts`, `src/state/events.ts`, `src/providers/invoke.ts`, `src/providers/cost.ts`, `src/tools/debate-request.ts`, `src/phases/review.ts`, `src/phases/review-panel.ts`, `src/cli/production-seams.ts`, plus `tests/state-events-parent-task-id.test.ts`, `tests/provider-invoke-parent-task-id.test.ts`, and `tests/cost-by-parent-task.test.ts`.
 - Behavior: add optional `parentTaskId` field to `agent_invoked` and `agent_completed` schemas (forward-compat — existing readers parse new events identically). Reviewer panel and debate-policy fire paths set it from the orchestrator step's task ID. Cost reducer report adds an optional `byParentTaskId` rollup section without changing the existing `byPhase`/`byRole` rollups (rule 1 — file-based gate signals untouched; rule 19 — budget enforcement untouched).
-- Tests: reducer/report tests prove rollup; gate outcome tests prove no behavioral drift; budget refusal tests prove no scheduling change.
+- Tests: reducer/report tests prove rollup; wrapper tests prove invoke/complete pass-through and omission back-compat; event-validator tests prove optional `T-NNN` enforcement.
 - Estimated diff: ~50-80 lines code + ~30-50 lines tests.
 - Rule-20 cost: 0 new authority (schema extension is forward-compat). Codex framing: "telemetry hotfix."
 - Rule-21 cost: 0.
@@ -137,7 +137,7 @@ In landing order, all four commits priced at zero rule-20 *new authority cost* (
   > **22. Consumer-first design and proof-first implementation.**
   > **(a) Outside-In feature design.** Every new code path starts from a concrete consumer (CLI subcommand, agent skill, persona prompt). Define the minimal interface the consumer requires; implement the service to fulfill it; extract entities only when shared structure emerges across consumers. Reviewing or planning that defines entities, types, or store interfaces before any consumer exists is Inside-Out and must be flagged.
   > **(b) Strict TDD ordering for behavior changes.** For any behavior change, the failing test is written first, run to confirm it fails for the right reason, then minimal implementation lands, then tests run again to confirm green, then refactor. The detailed RED-first sequence (and the "if you catch yourself…" framing) lives in `src/agents/defaults/builder.md` for execution; rule 22 is the structural non-negotiable.
-- Update `CLAUDE.md:7-9` (Status line) — v0.13.0-alpha.0 → v0.17.0-alpha.0; 1983 tests → 3108 tests; PE-1 reference → M16 closed (production CLI completion); add `docs/comparison/09-byterover-cli/` to "Where decisions live."
+- Update `CLAUDE.md:7-9` (Status line) — v0.13.0-alpha.0 → v0.17.0-alpha.0; 1983 tests → 3128 offline tests (3108 baseline + 20 in B3); PE-1 reference → M16 closed (production CLI completion); add `docs/comparison/09-byterover-cli/` to "Where decisions live."
 - Estimated diff: ~15-25 lines.
 - Rule-20 cost: 0.
 
@@ -148,11 +148,11 @@ In landing order, all four commits priced at zero rule-20 *new authority cost* (
 - Estimated diff: ~10-15 lines.
 - Rule-20 cost: 0.
 
-### Commit 4: docs(comparison): close 09-byterover-cli round + index update
+### Commit 4: docs(comparison): close 09-byterover-cli round
 
-- Files: this `SYNTHESIS.md` (already drafted), `docs/comparison/README.md`.
-- Add row 06 to the README sessions table: "06 | byterover-cli | 2026-05-10 | YES, with selective borrows (1 hotfix B3 pre-M17; 1 consolidated rule B1+B4; B2 reframed against `tool_use.repo_context`, M17/M18 contender; B5/B6 pattern-only; R10 reclassified to defer-with-high-bar). Codex `fix-first` → all addressed."
-- Estimated diff: ~1 line.
+- Files: `docs/comparison/09-byterover-cli/{COMPARISON.md,CODEX_BRIEFING.md,CODEX_RESPONSE.md,CODEX_PREDESIGN_B3.md,SYNTHESIS.md}`.
+- The branch deliberately does not edit `docs/comparison/README.md`; the README index entry is left for a separate sync commit on main to avoid colliding with parallel template-comparison sessions.
+- Estimated diff: ~820 lines of comparison artifacts.
 - Rule-20 cost: 0.
 
 ### Future milestones
@@ -171,7 +171,7 @@ In landing order, all four commits priced at zero rule-20 *new authority cost* (
 
 Resolved by Claude under Ozzy's autonomy grant ("don't wait for or ask my permission for actions"). Each decision is recorded with the verdict and the artifact that operationalizes it.
 
-1. **Land Commits 1-4 as the byterover-cli landing batch.** Resolved: yes. Shipped on `feat/byterover-09-borrows` as 4 atomic commits (~620 LOC + tests). 3128 tests passing (3108 baseline + 20 in B3).
+1. **Land Commits 1-4 as the byterover-cli landing batch.** Resolved: yes. Shipped on `feat/byterover-09-borrows` as 4 atomic commits (19 files; 1444 insertions, 2 deletions in the branch diff). 3128 tests passing (3108 baseline + 20 in B3).
 2. **B3 correlation field name.** Resolved: `parentTaskId`. Codex pre-design confirmed no conflict with `decisionId` (ULID join key for scheduler events). Lives on `ProviderRequest` (`src/providers/types.ts`) and on both `agent_invoked` / `agent_completed` schema variants (`src/state/schemas.ts`); validator enforces canonical `T-NNN` pattern when present (`src/state/events.ts`).
 3. **B3 rollup on both events.** Resolved: yes — both invoke and completed carry the field. Crashed turns still attribute their estimate to the parent task; `summarizeByParentTask` mirrors `summarizeBudgetUse`'s "crashed turn still counts" rule.
 4. **B1+B4 placement.** Resolved: consolidated into single rule 22 ("Consumer-first design and proof-first implementation") per Codex F5 to avoid rule-list bloat. The detailed RED-first 5-step sequence lives in `src/agents/defaults/builder.md` (Commit 3); rule 22(b) is the structural non-negotiable.
@@ -187,7 +187,7 @@ Resolved by Claude under Ozzy's autonomy grant ("don't wait for or ask my permis
 
 **Q2: Where does code-oz exceed byterover-cli?** Twelve axes in COMPARISON §4 (phase gates, cross-family REVIEW, 3-source verification, AUDIT, Scientist sidecars, universal anti-slop, one-authority-per-milestone, demand-driven providers, file-manifest context, cumulative budget enforcement, idempotent resume, NEEDS_INTERVENTION). All confirmed by Codex F6 with sharper wording.
 
-**Q3: What earns its place at v0.17?** Four commits in §4. **One pre-M17 hotfix** (B3 parentTaskId rollup — closes a real production telemetry gap in M14/M15 fan-out paths) plus **three zero-cost docs commits** (rule 22 consolidated; builder RED-first detail; comparison index update). Two M17/M18 contenders carry forward (B2 reframed against `tool_use.repo_context`; doubt-driven pre-BUILD checkpoint from agent-skills round). One reject reclassified to defer-with-high-bar (R10 read-only MCP).
+**Q3: What earns its place at v0.17?** Four commits in §4. **One pre-M17 hotfix** (B3 parentTaskId rollup — closes a real production telemetry gap in M14/M15 fan-out paths) plus **three zero-cost docs commits** (rule 22 consolidated; builder RED-first detail; comparison closure docs). Two M17/M18 contenders carry forward (B2 reframed against `tool_use.repo_context`; doubt-driven pre-BUILD checkpoint from agent-skills round). One reject reclassified to defer-with-high-bar (R10 read-only MCP).
 
 **Q4: What did cross-model review save us?** One block-push (B2 framed against an invented surface); two block-next-milestone (B2 under-priced, B3 mis-categorized as docs-cycle work when it's a production hotfix); two fix-soon (R10 wording, rule-list bloat). Codex thread `019e12ec-fe61-7030-b681-af492075a3eb`. The agent-skills round 2 lesson — "Codex catches the schema/contract trip wires Claude misses" — fired again. The cross-model peer review rule earned its place again.
 

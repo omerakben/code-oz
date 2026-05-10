@@ -123,6 +123,20 @@ describe('summarizeByParentTask', () => {
     expect(r.byParentTaskId['T-005']?.tokens).toBe(100)
   })
 
+  test('unparented completions do not consume later parented queue entries', () => {
+    const events: LoggedEvent[] = [
+      invoked({ phase: 'review', agent: 'unparented', tokensEstimate: 1000 }),
+      invoked({ phase: 'review', agent: 'reviewer-A', tokensEstimate: 100, parentTaskId: 'T-005' }),
+      completed({ phase: 'review', agent: 'unparented', tokensUsed: 1000 }),
+      completed({ phase: 'review', agent: 'reviewer-A', tokensUsed: 100, parentTaskId: 'T-005' }),
+    ]
+    const r = summarizeByParentTask(events)
+    expect(r.byParentTaskId['T-005']).toEqual({
+      tokens: 100,
+      providerCalls: 1,
+    })
+  })
+
   test('per-phase FIFO pairing isolates same-parentTaskId across phases', () => {
     // Same parentTaskId shouldn't leak across phases (FIFO is per phase
     // in summarizeBudgetUse; we mirror to keep semantics consistent).
