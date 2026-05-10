@@ -22,11 +22,23 @@
 //     unactionable; operators need to know whether to delete the dir,
 //     restore from backup, or file a bug.
 //
-// TOCTOU caveat (Codex C4 review R1): the wrapper does not acquire its own
-// lock. Callers MUST hold a phase-level lock (build.lock / verify.lock /
-// review.lock) before invoking this function, so two concurrent CLI
-// processes can't race the probe-then-create. The C4 commit lands the
-// build/verify locks; review.lock already exists.
+// Self-lock contract (R1 finding 2 fix, supersedes C4 R1 caveat):
+// the wrapper acquires a worktree-level lock at `<runDir>/.worktree.lock`
+// for the duration of the probe-then-create / probe-then-classify body.
+// Per-phase locks are held by `runBuild` / `runVerify` / `runReview`
+// (see C4 Mod #2: dispatchers do NOT hold the phase lock; runtime
+// functions self-lock). Without a wrapper-level lock, two concurrent
+// `code-oz run` processes that both reach the dispatcher's
+// `loadOrCreateRunWorktree` call BEFORE entering the runtime function
+// can race the probe-then-create path; the loser writes a false
+// `NEEDS_INTERVENTION` (case 4 / 4d). The lock makes the wrapper safe
+// to call from any dispatcher / approve hook without coordinating
+// caller-side serialization.
+//
+// On `LockBusyError`, the wrapper returns a `worktree_already_in_flight`
+// intervention without writing a gate file — mirrors runBuild's
+// `build_already_in_flight` shape (no durable orchestration outcome to
+// record beyond the in-memory result; another process is mid-load).
 //
 // Refusal paths (cases 3 + 4) write `NEEDS_INTERVENTION.json` and append
 // an `intervention` event before returning, so the run is durably
@@ -34,6 +46,7 @@
 // short-circuits guarantee the run halts at the next gate.
 
 import { access, readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 
 import { runPaths as worktreeRunPaths, type WorktreePaths } from './paths.ts'
 import {
@@ -43,6 +56,7 @@ import {
 } from './create-run-worktree.ts'
 import { appendEvent, type EventLogPaths, readEvents } from '../state/events.ts'
 import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
+import { LockBusyError, withLock } from '../state/lock.ts'
 import {
   isKnownPhaseEvent,
   type NeedsInterventionGate,
@@ -89,6 +103,7 @@ export type LoadOrCreateInterventionCode =
   | 'worktree_base_head_unknown'
   | 'worktree_stash_create_failed'
   | 'worktree_add_failed'
+  | 'worktree_already_in_flight'
 
 export interface LoadOrCreateRunWorktreeOk {
   readonly status: 'ok'
@@ -111,6 +126,36 @@ export type LoadOrCreateRunWorktreeResult =
   | LoadOrCreateRunWorktreeIntervention
 
 export async function loadOrCreateRunWorktree(
+  opts: LoadOrCreateRunWorktreeOptions,
+): Promise<LoadOrCreateRunWorktreeResult> {
+  // R1 finding 2 — wrapper-level self-lock. The lock dir lives under
+  // the state-side run dir (NOT the worktree-side run dir), so it sits
+  // beside the existing per-phase locks (.build.lock / .verify.lock /
+  // .review.lock) and shares the same `withLock` primitive.
+  //
+  // The lock is held for the entire probe-then-create / probe-then-
+  // classify / recreate body, including the appendEvent calls (which
+  // serialize via runPaths.lockDir under the hood). Two concurrent
+  // dispatchers will then either both observe a complete fresh worktree
+  // (loser takes the idempotent-reload path inside the same critical
+  // section) or one returns `worktree_already_in_flight` if the loser
+  // races IN the kernel layer.
+  const worktreeLockDir = join(opts.runPaths.runDir, '.worktree.lock')
+  try {
+    return await withLock(worktreeLockDir, () => loadOrCreateRunWorktreeLocked(opts))
+  } catch (err) {
+    if (err instanceof LockBusyError) {
+      return Object.freeze({
+        status: 'intervention' as const,
+        code: 'worktree_already_in_flight' as const,
+        rule: `another loadOrCreateRunWorktree is in progress for run ${opts.runId} (lock at ${worktreeLockDir})`,
+      })
+    }
+    throw err
+  }
+}
+
+async function loadOrCreateRunWorktreeLocked(
   opts: LoadOrCreateRunWorktreeOptions,
 ): Promise<LoadOrCreateRunWorktreeResult> {
   const now = opts.now ?? (() => new Date().toISOString())
@@ -370,6 +415,12 @@ function actionableSuggestionsFor(
       return Object.freeze([
         'git worktree add failed for an unclassified reason.',
         'Inspect the surrounding git state, including .git/worktrees/, and remove stale worktree entries before re-running.',
+      ])
+    case 'worktree_already_in_flight':
+      return Object.freeze([
+        'Another `code-oz run` process is currently loading this run\'s worktree.',
+        'Wait for it to complete, then re-run.',
+        'If you suspect the previous process crashed, remove `<runDir>/.worktree.lock` and re-run.',
       ])
   }
 }

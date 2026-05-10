@@ -331,7 +331,7 @@ export async function findDanglingLocks(
   const found: string[] = []
   for (const r of runs) {
     const runDir = join(stateRuns, r)
-    for (const name of ['.build.lock', '.verify.lock', '.review.lock', '.lock']) {
+    for (const name of ['.build.lock', '.verify.lock', '.review.lock', '.worktree.lock', '.lock']) {
       const candidate = join(runDir, name)
       if (existsSync(candidate)) {
         try {

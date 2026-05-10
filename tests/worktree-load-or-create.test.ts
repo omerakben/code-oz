@@ -439,6 +439,47 @@ describe('loadOrCreateRunWorktree — post-task-completed re-creation', () => {
   })
 })
 
+// ---- R1 finding 2: wrapper self-lock -----------------------------
+//
+// loadOrCreateRunWorktree must self-serialize so dispatchers can call
+// it BEFORE entering the per-phase lock body (per C4 Mod #2, runtime
+// functions self-lock). Two concurrent calls must NOT race the
+// probe-then-create path. The lock primitive uses mkdir-as-mutex; the
+// loser observes EEXIST and gets `worktree_already_in_flight`.
+
+describe('loadOrCreateRunWorktree — self-lock (R1 finding 2)', () => {
+  test('two simultaneous calls: one wins, one observes worktree_already_in_flight or the existing worktree', async () => {
+    const [a, b] = await Promise.all([callWrapper(), callWrapper()])
+    const results = [a, b] as const
+    const oks = results.filter((r) => r.status === 'ok')
+    const interventions = results.filter((r) => r.status === 'intervention')
+    // Two outcomes are valid:
+    //   1. one wins → ok(created:true), one observes the existing worktree → ok(created:false)
+    //   2. one wins → ok(created:true), one races the lock → intervention(worktree_already_in_flight)
+    // Both shapes preserve the invariant: at most one `worktree_created`
+    // event in events.jsonl.
+    expect(oks.length).toBeGreaterThanOrEqual(1)
+    if (interventions.length > 0) {
+      expect(interventions[0]!.status).toBe('intervention')
+      if (interventions[0]!.status === 'intervention') {
+        expect(interventions[0]!.code).toBe('worktree_already_in_flight')
+      }
+    }
+    const created = await readWorktreeCreatedEvents()
+    expect(created.length).toBe(1)
+  })
+
+  test('subsequent call after both finish takes the idempotent-reload path', async () => {
+    await Promise.all([callWrapper(), callWrapper()])
+    const third = await callWrapper()
+    expect(third.status).toBe('ok')
+    if (third.status !== 'ok') return
+    expect(third.created).toBe(false)
+    const created = await readWorktreeCreatedEvents()
+    expect(created.length).toBe(1)
+  })
+})
+
 // ---- Case 9: non-git cwd ------------------------------------------
 
 describe('loadOrCreateRunWorktree — non-git cwd', () => {
