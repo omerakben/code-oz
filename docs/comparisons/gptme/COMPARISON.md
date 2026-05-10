@@ -13,7 +13,7 @@
 
 - code-oz wins: file-based gate signals, cross-family adversarial review, debate runtime, role-cost policy under `budgets.global`, scientist tails, scoped-permission repo-context, Rule-20 authority-boundary discipline, Rule-21 risk-reduction-must-be-measurable.
 - gptme wins: chat-loop substrate, lessons auto-injection, generalized hook lifecycle (>16 points), autocompact decision engine with cache-invalidation guard, Git-backed checkpoint with kind classification, persistent-agent workspace (Bob), MCP discovery + ACP server, plugin entry-points, **release-quality eval harness** (Codex-flagged miss), web UI / REST / Tauri desktop.
-- **Final borrow set after Codex `fix-first` debate (thread `019e12ed-4038-7fe2-8800-5520e5f2048a`):** **2 narrowed-borrows now**, **3 deferred (incl. new D3 eval harness)**, **5 rejected**. See `CODEX_RESPONSE.md` and § Synthesis below.
+- **Final borrow set after Codex `fix-first` debate (thread `019e12ed-4038-7fe2-8800-5520e5f2048a`) and Codex round-2 scope lock (thread `019e1319-2169-7ab0-8ca7-036d6252fe60`):** **2 narrow-borrow candidates, deferred to their own milestones**; **4 deferred** (B2 + D1 + D2 + D3 eval harness); **5 rejected**. This PR ratifies the comparison findings only — no source/test code lands. See `SYNTHESIS.md` for the post-debate reading.
 
 ---
 
@@ -152,7 +152,9 @@ Authority: Rule 20 — one new authority boundary per milestone.
 
 ## Borrow set (Rule 21 classification: measurable risk-reduction)
 
-### Borrow now (3) — defensive primitives, no authority creep
+> **Reading note (post-debate):** the three-tier classification below is the **briefer's pre-debate recommendation**. Codex round 1 (`fix-first`, thread `019e12ed`) and Codex round 2 (Option A scope lock, thread `019e1319`) collapsed it to **2 narrow-borrow candidates / 4 defer / 5 reject** with both narrow borrows reserved for their own future milestones (no implementation in this PR). Treat the per-item write-ups below as historical context; the canonical post-debate settlement is the **Verdict** section at the bottom of this file and `SYNTHESIS.md`.
+
+### Borrow now (3) — defensive primitives, no authority creep [SUPERSEDED by post-debate verdict]
 
 #### B1. Autocompact decision engine with cache-invalidation guard
 
