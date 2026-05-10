@@ -81,7 +81,7 @@ Each fixture in the set carries an oracle: the ground-truth verdict (or verdict-
 
 For verdict-shaped surfaces (M15 debate scheduler, hypothetical multi-opponent debate, hypothetical pre-VERIFY trigger), the oracle is the canonical REVIEW verdict the fixture should resolve to. For non-verdict-shaped surfaces (hypothetical parallel builder candidates), the oracle is the *bundle* that survives REVIEW more often than any other candidate; the corrective metric measures whether the treatment surface's surviving bundle matches the oracle bundle more often than the control's.
 
-If a surface has no natural oracle (e.g., a panel mode where the verdict is the literal `panel` sentinel rather than a numeric score), the corrective metric returns `null` for that fixture and is excluded from the corrective rate's denominator. M15 applies this to panel-mode debate fires (see `DEBATE_POLICY.md:140` "panel verdicts return distance=null (excluded from corrective rate; v0.1 has no panel oracle)").
+If a surface has no natural oracle (e.g., a panel mode where the verdict is the literal `panel` sentinel rather than a numeric score), the corrective metric returns `null` for that fixture and is excluded from the corrective rate's denominator. M15 applies this to panel-mode debate fires (see `DEBATE_POLICY.md:138` "panel verdicts return distance=null (excluded from corrective rate; v0.1 has no panel oracle)").
 
 ### Worked examples per future surface
 
@@ -129,7 +129,7 @@ correctiveDeltaRate = correctiveCount / firedCount
 
 **What failing the floor means.** A `correctiveDeltaRate < 0.10` means fewer than one in ten fires moves the surface's output toward the oracle. The surface's selectivity signal is not justifying its cost. Operator response: investigate which fixtures' fires are non-corrective (the per-trigger breakdown surfaces this), tighten the trigger thresholds, or expand the canonical fixture set with fire-expected cases that the surface is actually good at.
 
-**Anti-corrective sub-metric.** The `antiCorrectiveCount` is surfaced separately as a regression signal. Anti-corrective fires move the surface's output *away* from the oracle. Even one anti-corrective fire is a documented hazard; sustained anti-corrective rate (e.g., > 0.05) blocks the ship gate independently of the corrective floor (the surface is causing measurable harm).
+**Anti-corrective sub-metric.** The `antiCorrectiveCount` is surfaced separately as a regression signal. Anti-corrective fires move the surface's output *away* from the oracle. Even one anti-corrective fire is a documented hazard and must be enumerated for review, but this telemetry does not add a third numerical floor beyond the two M15 gating metrics.
 
 **Reporting.** The rule-21 baseline output (e.g., `<surface>_baseline_completed` event payload) carries `correctiveCount`, `antiCorrectiveCount`, `neutralCount`, `excludedCount`, `firedCount`, and the computed `correctiveDeltaRate`.
 
@@ -166,10 +166,9 @@ the pre-treatment artifact.
 PASS  ⇔  correctiveDeltaRate >= 0.10
        AND newActionableFindingRate >= 0.30
        AND firedCount > 0
-       AND antiCorrectiveCount / firedCount <= 0.05  (regression guard)
 ```
 
-The rule-21 ship gate (the milestone's `code-oz doctor --<surface>-baseline` entry point) emits PASS only when all four conditions hold. Any failing condition blocks the ship gate; the milestone tag cannot land until either the surface is tuned to PASS or the milestone is unbundled and the surface deferred.
+The rule-21 ship gate (the milestone's `code-oz doctor --<surface>-baseline` entry point) emits PASS only when all three conditions hold. Any failing condition blocks the ship gate; the milestone tag cannot land until either the surface is tuned to PASS or the milestone is unbundled and the surface deferred.
 
 ### 3.4 Interpretation matrix
 
@@ -177,7 +176,7 @@ The two gating metrics carry independent diagnostic signal. The four-cell matrix
 
 | | New-actionable rate >= 0.30 | New-actionable rate < 0.30 |
 |---|---|---|
-| **Corrective rate >= 0.10** | PASS (subject to regression guard + firedCount > 0) | Surface fixes verdicts without surfacing actionable evidence; investigate whether the corrective fires are coincidental (e.g., trigger reasons that fire on inputs the post-fire artifact happens to flip but adds no new finding fingerprints) |
+| **Corrective rate >= 0.10** | PASS (subject to firedCount > 0) | Surface fixes verdicts without surfacing actionable evidence; investigate whether the corrective fires are coincidental (e.g., trigger reasons that fire on inputs the post-fire artifact happens to flip but adds no new finding fingerprints) |
 | **Corrective rate < 0.10** | Surface surfaces actionable evidence but does not move verdicts; investigate whether the new findings are downstream-only (post-fire REVIEW logs them but they do not weight into the verdict) | FAIL with no specific tuning signal — surface is mostly noise; either tighten triggers significantly or unbundle the milestone |
 
 The matrix is consumed at the post-baseline review. The R1 / R2 reviewer reads the metrics + the matrix together to decide whether a tuning round is reasonable or whether the surface needs to be unbundled before the milestone tag.
@@ -186,7 +185,7 @@ The matrix is consumed at the post-baseline review. The R1 / R2 reviewer reads t
 
 - **`firedCount == 0`.** Both rates are undefined (0/0). The surface failed to fire on any fixture under bundled-default config. PASS = false (Section 3.3 requires `firedCount > 0`). Operator response: expand the canonical fixture set with fire-expected cases, tighten triggers (loosen the gates that prevented fires), or unbundle.
 - **All fires excluded for null distance.** The corrective rate has a 0/0 denominator. The surface fired but produced only oracle-less outputs (e.g., only panel-mode fires in M15 when the panel oracle is absent). Treat as `correctiveDeltaRate = null`; PASS = false (the gating condition cannot be evaluated). Operator response: add per-fixture oracles for the oracle-less class, or restrict triggers to the oracle-bearing class.
-- **`antiCorrectiveCount > 0` but rate <= 0.05.** Sustained anti-correctness is a regression signal; even at low rate, every anti-corrective fire's fingerprint must be enumerated in the baseline output (Section 4.4). The R1 / R2 reviewer must explicitly acknowledge each anti-corrective fingerprint in the review notes — silent acceptance is a methodology violation.
+- **`antiCorrectiveCount > 0`.** Anti-correctness is a regression signal; every anti-corrective fire's fingerprint must be enumerated in the baseline output (Section 4.4). The R1 / R2 reviewer must explicitly acknowledge each anti-corrective fingerprint in the review notes.
 - **Mid-baseline drift (the surface mutates between control and treatment).** The control + treatment runs must use identical surface code modulo the mode toggle. A milestone that lands a fix between runs invalidates the baseline; the baseline must re-run end-to-end. This is one motivation for keeping the baseline runnable from a single command (Section 5.1).
 
 ## Section 4 — Telemetry-only metrics (no floor; surface for tuning)
@@ -241,7 +240,7 @@ The `antiCorrectiveCount` is surfaced both as a sub-metric of the corrective rat
 - The trigger reason that fired
 - The verdict transition (`pre -> post`) and the oracle
 
-Anti-corrective fires are the most actionable telemetry signal in the methodology. Even a single anti-corrective fire is documented as a hazard; the regression guard in Section 3.3 (`antiCorrectiveCount / firedCount <= 0.05`) makes sustained anti-correctness a ship-blocking condition.
+Anti-corrective fires are the most actionable telemetry signal in the methodology. Even a single anti-corrective fire is documented as a hazard and must be reviewed, but it remains telemetry unless the surface also fails the gating floors.
 
 ### 4.5 Reporting shape
 
@@ -288,9 +287,9 @@ type RuleTwentyOneBaselineReport = {
 }
 ```
 
-The `failureReasons` array is the operator's actionable summary when PASS = false. Each entry is a typed reason (e.g., `corrective_rate_below_floor`, `new_actionable_rate_below_floor`, `fired_count_zero`, `anti_corrective_rate_above_guard`) so downstream tooling (the ship gate runner, future R0 / R1 / R2 review tooling) can branch on the reason without reparsing free text.
+The `failureReasons` array is the operator's actionable summary when PASS = false. Each entry is a typed reason (e.g., `corrective_rate_below_floor`, `new_actionable_rate_below_floor`, `fired_count_zero`) so downstream tooling (the ship gate runner, future R0 / R1 / R2 review tooling) can branch on the reason without reparsing free text.
 
-The shape is recommended, not mandated — a surface with reduced telemetry needs may emit a subset, but the gating metrics (`correctiveDeltaRate`, `newActionableFindingRate`, `firedCount`, `antiCorrectiveRate`, `passedRuleTwentyOne`, `failureReasons`) are mandatory.
+The shape is recommended, not mandated — a surface with reduced telemetry needs may emit a subset, but the gating fields (`correctiveDeltaRate`, `newActionableFindingRate`, `firedCount`, `passedRuleTwentyOne`, `failureReasons`) are mandatory. `antiCorrectiveRate` is strongly recommended telemetry.
 
 ## Section 5 — Implementation expectations
 
@@ -369,7 +368,7 @@ The reducer is implemented once per surface (it consumes surface-specific event 
 When the milestone enters R0 (planning-convergence Codex round), the planning brief MUST present the rule-21 methodology evidence in a structured form:
 
 - **Surface declaration.** A single sentence naming the parallel-provider surface and citing the rule-20 authority slot it consumes.
-- **Methodology row.** The surface's row in the Section 2.4 worked-examples table, populated end-to-end (control config, treatment config, `pre`, `post`, oracle).
+- **Methodology row.** The surface's row in the Section 2 worked-examples table, populated end-to-end (control config, treatment config, `pre`, `post`, oracle).
 - **Fixture set inventory.** Path under `tests/fixtures/`, count of fire-expected fixtures, count of no-op fixtures, list of trigger reasons each fire-expected fixture exercises.
 - **Reducer location.** Path to the surface's reducer (or a declaration that the shared reducer module is being reused).
 - **Baseline command.** The exact `code-oz doctor --<surface>-baseline <fixture-root>` invocation that the ship gate fires.
@@ -399,6 +398,16 @@ If a milestone is doing any of these, stop and re-debate the surface shape:
 9. **Mid-fire budget kill as primary mechanism.** The aggregate budget preflight (rule 19) is the gate. Mid-fire budget kills (the `assertWithinBudget` chokepoint) are a backup, never a primary mechanism. M15 codifies this in `DEBATE_POLICY.md:199` ("Mid-debate budget kill as primary mechanism. Aggregate preflight is the gate. Mid-debate kill is the chokepoint backup."). Surfaces that rely on mid-fire kills produce non-deterministic baselines (the kill point depends on cumulative spend, which depends on test ordering); rule 21 cannot measure them reliably.
 
 10. **Generalizing the surface to fire from any phase.** Rule 20 again. M15 v0.1 fires post-REVIEW only (`DEBATE_POLICY.md:200`); generalizing to fire from any phase would bundle multiple authority boundaries into one milestone. Future surfaces that want a second call site (M15's deferred pre-VERIFY trigger is the canonical example) require their own milestone's rule-20 slot, their own canonical fixture set extension, and their own rule-21 baseline.
+
+11. **Turning a mechanical trigger surface into a persona.** The surface being measured must be deterministic scheduler / orchestrator code, not a new LLM role whose judgment becomes another authority boundary. M15 codifies this as `DEBATE_POLICY.md:192` ("Adding a Scheduler persona.").
+
+12. **Making the treatment default before the baseline proves value.** A new parallel-provider surface must remain opt-in or explicitly configured until its rule-21 baseline passes. M15 codifies this as `DEBATE_POLICY.md:193` ("Making `auto` the default.").
+
+13. **Mutating the underlying primitive while measuring the new surface.** The control/treatment delta must be the proposed surface, not a rewritten primitive underneath it. M15 codifies this as `DEBATE_POLICY.md:201` ("Replacing `requestDebate` body.").
+
+14. **Letting side evidence override the owning gate.** Parallel-provider output is evidence for the owning phase, not a replacement authority. M15 codifies this as `DEBATE_POLICY.md:202` ("Letting REVIEW lose to DECISION.").
+
+15. **Bypassing `budgets.global`.** Parallel-provider calls consume the existing run-level budget namespace. A surface-specific budget namespace or accounting carve-out violates rule 19. M15 codifies this as `DEBATE_POLICY.md:203` ("Bypassing `budgets.global`. Rule 19. Aggregate preflight is mandatory.").
 
 ## When this doc fires
 

@@ -21,7 +21,7 @@ This contract is the **generalized** safety surface. The sub-scope contracts (`R
 - The runtime classification function for per-call concurrency partitioning.
 - The five-layer permission evaluation pipeline with strict priority order and stateful side effects.
 - The protected-paths and protected-commands lists that bypass auto-approve.
-- The audit event shape for `tool_concurrency_partition` and `tool_protected_pattern_matched`.
+- The audit event shape for `tool_concurrency_partitioned` and `tool_protected_pattern_matched`.
 - The tool-safety review checklist any new `tool_use.*` sub-scope must satisfy before its sub-scope contract is accepted.
 
 **Does NOT define (lives in the sub-scope contract):**
@@ -46,7 +46,7 @@ type ToolSubScope =
   | 'repo_context.glob'
   | 'repo_context.grep'
   | 'repo_context.read'
-  | 'repo_context.symbol'
+  | 'repo_context.symbol' // reserved schema slot; no live ToolDefinition until W3+
   | 'debate.request'
   // future tool_use.* sub-scopes append here
 
@@ -91,9 +91,11 @@ This protects against:
 
 Mirrors the source pattern's "Default to Fail-Closed" rule (`tool-registry-pattern.md:15-19`). The TypeScript shape encodes the rule by leaving both fields optional with default `false`; consumers must positively assert safety, never inherit it.
 
-### Worked example: `tool_use.repo_context.search`
+`repo_context.symbol` is a reserved slot inherited from `REPO_CONTEXT.md`. It has no live registration, no handler, and no concurrency classification in v0.1; a runtime call must fail closed with typed `tool_unavailable` or be rejected at config/load time until the W3+ symbol-search contract lands.
 
-`glob` and `grep` are **read-only AND concurrent-safe** — registered with both flags `true`. The runtime may parallelize a batch of N glob/grep calls that target paths within the agent's `permissions.read` set. `read` is **read-only AND concurrent-safe** for the same reason: native filesystem reads with byte caps do not race against each other.
+### Worked example: `tool_use.repo_context.{glob,grep,read}`
+
+`glob` and `grep` are **read-only AND concurrent-safe** — registered with both flags `true`. The runtime may parallelize a batch of N glob/grep calls that target paths within the agent's `permissions.read` set. `read` is **read-only AND concurrent-safe** for the same reason: native filesystem reads with byte caps do not race against each other. `symbol` remains reserved and is not part of this live registration set.
 
 A hypothetical future `tool_use.repo_context.write` (NOT in v0.1; reserved for illustration) would register with `isReadOnly: false`, `isConcurrentSafe: false`. The runtime would force every write call into a serial segment, forbid parallel partitions, and route every call through the permission pipeline regardless of caller history. The `tool_use.repo_context` sub-scope contract would have to declare the write tool explicitly and pass this contract's safety review checklist (Section 6) before landing.
 
@@ -153,12 +155,12 @@ Registering a tool with a static concurrency flag and trusting the flag without 
 
 ### Audit event
 
-When classification changes the dispatch shape — i.e., when the runtime would have parallelized N calls but partitioned into M > 1 segments because of unsafe calls in the batch — emit `tool_concurrency_partition` to `events.jsonl`:
+When classification changes the dispatch shape — i.e., when the runtime would have parallelized N calls but partitioned into M > 1 segments because of unsafe calls in the batch — emit `tool_concurrency_partitioned` to `events.jsonl`:
 
 ```ts
 {
   version: 1,
-  type: 'tool_concurrency_partition',
+  type: 'tool_concurrency_partitioned',
   ts: string,                                // ISO-8601
   runId: string,
   phase: PhaseName,
@@ -387,14 +389,14 @@ A new `tool_use.*` sub-scope MUST satisfy this checklist before its sub-scope co
 - [ ] Default permission mode set in registration (the registration default falls out of `isReadOnly` + `isConcurrentSafe` per Section 4 Step 7; document the resolved default explicitly).
 - [ ] Bypass-immune patterns (Section 5) defined — at minimum, the contract-wide lists apply; the sub-scope MAY extend them via `ToolDefinition`.
 - [ ] Custom `permissionCheck` implemented (when sub-scope-specific logic is required beyond the five layers).
-- [ ] Audit logging enabled — at minimum, `tool_concurrency_partition` (when classification fires) and `tool_protected_pattern_matched` (always). Sub-scopes MAY add their own audit events (e.g., `repo_context_searched`).
+- [ ] Audit logging enabled — at minimum, `tool_concurrency_partitioned` (when classification fires) and `tool_protected_pattern_matched` (always). Sub-scopes MAY add their own audit events (e.g., `repo_context_searched`).
 - [ ] Cross-referenced from `REPO_CONTEXT.md` or `DEBATE_POLICY.md` as a worked example IF the new sub-scope is structurally similar; otherwise, the sub-scope's own contract serves as its worked example.
 
 ### Testing
 
 - [ ] Tested with safe inputs — pipeline returns `allow`, handler runs, no `tool_protected_pattern_matched` event.
 - [ ] Tested with unsafe inputs — pipeline returns `ask` or `deny`, handler does NOT run when result is `deny`, `tool_protected_pattern_matched` event emitted.
-- [ ] Tested concurrent execution — batches with mixed safe/unsafe calls partition correctly; `tool_concurrency_partition` event emitted; serial segments respect order.
+- [ ] Tested concurrent execution — batches with mixed safe/unsafe calls partition correctly; `tool_concurrency_partitioned` event emitted; serial segments respect order.
 - [ ] Tested error handling — handler failures are caught, logged via the existing `ProviderError` path or sub-scope-specific error type; state remains consistent (no partial side effects when serial ordering matters).
 - [ ] Tested protected-pattern matching — every pattern in the contract-wide list AND every sub-scope-added pattern has at least one matching test fixture.
 
