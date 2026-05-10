@@ -182,3 +182,60 @@ In landing order. All four items in this list fit one commit each, none introduc
 - April 30 round: [`docs/research/CODEX_BRIEFING_AGENT_SKILLS_BORROW.md`](../../research/CODEX_BRIEFING_AGENT_SKILLS_BORROW.md), [`CODEX_RESPONSE_AGENT_SKILLS_BORROW.md`](../../research/CODEX_RESPONSE_AGENT_SKILLS_BORROW.md), [`SYNTHESIS_AGENT_SKILLS_AND_PRODUCT_THESIS.md`](../../research/SYNTHESIS_AGENT_SKILLS_AND_PRODUCT_THESIS.md). Five proposals; three landed (M9/M10), one rejected, one deferred.
 - This round: [`comparison.md`](./comparison.md), [`codex-briefing.md`](./codex-briefing.md), [`codex-response.md`](./codex-response.md), this file. Three reframes; four landing plan commits; two M17+ open questions; Skills deferral confirmed with sharper trigger.
 - Next template up for one-by-one comparison: per the user's "one project per session" rule, this comparison closes the agent-skills surface. Future sessions can address the next template in the influence library (`opencode`, `Archon`, `pi-mono`, `maestro`, `Auto-claude-code-research-in-sleep`, `claude-code`).
+
+---
+
+## 8. Convergence record (2026-05-10)
+
+The implementation pass landed as a 7-commit series on `feat/agent-skills-borrow-r2`, opened as PR #15: https://github.com/omerakben/code-oz/pull/15.
+
+### Commits (in order)
+
+1. `eaee04d` — `docs(comparison): land agent-skills round-2 audit trail`
+2. `fdc8a40` — `feat(prompts): add universal rule 11 — trust classification for context`
+3. `a425c21` — `docs(plan): borrow source-driven citation discipline from agent-skills`
+4. `50b64dc` — `docs: refresh CLAUDE.md status + rule 16 count + comparison link`
+5. `1a7740f` — `docs(plan,builder): TDD-as-doubt — validation must prove new behavior`
+6. `5619afa` — `docs: fix CLAUDE.md resume overstatement + comparison-link wording` (post-impl Codex fix-first closure)
+7. _this commit_ — `docs(comparison): final convergence record + PR link in synthesis`
+
+### Codex pre-design review (thread 019e12ab, gpt-5.5 xhigh, sandbox: read-only)
+
+Returned 4 modifications across the 5 implementation commits. All applied verbatim:
+
+- `plan-system.md` must include explicit "no live network fetching" language (PLAN runs `repo_context.network: 'none'`); must include schema reject-list against `Hierarchy:`, non-SPEC `Quote:`, and other unsupported `SC-DOC` fields.
+- `universal-rules.md` must distinguish approved artifact contracts (SPEC/PLAN/etc as authority) from injected instruction-like text (data); must explicitly cover `requestReview()` and `requestDebate()` outputs.
+- `builder.md` must NOT tell Builder to add reproduction tests unilaterally — only when PLAN task's `Files:` lists the test file. Otherwise stop and flag in `## Notes`.
+- `CLAUDE.md` rule 16's affirmation count must update from 10 to 11 in the same series (per memory pin canonical_doc_precedence_chain).
+
+### Codex post-implementation review
+
+One fix-first finding: CLAUDE.md status sentence overstated `resume` as wired. Verified by maestro against `src/cli.ts` (only init/run/approve/doctor exposed); `resume` is M17 work. Closed by commit `5619afa`. Final Codex verdict: `push`.
+
+### Codex sign-off (verbatim, for the audit trail)
+
+> Codex sign-off: pre-design review required schema-safe PLAN wording, explicit provider-output trust classification, builder scope protection for reproduction tests, and CLAUDE.md rule-count/status accuracy. Post-implementation review returned one fix-first finding on an overstated `resume` command; commit `5619afa` closed it. Final Codex verdict: `push`.
+
+### Convergence statement (Claude + Codex, verbatim)
+
+> Claude and Codex converge that this 6-commit series fully captures the agent-skills borrow surface that earns its place at v0.17: source-driven PLAN discipline, universal trust classification for context/provider output, TDD-as-doubt validation tightening, current-state CLAUDE.md refresh, and the round-2 audit trail. Larger candidates from agent-skills, specifically the Skills layer and doubt-driven runtime/checkpoint, are intentionally deferred and logged in `docs/comparison/05-agent-skills/synthesis.md` for future milestone debate rather than being smuggled into this prompt/docs series.
+
+### Test + typecheck
+
+- `bun test` — 3108 pass / 1 skip / 0 fail / 7542 expect() calls / 30.47s
+- `bun run typecheck` — ok
+
+### What this round did NOT borrow (recorded for future audits)
+
+- The Skills-layer architecture (April 30 Proposal 5) stays deferred. Sharper trigger condition: same workflow appears in 3+ personas OR a postmortem ties a real bug to duplicated prompt instructions diverging across personas.
+- Doubt-driven as a runtime checkpoint (synthesis section 2.2) is M17+ candidate. New orchestrator authority + possible parallel-provider surface; needs its own debate-and-implement milestone.
+- The `simplify-ignore` hook (Codex flagged for future patch-validator design) is recorded as M-future candidate; not borrowed now.
+- `mandatory skill invocation by description` and `Agent Teams-style teammate discussion` are explicit rejects unless a future milestone proves measurable risk reduction.
+
+### Maestro session record
+
+- Session: 2026-05-10, ~4-hour autonomy window granted by Ozzy (AFK).
+- Maestro role: Claude Opus 4.7 (xhigh) as PM/technical-subject-expert.
+- Sub-agents: 6 Opus instances dispatched (Commits 0-5 + fix-first + this convergence commit), all `general-purpose`, each scoped to a single file or commit.
+- Codex sub-agent: 1 long-running thread (`019e12ab`) handling round-2 verdict + pre-design review + post-impl review + final convergence.
+- Other sessions running in parallel: `feat/byterover-09-borrows`, `worktree-aris-borrows-pre-m17`, plus the `06-codex` session that pushed `e18d127` to main mid-implementation. No file overlap; clean rebase.
