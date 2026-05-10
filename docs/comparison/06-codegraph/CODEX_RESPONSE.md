@@ -2,7 +2,7 @@
 name: codex-response-06-codegraph
 target: capture Codex's debate verdict for code-oz vs codegraph
 companion: COMPARISON.md, CODEX_BRIEFING.md, IMPLEMENTATION_PLAN.md (this folder)
-status: captured (R0 transcript; superseded by R1/R2/R3 — see Postscript at bottom)
+status: captured (R0 transcript; superseded by subsequent rounds — see Postscript § "Review round summary" for the canonical table)
 codex-thread: 019e12ed-a84c-7092-959d-8d57bd323e19
 codex-model: gpt-5.5 @ xhigh effort
 top-level-verdict: accept-with-modifications
@@ -11,10 +11,11 @@ date: 2026-05-10
 
 > **Document status — historical R0 transcript.** This file captures
 > the pre-implementation Codex debate. The implementation evolved past
-> several specifics in this transcript through Codex R1 (thread
-> 019e1326) and R2 (thread 019e1330). The post-implementation contract
-> lives in `IMPLEMENTATION_PLAN.md § Outcome`. See the **Postscript**
-> at the bottom for the specific divergences.
+> several specifics in this transcript through a multi-round Codex
+> review process. The post-implementation contract lives in
+> `IMPLEMENTATION_PLAN.md § Outcome`. See the **Postscript** at the
+> bottom for the specific divergences and the review-round summary
+> table.
 
 # Codex response — code-oz vs codegraph
 
@@ -186,13 +187,17 @@ This transcript is the R0 pre-implementation debate. The implementation that shi
 
 **B2 — standalone runner parity (R2 finding 4).** Added `minReturnedPaths` threshold + `mustTruncate` + `precisionPathPrefix` flags to `scripts/eval-repo-context.ts` so `bun run eval:repo_context --strict` reaches the same pass/fail conclusion as the bun-test wrapper. Wired in commit 28ee554.
 
-**Review round summary:**
+**Review round summary** (single source of truth — `IMPLEMENTATION_PLAN.md § Outcome` mirrors this):
 
 | Round | Thread | Verdict | Closed by commit |
 |---|---|---|---|
 | R0 | `019e12ed` | accept-with-modifications | a560df3 (synthesis into IMPLEMENTATION_PLAN.md) |
 | R1 | `019e1326` | fix-first (3 block-push) | b41b3f5 |
 | R2 | `019e1330` | fix-first (4 doc/parity drift) | 28ee554 |
-| R3 | `019e141b` | fix-first → push | (this commit) |
+| R3 | `019e141b` | fix-first (3 doc-drift) | 63721e7 |
+| R4 | `019e1421` | fix-first (3 sweep findings — COMPARISON.md + ROADMAP M6) | 15d5d43 |
+| R5 | `019e142d` | fix-first (CODEX_BRIEFING.md historical banner) | 2b25d98 |
+| R6 | `019e1436` | fix-first (metadata-recursion — stabilize round-count language; pin table here) | (current commit) |
+| next | (pending) | (target: push) | convergence verification |
 
-After R3 the branch ships at 3116 tests pass / 0 fail / typecheck clean / `bun run eval:repo_context --strict` passes all three cases.
+After the convergence round the branch ships at 3116 tests pass / 0 fail / typecheck clean / `bun run eval:repo_context --strict` passes all three cases.

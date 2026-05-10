@@ -4,19 +4,19 @@ template-path: ~/Projects/agents/templates/codegraph
 template-version: 0.7.2 (Node 18-24, snapshot 2026-05-08; @colbymchenry/codegraph)
 companion-docs: ../../contracts/REPO_CONTEXT.md, ../../design/ROADMAP.md (W3 section), IMPLEMENTATION_PLAN.md (this folder)
 target: borrow-decision record + shipped contract for Codegraph vs code-oz
-status: shipped (4 review rounds R0+R1+R2+R3 → R4 push, 2026-05-10)
-review-rounds: R0 accept-with-modifications (019e12ed) → R1 fix-first (019e1326) → R2 fix-first (019e1330) → R3 fix-first (019e141b) → R4 push
+status: shipped (multi-round Codex review process converged; see review-rounds table below and the round summary in IMPLEMENTATION_PLAN.md § Outcome)
+review-rounds: R0 accept-with-modifications (019e12ed) → R1..R6 sequential fix-first closures (threads 019e1326 / 019e1330 / 019e141b / 019e1421 / 019e142d / 019e1436 — see CODEX_RESPONSE.md § Postscript for the full table) → final-round push captured in the convergence commit
 decision: YES, code-oz is ahead **on category**, with two shipped borrows (B1 contract cleanup + B2 three-case eval harness) and one reclassified deferred-with-trigger (B5); shipped contract lives in `src/agents/schema.ts`, `src/tools/repo-context/permissions.ts`, `docs/contracts/REPO_CONTEXT.md § "Reservation and reopen-the-slot signal"`, and `tests/evaluation/repo-context/`
 prior-borrows: none — codegraph not in CLAUDE.md influence library
 ---
 
 > **Document status — synthesis complete and shipped.** This document
-> reflects the post-implementation state after four Codex review
-> rounds. The original pre-implementation framing is preserved as
-> context but the borrow ranking, decision section, and references
+> reflects the post-implementation state after a multi-round Codex
+> review process. The original pre-implementation framing is preserved
+> as context, but the borrow ranking, decision section, and references
 > all describe what shipped. See `IMPLEMENTATION_PLAN.md § Outcome`
-> and `CODEX_RESPONSE.md § Postscript` for the round-by-round
-> evolution.
+> and `CODEX_RESPONSE.md § Postscript` for the round-by-round evolution
+> (those tables are the source of truth for review-round metadata).
 
 # code-oz vs Codegraph
 

@@ -2,19 +2,19 @@
 name: implementation-plan-06-codegraph
 companion: COMPARISON.md, CODEX_RESPONSE.md (this folder)
 target: implement Codex-aligned borrows from codegraph comparison; reach Claude+Codex `push` verdict
-status: complete (Codex R3 push, 2026-05-10)
+status: complete (multi-round Codex review process converged; see Outcome § review-round summary)
 branch: worktree-feat+comparison-codegraph
 baseline-tests: 3108 pass / 0 fail (verified 2026-05-10)
 final-tests: 3116 pass / 0 fail / typecheck clean
-review-rounds: R1 fix-first → R2 fix-first → R3 push (threads 019e1326 / 019e1330 / 019e141b)
+review-rounds: R0..Rn — see Outcome § "Codex review round summary" for the canonical table
 ---
 
 > **Document status — historical planning snapshot.** This is the
-> pre-implementation plan written before the four Codex review rounds
-> ran. Several specifics evolved during R1+R2 (case-03 redesign,
-> error-code reuse decision) — see the **Outcome** section at the
-> bottom for the final state. The body below is preserved as the
-> planning-phase record.
+> pre-implementation plan written before the multi-round Codex review
+> process ran. Several specifics evolved during the review rounds
+> (case-03 redesign, error-code reuse decision) — see the **Outcome**
+> section at the bottom for the final state. The body below is
+> preserved as the planning-phase record.
 
 # Implementation plan — codegraph borrows
 
@@ -150,9 +150,13 @@ The second skip is the eval-harness rg-not-installed branch (mirrors the existin
 
 ### Codex review round summary
 
-| Round | Thread | Verdict | Findings closed |
+| Round | Thread | Verdict | Findings closed (commit) |
 |---|---|---|---|
-| R0 (pre-impl) | 019e12ed | accept-with-modifications | B1→D-reserved, B2→3 cases, B5 reclassified, Q8 contract-debt catch |
-| R1 | 019e1326 | fix-first | 3 block-push (REPO_CONTEXT.md drift, recall@k metric bug, case-03 not exercising budget pressure) |
-| R2 | 019e1330 | fix-first | 4 doc/parity drift (case-03 stale prose, recall@k JSDoc precision, standalone runner missing `minReturnedPaths`) |
-| R3 | 019e141b | fix-first → push (after this commit) | 3 final drift items (IMPLEMENTATION_PLAN.md outcome section, CODEX_RESPONSE.md postscript, harness.ts inline comment) |
+| R0 (pre-impl) | 019e12ed | accept-with-modifications | B1→D-reserved, B2→3 cases, B5 reclassified, Q8 contract-debt catch (a560df3) |
+| R1 | 019e1326 | fix-first | 3 block-push: REPO_CONTEXT.md drift, recall@k metric bug, case-03 not exercising budget pressure (b41b3f5) |
+| R2 | 019e1330 | fix-first | 4 doc/parity drift: case-03 stale prose, recall@k JSDoc precision, standalone runner missing `minReturnedPaths` (28ee554) |
+| R3 | 019e141b | fix-first | 3 doc-drift: IMPLEMENTATION_PLAN.md missing Outcome section, CODEX_RESPONSE.md missing post-implementation postscript, harness.ts inline comment (63721e7) |
+| R4 | 019e1421 | fix-first | 3 doc-drift sweep: COMPARISON.md matrix row + G1 narrative + B1 borrow row + References stale; ROADMAP M6 acceptance bullet stale (15d5d43) |
+| R5 | 019e142d | fix-first | 1 doc-drift: CODEX_BRIEFING.md missing historical-dispatch banner (2b25d98) |
+| R6 | 019e1436 | fix-first | 1 metadata-recursion: companion-doc review-rounds frontmatter and banners locked to round counts that the next round invalidates; stabilized language and migrated round-count to this table as the single source of truth (this commit) |
+| (next) | (pending) | (target: push) | convergence verification |

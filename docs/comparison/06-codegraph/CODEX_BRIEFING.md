@@ -2,7 +2,7 @@
 name: codex-briefing-06-codegraph
 target: pressure-test code-oz's borrow decisions against codegraph
 companion: COMPARISON.md, CODEX_RESPONSE.md, IMPLEMENTATION_PLAN.md (this folder), docs/contracts/REPO_CONTEXT.md, docs/design/ROADMAP.md (W3 section), CLAUDE.md (rules 13, 18, 19, 20, 21)
-status: historical (pre-implementation dispatch; superseded by R1/R2/R3/R4/R5 — see banner)
+status: historical (pre-implementation dispatch; superseded by subsequent rounds — see CODEX_RESPONSE.md § Postscript table)
 mode: debate (single-opponent, planning-convergence pressure-test)
 ---
 
@@ -10,11 +10,13 @@ mode: debate (single-opponent, planning-convergence pressure-test)
 > file captures the briefing sent to Codex for the R0 debate. Several
 > "current state" descriptions inside (the `symbol` slot framing, the
 > "Optional LSP integration" ROADMAP wording) were accurate AT
-> DISPATCH TIME but have since been replaced by the shipped contract.
-> The post-implementation state lives in `IMPLEMENTATION_PLAN.md §
-> Outcome` and in `docs/contracts/REPO_CONTEXT.md § "Reservation and
-> reopen-the-slot signal"`. Read this file as a historical artifact,
-> not as a current-state reference.
+> DISPATCH TIME but have since been replaced by the shipped contract
+> through a multi-round Codex review process. The post-implementation
+> state lives in `IMPLEMENTATION_PLAN.md § Outcome` and
+> `docs/contracts/REPO_CONTEXT.md § "Reservation and reopen-the-slot
+> signal"`; the round-by-round table lives in `CODEX_RESPONSE.md §
+> Postscript`. Read this file as a historical artifact, not as a
+> current-state reference.
 
 # Codex briefing — code-oz vs codegraph
 
