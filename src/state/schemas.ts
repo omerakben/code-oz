@@ -261,9 +261,20 @@ export const EVENT_TYPES = [
   //     before the first BUILD attempt for a task. Subsequent attempts
   //     (BUILD-restart from VERIFY-fail) do NOT re-emit; the
   //     `build_started` event already carries attempt N.
-  //   task_review_passed — emitted by runReview when the review verdict
-  //     resolves to 'ready' for the task. Mirrors review_resolved but
-  //     carries the taskIndex so the cursor projection is O(1).
+  //   task_review_passed — emitted by `dispatchReview` (src/commands/run.ts)
+  //     when `runReview` returns `status === 'resolved'` (verdict='ready').
+  //     Mirrors `review_resolved` but carries the `taskIndex` from the
+  //     cursor's pending entry so the cursor projection is O(1). Emitted
+  //     at the dispatcher level (not inside `runReview`) because
+  //     `RunReviewOptions` does not carry taskIndex — the cursor
+  //     projection is dispatcher authority. Idempotent on
+  //     `(runId, taskId, finalRound)`: a second `dispatchReview` for the
+  //     same resolving round will skip the emission. Fires BEFORE the
+  //     operator approves; the gap between this event and `task_completed`
+  //     is the "review-ready, awaiting approve review" window the cursor
+  //     surfaces via `TaskCursorEntry.reviewPassed`. M16 C9 follow-on (7)
+  //     wired the emit site; bug 10 (3081-test baseline) caught the
+  //     missing-emitter gap.
   //   task_completed — emitted by preApproveReviewHook AFTER the
   //     GATE_REVIEW_PASSED.json gate write succeeds. This is the
   //     durable "task is fully done" signal; `code-oz run` reads this

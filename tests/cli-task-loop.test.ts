@@ -3304,3 +3304,291 @@ describe('emitPhaseEnteredBuildIfNeeded — Bug 7: attempt-boundary phase_entere
     expect(reloaded?.state.currentPhase).toBe('build')
   })
 })
+
+// --- task_review_passed semantics (Bug 10 — M16 C9 follow-on 7) ---
+
+/**
+ * Bug 10: `task_review_passed` is declared in the schema
+ * (src/state/schemas.ts:1355) and consumed by the cursor projection
+ * (src/state/task-cursor.ts:115, 149, 182), but no call site emitted it
+ * before this follow-on. The C12 e2e (cli-multi-task-cycle.test.ts:438)
+ * caught the gap by asserting `taskReviewPassed.length === 3` and
+ * observing 0.
+ *
+ * Semantic A (chosen): the event is emitted by `dispatchReview` when
+ * `runReview` returns `status === 'resolved'`, BEFORE the operator's
+ * `code-oz approve review` lands `task_completed`. The gap between
+ * `task_review_passed` and `task_completed` is the
+ * "review-ready, awaiting approve review" window surfaced by
+ * `TaskCursorEntry.reviewPassed`. Semantic B (emit at
+ * `approveReviewTaskGate`) would make the boolean redundant with
+ * `status === 'completed'`, contradicting the cursor doc at
+ * src/state/task-cursor.ts:49-53.
+ *
+ * These tests verify the cursor-projection contract that the dispatcher's
+ * emit must satisfy. The dispatcher integration boundary is exercised by
+ * the C12 e2e (tests/e2e/cli-multi-task-cycle.test.ts).
+ */
+describe('task_review_passed — cursor projection contract (Bug 10)', () => {
+  test('cursor sets reviewPassed=true when task_review_passed is present and task_completed is absent (Semantic A: pre-approval gap)', async () => {
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    // Seed the lifecycle up to "review resolved, awaiting approve":
+    //   task_started (attempt 1) + task_review_passed (final round 1).
+    // No task_completed yet — that's what the operator's `approve review`
+    // would emit.
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_started',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+      },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_review_passed',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        finalRound: 1,
+        reviewReportSha256: 'a'.repeat(64),
+      },
+    )
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    const { cursor } = projectTaskCursor(plan, events)
+
+    expect(cursor.entries).toHaveLength(1)
+    expect(cursor.entries[0]!.taskId).toBe('T-001')
+    expect(cursor.entries[0]!.status).toBe('in_progress')
+    expect(cursor.entries[0]!.reviewPassed).toBe(true)
+    // The pending entry is still T-001; allCompleted is false.
+    expect(cursor.pending?.taskId).toBe('T-001')
+    expect(cursor.allCompleted).toBe(false)
+  })
+
+  test('cursor reports status=completed AND reviewPassed=true when both events are present', async () => {
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_started',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+      },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_review_passed',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        finalRound: 1,
+        reviewReportSha256: 'a'.repeat(64),
+      },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_completed',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        reviewGatePath: '/tmp/GATE_REVIEW_PASSED.json',
+      },
+    )
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    const { cursor } = projectTaskCursor(plan, events)
+    expect(cursor.entries[0]!.status).toBe('completed')
+    expect(cursor.entries[0]!.reviewPassed).toBe(true)
+    expect(cursor.allCompleted).toBe(true)
+  })
+
+  test('event-log ordering: task_review_passed precedes task_completed for the same task', async () => {
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await setupReviewReadyForTask({ taskId: 'T-001', attempt: 1, reviewSha: 'fixture body' })
+    // Inject task_review_passed BEFORE the approve primitive runs, so the
+    // ordering invariant matches what dispatchReview produces in
+    // production (the dispatcher emits before requireGate's blocked-on
+    // signal reaches the operator's approve invocation).
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_review_passed',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        finalRound: 1,
+        reviewReportSha256: SHA('fixture body\n'),
+      },
+    )
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const passIdx = events.findIndex(
+      (e) => isKnownPhaseEvent(e) && e.type === 'task_review_passed' && e.taskId === 'T-001',
+    )
+    const completedIdx = events.findIndex(
+      (e) => isKnownPhaseEvent(e) && e.type === 'task_completed' && e.taskId === 'T-001',
+    )
+    expect(passIdx).toBeGreaterThanOrEqual(0)
+    expect(completedIdx).toBeGreaterThanOrEqual(0)
+    expect(passIdx).toBeLessThan(completedIdx)
+  })
+
+  test('approveReviewTaskGate does NOT emit task_review_passed (Semantic A: dispatcher owns the emit)', async () => {
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await setupReviewReadyForTask({ taskId: 'T-001', attempt: 1, reviewSha: 'fixture body' })
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const taskReviewPassed = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'task_review_passed')
+    // The approve primitive emits task_completed (Semantic B's
+    // putative slot), but task_review_passed is dispatcher authority
+    // (Semantic A). The fixture seeded review_resolved + REVIEW.md
+    // but did NOT call dispatchReview, so no task_review_passed is
+    // expected here. This confirms the emit site lives in the
+    // dispatcher, not the approve primitive.
+    expect(taskReviewPassed).toHaveLength(0)
+    // Sanity: task_completed IS emitted by approveReviewTaskGate.
+    const taskCompleted = events
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'task_completed')
+    expect(taskCompleted).toHaveLength(1)
+  })
+
+  test('duplicate task_review_passed events for the same (taskId, finalRound) do not corrupt the cursor projection', async () => {
+    // Defensive: the dispatcher emit is idempotent on
+    // `(runId, taskId, finalRound)` (src/commands/run.ts), but a
+    // hand-edited or corrupted event log could carry duplicates. The
+    // cursor projection must remain stable under such input — it just
+    // sets `reviewPassed = true` regardless of how many duplicate
+    // events land.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT_SINGLE, 'utf8')
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_started',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+      },
+    )
+    for (let i = 0; i < 3; i++) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        {
+          version: 1,
+          type: 'task_review_passed',
+          ts: FIXED_TS,
+          runId: RUN,
+          taskId: 'T-001',
+          taskIndex: 0,
+          finalRound: 1,
+          reviewReportSha256: 'a'.repeat(64),
+        },
+      )
+    }
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const plan = parsePlan(PLAN_TXT_SINGLE, join(artifactRoot, 'PLAN.md'))
+    const { cursor, issues } = projectTaskCursor(plan, events)
+    expect(cursor.entries[0]!.reviewPassed).toBe(true)
+    expect(cursor.entries[0]!.status).toBe('in_progress')
+    // No projection issues raised by duplicates — they simply set the
+    // boolean idempotently.
+    expect(issues).toHaveLength(0)
+  })
+
+  test('task_review_passed.taskIndex mismatch with current PLAN.md surfaces a non-fatal cursor issue', async () => {
+    // Mirrors the existing index-mismatch test pattern for task_started
+    // / task_completed — task_review_passed is in the same family of
+    // task-keyed events the cursor projects (src/state/task-cursor.ts:131).
+    await initFreshRun()
+    // Multi-task PLAN to establish a known taskIndex space.
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    // Emit task_review_passed with the wrong taskIndex (2 instead of 0).
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'task_review_passed',
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 2,
+        finalRound: 1,
+        reviewReportSha256: 'a'.repeat(64),
+      },
+    )
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    const { cursor, issues } = projectTaskCursor(plan, events)
+    // Issue surfaced; cursor still records the lifecycle bit at the
+    // PLAN-canonical index (0) per the existing
+    // task_cursor_index_mismatch policy.
+    expect(issues.some((i) => i.code === 'task_cursor_index_mismatch')).toBe(true)
+    expect(cursor.entries[0]!.reviewPassed).toBe(true)
+  })
+})

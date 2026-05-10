@@ -1712,6 +1712,7 @@ export async function dispatchReview(
     })
   }
   const taskId = cursorResult.cursor.pending.taskId
+  const taskIndex = cursorResult.cursor.pending.taskIndex
 
   // M16 C9 follow-on (Bug 2) — task-boundary gate-file cleanup. Mirrors
   // dispatchBuild/dispatchVerify for `GATE_REVIEW_PASSED.json`. Deletes
@@ -1903,6 +1904,69 @@ export async function dispatchReview(
         },
       },
     )
+  }
+
+  // M16 C9 follow-on (7) — Bug 10: emit `task_review_passed` when REVIEW
+  // resolved with verdict='ready'. The schema (src/state/schemas.ts) and
+  // cursor projection (src/state/task-cursor.ts) were both wired for this
+  // event since C1, but no call site emitted it — the C12 e2e
+  // (cli-multi-task-cycle.test.ts:438) caught the gap by asserting
+  // `taskReviewPassed.length === 3` and observing 0.
+  //
+  // Semantic A (pre-approval signal): the event fires AFTER
+  // `runReview` returns `status === 'resolved'` and BEFORE the operator
+  // runs `code-oz approve review`. The gap between this event and
+  // `task_completed` (emitted by `approveReviewTaskGate`) is the
+  // "review-ready, awaiting operator approve" window surfaced via
+  // `TaskCursorEntry.reviewPassed`. If we instead emitted from
+  // `approveReviewTaskGate` (Semantic B), `reviewPassed` would always
+  // co-occur with `status === 'completed'` and the cursor's
+  // `reviewPassed` boolean would be redundant with `status` — the
+  // cursor's projection logic only justifies the event under
+  // Semantic A.
+  //
+  // Why the dispatcher and not `runReview`: the schema requires
+  // `taskIndex`, which is dispatcher authority (cursor projection lives
+  // here). `RunReviewOptions` does not carry taskIndex; plumbing it
+  // through would touch ~5 test helpers in tests/review-* without
+  // changing semantics. The dispatcher already reads the cursor pending
+  // entry for `taskId`/`taskIndex`; the emit is co-located.
+  //
+  // Idempotency: a re-dispatch of REVIEW for an already-resolved
+  // (taskId, finalRound) — possible under resume after operator drift —
+  // would re-run `runReview` and re-receive `status === 'resolved'`.
+  // Match the C9 idempotency pattern in `approveReviewTaskGate`: skip
+  // emit when an existing `task_review_passed` for
+  // `(runId, taskId, finalRound)` is found.
+  if (result.status === 'resolved') {
+    const eventsForIdem = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const alreadyEmitted = eventsForIdem.some((e) => {
+      if (!isKnownPhaseEvent(e)) return false
+      if (e.type !== 'task_review_passed') return false
+      return (
+        e.runId === opts.runId &&
+        e.taskId === taskId &&
+        e.finalRound === result.round
+      )
+    })
+    if (!alreadyEmitted) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        {
+          version: 1,
+          type: 'task_review_passed',
+          ts: now(),
+          runId: opts.runId,
+          taskId,
+          taskIndex,
+          finalRound: result.round,
+          reviewReportSha256: result.reviewReportSha256,
+        },
+      )
+    }
   }
 
   const exitCode = exitCodeForPhaseResult(result)
