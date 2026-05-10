@@ -161,14 +161,25 @@ The `scope` field is required and decides where the rule fires.
   intermediate (debate transcripts, repo-context tool calls).
 
 A rule that mentions a dangerous-API token in its `value` (necessary
-for any rule that wants to flag the token) MUST be scoped to
-`runtime-tool-call` only, OR it MUST exempt artifact paths via an
-explicit `field: file_path` + `operator: prefix` + value `docs/`
-condition. Otherwise the rule fires on documentation that mentions the
-token, which is the empirical failure mode encountered while writing
-the comparison itself (see `docs/comparisons/claude-code/COMPARISON.md`
-§4.6 correction note + the tripwire described in
-`docs/comparisons/claude-code/SYNTHESIS.md` §1.4).
+for any rule that wants to flag the token) MUST be scoped to either:
+
+- `runtime-tool-call` only — the rule will not fire on documentation
+  written under `artifact-authoring`. This is the simplest defense.
+- `artifact-authoring` with a positive `file_path` condition that
+  restricts the rule to the actual artifact path you care about
+  (for example, `file_path` `glob` `.code-oz/artifacts/**/*.md`).
+  Adding a positive `file_path prefix docs/` condition would do the
+  opposite of "exempt docs" under AND semantics — it would *limit
+  the rule to docs paths only*. Use a positive include of the
+  artifact path, not an attempt to exclude docs.
+
+The empirical failure mode this guidance prevents is the comparison
+document itself tripping the upstream `security-guidance` hook
+(see `docs/comparisons/claude-code/COMPARISON.md` §4.6 correction
+note + the tripwire described in `docs/comparisons/claude-code/SYNTHESIS.md`
+§1.4). v0.1 does not provide a `not_prefix` / `exclude` operator;
+exclusion is achieved by tightening the positive include or by
+splitting the rule across `scope`s.
 
 ### Multi-condition AND semantics
 
