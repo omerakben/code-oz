@@ -14,6 +14,8 @@ import {
   DEFAULT_DEBATE_POLICY,
   M12_COMPANY_ROLES,
   PANELIST_ROLES,
+  PRESET_NAMES,
+  PRESET_VALUES,
   type ByRoleBudget,
   type CodeOzConfig,
   type CompanyConfig,
@@ -31,6 +33,7 @@ import {
   type DefinePhaseConfig,
   type AskMeConfig,
   type OnMaxRoundsBehavior,
+  type PresetName,
 } from './schema.ts'
 import { AGENT_PROVIDERS, type AgentProvider } from '../agents/schema.ts'
 import { familyOf } from '../providers/families.ts'
@@ -131,6 +134,8 @@ export async function loadConfig(opts: LoadConfigOptions = {}): Promise<CodeOzCo
 function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   const issues: ConfigLoadIssue[] = []
 
+  const preset = mergePreset(raw.preset, file, issues)
+  const effectiveDefaults = applyPresetDefaults(preset)
   const version = stringOrDefault(raw.version, DEFAULT_CONFIG.version, 'version', file, issues)
   const profile = enumOrDefault(
     raw.profile,
@@ -150,8 +155,8 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   )
 
   const models = mergeModels(raw.models, file, issues)
-  const budgets = mergeBudgets(raw.budgets, file, issues)
-  const permissions = mergePermissions(raw.permissions, file, issues)
+  const budgets = mergeBudgets(raw.budgets, effectiveDefaults.budgets, file, issues)
+  const permissions = mergePermissions(raw.permissions, effectiveDefaults.permissions, file, issues)
   const phases = mergePhases(raw.phases, file, issues)
   const company = mergeCompany(raw.company, defaultProvider, file, issues)
   const debatePolicy = mergeDebatePolicy(raw.debatePolicy, file, issues)
@@ -161,6 +166,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   }
 
   return Object.freeze({
+    ...(preset !== undefined ? { preset } : {}),
     version,
     profile,
     defaultProvider,
@@ -171,6 +177,44 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
     ...(company !== undefined ? { company } : {}),
     ...(debatePolicy !== undefined ? { debatePolicy } : {}),
   })
+}
+
+function mergePreset(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): PresetName | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'string' || !(PRESET_NAMES as readonly string[]).includes(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: `preset must be one of: ${PRESET_NAMES.join(' | ')}`,
+      detail: `got ${JSON.stringify(raw)}`,
+    })
+    return undefined
+  }
+  return raw as PresetName
+}
+
+function applyPresetDefaults(preset: PresetName | undefined): CodeOzConfig {
+  if (preset === undefined) return DEFAULT_CONFIG
+  const values = PRESET_VALUES[preset]
+  return {
+    ...DEFAULT_CONFIG,
+    preset,
+    permissions: {
+      ...DEFAULT_CONFIG.permissions,
+      ...values.permissions,
+    },
+    budgets: {
+      ...DEFAULT_CONFIG.budgets,
+      global: {
+        ...DEFAULT_CONFIG.budgets.global,
+        softWarnAtRatio: values.softWarnAtRatio,
+      },
+    },
+  }
 }
 
 // M12: company:block validation. Validates the entire shape at config-load
@@ -513,26 +557,28 @@ function mergeModels(
 
 function mergeBudgets(
   raw: unknown,
+  defaults: Budgets,
   file: string,
   issues: ConfigLoadIssue[],
 ): Budgets {
-  if (raw === undefined || raw === null) return cloneBudgets(DEFAULT_CONFIG.budgets)
+  if (raw === undefined || raw === null) return cloneBudgets(defaults)
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     issues.push({ file, code: 'config_invalid_shape', rule: 'budgets must be a mapping' })
-    return cloneBudgets(DEFAULT_CONFIG.budgets)
+    return cloneBudgets(defaults)
   }
   const b = raw as Record<string, unknown>
-  const global = mergeGlobalBudget(b.global, file, issues)
-  const perPhase = mergePerPhase(b.perPhase, file, issues)
+  const global = mergeGlobalBudget(b.global, defaults.global, file, issues)
+  const perPhase = mergePerPhase(b.perPhase, defaults.perPhase, file, issues)
   return { global, perPhase }
 }
 
 function mergeGlobalBudget(
   raw: unknown,
+  defaults: GlobalBudget,
   file: string,
   issues: ConfigLoadIssue[],
 ): GlobalBudget {
-  const def = DEFAULT_CONFIG.budgets.global
+  const def = defaults
   if (raw === undefined || raw === null) return { ...def }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     issues.push({ file, code: 'config_invalid_shape', rule: 'budgets.global must be a mapping' })
@@ -785,10 +831,11 @@ function parsePriceTable(
 
 function mergePerPhase(
   raw: unknown,
+  defaults: Record<Phase, PhaseBudget>,
   file: string,
   issues: ConfigLoadIssue[],
 ): Record<Phase, PhaseBudget> {
-  const def = DEFAULT_CONFIG.budgets.perPhase
+  const def = defaults
   if (raw === undefined || raw === null) {
     return clonePerPhase(def)
   }
@@ -844,10 +891,11 @@ function mergePerPhase(
 
 function mergePermissions(
   raw: unknown,
+  defaults: CodeOzConfig['permissions'],
   file: string,
   issues: ConfigLoadIssue[],
 ): CodeOzConfig['permissions'] {
-  const def = DEFAULT_CONFIG.permissions
+  const def = defaults
   if (raw === undefined || raw === null) return { ...def }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     issues.push({

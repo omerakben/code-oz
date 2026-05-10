@@ -4,6 +4,14 @@ export type Profile = 'greenfield' | 'brownfield'
 
 export type Phase = 'define' | 'plan' | 'build' | 'verify' | 'review' | 'ship' | 'audit'
 
+export type PresetName = 'auto' | 'paranoid' | 'interactive'
+
+export const PRESET_NAMES: readonly PresetName[] = Object.freeze([
+  'auto',
+  'paranoid',
+  'interactive',
+])
+
 // M12 (rule 20: role-to-provider routing authority). The shipped roster
 // of company roles is defined in `src/agents/role.ts` (the leaf module
 // that owns role-identity vocabulary, per the M13 review fix-soon #1
@@ -120,6 +128,49 @@ export interface GlobalBudget extends PhaseBudget {
   byRole?: Readonly<Partial<Record<CompanyRole, ByRoleBudget>>>
 }
 
+// B4 named approval presets are aliases that expand into explicit resolved
+// config, not hidden semantic modes. Per CLAUDE.md rule 19, budgets stay
+// concrete config values; per rule 20 and
+// docs/comparison/06-codex/SYNTHESIS.md B4, presets are limited to the
+// locked field set below and must not become a second authority surface.
+export const PRESET_CONTROLLED_FIELDS = Object.freeze({
+  permissions: Object.freeze(['allowEscapeHatch', 'requireApprovalForBuild'] as const),
+  budgets: Object.freeze({
+    global: Object.freeze(['softWarnAtRatio'] as const),
+  }),
+})
+
+export type PresetValues = Readonly<{
+  permissions: Readonly<
+    Pick<CodeOzConfig['permissions'], 'allowEscapeHatch' | 'requireApprovalForBuild'>
+  >
+  softWarnAtRatio: number
+}>
+
+export const PRESET_VALUES: Readonly<Record<PresetName, PresetValues>> = Object.freeze({
+  auto: Object.freeze({
+    permissions: Object.freeze({
+      allowEscapeHatch: true,
+      requireApprovalForBuild: false,
+    }),
+    softWarnAtRatio: 0.9,
+  }),
+  paranoid: Object.freeze({
+    permissions: Object.freeze({
+      allowEscapeHatch: false,
+      requireApprovalForBuild: true,
+    }),
+    softWarnAtRatio: 0.5,
+  }),
+  interactive: Object.freeze({
+    permissions: Object.freeze({
+      allowEscapeHatch: false,
+      requireApprovalForBuild: true,
+    }),
+    softWarnAtRatio: 0.75,
+  }),
+})
+
 export interface Budgets {
   global: GlobalBudget
   perPhase: Record<Phase, PhaseBudget>
@@ -230,6 +281,7 @@ export const DEBATE_SCHEDULER_MODE_VALUES: readonly DebateSchedulerModeConfig[] 
 ] as const
 
 export interface CodeOzConfig {
+  preset?: PresetName
   version: string
   profile: Profile
   defaultProvider: 'claude' | 'codex' | 'gemini' | 'fake' | 'xai'

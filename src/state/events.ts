@@ -42,7 +42,7 @@ import {
 } from './schemas.ts'
 import { EventLogError, type EventLogIssue } from './errors.ts'
 import { LockBusyError, withLock } from './lock.ts'
-import { M12_COMPANY_ROLES } from '../config/schema.ts'
+import { M12_COMPANY_ROLES, PRESET_NAMES } from '../config/schema.ts'
 
 // M13 (Codex Q8 lock, CODEX_RESPONSE_M13.md, thread 019de672): role
 // discriminator on `budget_warning` is only meaningful for metrics that
@@ -179,6 +179,117 @@ export function validateEvent(
         }
       }
       break
+
+    case 'config_resolved': {
+      // B4 telemetry-only mirror. The emitter is deferred to the run-start
+      // follow-up; this validator intentionally reads the resolved event
+      // payload without making events.jsonl a parallel config authority
+      // (CLAUDE.md rule 19; docs/comparison/06-codex/SYNTHESIS.md B4).
+      if (
+        e.presetApplied !== null &&
+        (typeof e.presetApplied !== 'string' ||
+          !(PRESET_NAMES as readonly string[]).includes(e.presetApplied))
+      ) {
+        return enumInvalid(
+          file,
+          'config_resolved.presetApplied',
+          [...PRESET_NAMES, 'null'],
+          e.presetApplied,
+          line,
+        )
+      }
+      const permissions = e.permissions
+      if (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.permissions must be an object',
+          detail: `got ${JSON.stringify(permissions)}`,
+          line,
+        }
+      }
+      const p = permissions as Record<string, unknown>
+      if (typeof p.allowEscapeHatch !== 'boolean') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.permissions.allowEscapeHatch must be a boolean',
+          detail: `got ${JSON.stringify(p.allowEscapeHatch)}`,
+          line,
+        }
+      }
+      if (typeof p.requireApprovalForBuild !== 'boolean') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.permissions.requireApprovalForBuild must be a boolean',
+          detail: `got ${JSON.stringify(p.requireApprovalForBuild)}`,
+          line,
+        }
+      }
+      const budgets = e.budgets
+      if (budgets === null || typeof budgets !== 'object' || Array.isArray(budgets)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.budgets must be an object',
+          detail: `got ${JSON.stringify(budgets)}`,
+          line,
+        }
+      }
+      const global = (budgets as Record<string, unknown>).global
+      if (global === null || typeof global !== 'object' || Array.isArray(global)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.budgets.global must be an object',
+          detail: `got ${JSON.stringify(global)}`,
+          line,
+        }
+      }
+      const g = global as Record<string, unknown>
+      if (
+        typeof g.softWarnAtRatio !== 'number' ||
+        !Number.isFinite(g.softWarnAtRatio) ||
+        g.softWarnAtRatio <= 0 ||
+        g.softWarnAtRatio >= 1
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.budgets.global.softWarnAtRatio must be a number in (0, 1)',
+          detail: `got ${JSON.stringify(g.softWarnAtRatio)}`,
+          line,
+        }
+      }
+      const budgetIssue =
+        nonNegativeInteger(
+          file,
+          g.maxReviewRounds,
+          'config_resolved.budgets.global.maxReviewRounds',
+          line,
+        ) ??
+        nonNegativeInteger(
+          file,
+          g.maxProviderCalls,
+          'config_resolved.budgets.global.maxProviderCalls',
+          line,
+        ) ??
+        nonNegativeInteger(
+          file,
+          g.maxTokensEstimate,
+          'config_resolved.budgets.global.maxTokensEstimate',
+          line,
+        ) ??
+        nonNegativeInteger(
+          file,
+          g.maxWallTimeMinutes,
+          'config_resolved.budgets.global.maxWallTimeMinutes',
+          line,
+        )
+      if (budgetIssue) return budgetIssue
+      break
+    }
 
     case 'phase_entered':
       if (!isPhase(e.phase)) {

@@ -115,6 +115,27 @@ const BUDGET_WARN: PhaseEvent = {
   limit: 100000,
 }
 
+const CONFIG_RESOLVED: PhaseEvent = {
+  version: 1,
+  type: 'config_resolved',
+  ts: TS,
+  runId: RUN_ID,
+  presetApplied: 'auto',
+  permissions: {
+    allowEscapeHatch: true,
+    requireApprovalForBuild: false,
+  },
+  budgets: {
+    global: {
+      softWarnAtRatio: 0.9,
+      maxReviewRounds: 4,
+      maxProviderCalls: 50,
+      maxTokensEstimate: 2_000_000,
+      maxWallTimeMinutes: 240,
+    },
+  },
+}
+
 describe('EVENT_TYPES', () => {
   test('includes the M6 additions', () => {
     expect(EVENT_TYPES).toContain('repo_context_searched')
@@ -126,9 +147,20 @@ describe('EVENT_TYPES', () => {
     expect(EVENT_TYPES).toContain('question_deferred')
     expect(EVENT_TYPES).toContain('budget_warning')
   })
+
+  test('includes config_resolved', () => {
+    expect(EVENT_TYPES).toContain('config_resolved')
+  })
 })
 
 describe('validateEvent — happy path', () => {
+  test('accepts config_resolved', () => {
+    expect(validateEvent(CONFIG_RESOLVED, 'events.jsonl')).toBeNull()
+    expect(
+      validateEvent({ ...CONFIG_RESOLVED, presetApplied: null }, 'events.jsonl'),
+    ).toBeNull()
+  })
+
   test('accepts repo_context_searched', () => {
     expect(validateEvent(REPO_CONTEXT_EVENT, 'events.jsonl')).toBeNull()
   })
@@ -156,6 +188,32 @@ describe('validateEvent — happy path', () => {
 })
 
 describe('validateEvent — rejections', () => {
+  test('rejects config_resolved with unknown presetApplied', () => {
+    const issue = validateEvent(
+      { ...CONFIG_RESOLVED, presetApplied: 'relaxed' as 'auto' },
+      'events.jsonl',
+    )
+    expect(issue).not.toBeNull()
+    expect(issue?.code).toBe('event_invalid_value')
+  })
+
+  test('rejects config_resolved with invalid softWarnAtRatio', () => {
+    const issue = validateEvent(
+      {
+        ...CONFIG_RESOLVED,
+        budgets: {
+          global: {
+            ...CONFIG_RESOLVED.budgets.global,
+            softWarnAtRatio: 1,
+          },
+        },
+      },
+      'events.jsonl',
+    )
+    expect(issue).not.toBeNull()
+    expect(issue?.rule).toContain('softWarnAtRatio')
+  })
+
   test('rejects repo_context_searched with bad tool', () => {
     const issue = validateEvent({ ...REPO_CONTEXT_EVENT, tool: 'web' as 'glob' }, 'events.jsonl')
     expect(issue).not.toBeNull()
@@ -215,13 +273,14 @@ describe('validateEvent — rejections', () => {
 })
 
 describe('appendEvent + readEvents round-trip', () => {
-  test('round-trips all M6 events through events.jsonl', async () => {
+  test('round-trips config_resolved plus M6 events through events.jsonl', async () => {
     await withRunDir(async (dir) => {
       const paths = {
         file: join(dir, 'events.jsonl'),
         lockDir: join(dir, '.lock'),
       }
       const events: PhaseEvent[] = [
+        CONFIG_RESOLVED,
         REPO_CONTEXT_EVENT,
         SCIENCE_EVENT,
         HYP_ADDED,
