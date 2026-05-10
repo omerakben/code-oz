@@ -200,6 +200,6 @@ This transcript is the R0 pre-implementation debate. The implementation that shi
 | R6 | `019e1436` | fix-first (metadata-recursion — stabilize round-count language) | 83ca862 |
 | R7 | `019e143d` | fix-first (3 residual hardcoded round-count sites missed by R6) | 19650a2 |
 | R8 | `019e1442` | fix-first (6 residual round-count sites in IMPLEMENTATION_PLAN.md) | 13d2206 |
-| next | (pending) | (target: push) | convergence verification |
+| **R9** | `019e1447` | **push** | convergence — shipped contract intact; no remaining stale round-count copy |
 
 After the convergence round the branch ships at 3116 tests pass / 0 fail / typecheck clean / `bun run eval:repo_context --strict` passes all three cases.
