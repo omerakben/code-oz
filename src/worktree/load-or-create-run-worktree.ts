@@ -11,10 +11,15 @@
 //     subdir present, prior `worktree_created` event in events.jsonl with
 //     matching baseCommitSha), return ok with `created: false`. No event
 //     re-emission — the audit trail must record creation exactly once.
-//   - On a complete-on-disk run with NO prior `worktree_created` event,
-//     refuse with `worktree_created_event_missing`. Re-emitting silently
-//     would blur the file-based-signal discipline (rule 1); the operator
-//     must confirm whether events.jsonl was lost or this dir is foreign.
+//   - On a complete-on-disk run with the latest `worktree_created` BEFORE
+//     the latest `worktree_destroyed` (or no `worktree_created` event at
+//     all), audit-recover by emitting a fresh `worktree_created` event
+//     and returning ok with `created: true`. Per R1 finding 3 (locked
+//     decision): the recreateAfterTaskBoundary path can crash AFTER
+//     `git worktree add` but BEFORE `appendEvent(worktree_created)`,
+//     leaving the dir on disk without an event. The prior shape's
+//     first-match `find` silently matched the pre-destroy event;
+//     recovery surfaces the truth and lets the run continue.
 //   - On any partial state (base.txt missing/malformed, worktree subdir
 //     missing, sha mismatch between event and base.txt), refuse with
 //     `worktree_partial_state` and a SPECIFIC detail naming the
@@ -59,10 +64,13 @@ import { writeNeedsInterventionGate, type GatePaths } from '../state/gates.ts'
 import { LockBusyError, withLock } from '../state/lock.ts'
 import {
   isKnownPhaseEvent,
+  type LoggedEvent,
   type NeedsInterventionGate,
   type Phase,
 } from '../state/schemas.ts'
 import type { RunPaths } from '../state/run.ts'
+
+type WorktreeCreatedEvent = Extract<LoggedEvent, { type: 'worktree_created' }>
 
 const SHA_REGEX = /^[0-9a-f]{40}$/
 
@@ -257,36 +265,83 @@ async function classifyExisting(
   }
 
   const events = await readEvents(eventPathsFor(opts.runPaths))
-  const priorCreated = events
-    .filter(isKnownPhaseEvent)
-    .find((e) => e.type === 'worktree_created')
+  // R1 finding 3 — audit completeness for crash-during-recreate.
+  // Walk for the LATEST `worktree_created` and the LATEST
+  // `worktree_destroyed` for this runId. Three buckets:
+  //
+  //   A. latest_created exists AND (no destroy OR latest_created >
+  //      latest_destroyed): the existing happy idempotent-reload path.
+  //   B. subdir is present but the latest `worktree_created` is BEFORE
+  //      the latest `worktree_destroyed` (i.e., a destroy happened and
+  //      the recreate event was lost — `git worktree add` succeeded
+  //      but appendEvent crashed). Audit-completeness recovery: emit
+  //      a fresh `worktree_created` event so events.jsonl matches
+  //      reality, then proceed to the sha-equality check via the
+  //      next call into the wrapper.
+  //   C. no `worktree_created` event ever exists. Per locked R1
+  //      decision (Codex finding 3, third bullet): also recovery —
+  //      silently treating the dir as foreign was the prior behavior
+  //      and is too brittle when the audit log was truncated/lost
+  //      between sessions. Recovery emits a fresh event and proceeds.
+  //
+  // The prior shape used a first-match `find` which would silently
+  // match the ORIGINAL pre-destroy worktree_created in bucket B,
+  // letting events.jsonl claim "destroyed-then-never-recreated" while
+  // a real worktree sat on disk.
+  let latestCreatedIdx = -1
+  let latestCreated: WorktreeCreatedEvent | undefined
+  let latestDestroyedIdx = -1
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.runId !== opts.runId) continue
+    if (e.type === 'worktree_created') {
+      if (i > latestCreatedIdx) {
+        latestCreatedIdx = i
+        latestCreated = e as WorktreeCreatedEvent
+      }
+    } else if (e.type === 'worktree_destroyed') {
+      if (i > latestDestroyedIdx) latestDestroyedIdx = i
+    }
+  }
 
-  if (priorCreated === undefined) {
-    return await refuseWithIntervention(opts, now, {
-      code: 'worktree_created_event_missing',
-      rule: `worktree dir + base.txt present but no prior worktree_created event in events.jsonl for run ${opts.runId}`,
-      detail: `worktree at ${wtPaths.worktree}, base.txt sha ${onDiskSha}; events.jsonl has no record of creation`,
+  const matchedAfterDestroy =
+    latestCreatedIdx !== -1 && latestCreatedIdx > latestDestroyedIdx
+  if (matchedAfterDestroy && latestCreated !== undefined) {
+    if (latestCreated.baseCommitSha !== onDiskSha) {
+      return await refuseWithIntervention(opts, now, {
+        code: 'worktree_partial_state',
+        rule: `prior worktree_created.baseCommitSha (${latestCreated.baseCommitSha}) does not match on-disk base.txt sha (${onDiskSha}) for run ${opts.runId}`,
+        detail: `events.jsonl asserts ${latestCreated.baseCommitSha}; ${wtPaths.baseFile} contains ${onDiskSha}`,
+      })
+    }
+    return Object.freeze({
+      status: 'ok' as const,
+      created: false,
+      baseCommitSha: onDiskSha,
+      worktreePath: wtPaths.worktree,
+      paths: wtPaths,
     })
   }
 
-  if (priorCreated.type !== 'worktree_created') {
-    // Unreachable: the .find predicate already constrained type. This branch
-    // exists for the type narrower; keep the throw so a future refactor can't
-    // accidentally widen the predicate without surfacing the contract break.
-    throw new Error('loadOrCreateRunWorktree: priorCreated type narrowing bug')
-  }
-
-  if (priorCreated.baseCommitSha !== onDiskSha) {
-    return await refuseWithIntervention(opts, now, {
-      code: 'worktree_partial_state',
-      rule: `prior worktree_created.baseCommitSha (${priorCreated.baseCommitSha}) does not match on-disk base.txt sha (${onDiskSha}) for run ${opts.runId}`,
-      detail: `events.jsonl asserts ${priorCreated.baseCommitSha}; ${wtPaths.baseFile} contains ${onDiskSha}`,
-    })
-  }
-
+  // Recovery branch (bucket B + bucket C). Emit an audit-completeness
+  // `worktree_created` event so the on-disk reality is durable in
+  // events.jsonl. The new event re-uses the on-disk base.txt sha; the
+  // sha-equality check on the next call into the wrapper will then
+  // succeed (matchedAfterDestroy → ok).
+  await appendEvent(eventPathsFor(opts.runPaths), {
+    version: 1,
+    type: 'worktree_created',
+    ts: now(),
+    runId: opts.runId,
+    phase: opts.phase,
+    baseCommitSha: onDiskSha,
+    worktreePath: wtPaths.worktree,
+    dirtyTreePolicy: 'clean-base',
+  })
   return Object.freeze({
     status: 'ok' as const,
-    created: false,
+    created: true,
     baseCommitSha: onDiskSha,
     worktreePath: wtPaths.worktree,
     paths: wtPaths,

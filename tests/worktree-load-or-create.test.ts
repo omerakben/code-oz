@@ -285,10 +285,25 @@ describe('loadOrCreateRunWorktree — partial state: sha mismatch event vs base.
   })
 })
 
-// ---- Case 3: complete on disk but no prior worktree_created event -
+// ---- R1 finding 3: audit-completeness recovery -------------------
+//
+// The prior shape refused (worktree_created_event_missing) when subdir
+// + base.txt were present without a corresponding event, and used a
+// first-match `find` for the worktree_created event lookup. Both
+// behaviours are wrong when `recreateAfterTaskBoundary`'s git worktree
+// add succeeded but its subsequent appendEvent crashed: the next call
+// would silently match the pre-destroy event and proceed with the
+// audit log saying "destroyed-then-never-recreated."
+//
+// Per locked R1 decision: the wrapper recovers by emitting a fresh
+// `worktree_created` event so events.jsonl matches reality, then
+// proceeds. Three matrix points are covered:
+//   - subdir + post-destroy worktree_created   → matches (case 2 path)
+//   - subdir + only pre-destroy worktree_created → recovery
+//   - subdir + no worktree_created event ever  → recovery
 
-describe('loadOrCreateRunWorktree — worktree_created event missing', () => {
-  test('returns worktree_created_event_missing; writes NEEDS_INTERVENTION.json', async () => {
+describe('loadOrCreateRunWorktree — audit-completeness recovery (R1 finding 3)', () => {
+  test('subdir + no prior worktree_created event → emit a fresh event and proceed', async () => {
     // Bypass the wrapper: createRunWorktree directly so the events.jsonl
     // never gets a worktree_created entry.
     const direct = await createRunWorktree({ cwd: projectRoot, runId: RUN })
@@ -296,22 +311,73 @@ describe('loadOrCreateRunWorktree — worktree_created event missing', () => {
     if (!direct.ok) return
 
     const result = await callWrapper()
-    expect(result.status).toBe('intervention')
-    if (result.status !== 'intervention') return
-    expect(result.code).toBe('worktree_created_event_missing')
-    expect(result.rule).toContain('no prior worktree_created event')
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    // Recovery branch — created: true (a fresh event was appended),
+    // baseCommitSha matches base.txt.
+    expect(result.created).toBe(true)
+    expect(result.baseCommitSha).toMatch(/^[0-9a-f]{40}$/)
 
-    expect(existsSync(NEEDS_INTERVENTION_FILE(stateRunPaths))).toBe(true)
-    const interventions = await readInterventionEvents()
-    expect(interventions).toHaveLength(1)
-    if (interventions[0]?.type !== 'intervention') return
-    expect(interventions[0].code).toBe('worktree_created_event_missing')
+    // No NEEDS_INTERVENTION.json on the recovery path.
+    expect(existsSync(NEEDS_INTERVENTION_FILE(stateRunPaths))).toBe(false)
 
-    // The on-disk run is still intact — wrapper must not auto-clean
-    // operator data.
+    // Exactly one fresh worktree_created event written by the wrapper.
+    const created = await readWorktreeCreatedEvents()
+    expect(created).toHaveLength(1)
+
+    // The on-disk run is still intact.
     expect(existsSync(direct.paths.run)).toBe(true)
     expect(existsSync(direct.paths.worktree)).toBe(true)
     expect(existsSync(direct.paths.baseFile)).toBe(true)
+
+    // A subsequent call takes the idempotent-reload path (sha matches).
+    const second = await callWrapper()
+    expect(second.status).toBe('ok')
+    if (second.status !== 'ok') return
+    expect(second.created).toBe(false)
+    const createdAfter = await readWorktreeCreatedEvents()
+    expect(createdAfter).toHaveLength(1)
+  })
+
+  // Crash-during-recreate window: the worktree_destroyed event is the
+  // most recent, but the worktree subdir IS present (because git
+  // worktree add succeeded before the appendEvent crash). The prior
+  // shape's first-match `find` would match the ORIGINAL pre-destroy
+  // worktree_created and proceed silently with the audit log saying
+  // destroyed-then-never-recreated.
+  test('subdir + only pre-destroy worktree_created → recovery branch fires', async () => {
+    const first = await callWrapper()
+    expect(first.status).toBe('ok')
+    if (first.status !== 'ok') return
+
+    // Simulate a destroy — append the event but leave subdir intact
+    // (we want to assert the SUBDIR + LATEST_DESTROYED case, NOT the
+    // case-5 missing-subdir path).
+    const { appendEvent } = await import('../src/state/events.ts')
+    await appendEvent(
+      { file: stateRunPaths.eventsFile, lockDir: stateRunPaths.lockDir },
+      {
+        version: 1,
+        type: 'worktree_destroyed',
+        ts: FIXED_NOW,
+        runId: RUN,
+        phase: 'review',
+        attempt: 1,
+        worktreePath: first.paths.worktree,
+      },
+    )
+    // Now a recreate would normally follow; simulate the crash by
+    // NOT appending a follow-up worktree_created.
+
+    const second = await callWrapper()
+    expect(second.status).toBe('ok')
+    if (second.status !== 'ok') return
+    expect(second.created).toBe(true) // recovery emitted a fresh event
+    expect(second.baseCommitSha).toBe(first.baseCommitSha)
+
+    // events.jsonl now has TWO worktree_created (initial + recovery).
+    const created = await readWorktreeCreatedEvents()
+    expect(created).toHaveLength(2)
   })
 })
 
