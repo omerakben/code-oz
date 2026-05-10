@@ -5,6 +5,8 @@ canonical contract — section schema, validation rules, draft-vs-canonical
 discipline, ready-token grammar — lives in
 [`docs/references/spec-contract.md`](../references/spec-contract.md).
 
+*Gate philosophy: Reversed Conversation (see [`docs/product/AI_SOFTWARE_COMPANY_THESIS.md`](../product/AI_SOFTWARE_COMPANY_THESIS.md)).*
+
 ## What SPEC.md is
 
 The output of the DEFINE phase. A plain Markdown document at
