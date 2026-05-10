@@ -111,6 +111,10 @@ const DEDUP_KEY_KNOWN_PLACEHOLDERS = new Set<string>([
 const DEDUP_KEY_PLACEHOLDER_RE = /\{([^}]+)\}/g
 /** Cap substituted field values inside a dedup key to keep event keys bounded. */
 const DEDUP_KEY_FIELD_VALUE_MAX = 128
+/** Cap raw dedupKey template length at parse time. */
+const DEDUP_KEY_TEMPLATE_MAX = 256
+/** Hard cap on the final expanded dedup key length. */
+const DEDUP_KEY_EXPANDED_MAX = 512
 
 const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'name',
@@ -425,6 +429,13 @@ export function parseGuardrailRule(
   if (dedupKeyRaw !== undefined) {
     if (typeof dedupKeyRaw !== 'string') {
       pushIssue(issues, file, 'guardrail_invalid_dedup_template', 'dedupKey must be a string')
+    } else if (dedupKeyRaw.length > DEDUP_KEY_TEMPLATE_MAX) {
+      pushIssue(
+        issues,
+        file,
+        'guardrail_invalid_dedup_template',
+        `dedupKey template length must be ≤ ${DEDUP_KEY_TEMPLATE_MAX}`,
+      )
     } else {
       dedupKey = dedupKeyRaw
       // Validate placeholders. Unknown placeholders are warn-class per
@@ -487,7 +498,12 @@ export function parseGuardrailRule(
     for (let i = 0; i < conditionsRaw.length; i++) {
       const raw = conditionsRaw[i]
       if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-        pushIssue(issues, file, 'guardrail_invalid_action', `conditions[${i}] must be an object`)
+        pushIssue(
+          issues,
+          file,
+          'guardrail_invalid_condition_shape',
+          `conditions[${i}] must be an object with field/operator/value`,
+        )
         continue
       }
       const c = raw as Record<string, unknown>
@@ -762,10 +778,17 @@ function expandDedupKey(
     s.length <= DEDUP_KEY_FIELD_VALUE_MAX
       ? s
       : `${s.slice(0, DEDUP_KEY_FIELD_VALUE_MAX)}…(+${s.length - DEDUP_KEY_FIELD_VALUE_MAX})`
-  return template.replace(/\{rule\.name\}/g, ruleName).replace(
-    /\{(file_path|new_content|command|prompt|tool_input)\}/g,
-    (_, key: GuardrailField) => truncate(fields[key] ?? ''),
-  )
+  const expanded = template
+    .replace(/\{rule\.name\}/g, ruleName)
+    .replace(/\{(file_path|new_content|command|prompt|tool_input)\}/g, (_, key: GuardrailField) =>
+      truncate(fields[key] ?? ''),
+    )
+  // Hard cap on the final expanded key. The per-field truncation above
+  // bounds normal inputs; this final cap is defense in depth against
+  // pathological templates that compose many fields.
+  return expanded.length <= DEDUP_KEY_EXPANDED_MAX
+    ? expanded
+    : `${expanded.slice(0, DEDUP_KEY_EXPANDED_MAX)}…(+${expanded.length - DEDUP_KEY_EXPANDED_MAX})`
 }
 
 function normalizeNewlines(s: string): string {

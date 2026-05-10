@@ -123,30 +123,31 @@ matches every tool. Specifying `tool:` for a `UserPromptSubmit` /
 `Stop` / `SubagentStop` rule is a parse-time error
 (`guardrail_tool_not_allowed_for_event`).
 
-### Operator semantics
+### Operator semantics (v0.1)
 
 | Operator | Semantics | Notes |
 |---|---|---|
-| `equals` | Exact string equality after normalization | Newline-normalized |
-| `contains` | Substring match after normalization | Newline-normalized |
-| `prefix` | Input starts with `value` | |
-| `suffix` | Input ends with `value` | |
-| `glob` | POSIX-style glob match | Anchored; uses `bun-supported` glob library or hand-rolled equivalent |
-| `regex` | RegExp match with timeout cap | Requires `maxLength` |
+| `equals` | Exact string equality after newline normalization | CRLF in input is normalized to LF before comparing |
+| `contains` | Substring match after newline normalization | CRLF in input is normalized to LF before comparing |
+| `prefix` | Input starts with `value` (newline-normalized) | |
+| `suffix` | Input ends with `value` (newline-normalized) | |
+| `glob` | POSIX-ish glob match, anchored at both ends | Pattern length ≤ 256; `**/` zero-depth supported; consecutive `**/` normalized |
 
 Operator preference order, lowest cost first: `equals`, `contains`,
-`prefix`, `suffix`, `glob`, `regex`. The matcher does not rewrite rules,
-but the validator emits `guardrail_regex_advisable_substring` when a
-regex pattern reduces cleanly to a substring.
+`prefix`, `suffix`, `glob`. v0.1 ships these five deterministic
+operators only.
 
-### Regex constraints
+### Regex operator deferred to v0.2
 
-- `maxLength` is required and must be ≤ 65,536. Inputs longer than
-  `maxLength` are not matched (no truncation, no false positives).
-- Per-match wall-time cap: 50 ms. A timeout produces a
-  `guardrail_match_timeout` event and the rule does not fire.
-- The regex is compiled once at run start; compile errors are
-  parse-time failures.
+The `regex` operator is rejected at parse time in v0.1 with code
+`guardrail_operator_deferred`. JavaScript's synchronous `RegExp.test`
+cannot be interrupted by a wall-time timeout, so any documented
+millisecond cap on regex matching would be decorative. v0.2 reintroduces
+the operator with a worker-bounded evaluator that can actually enforce
+the cap. The `maxLength` condition field, `guardrail_regex_compile_error`,
+`guardrail_regex_missing_max_length`, `guardrail_regex_max_length_too_large`,
+and `guardrail_match_timeout` event are not part of v0.1; they return
+when v0.2 lands.
 
 ### Scope semantics
 
@@ -232,9 +233,12 @@ priority order.
 | `guardrail_evaluated` | `eventName, rulesConsidered, durationMs` | Every guarded event, regardless of match |
 | `guardrail_warned` | `ruleName, conditionsMatched, dedupKey?, message` | A warn-action rule matched and was not deduped |
 | `guardrail_blocked` | `ruleName, conditionsMatched, message, interventionPath` | A block-action rule matched |
-| `guardrail_skipped_dedup` | `ruleName, dedupKey, hitCount` | A rule matched but the dedup ledger silenced it |
-| `guardrail_match_timeout` | `ruleName, operator, durationMs, maxMs` | A regex evaluation hit the per-match timeout |
+| `guardrail_skipped_dedup` | `ruleName, dedupKey, hitCount` | A warn rule matched but the dedup ledger silenced it |
+| `guardrail_matcher_error_caught` | `ruleName, ruleAction, detail` | A matcher exception was caught and the rule was treated as fail-closed block |
 | `guardrail_parse_error` | `ruleFile, code, detail` | Run-start parse rejected a rule file |
+
+The `guardrail_match_timeout` event is reserved for v0.2 alongside the
+regex operator and is not part of v0.1.
 
 These events are append-only; the dedup ledger is the projection of
 `guardrail_warned` + `guardrail_skipped_dedup` events grouped by
@@ -252,8 +256,6 @@ before the next run, which is itself recorded at run start as
   parse logs a `guardrail_parse_error` event and the run proceeds with
   that rule disabled. Operator visibility comes from the event log,
   not from a fatal exit.
-- **Fail-open on regex timeout.** The rule does not fire; the event log
-  records the timeout for operator review.
 - **Fail-closed on a matcher exception** (any error not classified
   above). The decision becomes `block` with reason `matcher_error`,
   which surfaces as `NEEDS_INTERVENTION.json`.
@@ -265,18 +267,23 @@ on first parse if any issue is `block`-class:
 
 | Code | Severity | Rule |
 |---|---|---|
-| `guardrail_unknown_frontmatter_key` | block | unknown YAML key in frontmatter |
-| `guardrail_missing_required_field` | block | required field absent |
-| `guardrail_field_not_allowed_for_event` | block | field name disallowed for event |
-| `guardrail_tool_not_allowed_for_event` | block | tool field on event-only rule |
+| `guardrail_frontmatter_missing` | block | rule file must begin with a YAML frontmatter block |
+| `guardrail_unknown_frontmatter_key` | block | unknown YAML key in frontmatter (also raised when `maxLength` appears on a condition; that field is regex-tier and deferred to v0.2) |
+| `guardrail_missing_required_field` | block | required field absent (name, event, scope, conditions on non-Stop events, condition.value) |
+| `guardrail_field_not_allowed_for_event` | block | condition.field name disallowed for event |
+| `guardrail_tool_not_allowed_for_event` | block | tool field on event-only rule (Stop / SubagentStop) |
 | `guardrail_invalid_operator` | block | operator name not in enum |
 | `guardrail_invalid_event` | block | event name not in enum |
-| `guardrail_invalid_action` | block | action not warn or block |
+| `guardrail_invalid_action` | block | action not warn or block (also raised on malformed `conditions[i]` shape) |
 | `guardrail_invalid_scope` | block | scope not runtime-tool-call or artifact-authoring |
-| `guardrail_regex_missing_max_length` | block | regex operator without maxLength |
-| `guardrail_regex_max_length_too_large` | block | maxLength > 65536 |
-| `guardrail_regex_compile_error` | block | regex source invalid |
-| `guardrail_duplicate_name` | block | two rules share `name` |
+| `guardrail_invalid_enabled` | block | enabled not a boolean |
+| `guardrail_invalid_tool` | block | tool not in enum |
+| `guardrail_invalid_max_matches_per_run` | block | maxMatchesPerRun not a positive integer |
+| `guardrail_invalid_dedup_template` | block | dedupKey not a string |
+| `guardrail_operator_deferred` | block | regex operator (or any operator deferred to a later v0.x) used in v0.1 |
+| `guardrail_glob_pattern_too_long` | block | glob pattern length > 256 |
+| `guardrail_dedup_on_block_disallowed` | block | dedupKey set on `action: block` (would silently downgrade to allow) |
+| `guardrail_duplicate_name` | block | two rules share `name` (raised in `compileRuleSet`) |
 | `guardrail_priority_out_of_range` | warn | priority outside [0, 1000] |
 | `guardrail_dedup_template_invalid` | warn | dedupKey template references unknown placeholder |
 

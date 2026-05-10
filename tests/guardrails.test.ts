@@ -219,6 +219,52 @@ conditions:
     }
   })
 
+  test('rejects malformed condition shape with distinct code', () => {
+    const text = `---
+name: bad-cond-shape
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - "not an object"
+---
+`
+    try {
+      parseGuardrailRule(text)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as GuardrailParseError
+      expect(
+        e.issues.some((i) => i.code === 'guardrail_invalid_condition_shape'),
+      ).toBe(true)
+    }
+  })
+
+  test('rejects dedupKey template over the length cap', () => {
+    const longTemplate = '{rule.name}:' + 'x'.repeat(300)
+    const text = `---
+name: long-template
+event: PreToolUse
+scope: runtime-tool-call
+dedupKey: '${longTemplate}'
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+`
+    try {
+      parseGuardrailRule(text)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as GuardrailParseError
+      expect(
+        e.issues.some(
+          (i) => i.code === 'guardrail_invalid_dedup_template' && i.rule.includes('length'),
+        ),
+      ).toBe(true)
+    }
+  })
+
   test('rejects glob pattern over the length cap', () => {
     const longPattern = 'a/'.repeat(200) + '*'
     const text = `---
