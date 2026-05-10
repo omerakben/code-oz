@@ -29,9 +29,9 @@ interface AgentPermissions {
 }
 ```
 
-- The `tool_use.repo_context` sub-scope is the **only** `tool_use` sub-scope in v0.1. Adding `tool_use.web_search` or similar is W3+.
+- `tool_use.repo_context` was the first `tool_use` sub-scope (M6). Sibling sub-scopes shipped in later milestones — `tool_use.write` (M7 BUILD patches), `tool_use.execute` (M8 VERIFY commands), `tool_use.review_request` (REVIEW persona), `tool_use.debate` (M10) — and follow the same intersect-and-audit discipline.
 - `network` is fixed at `'none'` in v0.1. Remote tools are W3+.
-- `symbol` is optional in M6 (LSP integration deferred to W3 if data justifies).
+- `'symbol'` is RESERVED and not permissionable in v0.x — see § "`symbol` (RESERVED — not permissionable in v0.x)" and § "Reservation and reopen-the-slot signal" below for the locked rejection path and the 4-condition AND telemetry signal that would reopen the slot.
 
 ## Locked default caps
 

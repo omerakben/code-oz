@@ -24,10 +24,22 @@ interface CaseEntry {
   readonly setup: import('../tests/evaluation/repo-context/harness.ts').CaseSetup
   /** Inline thresholds — kept in sync with the bun-test wrapper. */
   readonly thresholds: {
-    readonly minRecall: number
+    /**
+     * Recall floor on the encounter-ordered top-k window. Skip (set
+     * undefined) for cases where recall depends on rg's filesystem
+     * traversal order — those cases use `precisionPathPrefix` instead.
+     */
+    readonly minRecall?: number
     readonly maxToolCalls?: number
     readonly maxTotalBytes?: number
     readonly mustNotTruncate?: boolean
+    readonly mustTruncate?: boolean
+    /**
+     * If set, every returned path must start with this prefix. Used in
+     * case-03 to assert "no decoys leaked through truncation" without
+     * depending on rg's traversal order.
+     */
+    readonly precisionPathPrefix?: string
   }
 }
 
@@ -45,7 +57,18 @@ const CASES: readonly CaseEntry[] = Object.freeze([
   {
     name: 'case-03-budget-pressure',
     setup: CASE_03_BUDGET_PRESSURE,
-    thresholds: { minRecall: 0.8, maxTotalBytes: 1_500_000, maxToolCalls: 13 },
+    // case-03 asserts truncation + envelope + precision-under-truncation
+    // (no decoy paths leak through). Recall is intentionally NOT a
+    // threshold here because it depends on rg's filesystem traversal
+    // order. Precision is the regression-detection signal: a tool change
+    // that accidentally returns decoys after cap saturation must fail.
+    // Kept in sync with tests/evaluation/repo-context/runner.test.ts.
+    thresholds: {
+      maxTotalBytes: 150_000,
+      maxToolCalls: 1,
+      mustTruncate: true,
+      precisionPathPrefix: 'src/match/',
+    },
   },
 ])
 
@@ -75,12 +98,25 @@ async function main(): Promise<void> {
     }
     const r = await runEvalCase(c.name, c.setup)
     const failures: string[] = []
-    if (r.metrics.recallAtK < c.thresholds.minRecall) {
+    if (
+      c.thresholds.minRecall !== undefined &&
+      r.metrics.recallAtK < c.thresholds.minRecall
+    ) {
       failures.push(
         `recallAtK ${r.metrics.recallAtK.toFixed(3)} < threshold ${c.thresholds.minRecall.toFixed(
           3,
         )}`,
       )
+    }
+    if (c.thresholds.precisionPathPrefix !== undefined) {
+      const offenders = r.metrics.orderedReturnedPaths.filter(
+        (p) => !p.startsWith(c.thresholds.precisionPathPrefix!),
+      )
+      if (offenders.length > 0) {
+        failures.push(
+          `precision violation: ${offenders.length} returned paths outside prefix '${c.thresholds.precisionPathPrefix}': ${offenders.slice(0, 3).join(', ')}${offenders.length > 3 ? '...' : ''}`,
+        )
+      }
     }
     if (
       c.thresholds.maxToolCalls !== undefined &&
@@ -100,6 +136,9 @@ async function main(): Promise<void> {
     }
     if (c.thresholds.mustNotTruncate === true && r.metrics.anyTruncated) {
       failures.push('anyTruncated=true (mustNotTruncate)')
+    }
+    if (c.thresholds.mustTruncate === true && !r.metrics.anyTruncated) {
+      failures.push('anyTruncated=false (mustTruncate — fixture not exercising cap)')
     }
     findings.push({
       case: c.name,

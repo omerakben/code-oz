@@ -63,13 +63,21 @@ export interface CaseMetrics {
   readonly totalResultBytes: number
   /** Sum of `resultTokensEstimate` across all events. */
   readonly totalResultTokensEstimate: number
-  /** Distinct paths returned across all calls (the recall numerator
-   *  ground truth before manifest promotion). */
-  readonly distinctReturnedPaths: readonly string[]
   /**
-   * recall@k where k = expectedPaths.length. The intersection of
-   * distinctReturnedPaths with expectedPaths divided by expectedPaths.length.
-   * 1.0 means every expected path was returned by some call.
+   * Distinct paths returned across all calls in event-encounter order
+   * (deduplicated, but ordering preserved across events). The first
+   * `k = expectedPaths.length` entries of this array form the top-k
+   * window used for `recallAtK`.
+   */
+  readonly orderedReturnedPaths: readonly string[]
+  /**
+   * recall@k where k = expectedPaths.length. Computed by slicing the
+   * encounter-ordered returned-path stream to its first k entries and
+   * counting how many of those are in the expected set. 1.0 means every
+   * expected path appeared inside the first k distinct returned paths.
+   * A query that returns 50 files including the expected 4 outside the
+   * first k will score below 1.0 — exactly the regression we want the
+   * harness to catch.
    */
   readonly recallAtK: number
   /** Whether any call truncated against `maxResults`. */
@@ -174,7 +182,12 @@ export async function runEvalCase(
   const events = await readEvents({ file: eventsFile, lockDir })
   const searchEvents = events.filter((e) => e.type === 'repo_context_searched')
 
-  const distinctReturnedPaths = new Set<string>()
+  // Preserve event-order encounter of result paths so recall@k is a true
+  // top-k metric (Codex R1 finding 2): a noisy query that returns 50 files
+  // including the expected 4 must NOT score recall@4 = 1.0 — only the
+  // first 4 distinct paths in encounter order count.
+  const orderedReturnedPaths: string[] = []
+  const seen = new Set<string>()
   let totalResultBytes = 0
   let totalResultTokensEstimate = 0
   let maxSelectedPathCount = 0
@@ -186,7 +199,12 @@ export async function runEvalCase(
       resultTokensEstimate: number
       selectedPaths: readonly string[]
     }
-    for (const p of evx.resultPaths) distinctReturnedPaths.add(p)
+    for (const p of evx.resultPaths) {
+      if (!seen.has(p)) {
+        seen.add(p)
+        orderedReturnedPaths.push(p)
+      }
+    }
     totalResultBytes += evx.resultBytes
     totalResultTokensEstimate += evx.resultTokensEstimate
     if (evx.selectedPaths.length > maxSelectedPathCount) {
@@ -194,12 +212,18 @@ export async function runEvalCase(
     }
   }
 
+  // recall@k where k = expectedPaths.length: the hit rate of the expected
+  // set restricted to the first k distinct returned paths in encounter
+  // order. If the harness returns expected paths after k in order, the
+  // metric drops below 1.0 — which is the desired behavior.
   const expectedSet = new Set(setup.expectedPaths)
+  const k = expectedSet.size
+  const topK = orderedReturnedPaths.slice(0, k)
   let hits = 0
-  for (const p of distinctReturnedPaths) {
+  for (const p of topK) {
     if (expectedSet.has(p)) hits += 1
   }
-  const recallAtK = expectedSet.size === 0 ? 1.0 : hits / expectedSet.size
+  const recallAtK = k === 0 ? 1.0 : hits / k
 
   const anyTruncated = results.some((r) =>
     r.tool === 'glob' || r.tool === 'grep' ? r.truncated : false,
@@ -211,7 +235,10 @@ export async function runEvalCase(
       toolCallCount: searchEvents.length,
       totalResultBytes,
       totalResultTokensEstimate,
-      distinctReturnedPaths: Object.freeze([...distinctReturnedPaths].sort()),
+      // Encounter-order preserved (first event's paths first, then later
+      // events' new paths). Critical to recall@k correctness — see the
+      // top-k slice above.
+      orderedReturnedPaths: Object.freeze([...orderedReturnedPaths]),
       recallAtK,
       anyTruncated,
       maxSelectedPathCount,
@@ -228,7 +255,8 @@ export function caseResultToJson(r: CaseResult): unknown {
       toolCallCount: r.metrics.toolCallCount,
       totalResultBytes: r.metrics.totalResultBytes,
       totalResultTokensEstimate: r.metrics.totalResultTokensEstimate,
-      distinctReturnedPathCount: r.metrics.distinctReturnedPaths.length,
+      orderedReturnedPathCount: r.metrics.orderedReturnedPaths.length,
+      orderedReturnedPaths: r.metrics.orderedReturnedPaths,
       recallAtK: r.metrics.recallAtK,
       anyTruncated: r.metrics.anyTruncated,
       maxSelectedPathCount: r.metrics.maxSelectedPathCount,

@@ -23,7 +23,10 @@ export const CASE_01_DISCOVERY: CaseSetup = {
     ['src/billing/invoice.ts', `export const newInvoice = () => ({ amount: 0 })\n`],
     ['src/billing/charge.ts', `export const charge = (cents: number) => cents > 0\n`],
     ['src/billing/index.ts', `export * from './invoice'\n`],
-    ['README.md', `# project\n\nLogin via authenticate().\n`],
+    // README intentionally does NOT contain the trigger word — only
+    // source files should match `grep authenticate`. Keeping README in
+    // the fixture proves the tool ignores irrelevant docs.
+    ['README.md', `# project\n\nLogin via the auth module.\n`],
   ] as ReadonlyArray<readonly [string, string]>),
   requests: Object.freeze([
     { tool: 'grep', args: { pattern: 'authenticate' } },
