@@ -164,10 +164,12 @@ After C13:
 
 ## Closure
 
-- **Closure date:** 2026-05-09
-- **HEAD commit at closure:** `08f4d45` (`test(e2e): multi-task BUILD/VERIFY/REVIEW cycle via CLI binary spawn (M16 C12)`) plus the C13 docs commit on top.
-- **Test count:** 3088 pass / 0 fail / 1 skip (baseline 2706 → +382 tests).
+- **Closure date:** 2026-05-09 (R1 fix-first → re-review pending)
+- **HEAD commit at C13 closure:** `9384522` (`docs: close M16 — production CLI completion (M16 C13)`).
+- **HEAD commit after R1 fix-first:** see commit log on `feat/m16-cli-completion` (R1 1/6 through R1 6/6 commits land on top of `9384522`).
+- **Test count:** 3088 → 3108 pass / 0 fail / 1 skip post-R1 fix-first (+20 tests across the six R1 commits, mostly unit tests for new helpers + the new verify-fail e2e).
 - **C12 e2e runtime:** ~2.4s (binary-spawn multi-task fixture, three tasks, full BUILD/VERIFY/REVIEW per task).
+- **R1 verify-fail e2e runtime:** ~1.7s (one-task fixture, BUILD a1 + VERIFY a1 fail + BUILD a2 + VERIFY a2 pass + REVIEW + ship).
 - **C9 follow-on commits (1-7):** seven unplanned fixes closing 8 production bugs surfaced only by the C12 e2e:
   - `c262efd` — C9 follow-on 1: cursor-aware ship transition + gate-file task-boundary lifecycle.
   - `5d21d9b` — C9 follow-on 2: phase_entered(build) emission on task boundary in approve-review.
@@ -176,7 +178,13 @@ After C13:
   - `e041c48` — C9 follow-on 5: `phase_entered(build)` emission on attempt-boundary pre-routes.
   - `0ac0f82` — C9 follow-on 6: `resolveNextReviewRound` walks across attempts (not just within the active attempt).
   - `c401dc7` — C9 follow-on 7: emit `task_review_passed` in `dispatchReview` (cursor projection sees the event).
-- **Bug count:** 8 production bugs caught by the C12 e2e (Bugs 1, 2, 3, 4, 6, 7, 9, 10). All bugs sat in C9's "task-loop dispatch" surface — coupling between `approveReviewTaskGate` and adjacent state-machine helpers (`completeIncompleteTransitions`, `completeTransitionForPhase`, `requireGate`, `recoverOrphanGates`, `validateRunIntegrity`, `clearStaleGateFile`, `resolveNextReviewRound`, `dispatchReview`'s `task_review_passed` emission). Per-commit Codex pre-design caught contract intent but missed implementation drift; only the milestone-level e2e exposed coupling. Empirical case for CLAUDE.md rule 19 (integration tests are non-negotiable). Implications for M17 retro: rule 20 (one authority per milestone) needs sharper application — C9 bundled six sub-surfaces under "task-loop dispatch" and the breadth let coupling bugs through.
-- **Bug 8 / Bug 11:** addressed via C12 fixture-side workaround (per-phase budget overrides). M17 should consider a proper fix: default `verify.maxProviderCalls=5` from `src/config/schema.ts:301` does not scale to multi-task PLANs; per-task budget scaling or higher defaults for multi-task workflows is the candidate solution.
+- **R1 fix-first commits (1-6):** six commits closing Codex's R1 verdict (4 block-push + 1 fix-soon + doc updates):
+  - R1 1/6 — `(taskId, attempt)`-scoped crash window + `task_started` idempotency (findings 1 + 5). New helpers `findLatestVerifyCompletedIndex` / `hasGateRequiredAfterIndex` / `isVerifyCrashWindow` in `dispatch-verify-helpers.ts`; `hasTaskStartedFor` in `dispatch-build-helpers.ts`.
+  - R1 2/6 — `loadOrCreateRunWorktree` self-lock at `.worktree.lock` (finding 2). Closes the Codex C4 R1 caveat without violating C4 Mod #2 (dispatcher does NOT hold phase lock; runtime self-locks).
+  - R1 3/6 — Audit-completeness recovery for crash-during-recreate (finding 3). Replaces first-match `find` with latest-created-vs-latest-destroyed walk; emits a fresh `worktree_created` event when subdir is present without a post-destroy event.
+  - R1 4/6 — Multi-task-friendly default per-phase budgets (finding 4). Closes the Bug 8/11 deferred-to-M17 gap above. New defaults: build/review 60/30/1.5M, verify 30/30/600k.
+  - R1 5/6 — VERIFY-fail restart e2e through the binary. Surfaced + closed a sixth uncaught bug not on Codex's list: verify-fail restart had no worktree recreation pattern. Added `isPostVerifyFailRecreation` alongside `isPostTaskCompletedRecreation`.
+  - R1 6/6 — Doc updates (this section + ROADMAP + cli `--help` clarifying SHIP runtime is M17).
+- **Bug count:** 8 production bugs caught by the C12 e2e (Bugs 1, 2, 3, 4, 6, 7, 9, 10), 5 R1 findings flagged by Codex (block-push 1 + 2 + 3 + 4, fix-soon 5), and 1 sixth bug discovered by the R1 verify-fail e2e (verify-fail restart had no worktree recreation pattern; not on Codex's list). All bugs sat in C9's "task-loop dispatch" surface or its adjacent worktree-wrapper surface. Per-commit Codex pre-design caught contract intent but missed implementation drift; only the milestone-level e2e (and now R1 review + verify-fail e2e) exposed coupling. Empirical case for CLAUDE.md rule 19 (integration tests are non-negotiable). Implications for M17 retro: rule 20 (one authority per milestone) needs sharper application — C9 bundled six sub-surfaces under "task-loop dispatch" and the breadth let coupling bugs through.
 - **Full milestone summary:** see `docs/design/ROADMAP.md` M16 entry (post-M10 productization sequence).
-- **R1 verdict:** TBD pending Codex review. R0 already done at `docs/research/CODEX_RESPONSE_M16.md`.
+- **R1 verdict:** fix-first → re-review pending. Six fix-first commits closed all 5 R1 findings + 1 uncaught bug surfaced by the new e2e. See `docs/research/CODEX_REVIEW_M16.md` once it lands. R0 was at `docs/research/CODEX_RESPONSE_M16.md`.

@@ -14,11 +14,13 @@ Usage: code-oz <command> [options]
 Commands:
   init             Scaffold a code-oz project in the current directory
   run              Drive the active phase: DEFINE -> PLAN -> BUILD -> VERIFY
-                     -> REVIEW -> SHIP. BUILD applies a per-task patch in an
-                     isolated worktree; VERIFY runs the validation command;
-                     REVIEW runs single-mode or panel cross-family review.
+                     -> REVIEW. BUILD applies a per-task patch in an isolated
+                     worktree; VERIFY runs the validation command; REVIEW
+                     runs single-mode or panel cross-family review.
                      Multi-task PLAN.md cycles BUILD/VERIFY/REVIEW per task
-                     until the cursor completes, then advances to ship.
+                     until the cursor completes, then advances currentPhase
+                     to ship after the final review approval. SHIP runtime
+                     (artifact production beyond gate writer) lands in M17.
   approve          Approve the current phase of the active run
   doctor           Probe environment health
                      'doctor providers' - provider auth + CLI presence
