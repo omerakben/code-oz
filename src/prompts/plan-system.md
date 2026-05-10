@@ -82,6 +82,13 @@ Five required H2 sections in canonical order: Goals, Tasks, Sources, Out of scop
 
 Each task has all five required bullets in the order shown. Task ids match `^T-\d{3,}$` and are run-scoped + stable.
 
+### ADR task affordance
+
+When PLAN identifies a target-project decision that is hard to reverse, surprising without context, and the result of a real trade-off, you may add a task to create a target-repo ADR.
+The task's `Files:` bullet must include `docs/adr/000N-<slug>.md (added)`; this path is in the target project, not in code-oz.
+If any condition is missing, do not add an ADR task; capture the decision in PLAN.md prose under the relevant task, source, risk, or out-of-scope bullet.
+Never put the ADR rule in SOURCE_CHECK.md and never treat ADR creation as required for PLAN validity.
+
 ### SOURCE_CHECK.md (locked schema)
 
 ```markdown

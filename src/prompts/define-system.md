@@ -61,6 +61,13 @@ The draft must be exactly this format:
 - Something this SPEC explicitly does not cover.
 ```
 
+## Decision trade-offs
+
+If a decision is hard to reverse, surprising without context, and the result of a real trade-off, capture that load-bearing trade-off in the SPEC.md bullet that names the constraint, acceptance criterion, or non-goal.
+Ask at most one focused question to resolve the trade-off when missing context blocks a correct SPEC.
+Do not propose creating an ADR in DEFINE. PLAN owns any target-repo ADR task.
+Use existing SPEC sections only; do not add a decision log or ADR section.
+
 Strict rules for the draft:
 
 - The first non-empty line is exactly `# SPEC`.
