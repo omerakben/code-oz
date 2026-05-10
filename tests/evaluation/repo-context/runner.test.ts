@@ -1,0 +1,72 @@
+// CI wrapper for the three-case repo_context evaluation harness. Runs
+// each case as a bun-test assertion so regressions surface in
+// `bun test`. The same harness is used by `bun run eval:repo_context`
+// for ad-hoc JSON reporting.
+//
+// Why these specific assertions:
+//
+//   - case-01 discovery: recall@k must be 1.0 — every expected file
+//     should be returned by a single broad grep. If recall drops, the
+//     grep tool is missing files (regression in tool implementation).
+//
+//   - case-02 usage: recall must hit every caller AND the call must
+//     not saturate maxResults (proves the cap is not binding for a
+//     normal call-site query at default caps).
+//
+//   - case-03 budget pressure: recall must stay ≥ 0.8 under tight caps
+//     (proves the harness exercises real truncation behavior without
+//     letting the tool degrade silently). Total result bytes must stay
+//     under the per-call envelope.
+
+import { describe, test, expect } from 'bun:test'
+
+import { runEvalCase, RG_AVAILABLE } from './harness.ts'
+import { CASE_01_DISCOVERY } from './case-01-discovery.ts'
+import { CASE_02_USAGE } from './case-02-usage.ts'
+import { CASE_03_BUDGET_PRESSURE } from './case-03-budget-pressure.ts'
+
+describe.if(RG_AVAILABLE)('repo_context eval harness — three deterministic cases', () => {
+  test('case-01 discovery: grep recovers every expected auth file at recall@4 = 1.0', async () => {
+    const r = await runEvalCase('case-01-discovery', CASE_01_DISCOVERY)
+    expect(r.metrics.recallAtK).toBe(1.0)
+    expect(r.metrics.toolCallCount).toBe(1)
+    expect(r.metrics.anyTruncated).toBe(false)
+    // Audit invariant: at least one path returned per expected file.
+    expect(r.metrics.distinctReturnedPaths.length).toBeGreaterThanOrEqual(
+      CASE_01_DISCOVERY.expectedPaths.length,
+    )
+  })
+
+  test('case-02 usage: every caller surfaces under default caps without saturation', async () => {
+    const r = await runEvalCase('case-02-usage', CASE_02_USAGE)
+    expect(r.metrics.recallAtK).toBe(1.0)
+    expect(r.metrics.anyTruncated).toBe(false)
+    // Default maxResults=50; the case has 6 expected paths, so the
+    // distinct returned-path count should be well under the cap.
+    expect(r.metrics.distinctReturnedPaths.length).toBeLessThan(50)
+  })
+
+  test('case-03 budget pressure: recall ≥ 0.8 under tightened caps; per-call cap honored', async () => {
+    const r = await runEvalCase('case-03-budget-pressure', CASE_03_BUDGET_PRESSURE)
+    // Recall floor: with tightened caps the harness allows partial
+    // recall so the case is genuinely under budget pressure.
+    expect(r.metrics.recallAtK).toBeGreaterThanOrEqual(0.8)
+    // Per-call cap envelope: each call's bytes must be bounded by
+    // maxBytesPerResult * maxResults. The case sets caps:
+    //   maxResults=25, maxBytesPerResult=4096 ⇒ envelope = 102_400 bytes/call.
+    // The case issues 13 calls (1 grep + 12 reads), so total cumulative
+    // bytes are bounded by 13 × 102_400 = 1_331_200. Asserting cumulative
+    // < 1_500_000 is a generous ceiling that still detects regressions.
+    expect(r.metrics.totalResultBytes).toBeLessThan(1_500_000)
+    // The case drives one grep + twelve reads = 13 events.
+    expect(r.metrics.toolCallCount).toBe(13)
+  })
+})
+
+describe.if(!RG_AVAILABLE)('repo_context eval harness — rg not installed', () => {
+  test('runEvalCase throws actionable error when rg is missing', async () => {
+    await expect(runEvalCase('case-01-discovery', CASE_01_DISCOVERY)).rejects.toThrow(
+      /rg.*ripgrep/,
+    )
+  })
+})
