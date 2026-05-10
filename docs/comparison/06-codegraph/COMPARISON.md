@@ -2,12 +2,21 @@
 name: comparison-codegraph
 template-path: ~/Projects/agents/templates/codegraph
 template-version: 0.7.2 (Node 18-24, snapshot 2026-05-08; @colbymchenry/codegraph)
-companion-docs: ../../contracts/REPO_CONTEXT.md, ../../design/ROADMAP.md (W3 section)
-target: borrow-decision record + Codex debate setup for Codegraph vs code-oz
-status: synthesis complete (Codex: accept-with-modifications, 2026-05-10, thread `019e12ed`)
-decision: YES, code-oz is ahead **on category**, with two action-bearing borrows (B1 contract cleanup + B2 eval harness, both v0.2 W3 polish) and one reclassified deferred-with-trigger (B5); see CODEX_RESPONSE.md "Synthesis" section for the locked verdict
+companion-docs: ../../contracts/REPO_CONTEXT.md, ../../design/ROADMAP.md (W3 section), IMPLEMENTATION_PLAN.md (this folder)
+target: borrow-decision record + shipped contract for Codegraph vs code-oz
+status: shipped (4 review rounds R0+R1+R2+R3 → R4 push, 2026-05-10)
+review-rounds: R0 accept-with-modifications (019e12ed) → R1 fix-first (019e1326) → R2 fix-first (019e1330) → R3 fix-first (019e141b) → R4 push
+decision: YES, code-oz is ahead **on category**, with two shipped borrows (B1 contract cleanup + B2 three-case eval harness) and one reclassified deferred-with-trigger (B5); shipped contract lives in `src/agents/schema.ts`, `src/tools/repo-context/permissions.ts`, `docs/contracts/REPO_CONTEXT.md § "Reservation and reopen-the-slot signal"`, and `tests/evaluation/repo-context/`
 prior-borrows: none — codegraph not in CLAUDE.md influence library
 ---
+
+> **Document status — synthesis complete and shipped.** This document
+> reflects the post-implementation state after four Codex review
+> rounds. The original pre-implementation framing is preserved as
+> context but the borrow ranking, decision section, and references
+> all describe what shipped. See `IMPLEMENTATION_PLAN.md § Outcome`
+> and `CODEX_RESPONSE.md § Postscript` for the round-by-round
+> evolution.
 
 # code-oz vs Codegraph
 
@@ -30,7 +39,7 @@ Legend: **G** = codegraph, **C** = code-oz. `=` overlap; `>` ahead; `<` behind; 
 | Surface | G | C | Notes |
 |---|---|---|---|
 | Codebase context for AI agents | 8 MCP tools backed by SQLite + tree-sitter graph | 3 in-process tools (`glob`, `grep`, `read`) backed by `rg` | `=` Same product job, different mechanics. codegraph indexes once and queries; code-oz greps live every call. |
-| Symbol-aware queries | `codegraph_search`, `_callers`, `_callees`, `_impact`, `_node` (deterministic AST traversal) | `symbol` tool **reserved, not implemented** (REPO_CONTEXT.md:74-77; types.ts allows it; runner.ts errors `"unsupported tool 'symbol'"`) | `<` Concrete gap. code-oz has the schema slot but no backend. W3 ROADMAP line: "Optional `symbol` LSP integration for repo-context tools (deferred from M6)." |
+| Symbol-aware queries | `codegraph_search`, `_callers`, `_callees`, `_impact`, `_node` (deterministic AST traversal) | `'symbol'` tool **RESERVED and not permissionable in v0.x** — config-load rejection at `src/agents/schema.ts` (`schema_invalid_permissions` with `RESERVED_REPO_CONTEXT_TOOLS`); runtime defense at `src/tools/repo-context/permissions.ts` (`tool_unavailable`). Type-union member kept for backward-compat; reopen gated on the 4-condition AND telemetry signal in REPO_CONTEXT.md § "Reservation and reopen-the-slot signal" | `<` Concrete category gap by design. code-oz's reserved slot is the schema lever that lets the comparison's borrow decisions land without authority creep (rule 20). |
 | Permission scope on context tools | None — MCP server runs in client process, OS-level access only | `tool_use.repo_context` with `tools[]`, `roots[]`, `maxResults`, `maxBytesPerResult`, `maxFilesForNextManifest`, `timeoutMs`, `network='none'` (REPO_CONTEXT.md:13-29) | `>` code-oz only. Rule 18 makes context retrieval a permission sub-scope, not a tool-invocation default. |
 | Audit trail of returned context | None — what the LLM saw is not logged | `repo_context_searched` event with `tool`, `query`, `roots`, `resultPaths`, `selectedPaths`, `resultBytes`, `resultTokensEstimate` (REPO_CONTEXT.md:87-105) | `>` code-oz only. The "manifest is the only source of truth for what bytes a provider call sent" invariant (file-based-gates.md:168) is preserved. |
 | Privacy default | Whatever the OS exposes; no `.gitignore` carve-out by default beyond what tree-sitter ignores | `.code-ozignore` + secret redaction + file-size caps + "files sent to provider" preview + explicit file manifests (rule 13); `roots` intersected with `permissions.read` at request time | `>` code-oz only. |
@@ -51,7 +60,7 @@ Legend: **G** = codegraph, **C** = code-oz. `=` overlap; `>` ahead; `<` behind; 
 
 ## What codegraph has that code-oz lacks (numbered)
 
-**G1. A complete `symbol` backend.** Codegraph's `codegraph_search`, `_callers`, `_callees`, `_impact`, `_node` are the deterministic answers code-oz's `symbol` slot points at. The gap is concrete: REPO_CONTEXT.md reserved the schema in M6; W3 ROADMAP defers it as "Optional LSP integration"; M16 closed without picking the backend. Codegraph offers a third option (tree-sitter + SQLite, no LSP daemon, framework-aware) and a fourth (consume codegraph itself as an external MCP server). This is the single architecturally consequential overlap and the only borrow that touches authority. **Borrow candidate B1 — escalated to a four-way decision; Codex debate target.**
+**G1. A complete `symbol` backend.** Codegraph's `codegraph_search`, `_callers`, `_callees`, `_impact`, `_node` are the deterministic answers code-oz's `symbol` slot points at. The gap is concrete: REPO_CONTEXT.md reserved the schema in M6; M16 closed without picking the backend. Codegraph offers a third option (tree-sitter + SQLite, no LSP daemon, framework-aware) and a fourth (consume codegraph itself as an external MCP server) beyond the original LSP plan and an explicit reservation. This is the single architecturally consequential overlap and the only borrow that touches authority. **Borrow candidate B1 — escalated to a four-way decision; Codex debate target.** Resolved post-debate as Option D-reserved (see § "Decision (post-Codex, locked 2026-05-10)" below and the shipped contract in `docs/contracts/REPO_CONTEXT.md` § "Reservation and reopen-the-slot signal").
 
 **G2. A tool-quality evaluation harness.** `docs/SEARCH_QUALITY_LOOP.md` documents a 7-test battery (explore, search, callers/callees, impact, edge extraction, node extraction, real-world LLM prompts) across 13 languages with a diagnosis table for 46 language-specific issues and fixes. `__tests__/evaluation/runner.ts` is a `npm run eval` runner. The methodology — "measure whether the tool's output actually helps the agent answer the question" — applies directly to code-oz's `glob`/`grep`/`read`. Today code-oz tests that the tools execute correctly and respect caps; it does not measure whether `maxBytesPerResult=16384` actually leaves room for useful context, or whether 20 selected files is the right `maxFilesForNextManifest`. The empirical work that justified those numbers (Codex push-back during M6) lives in design docs, not in a regression-suite-shaped harness. **Borrow candidate B2 — methodology only, not the language matrix; lands as a v0.2 W3 polish item.**
 
@@ -85,7 +94,7 @@ Legend: **G** = codegraph, **C** = code-oz. `=` overlap; `>` ahead; `<` behind; 
 
 | ID | Borrow | Where it lands | Cost | Risk | Final verdict |
 |---|---|---|---|---|---|
-| **B1** | `symbol` tool slot governance — Option D-reserved (explicit reservation marker + telemetry-gated reopen) | v0.2 W3 follow-up: `RepoContextToolName` comment + `permissions.ts` config-load rejection with typed `tool_unavailable` + `REPO_CONTEXT.md` wording | Low — type-comment + one validator branch + one doc paragraph | Low — reverse via single-line revert if telemetry reopens | **Borrow modification** — closes contract debt Codex named in Q8 |
+| **B1** | `symbol` tool slot governance — Option D-reserved (explicit reservation marker + telemetry-gated reopen) | Shipped: `RESERVED_REPO_CONTEXT_TOOLS` constant + `validateRepoContext` config-load rejection (`schema_invalid_permissions`) in `src/agents/schema.ts` + `intersectPermissions` runtime guard (`tool_unavailable`) in `src/tools/repo-context/permissions.ts` + JSDoc on `RepoContextToolName` + `REPO_CONTEXT.md § Reservation` section | Low — one constant + one validator branch + one runtime guard + doc paragraph | Low — reverse via single-line revert if telemetry reopens | **Shipped** — closes contract debt Codex named in Q8 |
 | **B2** | Tool-quality evaluation harness — three deterministic cases only (discovery, usage, budget pressure) | v0.2 W3 polish; new `__tests__/evaluation/repo_context/` directory; `bun run eval:repo_context` | Low — pure addition; no contract change; no LLM-judged path in default CI | Low — measurement, not behavior; bound at three fixtures | **Borrow** at minimum shape per Codex Q4 |
 | **B3** | Optional `--with-symbol-graph` install path that delegates to codegraph as an external MCP server | Conditional: only if telemetry reopens B1 as Option C | Medium — MCP-client surface; rule-20 authority cost | Medium — wrapping is mandatory (Codex Q5); cost-of-wrapping is itself evidence C is not the right default | **No-borrow today; wrapping spec recorded** for future reopen path |
 | **B4** | Worker-thread WASM recycling pattern | Only if B1 ever lands as Option B (native tree-sitter) | n/a today | n/a today | **No-borrow** |
@@ -112,7 +121,7 @@ The four options carry different milestone costs, different rule-20 implications
 Codex returned `accept-with-modifications` with one consequential catch in Q8: the `symbol` slot's "reserved but unsupported" status is **already contract debt**, not harmless optionality. The locked verdicts:
 
 - **Category verdict**: YES, code-oz is ahead **on category** — codegraph is a code-intelligence indexer for chat-tool agents, not an SDLC orchestrator.
-- **B1 (symbol backend) — Option D-reserved**: not "defer indefinitely" but "explicit reservation marker + telemetry-gated reopen condition." Cleanup item: tighten the `'symbol'` member in `RepoContextToolName` with a reservation comment, reject it at config-load in `permissions.ts` with a typed `tool_unavailable` error, update `REPO_CONTEXT.md` § "The three tools" wording. v0.2 W3 follow-up.
+- **B1 (symbol backend) — Option D-reserved**: not "defer indefinitely" but "explicit reservation marker + telemetry-gated reopen condition." Shipped contract: `RESERVED_REPO_CONTEXT_TOOLS` constant + `validateRepoContext` rejects `'symbol'` at config-load with `schema_invalid_permissions`; `intersectPermissions` rejects at runtime with `tool_unavailable`; `RepoContextToolName` JSDoc + `REPO_CONTEXT.md § Reservation` document the contract and the 4-condition AND telemetry signal for the reopen condition.
 - **B2 (eval harness) — Borrow at minimum shape**: three deterministic evals (discovery, usage, budget pressure), recall@k + bytes + tool-call counts, no LLM-judged path in default CI. v0.2 W3 polish.
 - **B3 (MCP-consume) — No-borrow today; wrapping spec recorded** if telemetry ever reopens B1 as Option C.
 - **B5 (framework-aware route detection) — Deferred-with-trigger** (reclassified up from no-borrow): land if a routing/API-surface audit persona enters the company roster.
@@ -130,5 +139,5 @@ Full Codex Q&A and the lead-author synthesis are in this folder's `CODEX_RESPONS
 - **code-oz REPO_CONTEXT contract**: `docs/contracts/REPO_CONTEXT.md`
 - **code-oz repo_context implementation**: `src/tools/repo-context/{glob,grep,read,runner,permissions,errors,types}.ts`
 - **code-oz doctor ripgrep probe**: `src/commands/doctor.ts:379-434`
-- **code-oz W3 LSP line**: `docs/design/ROADMAP.md` (W3 section — "Optional `symbol` LSP integration for repo-context tools (deferred from M6)")
+- **code-oz W3 reopen-trigger entry**: `docs/design/ROADMAP.md` W3 § "Deferred-with-trigger items" (replaced the prior "Optional `symbol` LSP integration" line in commit 366dd9e)
 - **Rule 18 (`tool_use.repo_context` scope)**, **Rule 13 (privacy by default)**, **Rule 19 (budget enforcement)**, **Rule 20 (one new authority per milestone)**, **Rule 21 (no new parallel surface without measurable risk reduction)** — `CLAUDE.md`

@@ -132,7 +132,7 @@ Files (`budgets.global` extension):
 
 Acceptance:
 - PLAN cannot pass without `SOURCE_CHECK.md` naming spec, reference (or explicit none-found rationale), and docs (or explicit no-library rationale); PLAN emits atomic tasks with file targets, validation commands, risk notes; gate waits before BUILD-lite.
-- Repo-context tools (`glob`, `grep`, `read`; `symbol` optional) callable by PLAN persona under `tool_use.repo_context` scope; results cap at configurable defaults; selected paths flow into next-invocation `ProviderRequest.files`; `repo_context_searched` events log every call.
+- Repo-context tools `glob`, `grep`, `read` callable by PLAN persona under `tool_use.repo_context` scope; `'symbol'` reserved-but-not-permissionable in v0.x per `docs/contracts/REPO_CONTEXT.md` § "Reservation and reopen-the-slot signal" (reopen gated on the 4-condition AND telemetry signal); results cap at configurable defaults; selected paths flow into next-invocation `ProviderRequest.files`; `repo_context_searched` events log every call.
 - HYPOTHESES.md and OPEN_QUESTIONS.md atomic writes survive crashes; PLAN's gate preflight validates both sidecars before writing `GATE_PLAN_PASSED.json`; overdue open questions block the gate.
 - Cumulative `budgets.global` enforces wall-time + token + call caps with soft warnings at 75% and hard kills at 100%.
 - DEFINE retro-seed (HYPOTHESES.md / OPEN_QUESTIONS.md generated from SPEC.md) is opt-in via `phases.scientist.retroSeedDefine: true`; never reopens M5.
