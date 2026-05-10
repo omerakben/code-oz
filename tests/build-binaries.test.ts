@@ -27,7 +27,7 @@ import {
   type Manifest,
 } from '../scripts/build-binaries.ts'
 
-const VERSION = '0.16.0-alpha.0'
+const VERSION = '0.17.0-alpha.0'
 const BUILT_AT = '2026-05-02T04:30:00.000Z'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -285,7 +285,7 @@ describe('buildAll', () => {
     expect(await fs.readTextFile(join(cwd, 'dist/handoff/README.md'))).toBe(
       renderHandoffReadme(VERSION),
     )
-    expect(result.tarballPath).toBe(join(cwd, 'dist/code-oz-v0.16.0-alpha.0-darwin.tar.gz'))
+    expect(result.tarballPath).toBe(join(cwd, 'dist/code-oz-v0.17.0-alpha.0-darwin.tar.gz'))
   })
 
   test('stages the Darwin tarball root and invokes tar with the expected args', async () => {
@@ -312,16 +312,16 @@ describe('buildAll', () => {
       now: () => new Date(BUILT_AT),
     })
 
-    const root = join(cwd, 'dist/code-oz-v0.16.0-alpha.0-darwin')
+    const root = join(cwd, 'dist/code-oz-v0.17.0-alpha.0-darwin')
     expect(result.ok).toBe(true)
-    expect(result.tarballPath).toBe(join(cwd, 'dist/code-oz-v0.16.0-alpha.0-darwin.tar.gz'))
+    expect(result.tarballPath).toBe(join(cwd, 'dist/code-oz-v0.17.0-alpha.0-darwin.tar.gz'))
     expect(tarCalls).toEqual([
       [
         '-czf',
-        join(cwd, 'dist/code-oz-v0.16.0-alpha.0-darwin.tar.gz'),
+        join(cwd, 'dist/code-oz-v0.17.0-alpha.0-darwin.tar.gz'),
         '-C',
         join(cwd, 'dist'),
-        'code-oz-v0.16.0-alpha.0-darwin',
+        'code-oz-v0.17.0-alpha.0-darwin',
       ],
     ])
     expect(await fs.readTextFile(join(root, 'install.sh'))).toBe('#!/bin/sh\necho installer\n')

@@ -39,8 +39,10 @@ describe('finding #1: versions report consistently across all surfaces', () => {
   // three sources — the post-M15 release-polish commit catches all
   // three up to `0.16.0-alpha.0` in one chore on `main`. The lesson:
   // bump these three together in the SAME milestone-close commit, not
-  // in a separate post-tag chore.
-  const CURRENT = '0.16.0-alpha.0'
+  // in a separate post-tag chore. M16 (production CLI completion)
+  // follows that lesson: this commit bumps to `0.17.0-alpha.0` together
+  // with the C13 closure + R1 fix-first commits, in the same chore.
+  const CURRENT = '0.17.0-alpha.0'
 
   test('PKG_VERSION', () => {
     expect(PKG_VERSION).toBe(CURRENT)
