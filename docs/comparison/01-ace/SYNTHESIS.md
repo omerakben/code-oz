@@ -49,65 +49,102 @@ Each milestone introduces exactly one new authority boundary (rule 20).
 
 ### M17 — Reviewer Memory read substrate
 
-**Authority added:** stable on-disk shape and read-side retrieval for `./.code-oz/lessons/*.md`.
+**Authority added:** stable on-disk shape and read-side retrieval for `./.code-oz/lessons/*.md`. One authority, four sub-surfaces (storage contract, event-type addition, read-path API, ID-generation) tracked explicitly per the M16 C9 lesson on counting sub-surfaces.
+
+**Sub-surface accounting (per rule 20 sharper application):**
+
+1. **S1 storage contract** — lesson entry markdown format on disk.
+2. **S2 event-type addition** — `lesson_consumed` event in `events.jsonl`.
+3. **S3 read-path API** — retrieval API surface consumed by phase prompts.
+4. **S4 ID-generation** — content-hash-derived IDs, collision detection, warm-start seed.
+
+Each sub-surface has a distinct rollback shape and ships with its own acceptance test. M17 stays one authority because S1-S4 are *all aspects of read substrate*; no LLM mutator authority is introduced. If any sub-surface needs to be deferred, it splits cleanly to a follow-up milestone without touching the others.
 
 **In scope:**
-- Lesson entry markdown format with frontmatter and bullet-shape body. Bullet line: `[<slug>-<5digit>] helpful=N harmful=M :: <content>` (counters are display-only in this milestone, set to 0 at write time).
-- Stable lesson ID generation. IDs derive from a content hash + collision-checked seed at boot. Never reset to 1 on warm-start (the ACE bug at `ace/ace.py:86-93`).
-- Explicit section header → slug mapping table. Adding a new section requires updating the mapping; the slug is never derived from initials at runtime. (ACE's `STRATEGIES & INSIGHTS` section falls through to a "first letters of words" branch in `utils.py:55-77` and produces slug `sai` — a drift between the header a user reads and the slug stored in IDs. code-oz's mapping must be explicit.)
-- Parser and validator. Parser failures produce `NEEDS_INTERVENTION.json` per rule 11; no silent skip.
-- Read-only retrieval API consumed by phase prompts (initial readers: REVIEW, BUILD).
-- New event type `lesson_consumed` in `events.jsonl` with fields: lesson ID, entry SHA, phase, agent, run/task ID. No content snippets. The event-type forward-compat path at `docs/references/file-based-gates.md:240` makes this additive.
+- (S1) Lesson entry markdown format with frontmatter and bullet-shape body. Bullet line: `[<slug>-<5digit>] helpful=N harmful=M :: <content>` (counters are display-only in this milestone, set to 0 at write time).
+- (S1) **Strict parser.** Full-line anchored grammar: slug must exist in the explicit mapping table, suffix is exactly five digits, counters are nonnegative integers, content after `::` is non-empty. Do not mirror ACE's permissive `parse_playbook_line` at `playbook_utils.py:23-46`, which accepts empty content via regex.
+- (S1) Parser failures produce `NEEDS_INTERVENTION.json` per rule 11; no silent skip.
+- (S1) Section header → slug mapping table lives in `src/memory/section-slugs.ts` as a frozen TypeScript const. Adding a new section is a code change + migration script + doctor validation that no existing lesson IDs reference the new slug. The slug is never derived from initials at runtime. (ACE's `STRATEGIES & INSIGHTS` section falls through to a "first letters of words" branch in `utils.py:55-77` and produces slug `sai` — code-oz rejects that drift.)
+- (S2) New event type `lesson_consumed` in `events.jsonl` with fields: lesson ID, entry SHA, phase, agent, run ID, task ID. **No content snippets, no question snippets, no context snippets.** The event-type forward-compat path at `docs/references/file-based-gates.md:240` (the Open-type-union rule) makes this additive without a version bump.
+- (S3) Read-only retrieval API consumed by phase prompts (initial readers: REVIEW, BUILD).
+- (S4) Stable lesson ID generation. IDs derive from a content hash + collision-checked seed at boot. Never reset to 1 on warm-start (the ACE bug at `ace/ace.py:86-93`).
+- Doctor check: `code-oz doctor memory` validates that `lesson_consumed` events contain only `{ lessonId, entrySha, phase, agent, runId, taskId }` and rejects any privacy-leaking field (rule 13).
 - Rule 19: `lesson_consumed` events ride existing `events.jsonl` telemetry. No new budget namespace at M17; the new namespace `memory.maxStoredTokens` arrives in M20.
 - Rule 21: does not apply at M17. Reviewer Memory is a sequential memory layer, not a parallel-provider surface. Rule 21 re-engages only if M20+ introduces competing memory updaters or curation panels.
 
 **Out of scope:** any LLM mutator, any UPDATE/MERGE/DELETE behavior, any helpful/harmful counter derivation, any compaction, any embedding work.
 
-**Gate exit:** validator round-trips a fixture lesson; offline test exercises the read path through a phase prompt; `lesson_consumed` events appear in `events.jsonl` for a fake-provider run.
+**Gate exit:**
+- Validator round-trips a fixture lesson (S1).
+- **Warm-start collision test:** load a fixture lesson with ID `<slug>-00042`, add a new entry, verify the new ID is `<slug>-00043` or higher, never `<slug>-00001` (S4 against the ACE bug).
+- Offline test exercises the read path through a phase prompt (S3).
+- `lesson_consumed` events appear in `events.jsonl` for a fake-provider run (S2).
+- Doctor check fails when seeded with a privacy-leaking event fixture.
 
 ### M18 — Memory mutation authority
 
 **Authority added:** deterministic ADD-only applier and the JSON op schema.
 
 **In scope:**
-- Op schema: `{type: "ADD", section, content}` with strict validation. `UPDATE`, `MERGE`, `DELETE` rejected at parse. (ACE's published source only ships `ADD`; we follow the implementation, not the marketing.)
+- Op schema: `{type: "ADD", section, content}` with strict validation. `UPDATE`, `MERGE`, `DELETE`, `CREATE_META` are NOT accepted; the applier rejects them with `op_not_supported` (an explicit failure, not a silent skip). ACE's validator at `ace/core/curator.py:210-215` warns on unknown types and then silently drops them — code-oz must reject loudly. Reserving the future operation names in the schema documentation is allowed; *implementing* them is a later milestone.
+- **Forward-compat rule:** the op-type field is a closed enum in M18 (only `ADD`). When a future milestone ships UPDATE/MERGE/DELETE, that milestone bumps the op-schema version and updates the M18 applier's enum together. M19 and M20 callers MUST query the applier's capability surface, never assume the op set.
 - Deterministic applier (`applyMemoryOperations`) that takes the current lesson file + ops and returns the updated file. Pure function, network-free, fully tested with `FakeProvider`.
 - Cross-family rule (rule 2): if an LLM proposes ops based on Builder output, the proposer must be a different provider family from Builder. The applier itself has no family.
-- Mutator parse failures produce `NEEDS_INTERVENTION.json`. No silent skip (rule 11).
-- Universal anti-slop rules imported into the proposer system prompt (rule 16).
+- Mutator parse failures and `op_not_supported` rejections produce `NEEDS_INTERVENTION.json`. No silent skip (rule 11).
+- Empty/sentinel LLM response from the proposer (ACE's `INCORRECT_DUE_TO_EMPTY_RESPONSE` path at `curator.py:109-113`) also produces `NEEDS_INTERVENTION.json`. Both silent-skip paths ACE has are closed.
+- Universal anti-slop rules imported from `src/prompts/universal-rules.md` into the proposer system prompt (rule 16).
+- **Scientist tail (rule 15):** after the applier writes the updated lesson file, M18 emits `HYPOTHESES.md` and `OPEN_QUESTIONS.md` sidecars under `./.code-oz/scientist/memory-mutation/` recording which ops were load-bearing and what open questions remain. The mutated lesson file is a primary artifact; rule 15 applies.
 
-**Out of scope:** UPDATE/MERGE/DELETE, attribution, compaction, dedup.
+**Out of scope:** UPDATE/MERGE/DELETE/CREATE_META applier logic, attribution, compaction, dedup.
 
-**Gate exit:** offline tests show ADD-only round-trip; mutator failures surface as `NEEDS_INTERVENTION.json`; cross-family check enforced at runtime.
+**Gate exit:** offline tests show ADD-only round-trip; UPDATE/MERGE/DELETE/CREATE_META rejected as `op_not_supported`; both ACE silent-skip paths produce `NEEDS_INTERVENTION.json`; cross-family check enforced at runtime; Scientist sidecars present after a fake-provider mutation run.
 
-### M19 — Outcome attribution (helpful/harmful, derived)
+### M19 — Outcome attribution (helpful only, derived)
 
-**Authority added:** the rule that lesson outcomes are derived from `events.jsonl`, never stored as authoritative counters.
+**Authority added:** the rule that lesson outcomes are derived from `events.jsonl`, never stored as authoritative counters. **v0.1 ships helpful-attribution only.** Harmful-attribution is deferred until the citation-tracking infrastructure exists.
+
+**Why helpful-only:** the memory-poisoning failure mode the architect raised in Round 2 is real. A malicious or sloppy entry can cause BUILD to succeed quickly and produce a worse artifact that humans only catch post-deploy; M19 would see `gate_passed` and incorrectly credit the entry. Codex's "harmful only if explicitly cited by a Reviewer in a `review_blocked` artifact" rule would require ReviewArtifact and NEEDS_INTERVENTION to carry cited lesson IDs — an undeclared schema change that bundles authority into M19 (rule 20 violation). The clean split: ship helpful-derivation now, defer harmful-derivation to a milestone that ships the citation infrastructure too.
 
 **In scope:**
-- Derivation function: given a lesson ID, scan `events.jsonl` for `lesson_consumed` followed by terminal phase results (`gate_passed`, `verify_failed`, `review_blocked`). Project to `(loaded, succeeded, failed)` triples.
-- Conservative attribution: a lesson is "helpful" only if it was consumed in a run that reached `gate_passed` and did not produce a `NEEDS_INTERVENTION` in any later phase; "harmful" only if explicitly cited by a Reviewer in a `review_blocked` artifact. Run-level VERIFY pass alone is not sufficient evidence (the Codex memory-poisoning risk).
+- Derivation function (helpful only): given a lesson ID, scan `events.jsonl` for `lesson_consumed` followed by terminal `gate_passed` events with no `NEEDS_INTERVENTION` after them in the same run. Project to `(loaded, succeeded)` pairs.
+- Conservative attribution: a lesson is "helpful" only if it was consumed in a run that reached `gate_passed` AND did not produce a `NEEDS_INTERVENTION` at any later phase. Run-level VERIFY pass alone is not sufficient evidence.
+- Harmful-attribution is OUT OF SCOPE for M19. Manual override path: `code-oz doctor memory flag-harmful <lesson-id> --reason "..."` writes a manual override event to `events.jsonl`. Doctor-flagged entries are excluded from retrieval until a follow-up milestone ships derived harmful-attribution + citation tracking.
 - Derivation is read-time. No materialized counters in M19. If counters are added later as a cache, they must carry `derivedFromEventSeq` and `doctor` must fail on drift. (Drift detection is the discipline ACE skips: its `update_bullet_counts` at `playbook_utils.py:50-93` mutates the playbook in place with no checksum, no event entry, and no drift check.)
-- `no_ground_truth` mode: VERIFY/REVIEW outcomes are the environment signal. The attribution function is the same in both modes; only the run-level signal source differs. The mode name is borrowed from ACE for legibility; the actual semantics are different (ACE still calls `answer_is_correct` regardless; code-oz has no ground truth and relies entirely on terminal phase results).
-- Cross-check before tagging: ACE's `eval/<task>/data_processor.py` is the load-bearing correctness-signal extension point. Confirm no `eval/*` pattern in ACE uses a richer signal than `gate_passed && !NEEDS_INTERVENTION` that code-oz would want to mirror.
+- `no_ground_truth` mode: VERIFY/REVIEW outcomes are the environment signal. The mode name is borrowed from ACE for legibility; the actual semantics are different (ACE still calls `answer_is_correct(final_answer, target)` regardless of the flag; code-oz has no ground truth and relies entirely on terminal phase results).
+- **`memoryStats` projection:** a derived read-only summary `{ total, unused, withHelpfulSignal, byMappedSection }` computed from `events.jsonl` on demand. **Reject ACE's hardcoded thresholds** (`high_performing: helpful>5 && harmful<2`, `problematic: harmful>=helpful` at `playbook_utils.py:240-244`) as authoritative policy; if code-oz needs thresholds later, they live in config, not in derived projections.
+- Doctor privacy check (continued from M17): `code-oz doctor memory` verifies no `lesson_consumed` event carries privacy-leaking fields. M19 makes this check load-bearing because its derivation function would silently consume leaked content if a regression slipped in.
+- Cross-check before tagging: ACE's `eval/<task>/data_processor.py` is the load-bearing correctness-signal extension point. Confirm no `eval/*` pattern uses a richer signal than `gate_passed && !NEEDS_INTERVENTION` that code-oz would want to mirror.
 
-**Out of scope:** mutators that act on the counters, compaction, dedup.
+**Out of scope:** harmful-attribution derivation, mutators that act on the counters, compaction, dedup, the citation-tracking infrastructure for ReviewArtifact / NEEDS_INTERVENTION.
 
-**Gate exit:** derivation function tested against fixtures with seeded `events.jsonl` traces; conservative attribution verified to flag known memory-poisoning patterns.
+**Gate exit:** derivation function tested against fixtures with seeded `events.jsonl` traces; helpful-attribution verified against the conservative rule; `memoryStats` projection produces stable output for a known fixture; doctor privacy check fails when seeded with a privacy-leaking event.
 
-### M20 — Curation budget and string-similarity compaction
+### M20 — Curation budget and compaction-proposal authority
 
-**Authority added:** stored-memory size budget + deterministic compaction.
+**Authority added:** stored-memory size budget + deterministic compaction-proposal generator. **M20 emits proposals only; applying approved destructive ops is M21 work that extends M18's mutator.** This keeps M20 one authority (compaction proposal policy) by separating it from the M18-extension authority (destructive op runtime).
 
 **In scope:**
-- Config schema: `memory.maxStoredTokens` (default 80000, ACE's number is sane). Provider-call spend continues to ride `budgets.global.maxTokensEstimate` per rule 19.
-- Compactor that runs on demand or at gate boundaries; walks `./.code-oz/lessons/*.md`, prefers MERGE / DELETE over ADD when within 0.9 of `memory.maxStoredTokens`. (MERGE / DELETE land here because the deterministic applier is now justified by a measured need.)
-- String/tag similarity dedup as the first compaction strategy. "Suggest merge, do not auto-merge" — the compactor produces a proposed merge plan in `NEEDS_INTERVENTION.json` for human approval. No automatic destructive ops in v1.
+- Config schema: `memory.maxStoredTokens` (default 80000, ACE's number is sane) under a new `memory.*` config namespace. Provider-call spend continues to ride `budgets.global.maxTokensEstimate` per rule 19 — the new namespace is for stored-content size only.
+- Compactor that runs on demand or at gate boundaries; walks `./.code-oz/lessons/*.md`, identifies merge or delete candidates when within 0.9 of `memory.maxStoredTokens`.
+- Compactor produces a proposed merge/delete plan in `NEEDS_INTERVENTION.json` for human approval. **The compactor never applies destructive ops.** Approval routes through M21 (or a later M18 extension that adds MERGE/DELETE to the applier with the schema-version bump M18 reserves for).
+- String/tag similarity dedup as the first compaction strategy. **Deterministic only, no LLM voting.** ACE's `BulletpointAnalyzer` LLM-merge step is rejected for v0.1.
 - Embedding-based dedup deferred until the string compactor produces a measurable false-negative rate. When added, it ships behind a local feature check or optional package, not a provider capability (rejected per Codex Q5).
+- Rule 21 explicit: does NOT apply at M20. Compaction proposals are deterministic; no parallel-provider surface. Rule 21 re-engages only if a future milestone adds LLM-based merge voting or multi-curator panels.
 
-**Out of scope:** automatic destructive merges, multi-curator votes, parallel-provider memory updaters.
+**Out of scope:** automatic destructive merges, applying approved ops (M21), LLM-based merge voting, embedding dedup, multi-curator votes, parallel-provider memory updaters.
 
-**Gate exit:** compactor exercised on a synthetic lesson set above the budget; merge proposals surface through the intervention path; offline tests pass.
+**Gate exit:** compactor exercised on a synthetic lesson set above the budget; merge/delete proposals surface through the intervention path; no destructive op fires without human approval routing through the M21 (or M18-extension) applier; offline tests pass.
+
+## Risks carried forward
+
+Logged here so the canonical doc carries them, not only the captured Codex response.
+
+1. **Scope creep masked as "substrate"** (R1, original). If a future implementer ships format + mutator + usage log + counters + prompt updater under one milestone label, it repeats the M7 / M16-C9 sub-surface bundling failure. The sub-surface accounting in M17 (S1-S4) is the discipline that prevents this; M18-M21 must inherit the same accounting.
+2. **Memory poisoning** (R1, R2 architect). Run-level VERIFY/REVIEW success is not bullet-level causality. M19 ships helpful-attribution only; harmful-attribution waits for citation-tracking infrastructure. Until that ships, doctor-flagged entries are the only "this lesson is wrong" signal.
+3. **Audit / privacy regression** (R1). ACE's usage-log shape stores content snippets and context excerpts. code-oz's `lesson_consumed` event is ID + SHA only. A regression that adds content fields would silently propagate through M19's derivation. Doctor check (M17 in-scope, M19 load-bearing) is the guard.
+4. **Parser / slug drift** (R2 Codex). Permissive parsing can create lesson IDs that M19's derivation cannot attribute cleanly. The strict full-line-anchored grammar + explicit section→slug mapping at `src/memory/section-slugs.ts` is the guard. Doctor validates the mapping at boot.
+5. **Attribution signal mismatch** (R2 Codex). Terminal phase events may be too coarse for lesson-level causality. Without a pinned event-shape contract for `lesson_consumed` (`docs/contracts/REVIEWER_MEMORY.md`, see CONTRACTS_NEEDED.md), M19's derivation will inherit whatever shape M17 happened to ship. The contract file is M17 work, not a future cleanup.
+6. **Compaction approval deadlock** (R2 Codex). Over-budget memory plus human-approved-merge proposals can repeatedly pause runs if the user does not respond. M20 must define a "soft denial" path: when `memory.maxStoredTokens` is exceeded and no human approval has come within N hours, M20 stops emitting new compaction proposals and instead disables ADD-only writes until the user clears the intervention. This converts a deadlock into a stop, not a stall.
 
 ## Corrections to COMPARISON.md
 
