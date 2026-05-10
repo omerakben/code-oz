@@ -2,7 +2,7 @@
 name: close-out-comparison-ace
 companion-docs: COMPARISON.md, CODEX_BRIEFING.md, CODEX_RESPONSE.md, SYNTHESIS.md, CONTRACTS_NEEDED.md, PROPAGATE_TO_CLAUDE_MD.md, ROUND_1.md, ROUND_2.md
 target: final sign-off and convergence record for the ACE template-comparison session
-status: pending Round 3 final sign-off from both critics (Opus pr-review-toolkit reviewer in flight; Codex round 3 verdict received)
+status: pending Round 4 Codex confirmation of Round 3 citation fixes (both Round 3 critics returned with fixable findings; all applied)
 date: 2026-05-10
 ---
 
@@ -20,8 +20,8 @@ date: 2026-05-10
 | 1 | Opus `code-reviewer` agent `a61af991e5e656007` | "claim-vs-source + style + rules 1-21" | 22 findings (1 block-push, 10 fix-soon, 11 nits) | All material findings applied; ROUND_1.md log |
 | 2 architect | Opus `code-architect` agent `ac656cca4ee02e716` | "systemic + contract gaps + decomposition" | 13 findings (3 block-push, 8 fix-soon, 2 open-questions) | All material findings applied; ROUND_2.md log |
 | 2 codex | Codex fresh thread `019e1322` | "what did we miss in ACE" | 7 findings (3 fix-soon + 1 open-question + 2 nits + risks list) | `accept-with-modifications`; all modifications applied |
-| 3 codex | Codex fresh thread `019e132c` | "final sweep, convergence check" | 1 fix-before-merge (event-name mismatch); L1/L2/L3 otherwise clean | Applied; awaiting Round 4 sign-off |
-| 3 opus | Opus `pr-review-toolkit:code-reviewer` agent `a2528ef755ecd046c` | "guideline adherence + PR readiness" | (in flight) | (pending) |
+| 3 codex | Codex fresh thread `019e132c` | "final sweep, convergence check" | 1 fix-before-merge (event-name mismatch); L1/L2/L3 otherwise clean | Applied; awaiting Round 4 confirmation |
+| 3 opus | Opus `pr-review-toolkit:code-reviewer` agent `a2528ef755ecd046c` | "guideline adherence + PR readiness" | 7 findings (4 fix-soon citation + style; 3 nits style + meta) | All applied; awaiting Round 4 confirmation |
 
 ## Decision shape (final)
 
@@ -82,9 +82,9 @@ docs/comparison/
 
 **Codex (Round 3, thread `019e132c`):** `accept-with-modifications`. One fix-before-merge applied (M19 event-name correction). All other lenses clean. Comparison-series exercise verdict: `continue`. Awaiting Round 4 confirmation that the event-name fix lands the verdict at `accept`.
 
-**Opus pr-review-toolkit reviewer (Round 3, agent `a2528ef755ecd046c`):** _(pending)_
+**Opus pr-review-toolkit reviewer (Round 3, agent `a2528ef755ecd046c`):** 7 findings — 4 fix-soon (3 citation corrections: `parse_playbook_line` actual range `13-27` not `23-46`; `task_completed` lives in `src/state/run.ts:454+` not in the v0.1 registry block; CONTRACTS_NEEDED C3 placement instruction targeted the rule prose at line 240 rather than the type literal block at 153-161), plus 1 fix-soon em-dash in COMPARISON.md paragraph 1, plus 2 nit em-dash items, plus 1 nit CLOSE_OUT meta-update (this entry). All 6 substantive items applied. The reviewer also spot-checked 25+ other citations and confirmed them correct.
 
-Both must return clean for close-out.
+Both critics must return clean on the Round 4 confirmation pass for close-out.
 
 ## Pair-programming closing statement
 

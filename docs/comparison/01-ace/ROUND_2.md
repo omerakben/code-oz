@@ -86,4 +86,4 @@ Both critics raised independent findings. Both findings sets close cleanly. Code
 
 ## What's next
 
-Round 3: final sweep. Dispatch both critics again — Opus reviewer or architect on the updated docs, and Codex on the canonical SYNTHESIS — and check for convergence to a clean `accept` with no findings. If both sign off, write CLOSE_OUT.md and push the PR.
+Round 3: final sweep. Dispatch both critics again (Opus reviewer or architect on the updated docs, and Codex on the canonical SYNTHESIS) and check for convergence to a clean `accept` with no findings. If both sign off, write CLOSE_OUT.md and push the PR.

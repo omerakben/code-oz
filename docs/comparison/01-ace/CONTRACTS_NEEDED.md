@@ -17,12 +17,12 @@ Pins the on-disk lesson format, the `lesson_consumed` event schema, the read-pat
 ### Required content
 
 - **Frontmatter schema.** Required keys: `lessonId`, `entrySha`, `slug`, `section`, `createdAt`, `createdByPhase`, `createdByAgent`, `createdInRun`. Optional: `tags`, `relatedLessonIds`.
-- **Bullet line grammar (strict).** Full-line anchored regex: `^\[(<slug>)-(\d{5})\] helpful=(\d+) harmful=(\d+) :: (.+)$`. Slug must be present in `src/memory/section-slugs.ts`. Content after `::` is non-empty. Counters are nonnegative integers. (Reject ACE's permissive `parse_playbook_line` at `playbook_utils.py:23-46`.)
+- **Bullet line grammar (strict).** Full-line anchored regex: `^\[(<slug>)-(\d{5})\] helpful=(\d+) harmful=(\d+) :: (.+)$`. Slug must be present in `src/memory/section-slugs.ts`. Content after `::` is non-empty. Counters are nonnegative integers. (Reject ACE's permissive `parse_playbook_line` at `playbook_utils.py:13-27`.)
 - **Section header → slug mapping.** Lives in `src/memory/section-slugs.ts` as a frozen TypeScript const. Adding a new section is a code change + migration script + doctor validation. Slug is never derived from initials at runtime.
 - **Lesson ID generation.** IDs derive from a content hash + collision-checked counter seeded from the highest existing ID at boot. Doctor fails if any lesson file contains IDs the generator cannot produce. **Never reset to 1 on warm-start** (the ACE bug at `ace.py:86-93`).
 - **`lesson_consumed` event schema.** `{ version: 1, ts, runId, type: "lesson_consumed", lessonId, entrySha, phase, agent, taskId? }`. **No content snippets, no question snippets, no context snippets.** Privacy shape per rule 13. The event-type forward-compat path at `docs/references/file-based-gates.md:240` (the Open-type-union rule) makes this additive without a `version` bump.
 - **Read-path API.** Function signature: `loadLesson(lessonId): Promise<Lesson>` and `findLessons({section?, slug?, limit?}): Promise<Lesson[]>`. Caps: 100 lessons per call, 16KB per lesson body, no recursive resolution of `relatedLessonIds` (caller fetches transitively if needed).
-- **M19 join semantics.** A lesson is "helpful" if a `lesson_consumed` event for it exists in a run/task where the success signal fires — phase-level (`gate_written` plus matching `phase_exited` with `outcome: "passed"`) or task-level (`task_completed`) — AND no later `intervention` event appears in the same scope AND no active `NEEDS_INTERVENTION.json` control file remains. Event-type literals match `docs/references/file-based-gates.md:153-161` (the canonical event registry). v0.1 ships helpful-attribution only; harmful-attribution waits for the citation-tracking milestone.
+- **M19 join semantics.** A lesson is "helpful" if a `lesson_consumed` event for it exists in a run/task where the success signal fires (phase-level: `gate_written` plus matching `phase_exited` with `outcome: "passed"`; or task-level: `task_completed`), AND no later `intervention` event appears in the same scope, AND no active `NEEDS_INTERVENTION.json` control file remains. Event-type literals `lesson_consumed`, `gate_written`, `phase_exited`, and `intervention` match the v0.1 registry at `docs/references/file-based-gates.md:153-161`; `task_completed` is a post-M7 type implemented in `src/state/run.ts:454+` and lands additively under the open-type-union rule at `docs/references/file-based-gates.md:240`. v0.1 ships helpful-attribution only; harmful-attribution waits for the citation-tracking milestone.
 
 ## C2 — `docs/contracts/MEMORY_OPERATIONS.md`
 
@@ -48,7 +48,7 @@ The Open-type-union rule at line 240 lets `lesson_consumed` land additively. The
 
 ### Required content
 
-Add to the recognized types list at line 240: `lesson_consumed`. Add per-type validation: `{ lessonId: non-empty string, entrySha: 64-char lowercase hex, phase: canonical phase enum, agent: non-empty string, taskId: optional non-empty string }`.
+Add `lesson_consumed` to the recognized-types JSON block at `docs/references/file-based-gates.md:153-161` (where each type literal is enumerated). Then update the prose at line 240 (the Open-type-union rule) to list `lesson_consumed` in the "Recognized types" sentence. Add per-type validation: `{ lessonId: non-empty string, entrySha: 64-char lowercase hex, phase: canonical phase enum, agent: non-empty string, taskId: optional non-empty string }`.
 
 ## Coordination note
 
