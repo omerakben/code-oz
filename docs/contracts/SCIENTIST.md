@@ -13,6 +13,8 @@ The Scientist is not a separate phase. It runs as a **phase-tail** after each pr
 
 The dossier behind the discipline: `docs/research/05-scientist-and-open-questions-agent.md`. The maestro skill it operationalizes is `requirement-restate` (every gate restates inputs, claims, and falsifiers).
 
+Related sibling discipline: [`CHECKLISTS.md`](./CHECKLISTS.md) captures static gate-readiness yes/no rubrics for SPEC.md and PLAN.md, while Scientist captures hypotheses and open questions. They are siblings, not competitors; both are advisory in v0.1. Pinned 2026-05-10 from `docs/comparison/11-mimir/SYNTHESIS.md` § "B5".
+
 ## What ships in M6 vs. later
 
 | Capability | Milestone | Where |
@@ -131,6 +133,6 @@ Per `CLAUDE.md` rule 17: updates to the maestro dossier (`docs/research/01-maest
 
 - **Dossier:** `docs/research/05-scientist-and-open-questions-agent.md`
 - **Maestro discipline:** `docs/research/01-maestro-rule-checker.md`
-- **Linked contracts:** [`HYPOTHESES.md`](./HYPOTHESES.md), [`OPEN_QUESTIONS.md`](./OPEN_QUESTIONS.md), [`PLAN.md`](./PLAN.md)
+- **Linked contracts:** [`HYPOTHESES.md`](./HYPOTHESES.md), [`OPEN_QUESTIONS.md`](./OPEN_QUESTIONS.md), [`PLAN.md`](./PLAN.md), [`CHECKLISTS.md`](./CHECKLISTS.md)
 - **Non-negotiable rules:** `CLAUDE.md` rules 15 (Scientist tail), 16 (universal rules), 17 (maestro dossier)
 - **Design rationale:** [`docs/design/CODEX_RESPONSE_M6.md`](../design/CODEX_RESPONSE_M6.md) decision 5 (loose gate-preflight)
