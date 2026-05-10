@@ -6,7 +6,7 @@ status: complete (multi-round Codex review process converged; see Outcome § rev
 branch: worktree-feat+comparison-codegraph
 baseline-tests: 3108 pass / 0 fail (verified 2026-05-10)
 final-tests: 3116 pass / 0 fail / typecheck clean
-review-rounds: R0..Rn — see Outcome § "Codex review round summary" for the canonical table
+review-rounds: canonical table in `CODEX_RESPONSE.md § Postscript "Review round summary"`; mirrored here in `Outcome § "Codex review round summary"`
 ---
 
 > **Document status — historical planning snapshot.** This is the
@@ -158,5 +158,6 @@ The second skip is the eval-harness rg-not-installed branch (mirrors the existin
 | R3 | 019e141b | fix-first | 3 doc-drift: IMPLEMENTATION_PLAN.md missing Outcome section, CODEX_RESPONSE.md missing post-implementation postscript, harness.ts inline comment (63721e7) |
 | R4 | 019e1421 | fix-first | 3 doc-drift sweep: COMPARISON.md matrix row + G1 narrative + B1 borrow row + References stale; ROADMAP M6 acceptance bullet stale (15d5d43) |
 | R5 | 019e142d | fix-first | 1 doc-drift: CODEX_BRIEFING.md missing historical-dispatch banner (2b25d98) |
-| R6 | 019e1436 | fix-first | 1 metadata-recursion: companion-doc review-rounds frontmatter and banners locked to round counts that the next round invalidates; stabilized language and migrated round-count to this table as the single source of truth (this commit) |
+| R6 | 019e1436 | fix-first | 1 metadata-recursion: companion-doc review-rounds frontmatter and banners locked to round counts that the next round invalidates; stabilized language and pointed companion docs at `CODEX_RESPONSE.md § Postscript` as the canonical round-summary table (83ca862) |
+| R7 | 019e143d | fix-first | 3 residual hardcoded round-count copy missed by R6: CODEX_RESPONSE.md Postscript heading + "three subsequent rounds" phrase; COMPARISON.md frontmatter R1..R6 range; IMPLEMENTATION_PLAN.md claimed its own Outcome table as canonical (current commit) |
 | (next) | (pending) | (target: push) | convergence verification |

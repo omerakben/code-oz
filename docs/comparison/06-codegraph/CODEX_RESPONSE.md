@@ -167,9 +167,9 @@ If all four trigger together on at least three runs across at least two repos, r
 - `docs/contracts/REPO_CONTEXT.md`
 - `CLAUDE.md` rules 13, 18, 19, 20, 21
 
-## Postscript — implementation evolution (R1 / R2 / R3)
+## Postscript — implementation evolution
 
-This transcript is the R0 pre-implementation debate. The implementation that shipped on branch `worktree-feat+comparison-codegraph` evolved past several specifics here through three subsequent Codex review rounds. The post-implementation contract lives in `IMPLEMENTATION_PLAN.md § Outcome` and in the shipped code itself. Specific divergences:
+This transcript is the R0 pre-implementation debate. The implementation that shipped on branch `worktree-feat+comparison-codegraph` evolved past several specifics here through a multi-round Codex review process. The post-implementation contract lives in `IMPLEMENTATION_PLAN.md § Outcome` and in the shipped code itself; the round-by-round table is the single source of truth at the bottom of this section. Specific divergences:
 
 **B1 — error-code decision (Q8 closure).** The R0 synthesis above describes the reservation in general terms. The shipped implementation reuses `schema_invalid_permissions` at the config-load layer (not a new `schema_reserved_tool` code) and reuses `tool_unavailable` at the runtime layer. The precision lives in the rule strings (anchored to `REPO_CONTEXT.md § Reservation`), not in new error-code authority. This matches Codex's R0 wording "tighten the wording" while keeping zero new surfaces.
 
@@ -197,7 +197,8 @@ This transcript is the R0 pre-implementation debate. The implementation that shi
 | R3 | `019e141b` | fix-first (3 doc-drift) | 63721e7 |
 | R4 | `019e1421` | fix-first (3 sweep findings — COMPARISON.md + ROADMAP M6) | 15d5d43 |
 | R5 | `019e142d` | fix-first (CODEX_BRIEFING.md historical banner) | 2b25d98 |
-| R6 | `019e1436` | fix-first (metadata-recursion — stabilize round-count language; pin table here) | (current commit) |
+| R6 | `019e1436` | fix-first (metadata-recursion — stabilize round-count language) | 83ca862 |
+| R7 | `019e143d` | fix-first (3 residual hardcoded round-count sites missed by R6) | (current commit) |
 | next | (pending) | (target: push) | convergence verification |
 
 After the convergence round the branch ships at 3116 tests pass / 0 fail / typecheck clean / `bun run eval:repo_context --strict` passes all three cases.
