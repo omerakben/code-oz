@@ -26,7 +26,7 @@ Land the three Codex-aligned borrow decisions from `CODEX_RESPONSE.md`:
 - **B2** — Three-case deterministic evaluation harness for repo_context tools. Discovery + usage + budget pressure. Recall@k + bytes + tool-call counts. No LLM-judged path in default CI. New `bun run eval:repo_context` script.
 - **B5** — Reclassify framework-aware route detection from no-borrow to deferred-with-trigger. ROADMAP entry.
 
-Plus: full offline tests pass, two Codex review rounds (R1 + R2 minimum) reaching `push`, PR up.
+Plus: full offline tests pass, a Codex review process culminating in `push`, PR up. (Original plan called for a two-round target; the canonical round-by-round table at the bottom records what actually happened.)
 
 ## Locked decisions (from CODEX_RESPONSE.md)
 
@@ -92,14 +92,14 @@ Plus: full offline tests pass, two Codex review rounds (R1 + R2 minimum) reachin
 
 ## Codex review rounds
 
-After commit 4, dispatch Codex R1 review on the head commit. Expected verdicts and responses:
+After the implementation commits, dispatch a Codex review on the head commit. Expected verdicts and responses:
 
 - `push` → done, open PR.
-- `fix-first` (block-push or block-next-milestone) → fix in commit 5+, dispatch R2.
-- `fix-first` (fix-soon / nit) → close findings in commit 5+, dispatch R2 confirming closure.
-- `debate-required` → record debate in CODEX_R2_DEBATE.md, synthesize, fix.
+- `fix-first` (block-push or block-next-milestone) → fix in a follow-up commit, dispatch a follow-up review.
+- `fix-first` (fix-soon / nit) → close findings in a follow-up commit, dispatch a follow-up review confirming closure.
+- `debate-required` → record the debate, synthesize, fix, then re-review.
 
-Two-round target. R1+R2 must converge to `push`.
+Original target: minimum two-round convergence. The canonical round-by-round table at the bottom of this document records the actual round-by-round history.
 
 ## Out of scope (explicitly)
 
@@ -109,7 +109,7 @@ Two-round target. R1+R2 must converge to `push`.
 - Touching any other comparison folder.
 - Touching `events.jsonl` event-projection code that allows `tool: 'symbol'` (must remain in the union for backward-compat in case any historical event is replayed; new events cannot get `'symbol'` because the gates above prevent it).
 
-## Outcome (post-R3 final state)
+## Outcome (post-implementation final state)
 
 This section captures what shipped. Where the plan above diverges from the final state, this section is authoritative.
 
@@ -117,9 +117,9 @@ This section captures what shipped. Where the plan above diverges from the final
 
 The plan considered adding a new `schema_reserved_tool` code to `AgentLoadIssue`. The shipped implementation **reuses `schema_invalid_permissions`** with a precise rule string anchored to `REPO_CONTEXT.md § Reservation`. Rationale: a new code is a small new authority surface; reusing the existing code with a precise rule keeps zero new surfaces while preserving call-site clarity (matches Codex's CODEX_RESPONSE.md Q8 wording "tighten the wording, not add new error codes"). Runtime path uses the existing `tool_unavailable` code in `RepoContextError` (also no new surface).
 
-### B2 — case-03 redesign (R1 → R2 fixes)
+### B2 — case-03 redesign (post-debate fixes)
 
-The plan described case-03 as "30 candidate files; pattern matches 12; recall@k ≥ 0.8 floor; selected-path count ≤ `maxFilesForNextManifest`." Codex R1 finding 3 caught that the original fixture never actually triggered truncation (12 < `maxResults=25`) and that the recall floor depended on rg's filesystem traversal order, which is platform-dependent.
+The plan described case-03 as "30 candidate files; pattern matches 12; recall@k ≥ 0.8 floor; selected-path count ≤ `maxFilesForNextManifest`." A post-debate review (see canonical table) caught that the original fixture never actually triggered truncation (12 < `maxResults=25`) and that the recall floor depended on rg's filesystem traversal order, which is platform-dependent.
 
 The shipped case-03 contract:
 
@@ -144,7 +144,7 @@ The plan didn't include a `minReturnedPaths` threshold for the standalone runner
 |---|---|---|---|
 | Baseline | 3108 | 0 | 1 |
 | After B1 | 3113 | 0 | 1 |
-| After B2 + R1 + R2 | 3116 | 0 | 2 |
+| After B2 + post-debate fixes | 3116 | 0 | 2 |
 
 The second skip is the eval-harness rg-not-installed branch (mirrors the existing pattern in `tests/repo-context-glob.test.ts`).
 
