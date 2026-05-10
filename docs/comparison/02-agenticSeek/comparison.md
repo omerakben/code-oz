@@ -5,7 +5,7 @@ companion-docs:
   - ../../CLAUDE.md (influence library; non-negotiable rules)
   - ../../docs/product/AI_SOFTWARE_COMPANY_THESIS.md (product north star)
 target: head-to-head against `~/Projects/agents/templates/agenticSeek` (Fosowl, GPL-3.0, GitHub-trending side-project)
-status: synthesized 2026-05-10 — Codex round complete
+status: round 2 applied 2026-05-10 — convergence verification pending
 date: 2026-05-10
 session: 02
 template: agenticSeek
@@ -17,7 +17,7 @@ verdict: YES, with selective borrows (most agenticSeek strengths are off-mission
 
 ## 0. TL;DR
 
-**Verdict: YES — code-oz is the right runtime for its category, and is structurally ahead of agenticSeek on every directly-overlapping mechanic when measured under the repo-native SDLC runtime frame** (`docs/product/AI_SOFTWARE_COMPANY_THESIS.md`). agenticSeek does ship more user-facing surface (local UI, browser autonomy, voice, MCP discovery, local-provider path), but most of that is off-category and the Codex round confirmed it is not a category-defining gap. Four borrow candidates land in section 5 / section 8: **B3 (MCP finder authority)**, **B1 (VERIFY-fail bad-plan telemetry)**, **B4 (local-first OpenAI-compatible provider)**, and a demoted **B2 (advisory DEFINE risk / effort hint)**. Local-first privacy was upgraded from "off-mission" to "demand-gated borrow" after Codex pushback. Each borrow must clear Rule 20 (one new authority per milestone) and Rule 21 (measurable risk-reduction effect) before earning a milestone slot.
+**Verdict: YES — code-oz is the right runtime for its category and is structurally stronger on the SDLC authority mechanics that overlap with agenticSeek** (`docs/product/AI_SOFTWARE_COMPANY_THESIS.md`). agenticSeek is still ahead on shipped MCP discovery breadth, local-provider availability, and personal-assistant UX surfaces (voice, browser autonomy, chat front-end). Those areas are not category-defining for code-oz and should not be described as places code-oz is already ahead — they are off-spine borrow candidates or off-mission, which is a category answer, not a "we already win" answer. The Codex round confirmed the category answer holds without a category-defining gap. Four borrow candidates land in section 5 / section 8: **B3 (MCP finder authority)**, **B1 (VERIFY-fail bad-plan telemetry)**, **B4 (local-first OpenAI-compatible provider)**, and a demoted **B2 (advisory DEFINE risk / effort hint)**. Local-first privacy was upgraded from "off-mission" to "demand-gated borrow" after Codex pushback. Each borrow must clear Rule 20 (one new authority per milestone) and Rule 21 (measurable risk-reduction effect) before earning a milestone slot.
 
 agenticSeek is GPL-3.0; per the CLAUDE.md influence-library rule, only patterns are borrowable. No code, snippets, or trained-classifier weights cross the boundary.
 
@@ -60,9 +60,9 @@ Each row is a mechanic that exists in *both* projects. "code-oz status" is "what
 | 2   | Pass / fail signal between phases | LLM emits "NO_UPDATE" string in free-form text; planner regexes for it                               | `state/GATE_<PHASE>_PASSED.json` validated by `src/state/gates.ts` schemas (CLAUDE.md Rule 1)                                                                     | **code-oz ahead** — Rule 1 explicitly forbids agenticSeek's pattern after the maestro lesson  |
 | 3   | Provider abstraction              | Multi-provider via `llm_provider.py`; one provider per session via `config.ini`                      | `IAgentProvider` (M2), capability contract (M11), Codex / Claude / Gemini / xAI adapters; reviewer panel runs simultaneous providers (M14)                       | **code-oz ahead** — first-class cross-family review is the central thesis                     |
 | 4   | Cross-family / cross-model review | Absent. Single LLM provider does plan, execute, and self-grade.                                      | M9 cross-family REVIEW; M14 Reviewer Panel v1 (multi-reviewer simultaneous); M10 `requestDebate()`; M15 debate-policy scheduler with budget-aware single-opponent | **code-oz ahead** — this is the product north star (`AI_SOFTWARE_COMPANY_THESIS.md`)          |
-| 5   | Re-planning after failure         | Planner re-invoked after each step; rewrites tail of JSON plan when "failure" detected               | M8 VERIFY → restart-on-fail policy with phase-locked retry; M16 multi-task VERIFY-fail restart cycle (e2e in tests)                                              | **code-oz ahead in rigor; agenticSeek lighter and closer to chat UX** — see borrow B1 below   |
+| 5   | Re-planning after every step      | Planner re-invoked after **every step** (success or failure) with `(goal, prior_results, this_step_result, success_flag)`; LLM emits `NO_UPDATE` or rewrites the tail. The success-only short-circuit at `planner_agent.py:206-207` is commented out, so re-planning fires unconditionally on every step (`planner_agent.py:299`). | M8 VERIFY → restart-on-fail policy with phase-locked retry; M16 multi-task VERIFY-fail restart cycle (e2e in tests). PLAN is static once its gate passes. | **code-oz ahead in rigor; agenticSeek conflates decomposition failure with implementation failure** — see borrow B1 below |
 | 6   | Code execution                    | Per-language interpreter tools that exec blocks parsed from LLM text                                 | Worktree-isolated build (M7) + permission manifest (Rule 9) + BUILD artifact authority (M7)                                                                      | **code-oz ahead on isolation**; agenticSeek is lighter for ad-hoc scripting                   |
-| 7   | Safety / sandboxing               | `tools/safety.py`: `is_unsafe(cmd)` returns true if any of ~30 strings appear as substrings in `cmd` | Permission manifest with allowed commands / network / file roots / env vars / timeout / secret access (Rule 9); default = no execution                           | **code-oz ahead** — agenticSeek's substring match is bypassable (e.g. `rm` matches `warm`)    |
+| 7   | Safety / sandboxing               | `tools/safety.py`: `is_unsafe(cmd)` returns true if any of ~30 strings appear as substrings in `cmd` | Permission manifest with allowed commands / network / file roots / env vars / timeout / secret access (Rule 9); default = no execution                           | **code-oz ahead** — agenticSeek's substring match is brittle in both directions: false-positives on benign substrings (`rm` inside `warm` blocks `warm`; `git` blocks all git use) and misses shell-level evasions |
 | 8   | Memory                            | Conversation list + LED summarization model + JSON session files                                     | `events.jsonl` cumulative event log + per-phase artifact files + run-level resume                                                                                | **code-oz ahead on auditability**; agenticSeek lighter for chat continuity                    |
 | 9   | Resume / session recovery         | Reload last session JSON                                                                             | `runId` + idempotent gate writes + `code-oz resume` (Rule 12)                                                                                                    | **code-oz ahead**                                                                             |
 | 10  | Budgets / cost control            | None visible; user manages token cost via provider choice                                            | `budgets.global` namespace, `assertWithinBudget` from `events.jsonl` (Rule 19), M13 role-cost policy                                                              | **code-oz ahead**                                                                             |
@@ -74,7 +74,7 @@ Each row is a mechanic that exists in *both* projects. "code-oz status" is "what
 | 16  | Web frontend                      | React frontend + FastAPI backend + Docker compose                                                    | CLI binary only; W3-lite ships native macOS / Linux binaries                                                                                                     | **off-mission for v0.1**; revisit if non-tech-user DEFINE flow needs a GUI                    |
 | 17  | Local-first / private             | Strong claim; runs on Ollama / LM Studio with zero outbound calls                                    | Provider-agnostic via `IAgentProvider`; xAI direct HTTP adapter (PE-1); local provider would just be another `IAgentProvider` impl                               | **code-oz architecturally compatible; not yet shipped**; see borrow B4 (deferred / demand-gated) |
 
-Score: code-oz ahead on 11 of 13 directly-overlapping rows; tied or behind on 2 (intent routing, MCP breadth); 4 rows are off-mission.
+Score (qualitative, not arithmetic): under the SDLC-runtime category frame, code-oz is stronger on the core authority mechanics — gates, cross-family review, worktree isolation, audit state, resume, brownfield handling, and budgets. agenticSeek is ahead on shipped MCP discovery breadth and local-provider availability; browser autonomy, voice, chat front-end, and memory-compression-as-canonical-state remain off-category for v0.1 rather than scoreable SDLC gaps. Privacy was reclassified after the Codex round from off-mission to demand-gated borrow B4.
 
 ## 4. Where code-oz is structurally better — and why
 
@@ -100,11 +100,11 @@ Each is a *pattern* (not code), with milestone disposition. None of these is gra
 
 ### B1. Lightweight dynamic re-planning telemetry inside the existing VERIFY → BUILD restart cycle
 
-**Pattern:** agenticSeek's planner re-runs after every step with `(goal, prior_results, this_step_result, success_flag)` and is allowed to rewrite the tail of the plan. The rewrite is bounded ("Make the plan the same length as the original or with only one additional step. Do not change past tasks.").
+**Pattern:** agenticSeek's planner re-runs after every step with `(goal, prior_results, this_step_result, success_flag)` and is allowed to rewrite the tail of the plan. The rewrite is bounded ("Make the plan the same length as the original one or with only one additional step. Do not change past tasks." — `planner_agent.py:221-222`).
 
 **Code-oz today:** M8 has restart-on-fail; M16 wired multi-task lifecycle. The current cycle restarts the *current task* but the orchestrator-level plan is static once PLAN passes its gate.
 
-**Borrow:** at VERIFY-fail, log a `plan_revision_proposed` event with `(reason, proposed_tail_diff)` *before* deciding restart vs. NEEDS_INTERVENTION. This is telemetry-only in v1 and turns into authority later.
+**Borrow:** at VERIFY-fail, log telemetry tied to `(failure_class, task_id, attempt_count, repeat_failure_flag)` inside the existing VERIFY-fail / restart-on-fail surface. Do not emit proposed tail diffs, do not create a gate artifact, and do not grant plan-mutation authority. The signal we are building is "repeated restarts under the same failure class indicate the plan is wrong," not "let the planner edit itself."
 
 **Disposition:** candidate for a future milestone behind M16 stabilization. Must clear Rule 21 (measurable: does plan-revision telemetry reduce VERIFY-fail loops vs. baseline?). Off the critical path for v0.1.
 
@@ -114,7 +114,7 @@ Each is a *pattern* (not code), with milestone disposition. None of these is gra
 
 **Code-oz today:** every run goes through DEFINE → PLAN regardless of complexity. For trivial tasks this is overhead; for non-tech users it is welcome rigor. There is no graceful "fast path" for "fix this typo" requests.
 
-**Borrow:** an *advisory* complexity classifier at DEFINE that surfaces a `suggested_path: full | abbreviated | direct` hint in DEFINE artifacts. Never authoritative — operator decides. Path-collapsing remains a phase-graph decision, not a classifier decision.
+**Borrow:** an *advisory* DEFINE risk / effort hint that records expected complexity, likely tool needs, and operator attention points. It must not emit `suggested_path`, imply abbreviated / direct flow, or affect whether DEFINE, PLAN, VERIFY, or REVIEW runs. Phase-collapse — if it is ever proposed — is a separate Rule-20 decision, not a side-effect of this hint.
 
 **Disposition:** candidate, but the *trained classifier* itself is not borrowed; we would use the existing provider on a structured prompt with a 5-shot example block. Risk-reduction claim must be measured before promotion.
 
@@ -124,7 +124,7 @@ Each is a *pattern* (not code), with milestone disposition. None of these is gra
 
 **Code-oz today:** Rule 18 defines `tool_use.repo_context`; MCP host integration was borrowed from opencode but not yet shipped. The "discovery" half is absent.
 
-**Borrow:** a `tool_use.mcp_finder` sub-scope that lets a permitted role (Researcher / Builder) propose adding an MCP server during PLAN. Adoption must go through a gate write so the operator approves the new tool surface. Network access denied for the finder itself; install path goes through an explicit operator step.
+**Borrow:** a distinct MCP tool-adoption authority — *not* an extension of `tool_use.repo_context`. A permitted shipped role may propose a pinned MCP server during PLAN, with adoption captured in the artifact as a structured record: server identity, pinned version, declared capability set, allowed file-roots, network surface, env-var / secret access, and an explicit re-approval requirement on any of those changing. Operator approval at install time is necessary but not sufficient; the harder failure mode is post-approval drift via server update, transitive tool addition, or registry compromise under a trusted name. Network access denied for the finder tool itself. Researcher is a deferred role under the M12 roster decision; B3 must not implicitly require Researcher to ship.
 
 **Disposition:** candidate, lower priority than M14 / M15 stabilization. Rule 21 review: measurable benefit only when an MCP-tool gap is repeatedly hitting `NEEDS_INTERVENTION`.
 
@@ -151,9 +151,9 @@ Each is a *pattern* (not code), with milestone disposition. None of these is gra
 
 **Privacy moved out of this table.** The earlier draft listed local-first / private as off-mission; Codex argued — correctly — that for proprietary code and secret-bearing worktrees, "zero outbound provider traffic" is a real adoption / trust property. It is now a demand-gated borrow (B4) in section 5, not an off-mission item.
 
-## 7. Open questions for Codex
+## 7. Open questions (resolved in round 1)
 
-These are the questions for the Codex debate round. Codex should pressure-test the verdict, especially the B1–B4 dispositions.
+The seven open questions and three bonus questions in [codex-briefing.md](codex-briefing.md) were answered in the round-1 response and integrated in § 8. They are retained below for transcript continuity but are *not* active uncertainty. Remaining uncertainty is limited to Rule 20 / Rule 21 promotion criteria for B1–B4, which is a ROADMAP question, not a comparison question.
 
 1. **Is the verdict ("YES, with selective borrows") the right shape?** Specifically, does agenticSeek demonstrate any *category-defining* primitive that we are calling off-mission but is actually load-bearing for the SDLC runtime?
 2. **Borrow B1 (plan-revision telemetry):** is `plan_revision_proposed` a useful event, or is it noise that pollutes `events.jsonl` without a clear consumer? Should it be a gate-file artifact instead?
@@ -193,7 +193,7 @@ The Codex round was substantive and forced four real changes. Codex agreed the v
 
 | Rank | Borrow | Disposition | Rule 21 measurement |
 |------|--------|-------------|---------------------|
-| 1 | **B3 — MCP finder sub-scope** *(promoted from rank 3)* | Demand-gated. Real new tool-adoption authority with identity / version / capability / file-root / network / env-var / re-approval semantics. Off the spine; uses its own gate. | Repeated `NEEDS_INTERVENTION` from missing tools drops; permission denials, unexpected network attempts, secret-access attempts, and operator re-approval events stay bounded and auditable. |
+| 1 (conditional) | **B3 — MCP finder authority** *(promoted from rank 3, conditional on MCP-gap evidence)* | Demand-gated. Promotion to rank 1 fires only once repeated `NEEDS_INTERVENTION` events caused by missing MCP tools cross a measurement threshold; until then, B3 ranks below B1 telemetry. Distinct tool-adoption authority — not a `tool_use.repo_context` extension — with identity / version / capability / file-root / network / env-var / re-approval semantics. Off the spine; uses its own gate. | Repeated `NEEDS_INTERVENTION` from missing tools drops; permission denials, unexpected network attempts, secret-access attempts, and operator re-approval events stay bounded and auditable. |
 | 2 | **B1 — VERIFY-fail bad-plan telemetry** *(re-scoped from "plan-revision telemetry")* | Telemetry-only inside the existing VERIFY-fail / restart-on-fail surface. No gate artifact. No plan mutation. | Repeat-failure reduction by failure class; fewer attempts-to-ready after first VERIFY fail; fewer cap-exhaustion interventions per comparable task. |
 | 3 | **B4 — local-first OpenAI-compatible provider** *(privacy framing reinforced)* | Demand-gated to PE-2. Generic adapter, not Ollama-specific. Privacy is a real adoption / trust property, not branding. | Zero outbound provider file payloads for the targeted role(s); gate completion rate, VERIFY pass rate, and REVIEW quality stay within tolerance of the cloud baseline. |
 | 4 | **B2 — DEFINE risk / effort hint** *(demoted; `suggested_path` framing dropped)* | Demand-gated and *advisory only*. No phase-collapse semantics. Hint surfaces inside DEFINE artifacts; operator decides. | Reduced abandoned runs or operator-override friction with no increase in VERIFY failures, REVIEW findings, or post-ship corrections vs. full-spine baseline. |
@@ -209,5 +209,7 @@ The Codex round was substantive and forced four real changes. Codex agreed the v
 ### Codex debate
 
 - Briefing: [codex-briefing.md](codex-briefing.md)
-- Response: [codex-response.md](codex-response.md) — Codex round 1, `gpt-5.5` xhigh, sandbox `read-only`, thread `019e12ac-61a1-73c1-afca-3cf6c3cc754c`.
-- Synthesis: this section (§ 8).
+- Round 1 response: [codex-response.md](codex-response.md) — `gpt-5.5` xhigh, sandbox `read-only`, thread `019e12ac-61a1-73c1-afca-3cf6c3cc754c`.
+- Round 2 deltas (Codex): [round2-codex.md](round2-codex.md) — 6 deltas, all integrated.
+- Round 2 deltas (Opus): [round2-opus.md](round2-opus.md) — 6 deltas, all integrated. Opus verified two source-fidelity bugs that Codex did not catch (re-planning trigger pattern; verbatim quote drop).
+- Synthesis: this section (§ 8). Round-2 changes: TL;DR reframe, score-line replacement, B1 narrowing, B2 `suggested_path` removal, B3 trust-boundary spec, B3 rank-1 conditional, row 5 trigger correction, row 7 directionality fix, verbatim quote restored, § 7 retirement.
