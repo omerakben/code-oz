@@ -72,7 +72,9 @@ No. D1 is a platform extension system. D2 is a parallel-agent execution surface.
 | (none) | **D3 (new): Release/run-quality eval harness inspired by gptme evals.** Defer unless it becomes the single milestone authority. |
 | D1, D2, R1, R2, R3, R4, R5 | unchanged |
 
-Borrow set after fix: **2 narrowed-borrows now, 3 deferred (incl. new D3 eval harness), 5 rejected.**
+Borrow set after fix: **2 narrow-borrow candidates (each deferred to its own milestone), 4 deferred (B2 demoted + D1 + D2 + new D3 eval harness), 5 rejected.**
+
+> **Note (post-R2 scope lock, thread `019e1319`):** Codex round 2 ratified Option A — RATIFY-ONLY. The two narrow-borrow candidates above (B1, B3) are reserved for their own future milestones (M17/M18 candidate slots in `docs/design/ROADMAP.md`); they are NOT implemented in this PR. The canonical post-debate settlement is `SYNTHESIS.md`.
 
 ---
 

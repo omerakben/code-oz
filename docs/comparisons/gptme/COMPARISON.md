@@ -294,8 +294,8 @@ Codex also surfaced one strategic miss the briefer missed entirely:
 
 | Action | Item | Note |
 |---|---|---|
-| Borrow now (narrowed) | **B1** | deterministic context-size + compaction-opportunity probe only; no LLM summarization, no view-branch swap |
-| Borrow now (narrowed) | **B3** | AGENT_FILES discovery + explicit AUDIT/DEFINE opt-in; no home/parent walk |
+| Narrow borrow candidate, deferred to own milestone | **B1** | deterministic context-size + compaction-opportunity probe only; no LLM summarization, no view-branch swap |
+| Narrow borrow candidate, deferred to own milestone | **B3** | AGENT_FILES discovery + explicit AUDIT/DEFINE opt-in; no home/parent walk |
 | Defer | **B2** (renamed) | worktree topology/refusal diagnostics; revisit when audit-completeness recovery measurably fails |
 | Defer | **D1** | generalized hook lifecycle |
 | Defer | **D2** | subagent executor/planner/batch |
@@ -308,10 +308,10 @@ Codex also surfaced one strategic miss the briefer missed entirely:
 
 ### Outcome counts
 
-- 2 narrowed borrows now (B1, B3)
-- 3 deferred (B2 demoted, D1, D2, D3 added) — wait, four deferred (B2, D1, D2, D3)
+- 2 narrow-borrow candidates (B1, B3) — each reserved for its own future milestone, no implementation in this PR
+- 4 deferred (B2 demoted, D1, D2, D3 added)
 - 5 rejected (R1-R5)
 
-**Total: 2 borrow / 4 defer / 5 reject. Net of one full classification round.**
+**Total: 2 narrow-borrow candidates / 4 defer / 5 reject. Implementation lands in future milestones; this PR ratifies the classification only.**
 
 The Codex debate caught real bugs in the recommendation (wrong threshold prose, restore-semantics mismatch, trust-boundary blind spot, missing eval-harness gap) — the cross-model peer review rule earned its keep again.

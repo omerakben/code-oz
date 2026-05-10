@@ -50,7 +50,7 @@ The original briefing recommended three "borrow now" items (B1, B2, B3). After t
 
 - **B1 needs a contract before extending.** The existing `ProviderContextMetrics` already emits `tokensEstimate` (`src/providers/manifest.ts:111`, with `filesSent` and `bytesSent` adjacent at lines 109–110 and the metrics struct frozen at 112–117). Extending it with new fields (`context_projection_tokens`, `compaction_opportunity_savings_ratio`, `compaction_skipped_savings_ratio`) requires a contract decision: where the compaction "what could be removed" projection runs, what its determinism guarantees are, and how downstream consumers (REVIEW preflight, debate-policy scheduler) read the new fields. That contract is itself a milestone.
 
-- **No source or test code is touched in this PR.** The four files this PR touches are `docs/comparisons/gptme/COMPARISON.md`, `docs/comparisons/gptme/CODEX_BRIEFING.md`, `docs/comparisons/gptme/CODEX_RESPONSE.md`, this file (`SYNTHESIS.md`), and `docs/design/ROADMAP.md`. No `src/**`, no `tests/**`, no telemetry schema (`src/state/schemas.ts:438` discriminated union of `PhaseEvent` is untouched), no event-emission code (`src/state/events.ts:170` neighborhood is untouched). The borrows are reserved as future-milestone slots, not landed.
+- **No source or test code is touched in this PR.** The five files this PR touches are `docs/comparisons/gptme/COMPARISON.md`, `docs/comparisons/gptme/CODEX_BRIEFING.md`, `docs/comparisons/gptme/CODEX_RESPONSE.md`, this file (`SYNTHESIS.md`), and `docs/design/ROADMAP.md`. No `src/**`, no `tests/**`, no telemetry schema (`src/state/schemas.ts:438` discriminated union of `PhaseEvent` is untouched), no event-emission code (`src/state/events.ts:170` neighborhood is untouched). The borrows are reserved as future-milestone slots, not landed.
 
 ---
 
@@ -78,9 +78,9 @@ Round-1 verdict (thread `019e12ed-4038-7fe2-8800-5520e5f2048a`) was `fix-first` 
 
 This PR closes when:
 
-1. **No further architectural improvements found.** The COMPARISON.md decision matrix, CODEX_RESPONSE.md verdict, and this synthesis converge on the same classifications. Round-2 ratified. No round 3 required for the comparison record.
+1. **No further architectural improvements found.** The COMPARISON.md decision matrix, CODEX_RESPONSE.md verdict, and this synthesis converge on the same classifications. Round-1 (`fix-first`, thread `019e12ed`) restructured the borrow set; round-2 (Option A scope lock, thread `019e1319`) ratified RATIFY-ONLY; round-3 (`fix-first` code review, thread `019e1323`) closed three findings (rebase onto current main, decision-matrix count normalization, line-citation widening); round-4 (convergence, thread `019e132a`) closed two follow-up nits and declared push-clean.
 2. **Rule 20 respected.** No new authority lands in this PR. B1 and B3 are reserved as separate milestone slots in `docs/design/ROADMAP.md`. B2 and D3 are reserved as deferred slots with measurement triggers.
 3. **Rule 21 measurement plans documented for future milestones.** Each borrow's measurement plan is recorded in the decision matrix above and in the `ROADMAP.md` slot reservation. Implementation cannot land without telemetry first.
 4. **No source or test code touched.** Only `docs/comparisons/gptme/*` and `docs/design/ROADMAP.md` are modified. No `src/**`, no `tests/**`, no schema changes.
 
-When the maestro's round-3 Codex code-review on this PR returns `push`, the PR ships and the slots are reserved. The next milestone (M17 candidate or otherwise) opens its own briefing → debate → implementation → review cycle.
+When the convergence Codex round returns `push-clean`, the PR ships and the slots are reserved. The next milestone (M17 candidate or otherwise) opens its own briefing → debate → implementation → review cycle.
