@@ -161,3 +161,22 @@ After C13:
 - W3+ — npm publish + Homebrew tap + Scoop bucket
 - Streaming chunked persona output to stdout (currently buffered)
 - SHIP packager (artifact production beyond gate writer)
+
+## Closure
+
+- **Closure date:** 2026-05-09
+- **HEAD commit at closure:** `08f4d45` (`test(e2e): multi-task BUILD/VERIFY/REVIEW cycle via CLI binary spawn (M16 C12)`) plus the C13 docs commit on top.
+- **Test count:** 3088 pass / 0 fail / 1 skip (baseline 2706 → +382 tests).
+- **C12 e2e runtime:** ~2.4s (binary-spawn multi-task fixture, three tasks, full BUILD/VERIFY/REVIEW per task).
+- **C9 follow-on commits (1-7):** seven unplanned fixes closing 8 production bugs surfaced only by the C12 e2e:
+  - `c262efd` — C9 follow-on 1: cursor-aware ship transition + gate-file task-boundary lifecycle.
+  - `5d21d9b` — C9 follow-on 2: phase_entered(build) emission on task boundary in approve-review.
+  - `3719403` — C9 follow-on 3: task-boundary supersedence in phase-transition helpers (`completeIncompleteTransitions`, `completeTransitionForPhase`).
+  - `bb285bc` — C9 follow-on 4: attempt-boundary supersedence in `clearStaleGateFile`.
+  - `e041c48` — C9 follow-on 5: `phase_entered(build)` emission on attempt-boundary pre-routes.
+  - `0ac0f82` — C9 follow-on 6: `resolveNextReviewRound` walks across attempts (not just within the active attempt).
+  - `c401dc7` — C9 follow-on 7: emit `task_review_passed` in `dispatchReview` (cursor projection sees the event).
+- **Bug count:** 8 production bugs caught by the C12 e2e (Bugs 1, 2, 3, 4, 6, 7, 9, 10). All bugs sat in C9's "task-loop dispatch" surface — coupling between `approveReviewTaskGate` and adjacent state-machine helpers (`completeIncompleteTransitions`, `completeTransitionForPhase`, `requireGate`, `recoverOrphanGates`, `validateRunIntegrity`, `clearStaleGateFile`, `resolveNextReviewRound`, `dispatchReview`'s `task_review_passed` emission). Per-commit Codex pre-design caught contract intent but missed implementation drift; only the milestone-level e2e exposed coupling. Empirical case for CLAUDE.md rule 19 (integration tests are non-negotiable). Implications for M17 retro: rule 20 (one authority per milestone) needs sharper application — C9 bundled six sub-surfaces under "task-loop dispatch" and the breadth let coupling bugs through.
+- **Bug 8 / Bug 11:** addressed via C12 fixture-side workaround (per-phase budget overrides). M17 should consider a proper fix: default `verify.maxProviderCalls=5` from `src/config/schema.ts:301` does not scale to multi-task PLANs; per-task budget scaling or higher defaults for multi-task workflows is the candidate solution.
+- **Full milestone summary:** see `docs/design/ROADMAP.md` M16 entry (post-M10 productization sequence).
+- **R1 verdict:** TBD pending Codex review. R0 already done at `docs/research/CODEX_RESPONSE_M16.md`.

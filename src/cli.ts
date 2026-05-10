@@ -13,12 +13,18 @@ Usage: code-oz <command> [options]
 
 Commands:
   init             Scaffold a code-oz project in the current directory
-  run              Run the active phase (DEFINE → PLAN; M7 adds BUILD onward)
+  run              Drive the active phase: DEFINE -> PLAN -> BUILD -> VERIFY
+                     -> REVIEW -> SHIP. BUILD applies a per-task patch in an
+                     isolated worktree; VERIFY runs the validation command;
+                     REVIEW runs single-mode or panel cross-family review.
+                     Multi-task PLAN.md cycles BUILD/VERIFY/REVIEW per task
+                     until the cursor completes, then advances to ship.
   approve          Approve the current phase of the active run
   doctor           Probe environment health
-                     'doctor providers' — provider auth + CLI presence
-                     'doctor tools'     — required external tools (rg)
-                     'doctor run'       — read-only run inspector
+                     'doctor providers' - provider auth + CLI presence
+                     'doctor tools'     - required external tools (rg)
+                     'doctor git'       - git version (worktree subsystem)
+                     'doctor run'       - read-only run inspector
   help             Show this help
 
 Run 'code-oz <command> --help' for command-specific options.
