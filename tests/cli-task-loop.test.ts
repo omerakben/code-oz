@@ -53,7 +53,7 @@ import type { GateFile } from '../src/state/schemas.ts'
 import { writeGate } from '../src/state/gates.ts'
 import { generateUlid } from '../src/state/schemas.ts'
 import { appendEvent, readEvents } from '../src/state/events.ts'
-import { isKnownPhaseEvent, type LoggedEvent } from '../src/state/schemas.ts'
+import { isKnownPhaseEvent, type LoggedEvent, type Phase } from '../src/state/schemas.ts'
 import { parsePlan } from '../src/artifacts/plan.ts'
 import {
   serializeReviewReport,
@@ -70,6 +70,7 @@ import {
 import {
   shouldRouteReviewToBuildRestart,
 } from '../src/commands/dispatch-review-helpers.ts'
+import { emitPhaseEnteredBuildIfNeeded } from '../src/commands/run.ts'
 import {
   clearStaleGateFile,
   resolveBuildCarryForward,
@@ -3033,5 +3034,273 @@ describe('recoverOrphanGates — Bug 4: task-boundary supersedence on phase cove
       (e) => e.type === 'gate_written' && e.phase === 'build',
     )
     expect(buildGateWritten).toHaveLength(2)
+  })
+})
+
+// ---------------------------------------------------------------
+// M16 C9 follow-on (5) — Bug 7: phase_entered(build) on attempt-
+// boundary BUILD pre-routes (verify-restart + review-remediation).
+//
+// `dispatchBuild` never emits `phase_entered(build)` itself — the
+// upstream caller is authoritative for the transition. After 5d21d9be
+// closed the task-boundary half (approveReviewTaskGate emits
+// phase_entered(build) on the iterate half), the attempt-boundary
+// half remained: both pre-routes in handleActiveRun call dispatchBuild
+// without emitting the transition. currentPhase stays at 'verify' (or
+// 'review') and the operator's `code-oz approve build` for attempt
+// N+1 fails at approve.ts:117 with `current phase is '<phase>',
+// not 'build'`.
+//
+// Tests below cover the helper directly (not handleActiveRun's flow,
+// which spans process boundaries). The helper's contract mirrors the
+// approveReviewTaskGate dedup pattern: idempotent on currentPhase
+// already 'build'.
+// ---------------------------------------------------------------
+
+describe('emitPhaseEnteredBuildIfNeeded — Bug 7: attempt-boundary phase_entered(build)', () => {
+  test('currentPhase=verify (verify-restart pre-route): emits phase_entered(build)', async () => {
+    await initFreshRun()
+    // Drop synthetic events that put currentPhase at 'verify' for a
+    // BUILD attempt 1 that just completed and has a verify-restart
+    // signal pending. The reducer's currentPhase derives from the
+    // last phase_entered, so we mirror what handleActiveRun reads.
+    const synthSequence: Array<{ exit: Phase; enter: Phase }> = [
+      { exit: 'define', enter: 'plan' },
+      { exit: 'plan', enter: 'build' },
+      { exit: 'build', enter: 'verify' },
+    ]
+    for (const { exit, enter } of synthSequence) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        {
+          version: 1,
+          type: 'phase_exited',
+          ts: FIXED_TS,
+          runId: RUN,
+          phase: exit,
+          outcome: 'passed',
+        },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    const events = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const result = await emitPhaseEnteredBuildIfNeeded({
+      runPaths,
+      events,
+      runId: RUN,
+      currentPhase: 'verify',
+      now: () => FIXED_TS,
+    })
+    expect(result.emitted).toBe(true)
+    const after = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const enteredPhases = after
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered')
+      .map((e) => (e.type === 'phase_entered' ? e.phase : ''))
+    // The last phase_entered must be 'build' so the reducer's
+    // currentPhase advances. Prior entries (define, plan, build,
+    // verify) remain.
+    expect(enteredPhases[enteredPhases.length - 1]).toBe('build')
+    // The reducer projects the same.
+    const reloaded = await loadRun(runPaths)
+    expect(reloaded?.state.currentPhase).toBe('build')
+  })
+
+  test('currentPhase=review (review-remediation pre-route): emits phase_entered(build)', async () => {
+    await initFreshRun()
+    // The review-remediation pre-route fires when REVIEW r1 returns
+    // needs_revision and a review_remediation_recorded event is
+    // present. currentPhase is 'review' because review_remediation_
+    // recorded does not change phase. Synthesize that state.
+    const synthSequence: Array<{ exit: Phase; enter: Phase }> = [
+      { exit: 'define', enter: 'plan' },
+      { exit: 'plan', enter: 'build' },
+      { exit: 'build', enter: 'verify' },
+      { exit: 'verify', enter: 'review' },
+    ]
+    for (const { exit, enter } of synthSequence) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        {
+          version: 1,
+          type: 'phase_exited',
+          ts: FIXED_TS,
+          runId: RUN,
+          phase: exit,
+          outcome: 'passed',
+        },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    const events = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const result = await emitPhaseEnteredBuildIfNeeded({
+      runPaths,
+      events,
+      runId: RUN,
+      currentPhase: 'review',
+      now: () => FIXED_TS,
+    })
+    expect(result.emitted).toBe(true)
+    const reloaded = await loadRun(runPaths)
+    expect(reloaded?.state.currentPhase).toBe('build')
+  })
+
+  test('idempotency: currentPhase already \'build\' → short-circuit, no duplicate emit', async () => {
+    await initFreshRun()
+    // Synthesize a state where currentPhase is already 'build'
+    // (e.g., the first pre-route call already emitted, and we are
+    // re-entering on a benign resume).
+    const synthSequence: Array<{ exit: Phase; enter: Phase }> = [
+      { exit: 'define', enter: 'plan' },
+      { exit: 'plan', enter: 'build' },
+    ]
+    for (const { exit, enter } of synthSequence) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        {
+          version: 1,
+          type: 'phase_exited',
+          ts: FIXED_TS,
+          runId: RUN,
+          phase: exit,
+          outcome: 'passed',
+        },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    const eventsBefore = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const result = await emitPhaseEnteredBuildIfNeeded({
+      runPaths,
+      events: eventsBefore,
+      runId: RUN,
+      currentPhase: 'build',
+      now: () => FIXED_TS,
+    })
+    expect(result.emitted).toBe(false)
+    // The events.jsonl tail is unchanged.
+    const eventsAfter = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    expect(eventsAfter.length).toBe(eventsBefore.length)
+  })
+
+  test('three repeat invocations: emit once, skip twice', async () => {
+    await initFreshRun()
+    // Initial state: currentPhase='verify' (mid verify-restart).
+    const synthSequence: Array<{ exit: Phase; enter: Phase }> = [
+      { exit: 'define', enter: 'plan' },
+      { exit: 'plan', enter: 'build' },
+      { exit: 'build', enter: 'verify' },
+    ]
+    for (const { exit, enter } of synthSequence) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        {
+          version: 1,
+          type: 'phase_exited',
+          ts: FIXED_TS,
+          runId: RUN,
+          phase: exit,
+          outcome: 'passed',
+        },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    // First call: currentPhase=verify → emits.
+    let events = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const r1 = await emitPhaseEnteredBuildIfNeeded({
+      runPaths,
+      events,
+      runId: RUN,
+      currentPhase: 'verify',
+      now: () => FIXED_TS,
+    })
+    expect(r1.emitted).toBe(true)
+    // Second + third calls: currentPhase is now 'build' (per reducer),
+    // so the helper short-circuits.
+    events = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const reloaded = await loadRun(runPaths)
+    expect(reloaded?.state.currentPhase).toBe('build')
+    const r2 = await emitPhaseEnteredBuildIfNeeded({
+      runPaths,
+      events,
+      runId: RUN,
+      currentPhase: reloaded!.state.currentPhase,
+      now: () => FIXED_TS,
+    })
+    expect(r2.emitted).toBe(false)
+    const r3 = await emitPhaseEnteredBuildIfNeeded({
+      runPaths,
+      events,
+      runId: RUN,
+      currentPhase: reloaded!.state.currentPhase,
+      now: () => FIXED_TS,
+    })
+    expect(r3.emitted).toBe(false)
+    // Exactly one phase_entered(build) appears AFTER the upstream
+    // build entry from the synth sequence (we record the canonical
+    // build entry plus exactly one re-entry on the verify→build
+    // boundary).
+    const after = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const buildEntries = after
+      .filter(isKnownPhaseEvent)
+      .filter((e) => e.type === 'phase_entered' && e.phase === 'build')
+    expect(buildEntries).toHaveLength(2)
+  })
+
+  test('runApprove(build) for the next BUILD attempt is unblocked after emit', async () => {
+    // Operator-facing regression: after the pre-route emits
+    // phase_entered(build), runApprove(build) for the next attempt
+    // must succeed (currentPhase==='build' is the precondition at
+    // src/commands/approve.ts:117).
+    await initFreshRun()
+    const synthSequence: Array<{ exit: Phase; enter: Phase }> = [
+      { exit: 'define', enter: 'plan' },
+      { exit: 'plan', enter: 'build' },
+      { exit: 'build', enter: 'verify' },
+    ]
+    for (const { exit, enter } of synthSequence) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        {
+          version: 1,
+          type: 'phase_exited',
+          ts: FIXED_TS,
+          runId: RUN,
+          phase: exit,
+          outcome: 'passed',
+        },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    const events = await readEvents({ file: runPaths.eventsFile, lockDir: runPaths.lockDir })
+    const result = await emitPhaseEnteredBuildIfNeeded({
+      runPaths,
+      events,
+      runId: RUN,
+      currentPhase: 'verify',
+      now: () => FIXED_TS,
+    })
+    expect(result.emitted).toBe(true)
+    // currentPhase advances; that is the precondition for
+    // runApprove(build) at approve.ts:117. The approve primitive
+    // itself requires more state (BUILD_REPORT.md, gate file, etc.);
+    // this test verifies the phase precondition only — the operator-
+    // facing failure mode at line 117 is `currentPhase !== 'build'`.
+    const reloaded = await loadRun(runPaths)
+    expect(reloaded?.state.currentPhase).toBe('build')
   })
 })

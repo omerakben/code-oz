@@ -25,6 +25,7 @@ import { stdin as input, stdout as output } from 'node:process'
 
 import { appendEvent, readEvents } from '../state/events.ts'
 import { isKnownPhaseEvent } from '../state/schemas.ts'
+import type { LoggedEvent, Phase, PhaseEvent } from '../state/schemas.ts'
 
 import {
   bootstrap,
@@ -38,6 +39,7 @@ import {
   loadRun,
   readActiveRun,
   runPathsFor,
+  type RunPaths,
 } from '../state/run.ts'
 import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
@@ -786,6 +788,20 @@ async function handleActiveRun(
       // guidance; stay on the verify path.
     }
     if (plan !== null && shouldRouteToBuildRestart(events, plan, activeRunId)) {
+      // M16 C9 follow-on (5) — Bug 7 (verify-restart sibling): emit
+      // phase_entered(build) before dispatchBuild. The verify-restart
+      // signal does NOT change currentPhase via the reducer (run.ts
+      // line 124), and dispatchBuild never emits the transition itself.
+      // Without this emission, currentPhase stays at 'verify' and the
+      // operator's `code-oz approve build` for attempt N+1 would fail
+      // at approve.ts:117. Idempotent: skips when currentPhase is
+      // already 'build' (benign resume of an already-routed BUILD).
+      await emitPhaseEnteredBuildIfNeeded({
+        runPaths,
+        events,
+        runId: activeRunId,
+        currentPhase: phase,
+      })
       const result = await dispatchBuild({
         stateDir,
         artifactRoot,
@@ -842,6 +858,21 @@ async function handleActiveRun(
       reviewPlan !== null &&
       shouldRouteReviewToBuildRestart(events, reviewPlan, activeRunId)
     ) {
+      // M16 C9 follow-on (5) — Bug 7: emit phase_entered(build) before
+      // dispatchBuild. review_remediation_recorded does NOT change
+      // currentPhase via the reducer, and dispatchBuild never emits the
+      // transition itself. Without this emission, currentPhase stays at
+      // 'review' and the operator's `code-oz approve build` for attempt
+      // N+1 fails at approve.ts:117 with `current phase is 'review',
+      // not 'build'`. Symmetric to the verify-restart pre-route emission
+      // above; both close the attempt-boundary half of the same bug
+      // class that 5d21d9be closed at the task boundary.
+      await emitPhaseEnteredBuildIfNeeded({
+        runPaths,
+        events,
+        runId: activeRunId,
+        currentPhase: phase,
+      })
       const result = await dispatchBuild({
         stateDir,
         artifactRoot,
@@ -1946,6 +1977,76 @@ export async function dispatchReview(
       ].join('\n'),
     ),
   })
+}
+
+/**
+ * M16 C9 follow-on (5) — Bug 7: emit `phase_entered(build)` on the
+ * attempt-boundary BUILD pre-routes (verify-restart + review-remediation)
+ * before invoking `dispatchBuild`. Without this emission, `currentPhase`
+ * stays at `verify` (verify-restart path) or `review` (review-remediation
+ * path), and the operator's subsequent `code-oz approve build` for the
+ * new attempt fails at `src/commands/approve.ts:117` with `current phase
+ * is '<phase>', not 'build'`.
+ *
+ * This is the symmetric attempt-boundary counterpart to
+ * `approveReviewTaskGate`'s task-boundary `phase_entered(build)` emission
+ * (5d21d9be — M16 C9 follow-on 2). Both close the same bug class:
+ * `dispatchBuild` never emits `phase_entered(build)` itself; the upstream
+ * caller is authoritative for the transition.
+ *
+ * Idempotency: when `currentPhase` is already `build`, skip the emit.
+ * Mirrors the dedup pattern used in `approveReviewTaskGate` — the
+ * idempotent re-invocation case is "the prior call already emitted the
+ * transition, this re-call must not duplicate". A duplicate
+ * `phase_entered(build)` is benign for the reducer (it just re-sets
+ * currentPhase to 'build'), but the audit trail should not record the
+ * same boundary twice. The reducer over `loaded.state.currentPhase`
+ * already collapses redundant emissions for state purposes; we still
+ * skip to keep the event log minimal.
+ *
+ * Test-only export: `tests/cli-task-loop.test.ts` exercises this helper
+ * directly so the regression coverage does not require spawning the CLI
+ * binary. Production callers are the two pre-routes in `handleActiveRun`
+ * (verify-restart, review-remediation).
+ */
+export interface EmitPhaseEnteredBuildIfNeededInput {
+  readonly runPaths: RunPaths
+  readonly events: readonly LoggedEvent[]
+  readonly runId: string
+  readonly currentPhase: Phase
+  readonly now?: () => string
+}
+
+export interface EmitPhaseEnteredBuildIfNeededResult {
+  /** True when a `phase_entered(build)` event was appended; false when
+   *  the helper short-circuited because `currentPhase` was already
+   *  `build` (idempotent re-call). */
+  readonly emitted: boolean
+}
+
+export async function emitPhaseEnteredBuildIfNeeded(
+  input: EmitPhaseEnteredBuildIfNeededInput,
+): Promise<EmitPhaseEnteredBuildIfNeededResult> {
+  if (input.currentPhase === 'build') {
+    // Idempotent re-call: the prior pre-route invocation already emitted
+    // the boundary, OR a defensive resume of an in-flight BUILD. Either
+    // way, currentPhase is already where dispatchBuild expects it; do
+    // not re-emit.
+    return Object.freeze({ emitted: false })
+  }
+  const ts = input.now !== undefined ? input.now() : new Date().toISOString()
+  const ev: PhaseEvent = {
+    version: 1,
+    type: 'phase_entered',
+    ts,
+    runId: input.runId,
+    phase: 'build',
+  }
+  await appendEvent(
+    { file: input.runPaths.eventsFile, lockDir: input.runPaths.lockDir },
+    ev,
+  )
+  return Object.freeze({ emitted: true })
 }
 
 const RUN_HELP = `
