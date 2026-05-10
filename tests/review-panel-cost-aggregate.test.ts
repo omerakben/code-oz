@@ -88,12 +88,15 @@ describe('assertPanelWithinBudget — happy paths', () => {
 
 describe('assertPanelWithinBudget — aggregate refusals', () => {
   test('panel aggregate exceeds per-phase tokens → provider_budget_exceeded', () => {
-    // review phase has maxTokensEstimate 400_000 by default
+    // review phase has maxTokensEstimate 1_500_000 by default (M16 R1
+    // finding 4 raised the multi-task-friendly defaults). The test
+    // exercises the per-phase rejection branch with panelist estimates
+    // that exceed the cap; numbers updated to match.
     let err: ProviderError | undefined
     try {
       assertPanelWithinBudget(
         DEFAULT_CONFIG,
-        { phase: 'review', panelistTokenEstimates: [200_000, 200_000, 100_000] },  // 500k > 400k
+        { phase: 'review', panelistTokenEstimates: [800_000, 800_000, 100_000] },  // 1_700_000 > 1_500_000
         [],
       )
     } catch (e) {
@@ -102,7 +105,7 @@ describe('assertPanelWithinBudget — aggregate refusals', () => {
     expect(err).toBeInstanceOf(ProviderError)
     expect(err!.issues[0]!.code).toBe('provider_budget_exceeded')
     expect(err!.issues[0]!.rule).toContain('panel aggregate would exceed')
-    expect(err!.issues[0]!.detail).toContain('panel-aggregate=500000 (3 panelists)')
+    expect(err!.issues[0]!.detail).toContain('panel-aggregate=1700000 (3 panelists)')
   })
 
   test('panel aggregate exceeds per-role tokens → provider_budget_exceeded with role-specific suggestion', () => {
@@ -146,9 +149,11 @@ describe('assertPanelWithinBudget — aggregate refusals', () => {
   })
 
   test('panel aggregate exceeds per-phase provider calls → provider_budget_exceeded', () => {
-    // review phase has maxProviderCalls 10 by default; existing 8, panel of 3 → 11
+    // review phase has maxProviderCalls 30 by default (M16 R1 finding 4).
+    // To trip the cap with a panel of 3, prime the event log with 28
+    // prior calls so 28 + 3 = 31 > 30.
     const events: LoggedEvent[] = []
-    for (let i = 0; i < 8; i++) events.push(invokedEvent(undefined, 100), completedEvent(50))
+    for (let i = 0; i < 28; i++) events.push(invokedEvent(undefined, 100), completedEvent(50))
     let err: ProviderError | undefined
     try {
       assertPanelWithinBudget(
@@ -184,16 +189,15 @@ describe('assertPanelWithinBudget — aggregate refusals', () => {
   })
 
   test('per-phase tokens checked BEFORE per-role tokens (most-specific scope wins)', () => {
-    // Both per-phase (400k cap) and per-role (5k cap) would fail.
-    // Per-phase fires first by check order (existing assertWithinBudget pattern)
-    // Wait: actually per-phase is checked first per the existing code order.
-    // Let me re-verify... Yes, lines 235-242 check per-phase first.
+    // Both per-phase (1.5M cap, raised in M16 R1 finding 4) and per-role
+    // (5k cap) would fail. Per-phase fires first by check order
+    // (lines 235-242 check per-phase first in src/providers/budget.ts).
     const cfg = configWithReviewerCap(5000)
     let err: ProviderError | undefined
     try {
       assertPanelWithinBudget(
         cfg,
-        { phase: 'review', role: 'reviewer', panelistTokenEstimates: [500_000, 500_000] }, // 1M > 400k phase cap AND > 5k role cap
+        { phase: 'review', role: 'reviewer', panelistTokenEstimates: [800_000, 800_000] }, // 1.6M > 1.5M phase cap AND > 5k role cap
         [],
       )
     } catch (e) {

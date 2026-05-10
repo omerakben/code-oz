@@ -295,11 +295,30 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
       }),
     },
     perPhase: {
+      // M16 R1 finding 4 — per-phase budgets are CUMULATIVE across the
+      // run, not per-task. The original values targeted a single-task
+      // PLAN; multi-task runs (M16 C9+ task-loop) exhaust them quickly.
+      // Concrete failure mode Codex flagged: default
+      // verify.maxProviderCalls=5 is exhausted by 3 tasks × 2 calls
+      // (verifier + scientist tail). Locked R1 decision: raise the
+      // defaults to handle a 5-task PLAN with up to 2 attempts each
+      // (verify-fail restart × 1 round of needs-revision).
+      //
+      // The values below give generous headroom while staying
+      // conservative against a fully-real provider (the
+      // `budgets.global` cumulative cap still fires first under
+      // pathological prompt loops). Per-task budget scaling is a
+      // future milestone (rule 19 already covers run-level enforcement;
+      // task-level adds a new dimension).
+      //
+      // The C12 e2e (tests/e2e/cli-multi-task-cycle.test.ts) writes
+      // its own override of 60/60/1_000_000 for every phase — that
+      // remains in place to also exercise the override path.
       define: { maxTurns: 30, maxProviderCalls: 15, maxTokensEstimate: 300_000 },
       plan: { maxTurns: 30, maxProviderCalls: 15, maxTokensEstimate: 300_000 },
-      build: { maxTurns: 50, maxProviderCalls: 25, maxTokensEstimate: 800_000 },
-      verify: { maxTurns: 10, maxProviderCalls: 5, maxTokensEstimate: 100_000 },
-      review: { maxTurns: 20, maxProviderCalls: 10, maxTokensEstimate: 400_000 },
+      build: { maxTurns: 60, maxProviderCalls: 30, maxTokensEstimate: 1_500_000 },
+      verify: { maxTurns: 30, maxProviderCalls: 30, maxTokensEstimate: 600_000 },
+      review: { maxTurns: 60, maxProviderCalls: 30, maxTokensEstimate: 1_500_000 },
       ship: { maxTurns: 5, maxProviderCalls: 2, maxTokensEstimate: 50_000 },
       audit: { maxTurns: 30, maxProviderCalls: 15, maxTokensEstimate: 300_000 },
     },
