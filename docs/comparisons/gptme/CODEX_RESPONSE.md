@@ -66,9 +66,9 @@ No. D1 is a platform extension system. D2 is a parallel-agent execution surface.
 
 | Original | Fixed |
 |---|---|
-| B1: Borrow now — Autocompact decision engine with cache-invalidation guard | **B1: Borrow now (narrowed) — deterministic context-size and compaction-opportunity probe only.** No LLM summarization, no automatic provider-context mutation, no view-branch equivalent. Measurement: `context_projection_tokens`, `compaction_opportunity_savings_ratio`, `compaction_skipped_savings_ratio`, `oversized_artifact_gate_refused`. |
+| B1: Borrow now — Autocompact decision engine with cache-invalidation guard | **B1: Narrow borrow candidate, deferred to own milestone — deterministic context-size and compaction-opportunity probe only.** No LLM summarization, no automatic provider-context mutation, no view-branch equivalent. Measurement: `context_projection_tokens`, `compaction_opportunity_savings_ratio`, `compaction_skipped_savings_ratio`, `oversized_artifact_gate_refused`. Reserved as M18 candidate slot in `ROADMAP.md`. |
 | B2: Borrow now — Checkpoint kind-classification with refusal modes | **B2: Defer (renamed) — worktree topology/refusal diagnostics.** Reject gptme-style checkpoint restore. Measurement before implementation: count actual resumes where audit-completeness cannot recover from a dirty run worktree without destructive reset. |
-| B3: Borrow now — Cross-tool AGENT_FILES ingestion | **B3: Borrow now (narrowed) — AGENT_FILES discovery plus explicit AUDIT/DEFINE opt-in.** No parent/home walk. Cross-tool files are informational until the user accepts them. Measurement: `agent_files_discovered`, `agent_files_accepted`, `agent_files_rejected`, `agent_instruction_conflicts`, intake-question delta. |
+| B3: Borrow now — Cross-tool AGENT_FILES ingestion | **B3: Narrow borrow candidate, deferred to own milestone — AGENT_FILES discovery plus explicit AUDIT/DEFINE opt-in.** No parent/home walk. Cross-tool files are informational until the user accepts them. Measurement: `agent_files_discovered`, `agent_files_accepted`, `agent_files_rejected`, `agent_instruction_conflicts`, intake-question delta. Reserved as M17 candidate slot in `ROADMAP.md`. |
 | (none) | **D3 (new): Release/run-quality eval harness inspired by gptme evals.** Defer unless it becomes the single milestone authority. |
 | D1, D2, R1, R2, R3, R4, R5 | unchanged |
 
