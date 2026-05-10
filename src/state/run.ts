@@ -96,6 +96,29 @@ function activeLockDirFor(activeFile: string): string {
   return join(dirname(activeFile), '.active.lock')
 }
 
+// M16 C9 follow-on (3) — class-fix helper for task-boundary supersedence.
+//
+// `gate_file_cleared(phase)` events mark task boundaries: the prior task's
+// gate file has been deleted by the dispatcher and the next task's gate
+// file may or may not be on disk yet. Helpers that walk the event log
+// looking for "is there already a gate_written / phase_exited /
+// phase_entered / gate_required for this phase" must distinguish "active"
+// records (after the latest gate_file_cleared(phase)) from "historical"
+// records (before it). A bare `events.some(e => e.phase === phase)` check
+// is task-blind and silently bricks the multi-task lifecycle when the
+// next task's events are wrongly deduped against the prior task's.
+//
+// Returns the index of the last element where `pred` is true, or -1 if
+// none. Stable, callsite-friendly: the supersedence check pattern is
+// `latestActiveIdx > latestClearedIdx` (active record is "after" the
+// clear, so it is fresh; otherwise the prior task's record is stale).
+function lastIndexOf<T>(arr: readonly T[], pred: (e: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (pred(arr[i]!)) return i
+  }
+  return -1
+}
+
 // --- pure reducer --------------------------------------------------
 
 /**
@@ -606,12 +629,30 @@ export async function approveReviewTaskGate(
     //    phase_exited(review)). Idempotent. Mirrors approveGate's
     //    completeTransitionForPhase but stops short of phase_entered —
     //    the cursor decides whether to enter ship.
+    //
+    //    M16 C9 follow-on (3) — Bug 4 class fix. Dedup is supersedence-
+    //    aware: a `gate_file_cleared(review)` event later than the
+    //    latest matching record marks the prior task's record as
+    //    historical, so the next task gets a fresh emission. Without
+    //    this, T-002 REVIEW approve would see T-001's `gate_written
+    //    (review)` + `phase_exited(review)` still in the log, skip
+    //    both emissions, and the new task's gate file would have no
+    //    event referencing it (followed by integrity failure at the
+    //    next loadRun). Mirrors the supersedence pattern in
+    //    completeTransitionForPhase.
     let events = await readEvents(eventPaths)
     let working: PhaseEvent[] = [...events.filter(isKnownPhaseEvent)]
 
-    const hasGateWritten = working.some(
+    const reviewClearAnchor = lastIndexOf(
+      working,
+      (e) => e.type === 'gate_file_cleared' && e.phase === 'review',
+    )
+
+    const latestReviewGateWrittenIdx = lastIndexOf(
+      working,
       (e) => e.type === 'gate_written' && e.phase === 'review',
     )
+    const hasGateWritten = latestReviewGateWrittenIdx > reviewClearAnchor
     if (!hasGateWritten) {
       const ev: PhaseEvent = {
         version: 1,
@@ -625,12 +666,14 @@ export async function approveReviewTaskGate(
       working.push(ev)
     }
 
-    const hasPhaseExited = working.some(
+    const latestReviewPhaseExitedIdx = lastIndexOf(
+      working,
       (e) =>
         e.type === 'phase_exited' &&
         e.phase === 'review' &&
         e.outcome === 'passed',
     )
+    const hasPhaseExited = latestReviewPhaseExitedIdx > reviewClearAnchor
     if (!hasPhaseExited) {
       const ev: PhaseEvent = {
         version: 1,
@@ -868,9 +911,25 @@ export async function requireGate(opts: RequireGateOptions): Promise<RequireGate
   return await withLock(opts.paths.lockDir, async () => {
     const events = await readEvents(eventPaths)
     const known = events.filter(isKnownPhaseEvent)
-    const existing = known.some(
+    // M16 C9 follow-on (3) — supersedence-aware idempotency. The prior
+    // task's `gate_required(phase)` event lives forever in the log, so
+    // a bare `known.some(e => e.phase === phase)` check would silently
+    // drop the new task's gate_required emission. After the dispatcher
+    // has emitted `gate_file_cleared(phase)` for the boundary, the
+    // next task needs a fresh gate_required signal so the operator's
+    // approve sees a live "awaiting approval" record. Mirrors the
+    // class-fix pattern in completeTransitionForPhase: clearAnchor =
+    // index of latest gate_file_cleared(phase); existing record is
+    // historical when its index < clearAnchor.
+    const clearAnchor = lastIndexOf(
+      known,
+      (e) => e.type === 'gate_file_cleared' && e.phase === opts.phase,
+    )
+    const latestGateRequiredIdx = lastIndexOf(
+      known,
       (e) => e.type === 'gate_required' && e.phase === opts.phase,
     )
+    const existing = latestGateRequiredIdx > clearAnchor
     let appended = false
     if (!existing) {
       await appendEvent(
@@ -1041,14 +1100,33 @@ async function recoverOrphanGates(
     return false
   }
 
-  const gateWrittenPhases = new Set<Phase>()
-  for (const e of known) {
-    if (e.type === 'gate_written') gateWrittenPhases.add(e.phase)
+  // M16 C9 follow-on (3) — supersedence-aware orphan recovery. A
+  // `gate_written(phase)` event covers `phase` only until a later
+  // `gate_file_cleared(phase)` supersedes it. Without this, the prior
+  // task's gate_written would mask the next task's orphaned gate file:
+  // T-002 BUILD writes GATE_BUILD_PASSED.json, the dispatcher emits
+  // gate_file_cleared(build), and if a crash leaves the file on disk
+  // without a fresh gate_written event, this recovery step would skip
+  // the orphan because T-001's gate_written(build) is still in the log.
+  // The fix: a phase is "covered" only when its latest gate_written is
+  // more recent than its latest gate_file_cleared.
+  const phaseCovered = new Set<Phase>()
+  for (const phase of PHASES) {
+    const latestGateWrittenIdx = lastIndexOf(
+      known,
+      (e) => e.type === 'gate_written' && e.phase === phase,
+    )
+    if (latestGateWrittenIdx < 0) continue
+    const latestGateClearedIdx = lastIndexOf(
+      known,
+      (e) => e.type === 'gate_file_cleared' && e.phase === phase,
+    )
+    if (latestGateWrittenIdx > latestGateClearedIdx) phaseCovered.add(phase)
   }
 
   const orphans: { phase: Phase; gate: GateFile }[] = []
   for (const phase of PHASES) {
-    if (gateWrittenPhases.has(phase)) continue
+    if (phaseCovered.has(phase)) continue
     const filePath = join(paths.runDir, gateFilename(phase))
     let gate: GateFile
     try {
@@ -1190,8 +1268,24 @@ async function completeIncompleteTransitions(
     const phase = e.phase
     const next = nextPhase(phase, profile)
 
+    // M16 C9 follow-on (3) — Bug 4 class fix. Index-based dedup for
+    // multi-task BUILD/VERIFY/REVIEW. With the prior task's
+    // gate_written(phase) followed by gate_file_cleared(phase) followed
+    // by the next task's gate_written(phase), this loop walks BOTH
+    // gate_written records. The phase_exited(phase) and phase_entered
+    // (next) records that "belong" to this gate_written are the ones
+    // that come AFTER it in the log; a global `working.some(...)`
+    // check would find the prior task's records and skip emission for
+    // the new task. Mirrors the iterate-half index-based dedup pattern
+    // already used below for review→build (5d21d9be) and the
+    // supersedence pattern in completeTransitionForPhase /
+    // approveReviewTaskGate / requireGate.
     const hasPhaseExited = working.some(
-      (x) => x.type === 'phase_exited' && x.phase === phase && x.outcome === 'passed',
+      (x, idx) =>
+        idx > gateIndex &&
+        x.type === 'phase_exited' &&
+        x.phase === phase &&
+        x.outcome === 'passed',
     )
     if (!hasPhaseExited) {
       const ev: PhaseEvent = {
@@ -1215,7 +1309,6 @@ async function completeIncompleteTransitions(
       // next loadRun. Bug 1 covers the terminal half (ship); Bug 3
       // covers the iterate half (build, for the next pending task).
       let emittedPhase: Phase = next
-      let isIterateHalf = false
       if (phase === 'review' && next === 'ship') {
         const planForCursor = await tryLoadPlan()
         if (planForCursor === null) {
@@ -1233,7 +1326,6 @@ async function completeIncompleteTransitions(
           // `code-oz approve build` for the next task fails at
           // approve.ts:117 because currentPhase stays at 'review'.
           emittedPhase = 'build'
-          isIterateHalf = true
         } else {
           // Defensive: cursor is not allCompleted AND has no pending —
           // structurally impossible. Skip emission rather than corrupt
@@ -1243,25 +1335,19 @@ async function completeIncompleteTransitions(
         }
       }
 
-      // Idempotency. For the linear FSM transitions (define→plan,
-      // plan→build, build→verify, verify→review) and the terminal-half
-      // ship transition, each phase appears at most once in the log so
-      // a global `working.some(...)` check is correct. For the iterate
-      // half (review→build for the next task), the original task's
-      // BUILD already produced a `phase_entered(build)` event upstream
-      // — we need to dedupe only against `phase_entered(build)` events
-      // that come AFTER this `gate_written(review)` index, which would
-      // indicate a prior loadRun already filled the iterate transition.
-      const hasPhaseEntered = isIterateHalf
-        ? working.some(
-            (x, idx) =>
-              idx > gateIndex &&
-              x.type === 'phase_entered' &&
-              x.phase === emittedPhase,
-          )
-        : working.some(
-            (x) => x.type === 'phase_entered' && x.phase === emittedPhase,
-          )
+      // Index-based dedup (Bug 4 class fix): the phase_entered record
+      // that "belongs" to this gate_written must come AFTER it. Same
+      // pattern across both the review iterate-half (review→build for
+      // the next task — original gate_written(build) lives upstream,
+      // need to scope dedup) and the linear-FSM transitions (T-002
+      // gate_written(build) at idx=N — need to scope dedup against
+      // T-001's phase_entered(verify) earlier in the log).
+      const hasPhaseEntered = working.some(
+        (x, idx) =>
+          idx > gateIndex &&
+          x.type === 'phase_entered' &&
+          x.phase === emittedPhase,
+      )
       if (!hasPhaseEntered) {
         const ev: PhaseEvent = {
           version: 1,
@@ -1299,6 +1385,19 @@ async function completeIncompleteTransitions(
  * phase_exited + phase_entered/run_ended events that are missing for
  * the given phase. Idempotent; safe to call multiple times. CALLER must
  * hold the per-run lock.
+ *
+ * M16 C9 follow-on (3) — Bug 4 class fix. Dedup is supersedence-aware:
+ * a `gate_file_cleared(phase)` event later than the latest matching
+ * record marks the prior task's record as historical, so the next task
+ * gets a fresh emission instead of being silently deduped against the
+ * prior task. Without this, the multi-task BUILD/VERIFY lifecycle
+ * bricks: T-002 `approve build` would see T-001's `gate_written(build)`
+ * + `phase_exited(build)` + `phase_entered(verify)` still in the log,
+ * skip all emissions, and the FSM never advances. Mirrors the
+ * supersedence pattern in `validateRunIntegrity` (c262efd) and the
+ * index-based dedup pattern in `completeIncompleteTransitions`
+ * (5d21d9be) — both shipped as half-fixes that this commit completes
+ * across the rest of the phase-transition surface.
  */
 async function completeTransitionForPhase(opts: {
   paths: RunPaths
@@ -1314,9 +1413,23 @@ async function completeTransitionForPhase(opts: {
   let working: PhaseEvent[] = [...opts.events.filter(isKnownPhaseEvent)]
   let appendedAny = false
 
-  const hasGateWritten = working.some(
+  // Supersedence anchor: if a `gate_file_cleared(phase)` is more recent
+  // than the latest gate_written(phase), the prior task's gate is
+  // historical and we must emit fresh records for the new task. The
+  // anchor is the index of the latest gate_file_cleared(phase); active
+  // records have idx > anchor, historical records have idx < anchor.
+  // -1 (no clear) means every record so far is "active" (single-task
+  // lifecycle or first task of a multi-task run).
+  const clearAnchor = lastIndexOf(
+    working,
+    (e) => e.type === 'gate_file_cleared' && e.phase === opts.phase,
+  )
+
+  const latestGateWrittenIdx = lastIndexOf(
+    working,
     (e) => e.type === 'gate_written' && e.phase === opts.phase,
   )
+  const hasGateWritten = latestGateWrittenIdx > clearAnchor
   if (!hasGateWritten) {
     const ev: PhaseEvent = {
       version: 1,
@@ -1331,10 +1444,12 @@ async function completeTransitionForPhase(opts: {
     appendedAny = true
   }
 
-  const hasPhaseExited = working.some(
+  const latestPhaseExitedIdx = lastIndexOf(
+    working,
     (e) =>
       e.type === 'phase_exited' && e.phase === opts.phase && e.outcome === 'passed',
   )
+  const hasPhaseExited = latestPhaseExitedIdx > clearAnchor
   if (!hasPhaseExited) {
     const ev: PhaseEvent = {
       version: 1,
@@ -1351,9 +1466,17 @@ async function completeTransitionForPhase(opts: {
 
   const next = nextPhase(opts.phase, opts.profile)
   if (next !== null) {
-    const hasPhaseEntered = working.some(
+    // The "next phase" record is anchored to the SAME gate_file_cleared
+    // (the clear marks the prior task's full transition as historical;
+    // the new task's full transition — including its `phase_entered(next)`
+    // — must come after). Without this, T-002 approve build would see
+    // T-001's `phase_entered(verify)` and skip emission, leaving
+    // currentPhase stuck at 'build' instead of advancing to 'verify'.
+    const latestPhaseEnteredIdx = lastIndexOf(
+      working,
       (e) => e.type === 'phase_entered' && e.phase === next,
     )
+    const hasPhaseEntered = latestPhaseEnteredIdx > clearAnchor
     if (!hasPhaseEntered) {
       const ev: PhaseEvent = {
         version: 1,
@@ -1367,6 +1490,9 @@ async function completeTransitionForPhase(opts: {
       appendedAny = true
     }
   } else {
+    // Terminal phase (ship). `run_ended` is global, not per-phase, so
+    // no supersedence applies — gate_file_cleared events never target
+    // the terminal phase (no gate file to clear). Plain dedup.
     const hasRunEnded = working.some((e) => e.type === 'run_ended')
     if (!hasRunEnded) {
       const ev: PhaseEvent = {

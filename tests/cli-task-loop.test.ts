@@ -40,6 +40,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 
 import {
+  approveGate,
   approveReviewTaskGate,
   ApproveReviewTaskGateError,
   initRun,
@@ -48,6 +49,8 @@ import {
   runPathsFor,
   type RunPaths,
 } from '../src/state/run.ts'
+import type { GateFile } from '../src/state/schemas.ts'
+import { writeGate } from '../src/state/gates.ts'
 import { generateUlid } from '../src/state/schemas.ts'
 import { appendEvent, readEvents } from '../src/state/events.ts'
 import { isKnownPhaseEvent, type LoggedEvent } from '../src/state/schemas.ts'
@@ -2102,5 +2105,528 @@ describe('completeIncompleteTransitions — Bug 3: iterate-half on loadRun recov
       .filter(isKnownPhaseEvent)
       .filter((e) => e.type === 'phase_entered' && e.phase === 'build')
     expect(phaseEnteredBuild).toHaveLength(2)
+  })
+})
+
+// --- M16 C9 follow-on (3) Bug 4 class fix: task-boundary supersedence --
+// across phase-transition helpers in src/state/run.ts.
+//
+// The C12 e2e agent caught Bug 4 in `completeTransitionForPhase`: after
+// T-001 BUILD/VERIFY/REVIEW approves and T-002's dispatcher emits
+// `gate_file_cleared(build)` at the boundary, T-002's `approve build`
+// would read T-001's still-present gate_written(build) +
+// phase_exited(build) + phase_entered(verify) and skip ALL emissions —
+// the FSM would never advance from `build` to `verify`.
+//
+// The class-fix audit found three more sibling helpers with the same
+// bare `events.some(e => e.phase === phase)` dedup that ignores
+// gate_file_cleared supersedence:
+//
+//   - completeTransitionForPhase (Bug 4 — primary)
+//   - requireGate (gate_required emission across task boundaries)
+//   - approveReviewTaskGate (gate_written + phase_exited dedup; sibling
+//     to Bug 3's phase_entered fix already handled in 5d21d9be)
+//   - completeIncompleteTransitions (linear-FSM phase_exited /
+//     phase_entered; iterate-half was index-based, linear was global)
+//   - recoverOrphanGates (gateWrittenPhases membership check ignored
+//     supersedence, so a fresh gate file at a re-cleared phase was not
+//     recovered)
+//
+// All five are extended to use the same supersedence anchor: the index
+// of the latest `gate_file_cleared(phase)`. Records with idx > anchor
+// are "active"; records with idx < anchor are "historical" and do not
+// dedupe the new task's emission.
+
+const ARTIFACT_FOR: Record<'build' | 'verify' | 'review', string> = {
+  build: 'BUILD_REPORT.md',
+  verify: 'VERIFY.md',
+  review: 'REVIEW.md',
+}
+
+function makeNonReviewGate(opts: {
+  phase: 'build' | 'verify' | 'review'
+  artifact?: string
+}): GateFile {
+  return {
+    version: 1,
+    runId: RUN,
+    phase: opts.phase,
+    artifact: opts.artifact ?? ARTIFACT_FOR[opts.phase],
+    agent: 'tester',
+    agentProvider: 'fake',
+    approvedBy: 'test',
+    approvedAt: FIXED_TS,
+  }
+}
+
+async function appendGateFileCleared(opts: {
+  phase: 'build' | 'verify' | 'review'
+  priorTaskId: string
+  currentTaskId: string
+}): Promise<void> {
+  await appendEvent(
+    { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+    {
+      version: 1,
+      type: 'gate_file_cleared',
+      ts: FIXED_TS,
+      runId: RUN,
+      phase: opts.phase,
+      priorTaskId: opts.priorTaskId,
+      currentTaskId: opts.currentTaskId,
+      gateFile: opts.phase === 'build'
+        ? 'GATE_BUILD_PASSED.json'
+        : opts.phase === 'verify'
+          ? 'GATE_VERIFY_PASSED.json'
+          : 'GATE_REVIEW_PASSED.json',
+      priorArtifactSha256: 'a'.repeat(64),
+    },
+  )
+}
+
+describe('completeTransitionForPhase — Bug 4: task-boundary supersedence', () => {
+  test('multi-task BUILD: after gate_file_cleared(build), T-002 approveGate emits fresh gate_written + phase_exited + phase_entered', async () => {
+    // T-001 lifecycle: walk to build, approve build (emits gate_written
+    // (build) + phase_exited(build) + phase_entered(verify)). Then
+    // simulate the dispatcher emitting gate_file_cleared(build) at the
+    // T-002 boundary, write a fresh BUILD_REPORT.md, and call
+    // approveGate(build) again. The class fix must emit a fresh trio
+    // of events for T-002 instead of deduping against T-001's records.
+    await initFreshRun()
+    // Walk define→plan→build.
+    for (const [exit, enter] of [
+      ['define', 'plan'] as const,
+      ['plan', 'build'] as const,
+    ]) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_exited', ts: FIXED_TS, runId: RUN, phase: exit, outcome: 'passed' },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+
+    // T-001 BUILD approve.
+    await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), 'T-001 build body\n', 'utf8')
+    const t1Result = await approveGate({
+      paths: runPaths,
+      gate: makeNonReviewGate({ phase: 'build' }),
+      profile: 'greenfield',
+      now: () => FIXED_TS,
+    })
+    expect(t1Result.gateExisted).toBe(false)
+    expect(t1Result.nextPhase).toBe('verify')
+    expect(t1Result.state.currentPhase).toBe('verify')
+
+    // Simulate the dispatcher's task-boundary cleanup: emit
+    // gate_file_cleared(build) and remove the prior task's gate file.
+    await appendGateFileCleared({
+      phase: 'build',
+      priorTaskId: 'T-001',
+      currentTaskId: 'T-002',
+    })
+    await rm(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), { force: true })
+
+    // Mirror T-002 BUILD: walk verify→build (FSM moves back to BUILD
+    // for the new task), write fresh BUILD_REPORT.md, approveGate.
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      { version: 1, type: 'phase_exited', ts: FIXED_TS, runId: RUN, phase: 'verify', outcome: 'passed' },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: 'build' },
+    )
+    await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), 'T-002 build body\n', 'utf8')
+
+    const t2Result = await approveGate({
+      paths: runPaths,
+      gate: makeNonReviewGate({ phase: 'build' }),
+      profile: 'greenfield',
+      now: () => FIXED_TS,
+    })
+    expect(t2Result.gateExisted).toBe(false)
+    expect(t2Result.nextPhase).toBe('verify')
+    // The class fix: currentPhase advances to verify for T-002 because
+    // a fresh phase_entered(verify) is emitted post-clear. Without the
+    // fix, T-001's phase_entered(verify) would have masked the new
+    // emission and the reducer would still report some other state.
+    expect(t2Result.state.currentPhase).toBe('verify')
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    const buildGateWritten = known.filter(
+      (e) => e.type === 'gate_written' && e.phase === 'build',
+    )
+    expect(buildGateWritten).toHaveLength(2)
+    const buildPhaseExited = known.filter(
+      (e) => e.type === 'phase_exited' && e.phase === 'build' && e.outcome === 'passed',
+    )
+    expect(buildPhaseExited).toHaveLength(2)
+    const verifyPhaseEntered = known.filter(
+      (e) => e.type === 'phase_entered' && e.phase === 'verify',
+    )
+    // walkFsmToReview equivalent didn't fire here — only the two
+    // approveGate(build) calls produced phase_entered(verify).
+    expect(verifyPhaseEntered).toHaveLength(2)
+  })
+
+  test('single-task BUILD (no gate_file_cleared): repeat approveGate is idempotent (regression guard)', async () => {
+    // The fix must not regress the existing idempotency contract.
+    // Without a gate_file_cleared event, a second approveGate call
+    // with identical inputs is still a no-op.
+    await initFreshRun()
+    for (const [exit, enter] of [
+      ['define', 'plan'] as const,
+      ['plan', 'build'] as const,
+    ]) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_exited', ts: FIXED_TS, runId: RUN, phase: exit, outcome: 'passed' },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), 'body\n', 'utf8')
+    const first = await approveGate({
+      paths: runPaths,
+      gate: makeNonReviewGate({ phase: 'build' }),
+      profile: 'greenfield',
+      now: () => FIXED_TS,
+    })
+    expect(first.gateExisted).toBe(false)
+    const second = await approveGate({
+      paths: runPaths,
+      gate: makeNonReviewGate({ phase: 'build' }),
+      profile: 'greenfield',
+      now: () => FIXED_TS,
+    })
+    expect(second.gateExisted).toBe(true)
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    expect(known.filter((e) => e.type === 'gate_written' && e.phase === 'build')).toHaveLength(1)
+    expect(known.filter((e) => e.type === 'phase_exited' && e.phase === 'build')).toHaveLength(1)
+  })
+})
+
+describe('requireGate — Bug 4: task-boundary supersedence', () => {
+  test('multi-task BUILD: after gate_file_cleared(build), requireGate emits fresh gate_required for T-002', async () => {
+    await initFreshRun()
+    // Plant T-001's gate_required(build) directly (mirrors what
+    // runBuild emits via requireGate after BUILD_REPORT.md write).
+    await requireGate({
+      paths: runPaths,
+      runId: RUN,
+      phase: 'build',
+      blockedOn: 'T-001 awaiting approval',
+      now: () => FIXED_TS,
+    })
+
+    // Boundary cleanup.
+    await appendGateFileCleared({
+      phase: 'build',
+      priorTaskId: 'T-001',
+      currentTaskId: 'T-002',
+    })
+
+    // T-002's runBuild calls requireGate(build) again. With the class
+    // fix, this emits a fresh gate_required(build) event because the
+    // prior one is superseded by the gate_file_cleared.
+    const result = await requireGate({
+      paths: runPaths,
+      runId: RUN,
+      phase: 'build',
+      blockedOn: 'T-002 awaiting approval',
+      now: () => FIXED_TS,
+    })
+    expect(result.appended).toBe(true)
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    const gateRequired = known.filter(
+      (e) => e.type === 'gate_required' && e.phase === 'build',
+    )
+    expect(gateRequired).toHaveLength(2)
+    expect((gateRequired[1] as { blockedOn: string }).blockedOn).toBe('T-002 awaiting approval')
+  })
+
+  test('single-task BUILD (no gate_file_cleared): repeat requireGate is idempotent (regression guard)', async () => {
+    await initFreshRun()
+    const first = await requireGate({
+      paths: runPaths,
+      runId: RUN,
+      phase: 'build',
+      blockedOn: 'T-001 awaiting approval',
+      now: () => FIXED_TS,
+    })
+    expect(first.appended).toBe(true)
+    const second = await requireGate({
+      paths: runPaths,
+      runId: RUN,
+      phase: 'build',
+      blockedOn: 'T-001 awaiting approval (re-run)',
+      now: () => FIXED_TS,
+    })
+    expect(second.appended).toBe(false)
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    expect(known.filter((e) => e.type === 'gate_required' && e.phase === 'build')).toHaveLength(1)
+  })
+})
+
+describe('approveReviewTaskGate — Bug 4: task-boundary supersedence on gate_written + phase_exited', () => {
+  test('multi-task REVIEW: after gate_file_cleared(review), T-002 approveReviewTaskGate emits fresh gate_written(review) + phase_exited(review)', async () => {
+    // Drive T-001 through to approveReviewTaskGate, then simulate the
+    // T-002 dispatchReview boundary cleanup, then approve T-002. The
+    // class fix must emit a fresh gate_written(review) and a fresh
+    // phase_exited(review) for T-002 — not just the phase_entered(build)
+    // already covered by Bug 3.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    await walkFsmToReview()
+    await setupReviewReadyForTask({
+      taskId: 'T-001',
+      attempt: 1,
+      reviewSha: 'T-001 review body',
+    })
+    const plan = parsePlan(PLAN_TXT, join(artifactRoot, 'PLAN.md'))
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-001'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-001',
+      now: () => FIXED_TS,
+    })
+
+    // Boundary cleanup: gate_file_cleared + remove the gate file.
+    await appendGateFileCleared({
+      phase: 'review',
+      priorTaskId: 'T-001',
+      currentTaskId: 'T-002',
+    })
+    await rm(join(runPaths.runDir, 'GATE_REVIEW_PASSED.json'), { force: true })
+
+    // T-002 fixture: fresh REVIEW.md + review_resolved for T-002 +
+    // gate_required(review) (already supersedence-aware via
+    // requireGate).
+    await writeFile(join(artifactRoot, 'REVIEW.md'), 'T-002 review body\n', 'utf8')
+    const t2Sha = SHA('T-002 review body\n')
+    await appendReviewResolved('T-002', 1, t2Sha)
+    await requireGate({
+      paths: runPaths,
+      runId: RUN,
+      phase: 'review',
+      blockedOn: 'T-002 awaiting approval',
+      now: () => FIXED_TS,
+    })
+
+    await approveReviewTaskGate({
+      paths: runPaths,
+      gate: makeReviewGate('T-002'),
+      profile: 'greenfield',
+      plan,
+      upstreamAttempt: 1,
+      upstreamTaskId: 'T-002',
+      now: () => FIXED_TS,
+    })
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    const reviewGateWritten = known.filter(
+      (e) => e.type === 'gate_written' && e.phase === 'review',
+    )
+    expect(reviewGateWritten).toHaveLength(2)
+    const reviewPhaseExited = known.filter(
+      (e) => e.type === 'phase_exited' && e.phase === 'review' && e.outcome === 'passed',
+    )
+    expect(reviewPhaseExited).toHaveLength(2)
+    // task_completed for both tasks; cursor.allCompleted=true → ship.
+    const taskCompleted = known.filter((e) => e.type === 'task_completed')
+    expect(taskCompleted).toHaveLength(2)
+    const phaseEnteredShip = known.filter(
+      (e) => e.type === 'phase_entered' && e.phase === 'ship',
+    )
+    expect(phaseEnteredShip).toHaveLength(1)
+  })
+})
+
+describe('completeIncompleteTransitions — Bug 4: linear-FSM index-based dedup', () => {
+  test('multi-task BUILD: missing T-002 phase_exited(build) + phase_entered(verify) are filled on loadRun without masking by T-001 records', async () => {
+    // Build a multi-task scenario where T-002's gate_written(build) is
+    // present but the trailing phase_exited / phase_entered are
+    // missing (mirrors a crash window between approveGate's gate
+    // append and the transition append). The class fix must emit
+    // fresh phase_exited(build) AFTER T-002's gate_written(build),
+    // regardless of T-001's earlier phase_exited(build) being present.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+    // Walk define→plan→build, approve T-001 build (full transition).
+    for (const [exit, enter] of [
+      ['define', 'plan'] as const,
+      ['plan', 'build'] as const,
+    ]) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_exited', ts: FIXED_TS, runId: RUN, phase: exit, outcome: 'passed' },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), 'T-001 body\n', 'utf8')
+    await approveGate({
+      paths: runPaths,
+      gate: makeNonReviewGate({ phase: 'build' }),
+      profile: 'greenfield',
+      now: () => FIXED_TS,
+    })
+
+    // Boundary cleanup, walk back to build for T-002.
+    await appendGateFileCleared({
+      phase: 'build',
+      priorTaskId: 'T-001',
+      currentTaskId: 'T-002',
+    })
+    await rm(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), { force: true })
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      { version: 1, type: 'phase_exited', ts: FIXED_TS, runId: RUN, phase: 'verify', outcome: 'passed' },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: 'build' },
+    )
+
+    // Write T-002's gate file + emit gate_written(build) but truncate
+    // the events.jsonl just before phase_exited(build) to simulate a
+    // crash. Use writeGate + a manual gate_written append.
+    await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), 'T-002 body\n', 'utf8')
+    await writeGate({
+      paths: { runDir: runPaths.runDir, artifactRoot: runPaths.artifactRoot, lockDir: runPaths.lockDir },
+      gate: makeNonReviewGate({ phase: 'build' }),
+    })
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_written',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build',
+        file: 'GATE_BUILD_PASSED.json',
+      },
+    )
+
+    // loadRun runs completeIncompleteTransitions. With the class fix,
+    // it emits fresh phase_exited(build) + phase_entered(verify) for
+    // T-002 even though T-001's pair is in the log.
+    const loaded = await loadRun(runPaths)
+    expect(loaded?.state.currentPhase).toBe('verify')
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    expect(known.filter((e) => e.type === 'phase_exited' && e.phase === 'build' && e.outcome === 'passed')).toHaveLength(2)
+    expect(known.filter((e) => e.type === 'phase_entered' && e.phase === 'verify')).toHaveLength(2)
+  })
+})
+
+describe('recoverOrphanGates — Bug 4: task-boundary supersedence on phase coverage', () => {
+  test('multi-task BUILD: after gate_file_cleared(build), an orphan T-002 gate file IS recovered (not masked by T-001 gate_written)', async () => {
+    // T-001 BUILD approve emits gate_written(build) and creates
+    // GATE_BUILD_PASSED.json. The dispatcher then emits
+    // gate_file_cleared(build) and removes the file. T-002 BUILD
+    // writes a fresh GATE_BUILD_PASSED.json but a crash leaves the
+    // gate_written event missing. recoverOrphanGates must NOT skip
+    // the recovery on the basis that gate_written(build) appears
+    // somewhere in the log — it must check supersedence.
+    await initFreshRun()
+    for (const [exit, enter] of [
+      ['define', 'plan'] as const,
+      ['plan', 'build'] as const,
+    ]) {
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_exited', ts: FIXED_TS, runId: RUN, phase: exit, outcome: 'passed' },
+      )
+      await appendEvent(
+        { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+        { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: enter },
+      )
+    }
+    await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), 'T-001 body\n', 'utf8')
+    await approveGate({
+      paths: runPaths,
+      gate: makeNonReviewGate({ phase: 'build' }),
+      profile: 'greenfield',
+      now: () => FIXED_TS,
+    })
+
+    // Boundary cleanup + T-002 dispatch (back to BUILD).
+    await appendGateFileCleared({
+      phase: 'build',
+      priorTaskId: 'T-001',
+      currentTaskId: 'T-002',
+    })
+    await rm(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), { force: true })
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      { version: 1, type: 'phase_exited', ts: FIXED_TS, runId: RUN, phase: 'verify', outcome: 'passed' },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      { version: 1, type: 'phase_entered', ts: FIXED_TS, runId: RUN, phase: 'build' },
+    )
+
+    // T-002 writes fresh BUILD_REPORT.md and the gate file, but
+    // crashes before appending gate_written.
+    await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), 'T-002 body\n', 'utf8')
+    await writeGate({
+      paths: { runDir: runPaths.runDir, artifactRoot: runPaths.artifactRoot, lockDir: runPaths.lockDir },
+      gate: makeNonReviewGate({ phase: 'build' }),
+    })
+
+    // loadRun → recoverOrphanGates must detect the orphan and emit a
+    // fresh gate_written(build). Without the class fix, T-001's
+    // gate_written(build) keeps phase=build covered forever and the
+    // orphan is silently ignored.
+    const loaded = await loadRun(runPaths)
+    expect(loaded?.recovered).toBe(true)
+
+    const events = await readEvents({
+      file: runPaths.eventsFile,
+      lockDir: runPaths.lockDir,
+    })
+    const known = events.filter(isKnownPhaseEvent)
+    const buildGateWritten = known.filter(
+      (e) => e.type === 'gate_written' && e.phase === 'build',
+    )
+    expect(buildGateWritten).toHaveLength(2)
   })
 })
