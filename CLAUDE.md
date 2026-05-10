@@ -6,7 +6,7 @@ This file orients Claude Code sessions working on `code-oz`.
 
 `code-oz` is a standalone Bun + TypeScript CLI that boots an adaptive multi-agent software-company simulation over a hybrid phase-graph + agentic sub-orchestration spine. Hard SDLC gates between phases (file-based, schema-validated). Cross-family adversarial review. Non-technical-user intent elicitation at the front. Multi-provider via `IAgentProvider` (Claude / Codex / Gemini SDKs reading CLI OAuth tokens).
 
-Status: **v0.17.0-alpha.0 — M16 closed.** Production CLI completion (per-task cursor, dispatch infra, milestone-level e2e through the binary): `code-oz run`, `approve`, `resume`, `doctor` are wired end-to-end across DEFINE → REVIEW. 3108 offline tests pass (+402 across M16); live xAI gated behind `CODE_OZ_LIVE_PROVIDER_TESTS=xai` + `CODE_OZ_LIVE_XAI_MODEL=<grok-variant>`. M16 R0/R1/R2 closed (8 production bugs caught by C12 e2e + 4 by Codex R1; per-commit cross-model peer review pattern validated for shared infra). Latest tag pushed: `v0.17.0-alpha.0` (2026-05-10).
+Status: **v0.17.0-alpha.0 — M16 closed.** Production CLI completion (per-task cursor, dispatch infra, milestone-level e2e through the binary): `code-oz run`, `approve`, and `doctor` are wired end-to-end across DEFINE → REVIEW; full `resume` command remains M17. 3108 offline tests pass (+402 across M16); live xAI gated behind `CODE_OZ_LIVE_PROVIDER_TESTS=xai` + `CODE_OZ_LIVE_XAI_MODEL=<grok-variant>`. M16 R0/R1/R2 closed (8 production bugs caught by C12 e2e + 4 by Codex R1; per-commit cross-model peer review pattern validated for shared infra). Latest tag pushed: `v0.17.0-alpha.0` (2026-05-10).
 
 Product north star: `code-oz` is a **repo-native agentic SDLC runtime** (market category) framed internally as an **AI software company** (product metaphor). The thesis lives in `docs/product/AI_SOFTWARE_COMPANY_THESIS.md`: provider and model bias are real, so `code-oz` coordinates role-specialized agents through artifacts, evidence gates, debate, verification, and cross-family review instead of trusting one model's confidence. Category and metaphor revised 2026-04-30 after Codex pressure-test (`docs/research/CODEX_RESPONSE_PRODUCT_THESIS.md`, thread `019de031`).
 
@@ -17,7 +17,7 @@ Product north star: `code-oz` is a **repo-native agentic SDLC runtime** (market 
 - `docs/adr/0001-mvp-option-e.md` — MVP scope decision (Option E, spine-first end-to-end)
 - `docs/design/SESSION_CYCLE.md` — the empirical session cycle (boot → plan → implement → review → tag → handoff). Every milestone session follows it.
 - `docs/design/CODEX_BRIEFING.md` and `docs/design/CODEX_RESPONSE.md` — debate transcripts that produced the roadmap
-- `docs/comparison/05-agent-skills/synthesis.md` — round-2 borrow audit verdict (2026-05-10): four landing-plan commits (this one is #4), Skills layer deferred with sharper trigger, doubt-driven shaped as risk-triggered pre-BUILD checkpoint for an M17+ design.
+- `docs/comparison/05-agent-skills/synthesis.md` — round-2 borrow audit verdict (2026-05-10): four landing-plan commits in this series, Skills layer deferred with sharper trigger, doubt-driven shaped as risk-triggered pre-BUILD checkpoint for an M17+ design.
 
 ## Non-negotiable rules (audit-derived)
 
