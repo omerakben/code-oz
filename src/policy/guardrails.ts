@@ -783,12 +783,18 @@ function expandDedupKey(
     .replace(/\{(file_path|new_content|command|prompt|tool_input)\}/g, (_, key: GuardrailField) =>
       truncate(fields[key] ?? ''),
     )
-  // Hard cap on the final expanded key. The per-field truncation above
-  // bounds normal inputs; this final cap is defense in depth against
-  // pathological templates that compose many fields.
-  return expanded.length <= DEDUP_KEY_EXPANDED_MAX
-    ? expanded
-    : `${expanded.slice(0, DEDUP_KEY_EXPANDED_MAX)}…(+${expanded.length - DEDUP_KEY_EXPANDED_MAX})`
+  // True hard cap on the final expanded key. The per-field truncation
+  // above bounds normal inputs; this final cap is defense in depth
+  // against pathological templates that compose many fields. We reserve
+  // 32 chars at the end for the suffix and slice the head so the
+  // resulting key length is ≤ DEDUP_KEY_EXPANDED_MAX.
+  if (expanded.length <= DEDUP_KEY_EXPANDED_MAX) return expanded
+  const SUFFIX_RESERVE = 32
+  const headLen = DEDUP_KEY_EXPANDED_MAX - SUFFIX_RESERVE
+  const suffix = `…(+${expanded.length - headLen})`
+  const truncatedSuffix =
+    suffix.length > SUFFIX_RESERVE ? suffix.slice(0, SUFFIX_RESERVE) : suffix
+  return expanded.slice(0, headLen) + truncatedSuffix
 }
 
 function normalizeNewlines(s: string): string {

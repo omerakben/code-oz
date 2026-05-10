@@ -636,6 +636,38 @@ conditions:
     }
   })
 
+  test('expanded dedup key is hard-capped at 512 chars even with pathological fields', () => {
+    const r = rule(`---
+name: dedup-hard-cap
+event: PreToolUse
+scope: runtime-tool-call
+tool: Write
+dedupKey: '{rule.name}:{new_content}:{file_path}'
+conditions:
+  - field: new_content
+    operator: contains
+    value: x
+---
+`)
+    const set = compileRuleSet([r])
+    const decision = evaluateGuardrails(
+      set,
+      ctx({
+        event: 'PreToolUse',
+        scope: 'runtime-tool-call',
+        tool: 'Write',
+        // Both substituted values are themselves huge.
+        fields: {
+          new_content: 'x'.repeat(10_000),
+          file_path: 'a/'.repeat(10_000),
+        },
+      }),
+    )
+    expect(decision.outcome).toBe('warn')
+    const expandedKey = decision.matches[0]?.dedupKey ?? ''
+    expect(expandedKey.length).toBeLessThanOrEqual(512)
+  })
+
   test('dedup below cap: rule fires normally; ledger hit < cap', () => {
     const r = rule(`---
 name: under-cap-warn

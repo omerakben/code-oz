@@ -274,7 +274,8 @@ on first parse if any issue is `block`-class:
 | `guardrail_tool_not_allowed_for_event` | block | tool field on event-only rule (Stop / SubagentStop) |
 | `guardrail_invalid_operator` | block | operator name not in enum |
 | `guardrail_invalid_event` | block | event name not in enum |
-| `guardrail_invalid_action` | block | action not warn or block (also raised on malformed `conditions[i]` shape) |
+| `guardrail_invalid_action` | block | action not warn or block |
+| `guardrail_invalid_condition_shape` | block | a `conditions[i]` entry is not an object with field/operator/value |
 | `guardrail_invalid_scope` | block | scope not runtime-tool-call or artifact-authoring |
 | `guardrail_invalid_enabled` | block | enabled not a boolean |
 | `guardrail_invalid_tool` | block | tool not in enum |
