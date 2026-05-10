@@ -3,6 +3,7 @@ import {
   parseSpec,
   serializeSpec,
   hasMinimumContent,
+  lintSpecQuality,
   adaptYamlStyleSpec,
   SPEC_OPEN_QUESTIONS_NONE,
   SPEC_SECTION_KEYS,
@@ -940,5 +941,124 @@ non_goals:
     expect(serialized).toContain('- a, b')
     const reparsed = parseSpec(serialized)
     expect(reparsed.goals).toEqual(['a, b', 'c'])
+  })
+})
+
+const LINT_BASE_SPEC: SpecArtifact = Object.freeze({
+  title: 'SPEC',
+  goals: Object.freeze([
+    'Measure name selection outcomes.',
+    'Capture parent preference details.',
+  ]),
+  users: Object.freeze(['Parents comparing newborn name choices.']),
+  constraints: Object.freeze(['Runs offline after installation.']),
+  acceptance: Object.freeze(['Given a surname, the app returns ranked candidates.']),
+  openQuestions: Object.freeze(['Does the parent prefer gender-neutral names?']),
+  nonGoals: Object.freeze(['Not generating surnames.']),
+})
+
+const VAGUE_TERMS_FOR_TEST = [
+  'fast', 'quick', 'slow', 'good', 'bad', 'poor',
+  'user-friendly', 'easy', 'simple', 'secure', 'safe',
+  'scalable', 'flexible', 'performant', 'efficient',
+] as const
+
+function specForLint(overrides: Partial<Omit<SpecArtifact, 'title'>> = {}): SpecArtifact {
+  return Object.freeze({
+    ...LINT_BASE_SPEC,
+    ...overrides,
+  })
+}
+
+describe('lintSpecQuality', () => {
+  test('healthy SPEC produces 0 issues', () => {
+    expect(lintSpecQuality(LINT_BASE_SPEC)).toEqual([])
+  })
+
+  test('each pinned vague term triggers in acceptance', () => {
+    for (const term of VAGUE_TERMS_FOR_TEST) {
+      const issues = lintSpecQuality(specForLint({
+        acceptance: [`The workflow is ${term} for parents.`],
+      }))
+      expect(issues).toContainEqual({
+        code: 'spec_vague_language',
+        section: 'acceptance',
+        bulletIndex: 0,
+        term,
+      })
+    }
+  })
+
+  test('lead-ins still trigger vague-language warnings', () => {
+    for (const phrase of ['should be fast', 'must be fast', 'needs to be fast']) {
+      const issues = lintSpecQuality(specForLint({
+        acceptance: [`The workflow ${phrase} for parents.`],
+      }))
+      expect(issues).toContainEqual({
+        code: 'spec_vague_language',
+        section: 'acceptance',
+        bulletIndex: 0,
+        term: 'fast',
+      })
+    }
+  })
+
+  test('explicit metric in the same bullet suppresses a vague-language match', () => {
+    const issues = lintSpecQuality(specForLint({
+      acceptance: ['The workflow should be fast under <200ms.'],
+    }))
+    expect(issues.some((issue) => issue.code === 'spec_vague_language')).toBe(false)
+  })
+
+  test('named control in the same bullet suppresses a vague-language match', () => {
+    const issues = lintSpecQuality(specForLint({
+      acceptance: ['The login flow must be secure with OAuth.'],
+    }))
+    expect(issues.some((issue) => issue.code === 'spec_vague_language')).toBe(false)
+  })
+
+  test('Goals with 2+ bullets do not trigger goals underspecified', () => {
+    const issues = lintSpecQuality(specForLint({
+      goals: ['Deliver ranked names.', 'Record parent choices.'],
+    }))
+    expect(issues.some((issue) => issue.code === 'spec_goals_underspecified')).toBe(false)
+  })
+
+  test('Goals with 1 bullet and at least 15 words do not trigger goals underspecified', () => {
+    const issues = lintSpecQuality(specForLint({
+      goals: [
+        'Deliver a measurable onboarding workflow that records parent preferences and produces ranked name candidates before approval.',
+      ],
+    }))
+    expect(issues.some((issue) => issue.code === 'spec_goals_underspecified')).toBe(false)
+  })
+
+  test('Goals with 1 bullet and fewer than 15 words trigger goals underspecified', () => {
+    const issues = lintSpecQuality(specForLint({
+      goals: ['Deliver ranked names.'],
+    }))
+    expect(issues).toContainEqual({
+      code: 'spec_goals_underspecified',
+      section: 'goals',
+      bulletIndex: 0,
+    })
+  })
+
+  test('issue objects expose only diagnostic fields', () => {
+    const vagueIssue = lintSpecQuality(specForLint({
+      acceptance: ['The workflow should be fast for parents.'],
+    })).find((issue) => issue.code === 'spec_vague_language')
+    const goalsIssue = lintSpecQuality(specForLint({
+      goals: ['Deliver ranked names.'],
+    })).find((issue) => issue.code === 'spec_goals_underspecified')
+    expect(Object.keys(vagueIssue!)).toEqual(['code', 'section', 'bulletIndex', 'term'])
+    expect(Object.keys(goalsIssue!)).toEqual(['code', 'section', 'bulletIndex'])
+  })
+
+  test('returned issue array is frozen', () => {
+    const issues = lintSpecQuality(specForLint({
+      acceptance: ['The workflow should be fast for parents.'],
+    }))
+    expect(Object.isFrozen(issues)).toBe(true)
   })
 })
