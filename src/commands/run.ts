@@ -80,14 +80,14 @@ import {
   clearStaleGateFile,
   detectOpenBuildStarted,
   formatInterventionRefusal,
+  hasTaskStartedFor,
   loadPlanArtifact,
   resolveBuildCarryForward,
   tryReadNeedsInterventionGate,
 } from './dispatch-build-helpers.ts'
 import {
   findLatestBuildCompleted,
-  findLatestVerifyCompleted,
-  hasGateRequired,
+  isVerifyCrashWindow,
   resolveVerifyArtifacts,
   shouldRouteToBuildRestart,
 } from './dispatch-verify-helpers.ts'
@@ -1249,9 +1249,18 @@ export async function dispatchBuild(
     applyFakeScript(fakeProvider, opts.fakeScriptEntries)
   }
 
-  // Emit task_started exactly once per task — attempt 1 only (Codex
-  // Mod #5 + schema comment at src/state/schemas.ts:251).
-  if (attempt === 1) {
+  // Emit task_started exactly once per task. The prior shape gated on
+  // `attempt === 1`, but a crash AFTER `task_started` and BEFORE
+  // `build_started` would re-enter dispatchBuild on the next run with
+  // attempt still === 1 (the BUILD never succeeded), causing a second
+  // `task_started` to be appended.
+  //
+  // R1 finding 5 (fix-soon): emission is now keyed on event presence —
+  // skip if any prior `task_started` for `(runId, taskId)` exists. The
+  // attempt-1 guard remains as a fast path because attempt > 1 always
+  // implies a prior successful BUILD for attempt 1, and the BUILD path
+  // emitted `task_started` before that first BUILD ran.
+  if (!hasTaskStartedFor(events, opts.runId, taskId)) {
     await appendEvent(
       { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
       {
@@ -1420,11 +1429,19 @@ export async function dispatchVerify(
   // is still 'verify' and gate_required(verify) is missing. Refuse as
   // drift — re-running runVerify against the same patch would
   // double-emit verify_completed.
-  const verifyDone = findLatestVerifyCompleted(events, opts.runId, taskId)
-  if (verifyDone !== null && !hasGateRequired(events, opts.runId, 'verify')) {
+  //
+  // R1 finding 1 (block-push): the check is now (taskId, attempt)-scoped
+  // via `isVerifyCrashWindow`. The prior any-task / any-attempt presence
+  // check let a stale `gate_required(verify)` from a prior task or
+  // earlier attempt mask a real crash for the current attempt. The
+  // attempt anchor is the latest `build_completed` for this task — the
+  // upcoming VERIFY (or its just-crashed predecessor) operates against
+  // that BUILD attempt.
+  const crashAttempt = findLatestBuildCompleted(events, opts.runId, taskId)?.attempt ?? 1
+  if (isVerifyCrashWindow(events, opts.runId, taskId, crashAttempt)) {
     return Object.freeze({
       exitCode: EXIT_INTERVENTION as 1,
-      stderr: `code-oz run: VERIFY attempt ${verifyDone.attempt} for ${taskId} emitted verify_completed but no gate_required(verify).\n  A prior process likely crashed between event emissions.\n  Inspect .code-oz/state/runs/${opts.runId}/events.jsonl and resolve the partial state before re-running.\n`,
+      stderr: `code-oz run: VERIFY attempt ${crashAttempt} for ${taskId} emitted verify_completed but no gate_required(verify).\n  A prior process likely crashed between event emissions.\n  Inspect .code-oz/state/runs/${opts.runId}/events.jsonl and resolve the partial state before re-running.\n`,
     })
   }
 

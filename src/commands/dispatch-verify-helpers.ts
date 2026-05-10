@@ -160,6 +160,13 @@ export function findLatestVerifyCompleted(
  * `phase` only). `runVerify` emits `gate_required(verify)` after a
  * passing VERIFY; absence of this event after a `verify_completed`
  * indicates a crash window.
+ *
+ * NOTE — pre-R1 callers used this for the crash-window check without
+ * task/attempt scoping; that bug is closed by `hasGateRequiredAfterIndex`
+ * below + `findLatestVerifyCompletedIndex`. The legacy helper stays for
+ * API compatibility (no in-tree callers other than the dispatcher today,
+ * but its own unit tests pin the contract). Prefer the index variant
+ * for new callers.
  */
 export function hasGateRequired(
   events: readonly LoggedEvent[],
@@ -173,6 +180,131 @@ export function hasGateRequired(
     if (e.phase === phase) return true
   }
   return false
+}
+
+/**
+ * Returns the events.jsonl index of the most recent `verify_completed`
+ * event for `(runId, taskId, attempt)`, or `-1` if none exists. The
+ * index is the load-bearing return — the crash-window check needs it
+ * to anchor a forward search for `gate_required(verify)`.
+ *
+ * Codex R1 finding 1: the prior `findLatestVerifyCompleted` returned
+ * the latest event for `(runId, taskId)` regardless of attempt; that
+ * shape can't disambiguate "VERIFY attempt 1 crashed mid-emission" from
+ * "VERIFY attempt 1 passed and we're now mid-attempt-2". Pinning to
+ * `(taskId, attempt)` + returning the index makes the crash-window
+ * check exact.
+ */
+export function findLatestVerifyCompletedIndex(
+  events: readonly LoggedEvent[],
+  runId: string,
+  taskId: string,
+  attempt: number,
+): number {
+  let latestIdx = -1
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'verify_completed') continue
+    if (e.runId !== runId) continue
+    const completed = e as Extract<LoggedEvent, { type: 'verify_completed' }>
+    if (completed.taskId !== taskId) continue
+    if (completed.attempt !== attempt) continue
+    if (i > latestIdx) latestIdx = i
+  }
+  return latestIdx
+}
+
+/**
+ * Returns the events.jsonl index of the latest
+ * `gate_file_cleared(verify)` event for `(runId, currentTaskId,
+ * currentAttempt)`, or `-1` if none. `gate_file_cleared` only carries
+ * `phase` + `priorTaskId` + `currentTaskId` (no attempt), so
+ * "for this attempt" is approximated by "current task matches AND the
+ * event is in events.jsonl order ahead of the current attempt's
+ * `verify_started` if any." For the dispatcher's crash-window anchor
+ * that's enough: a clearance for an earlier attempt of the same task
+ * still bounds the search window correctly because runVerify's
+ * `verify_completed` for the new attempt is appended AFTER any
+ * clearance write (clearStaleGateFile runs in the dispatcher BEFORE
+ * runVerify in src/commands/run.ts:1443-1449).
+ */
+function latestVerifyClearanceIndex(
+  events: readonly LoggedEvent[],
+  runId: string,
+  currentTaskId: string,
+): number {
+  let latestIdx = -1
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'gate_file_cleared') continue
+    if (e.runId !== runId) continue
+    const cleared = e as Extract<LoggedEvent, { type: 'gate_file_cleared' }>
+    if (cleared.phase !== 'verify') continue
+    if (cleared.currentTaskId !== currentTaskId) continue
+    if (i > latestIdx) latestIdx = i
+  }
+  return latestIdx
+}
+
+/**
+ * Returns true when a `gate_required(verify)` event exists at any
+ * events.jsonl position strictly after `afterIdx`. Used as the second
+ * half of the crash-window check: combined with
+ * `findLatestVerifyCompletedIndex`, the dispatcher refuses only when
+ * THIS task/attempt's `verify_completed` is followed by no
+ * `gate_required(verify)` event — even if a PRIOR task or PRIOR
+ * attempt emitted one.
+ *
+ * Codex R1 finding 1: the prior shape (any-position presence check)
+ * meant a stale `gate_required(verify)` from T-001 attempt 1 masked
+ * a real crash for T-002 attempt 1, allowing dispatchVerify to
+ * re-run runVerify against the same patch and double-emit
+ * `verify_completed`.
+ */
+export function hasGateRequiredAfterIndex(
+  events: readonly LoggedEvent[],
+  runId: string,
+  phase: 'build' | 'verify' | 'review',
+  afterIdx: number,
+): boolean {
+  for (let i = afterIdx + 1; i < events.length; i++) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'gate_required') continue
+    if (e.runId !== runId) continue
+    if (e.phase === phase) return true
+  }
+  return false
+}
+
+/**
+ * Crash-window detector. Returns true exactly when:
+ *   1. A `verify_completed` event exists for `(taskId, attempt)`, AND
+ *   2. No `gate_required(verify)` event was appended after it.
+ *
+ * The search anchors after the latest `gate_file_cleared(verify)` for
+ * the current task, which conservatively widens the window — a
+ * clearance event from an earlier attempt of the same task still
+ * precedes the new attempt's `verify_completed`, so anchoring there is
+ * safe.
+ */
+export function isVerifyCrashWindow(
+  events: readonly LoggedEvent[],
+  runId: string,
+  taskId: string,
+  attempt: number,
+): boolean {
+  const completedIdx = findLatestVerifyCompletedIndex(events, runId, taskId, attempt)
+  if (completedIdx === -1) return false
+  const clearanceIdx = latestVerifyClearanceIndex(events, runId, taskId)
+  // The completed event MUST come AFTER any clearance (clearStaleGateFile
+  // runs before runVerify). If somehow the clearance is later, treat as
+  // not-a-crash-window — the state is inconsistent and the dispatcher
+  // should not make further inferences.
+  if (clearanceIdx > completedIdx) return false
+  return !hasGateRequiredAfterIndex(events, runId, 'verify', completedIdx)
 }
 
 // --- routing pre-check --------------------------------------------

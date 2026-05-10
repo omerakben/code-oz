@@ -28,8 +28,11 @@ import { dispatchVerify } from '../src/commands/run.ts'
 import {
   findLatestBuildCompleted,
   findLatestVerifyCompleted,
+  findLatestVerifyCompletedIndex,
   findLatestVerifyRestart,
   hasGateRequired,
+  hasGateRequiredAfterIndex,
+  isVerifyCrashWindow,
   resolveVerifyArtifacts,
   shouldRouteToBuildRestart,
 } from '../src/commands/dispatch-verify-helpers.ts'
@@ -187,6 +190,24 @@ function buildStarted(opts: { taskId: string; attempt: number }): LoggedEvent {
   } as unknown as LoggedEvent
 }
 
+function gateFileCleared(opts: {
+  phase: 'build' | 'verify' | 'review'
+  priorTaskId: string
+  currentTaskId: string
+}): LoggedEvent {
+  return {
+    version: 1 as const,
+    type: 'gate_file_cleared',
+    ts: FIXED_TS,
+    runId: RUN,
+    phase: opts.phase,
+    priorTaskId: opts.priorTaskId,
+    currentTaskId: opts.currentTaskId,
+    gateFile: `GATE_${opts.phase.toUpperCase()}_PASSED.json`,
+    priorArtifactSha256: 'e'.repeat(64),
+  } as unknown as LoggedEvent
+}
+
 // --- findLatestBuildCompleted -------------------------------------
 
 describe('findLatestBuildCompleted', () => {
@@ -278,6 +299,117 @@ describe('findLatestVerifyCompleted', () => {
       'T-001',
     )
     expect(result!.attempt).toBe(2)
+  })
+})
+
+// --- findLatestVerifyCompletedIndex / hasGateRequiredAfterIndex ---
+//
+// R1 finding 1: the prior crash-window check used any-task / any-attempt
+// `hasGateRequired`, so a stale gate_required(verify) from T-001 a1
+// masked a real crash for T-002 a1. The new helpers anchor the search
+// per (taskId, attempt) and let `isVerifyCrashWindow` compose them.
+
+describe('findLatestVerifyCompletedIndex', () => {
+  test('returns -1 when no events match', () => {
+    expect(findLatestVerifyCompletedIndex([], RUN, 'T-001', 1)).toBe(-1)
+  })
+
+  test('returns the index of the matching (taskId, attempt) event', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+      verifyCompleted({ taskId: 'T-002', attempt: 1 }),
+    ]
+    expect(findLatestVerifyCompletedIndex(events, RUN, 'T-002', 1)).toBe(1)
+  })
+
+  test('does NOT match a different attempt for the same task', () => {
+    const events: LoggedEvent[] = [verifyCompleted({ taskId: 'T-001', attempt: 1 })]
+    expect(findLatestVerifyCompletedIndex(events, RUN, 'T-001', 2)).toBe(-1)
+  })
+
+  test('returns the latest index when multiple match', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+    ]
+    expect(findLatestVerifyCompletedIndex(events, RUN, 'T-001', 1)).toBe(1)
+  })
+})
+
+describe('hasGateRequiredAfterIndex', () => {
+  test('false when no gate_required after the anchor', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+    ]
+    expect(hasGateRequiredAfterIndex(events, RUN, 'verify', 0)).toBe(false)
+  })
+
+  test('true when gate_required(verify) appears strictly after anchor', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+      gateRequired('verify'),
+    ]
+    expect(hasGateRequiredAfterIndex(events, RUN, 'verify', 0)).toBe(true)
+  })
+
+  test('false when gate_required is BEFORE the anchor (stale event)', () => {
+    const events: LoggedEvent[] = [
+      gateRequired('verify'),
+      verifyCompleted({ taskId: 'T-002', attempt: 1 }),
+    ]
+    // anchor is index 1 (verify_completed for T-002); the gate_required
+    // at index 0 is for a prior task and must NOT count.
+    expect(hasGateRequiredAfterIndex(events, RUN, 'verify', 1)).toBe(false)
+  })
+})
+
+describe('isVerifyCrashWindow', () => {
+  test('false when no verify_completed for (taskId, attempt)', () => {
+    expect(isVerifyCrashWindow([], RUN, 'T-001', 1)).toBe(false)
+  })
+
+  test('true when verify_completed exists with no following gate_required(verify)', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+    ]
+    expect(isVerifyCrashWindow(events, RUN, 'T-001', 1)).toBe(true)
+  })
+
+  test('false when verify_completed is followed by gate_required(verify)', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+      gateRequired('verify'),
+    ]
+    expect(isVerifyCrashWindow(events, RUN, 'T-001', 1)).toBe(false)
+  })
+
+  // R1 finding 1 — the load-bearing fix. Without (taskId, attempt) scoping
+  // a prior task's gate_required would mask a current task's crash.
+  test('prior task gate_required(verify) does NOT mask a crash for the current task', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+      gateRequired('verify'),
+      // T-002 attempt 1 emits verify_completed but crashes before
+      // emitting gate_required(verify). The any-task presence check
+      // would see T-001's gate_required and miss the crash.
+      verifyCompleted({ taskId: 'T-002', attempt: 1 }),
+    ]
+    expect(isVerifyCrashWindow(events, RUN, 'T-002', 1)).toBe(true)
+  })
+
+  // Multi-attempt sibling: a1's gate_required + a1 cleanup must not
+  // mask a2's crash.
+  test('prior attempt cleanup does NOT mask a crash for a later attempt of the same task', () => {
+    const events: LoggedEvent[] = [
+      verifyCompleted({ taskId: 'T-001', attempt: 1 }),
+      gateRequired('verify'),
+      // task-boundary cleanup happens between attempts; clear gate file
+      // for this task before running attempt 2.
+      gateFileCleared({ phase: 'verify', priorTaskId: 'T-001', currentTaskId: 'T-001' }),
+      // attempt 2 emits verify_completed and crashes pre-gate.
+      verifyCompleted({ taskId: 'T-001', attempt: 2 }),
+    ]
+    expect(isVerifyCrashWindow(events, RUN, 'T-001', 2)).toBe(true)
   })
 })
 

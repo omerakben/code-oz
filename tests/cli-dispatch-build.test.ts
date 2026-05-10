@@ -24,6 +24,7 @@ import { dispatchBuild } from '../src/commands/run.ts'
 import {
   detectOpenBuildStarted,
   formatInterventionRefusal,
+  hasTaskStartedFor,
   loadPlanArtifact,
   NeedsInterventionReadError,
   resolveBuildCarryForward,
@@ -168,6 +169,17 @@ function verifyRestartEvent(taskId: string, attempt: number): LoggedEvent {
   } as unknown as LoggedEvent
 }
 
+function taskStartedEvent(taskId: string, taskIndex: number): LoggedEvent {
+  return {
+    version: 1 as const,
+    type: 'task_started',
+    ts: FIXED_TS,
+    runId: RUN,
+    taskId,
+    taskIndex,
+  } as unknown as LoggedEvent
+}
+
 // --- tryReadNeedsInterventionGate ---------------------------------
 
 describe('tryReadNeedsInterventionGate', () => {
@@ -242,6 +254,34 @@ describe('detectOpenBuildStarted', () => {
     const result = detectOpenBuildStarted(events, RUN, 'T-001')
     expect(result).not.toBeNull()
     expect(result!.attempt).toBe(3)
+  })
+})
+
+// --- hasTaskStartedFor (R1 finding 5) -----------------------------
+//
+// dispatchBuild's task_started emission gates on this helper instead
+// of `attempt === 1`. Pre-build crash at attempt 1 (after task_started
+// but before build_started) leaves attempt still === 1 on retry; the
+// presence-keyed gate prevents a duplicate emit.
+
+describe('hasTaskStartedFor', () => {
+  test('false on empty event log', () => {
+    expect(hasTaskStartedFor([], RUN, 'T-001')).toBe(false)
+  })
+
+  test('true when task_started exists for the (runId, taskId)', () => {
+    expect(hasTaskStartedFor([taskStartedEvent('T-001', 0)], RUN, 'T-001')).toBe(true)
+  })
+
+  test('false when only a different taskId has task_started', () => {
+    expect(hasTaskStartedFor([taskStartedEvent('T-002', 1)], RUN, 'T-001')).toBe(false)
+  })
+
+  // R1 finding 5 — pre-build crash scenario. attempt === 1 is the
+  // common case; the prior shape would re-emit task_started on retry.
+  test('detects prior task_started even when no build_started followed (pre-build-crash)', () => {
+    const events: LoggedEvent[] = [taskStartedEvent('T-001', 0)]
+    expect(hasTaskStartedFor(events, RUN, 'T-001')).toBe(true)
   })
 })
 

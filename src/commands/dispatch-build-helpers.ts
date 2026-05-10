@@ -196,6 +196,32 @@ export function detectOpenBuildStarted(
   return null
 }
 
+/**
+ * True when a prior `task_started` event exists for `(runId, taskId)`.
+ * dispatchBuild uses this to gate `task_started` emission idempotently
+ * across pre-build crashes.
+ *
+ * R1 finding 5 (fix-soon): the prior shape gated emission on
+ * `attempt === 1`. A crash AFTER `task_started` and BEFORE
+ * `build_started` re-enters dispatchBuild on the next run with attempt
+ * still === 1, double-emitting `task_started`. Keying on event
+ * presence (rather than attempt) closes that crash window.
+ */
+export function hasTaskStartedFor(
+  events: readonly LoggedEvent[],
+  runId: string,
+  taskId: string,
+): boolean {
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'task_started') continue
+    if (e.runId !== runId) continue
+    const started = e as Extract<LoggedEvent, { type: 'task_started' }>
+    if (started.taskId === taskId) return true
+  }
+  return false
+}
+
 // --- PLAN.md load --------------------------------------------------
 
 /**
