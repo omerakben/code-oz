@@ -159,5 +159,6 @@ The second skip is the eval-harness rg-not-installed branch (mirrors the existin
 | R4 | 019e1421 | fix-first | 3 doc-drift sweep: COMPARISON.md matrix row + G1 narrative + B1 borrow row + References stale; ROADMAP M6 acceptance bullet stale (15d5d43) |
 | R5 | 019e142d | fix-first | 1 doc-drift: CODEX_BRIEFING.md missing historical-dispatch banner (2b25d98) |
 | R6 | 019e1436 | fix-first | 1 metadata-recursion: companion-doc review-rounds frontmatter and banners locked to round counts that the next round invalidates; stabilized language and pointed companion docs at `CODEX_RESPONSE.md § Postscript` as the canonical round-summary table (83ca862) |
-| R7 | 019e143d | fix-first | 3 residual hardcoded round-count copy missed by R6: CODEX_RESPONSE.md Postscript heading + "three subsequent rounds" phrase; COMPARISON.md frontmatter R1..R6 range; IMPLEMENTATION_PLAN.md claimed its own Outcome table as canonical (current commit) |
+| R7 | 019e143d | fix-first | 3 residual hardcoded round-count copy missed by R6: CODEX_RESPONSE.md Postscript heading + "three subsequent rounds" phrase; COMPARISON.md frontmatter R1..R6 range; IMPLEMENTATION_PLAN.md claimed its own Outcome table as canonical (19650a2) |
+| R8 | 019e1442 | fix-first | 6 residual round-count sites in IMPLEMENTATION_PLAN.md (planning-body, Outcome heading, B2 subheading, test-count table) (13d2206) |
 | (next) | (pending) | (target: push) | convergence verification |
