@@ -235,26 +235,35 @@ async function classifyExisting(
   const onDiskSha = baseRead.sha
 
   if (!(await pathExists(wtPaths.worktree))) {
-    // M16 C9 Mod #6 — task-boundary re-creation case (case #5).
-    // After approve-review for task N, preApproveReviewHook destroys
-    // the worktree subdir but `removeRunWorktree` preserves the run
-    // dir + base.txt + patches/. When task N+1's first BUILD calls
-    // this wrapper, the run dir is present but the worktree subdir
-    // is gone.
+    // Two recreation patterns recognise the missing-subdir case as
+    // legitimate (NOT a partial-state refusal):
     //
-    // Detect: latest `worktree_destroyed` event for this runId
-    // followed by a `task_completed` (and no subsequent
-    // `worktree_created` / `run_initialized` re-creation event). When
-    // matched, recreate the worktree from base.txt's sha (NOT a fresh
-    // capture — the run's base commit is already pinned).
+    //   - M16 C9 Mod #6: post-task-completed re-creation. After
+    //     approve-review for task N, preApproveReviewHook destroys
+    //     the worktree but preserves the run dir + base.txt +
+    //     patches/. Pattern = latest `worktree_destroyed` followed
+    //     by `task_completed` AND no later `worktree_created`.
     //
-    // The detection scans events.jsonl once; ordering is enforced by
-    // file order (validation rule 8). When the post-task-completed
-    // pattern is NOT matched, we fall through to the original
+    //   - M16 R1 fix-first: verify-fail re-creation. Codex flagged
+    //     the verify-fail restart e2e as a coverage gap; running it
+    //     surfaces a previously-untested production path. After
+    //     `scheduleAttemptNPlus1` removes the failed worktree (emits
+    //     `worktree_destroyed` + `verify_restart_initiated`), the
+    //     next BUILD attempt for the same task needs the worktree
+    //     back. Pattern = latest `worktree_destroyed` followed by
+    //     `verify_restart_initiated{nextAction:'restart'}` AND no
+    //     later `worktree_created`.
+    //
+    // Both patterns recreate from base.txt's sha (NOT a fresh
+    // capture — the run's base commit is already pinned). When
+    // neither pattern matches we fall through to the
     // `worktree_partial_state` refusal (the dir was destroyed by
-    // something other than the post-review cleanup).
+    // something other than the recognised flows).
     const events = await readEvents(eventPathsFor(opts.runPaths))
-    if (await isPostTaskCompletedRecreation(events, opts.runId)) {
+    if (
+      isPostTaskCompletedRecreation(events, opts.runId) ||
+      isPostVerifyFailRecreation(events, opts.runId)
+    ) {
       return await recreateAfterTaskBoundary(opts, wtPaths, onDiskSha, now)
     }
     return await refuseWithIntervention(opts, now, {
@@ -508,10 +517,10 @@ async function pathExists(p: string): Promise<boolean> {
  * removal (preApproveReviewHook + approveReviewTaskGate sequence
  * the writes inside the same approval transaction).
  */
-async function isPostTaskCompletedRecreation(
+function isPostTaskCompletedRecreation(
   events: readonly { readonly type: string; readonly runId?: string }[],
   runId: string,
-): Promise<boolean> {
+): boolean {
   let latestDestroyedIdx = -1
   let latestCreatedAfterIdx = -1
   let taskCompletedAfterDestroyed = false
@@ -536,6 +545,55 @@ async function isPostTaskCompletedRecreation(
   if (latestDestroyedIdx === -1) return false
   if (latestCreatedAfterIdx > latestDestroyedIdx) return false
   return taskCompletedAfterDestroyed
+}
+
+/**
+ * M16 R1 fix-first companion to `isPostTaskCompletedRecreation` —
+ * the verify-fail restart variant. After `scheduleAttemptNPlus1`
+ * removes the failed worktree, it appends `worktree_destroyed`
+ * followed by `verify_restart_initiated{nextAction:'restart'}`.
+ * The next BUILD attempt for the same task expects the worktree
+ * back (M16 C9 Mod #1 derives attempt N+1 from carryForward; the
+ * orchestration assumes the wrapper provides a fresh worktree).
+ *
+ * Pattern: latest `worktree_destroyed` is followed by a
+ * `verify_restart_initiated` whose `nextAction === 'restart'`,
+ * AND no later `worktree_created` has re-created the worktree.
+ * The order matches scheduleAttemptNPlus1's emission sequence.
+ *
+ * The detector deliberately does NOT match
+ * `nextAction === 'intervention'` — that path means the 4-attempt
+ * cap was reached and the run is durably paused; recreating the
+ * worktree silently would mask the operator-required halt.
+ */
+function isPostVerifyFailRecreation(
+  events: readonly { readonly type: string; readonly runId?: string; readonly nextAction?: string }[],
+  runId: string,
+): boolean {
+  let latestDestroyedIdx = -1
+  let latestCreatedAfterIdx = -1
+  let verifyRestartAfterDestroyed = false
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!
+    if (e.runId !== runId) continue
+    if (e.type === 'worktree_destroyed') {
+      latestDestroyedIdx = i
+      latestCreatedAfterIdx = -1
+      verifyRestartAfterDestroyed = false
+      continue
+    }
+    if (latestDestroyedIdx === -1) continue
+    if (e.type === 'worktree_created') {
+      latestCreatedAfterIdx = i
+      continue
+    }
+    if (e.type === 'verify_restart_initiated' && e.nextAction === 'restart') {
+      verifyRestartAfterDestroyed = true
+    }
+  }
+  if (latestDestroyedIdx === -1) return false
+  if (latestCreatedAfterIdx > latestDestroyedIdx) return false
+  return verifyRestartAfterDestroyed
 }
 
 /**
