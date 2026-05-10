@@ -952,3 +952,104 @@ export function aggregateDebateSchedulerPreflight(
     projectedExtraCalls,
   }
 }
+
+// --- 09-byterover-cli B3 — orchestrator-operation rollup --------------
+//
+// Pre-B3, fan-out provider calls under a REVIEW panel run or a debate
+// turn appear as N detached rows in `events.jsonl`. The cost reducer
+// `summarizeBudgetUse` correctly sums them into per-phase / per-role
+// counts, but operators reading the log cannot ask "what did panel run
+// T-007 cost?" without manually walking event order.
+//
+// `summarizeByParentTask` is a separate report function (deliberately
+// not folded into `summarizeBudgetUse`) that walks paired
+// agent_invoked/agent_completed and produces a rollup keyed by
+// `parentTaskId`. Pairing follows the same FIFO-by-phase convention as
+// `summarizeBudgetUse` so a `parentTaskId` recorded on `agent_invoked`
+// (and echoed onto its matching `agent_completed`) attributes its
+// `tokensUsed` (or fallback estimate) to the parent task. Events
+// without `parentTaskId` are ignored.
+//
+// Rule-21 stance: telemetry-only. The rollup is not consulted by
+// `assertWithinBudget`, by reviewer-panel preflight, or by the debate
+// scheduler. It exists so doctor / audit tooling and post-run reports
+// can attribute cost to the orchestrator step that issued it.
+
+export interface ParentTaskCost {
+  /** Sum of paired tokensUsed (or fallback tokensEstimate) for this parent task. */
+  readonly tokens: number
+  /** Number of `agent_invoked` events recorded under this parent task. */
+  readonly providerCalls: number
+}
+
+export interface ParentTaskRollup {
+  readonly byParentTaskId: Readonly<Record<string, ParentTaskCost>>
+}
+
+export function summarizeByParentTask(
+  events: readonly LoggedEvent[],
+): ParentTaskRollup {
+  // Per-phase FIFO queues mirror summarizeBudgetUse's pairing semantics
+  // so that crashed / unmatched agent_invoked entries still attribute
+  // their estimate to the parent task. Pending entries carry the
+  // estimate (Q3 token-only fallback) and the parent id snapshotted at
+  // invoke time. The matching agent_completed shifts the head and
+  // (when tokensUsed is reported) replaces the estimate before
+  // accumulating into the rollup.
+  interface PendingEntry {
+    readonly estimate: number
+    readonly parentTaskId: string
+  }
+  const pendingByPhase = new Map<Phase, PendingEntry[]>()
+  const tokensByParent: Record<string, number> = {}
+  const callsByParent: Record<string, number> = {}
+
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type === 'agent_invoked') {
+      if (typeof e.parentTaskId !== 'string' || e.parentTaskId.length === 0) {
+        continue
+      }
+      const queue = pendingByPhase.get(e.phase) ?? []
+      queue.push(Object.freeze({
+        estimate: e.tokensEstimate,
+        parentTaskId: e.parentTaskId,
+      }))
+      pendingByPhase.set(e.phase, queue)
+      callsByParent[e.parentTaskId] = (callsByParent[e.parentTaskId] ?? 0) + 1
+      continue
+    }
+    if (e.type === 'agent_completed') {
+      const queue = pendingByPhase.get(e.phase) ?? []
+      const head = queue.shift()
+      if (head === undefined) continue
+      const cost = e.tokensUsed ?? head.estimate
+      tokensByParent[head.parentTaskId] =
+        (tokensByParent[head.parentTaskId] ?? 0) + cost
+      continue
+    }
+  }
+
+  // Drain any unmatched in-flight invocations as conservative-estimate
+  // tokens — same fairness as summarizeBudgetUse's "crashed turn still
+  // counts" rule.
+  for (const queue of pendingByPhase.values()) {
+    for (const pending of queue) {
+      tokensByParent[pending.parentTaskId] =
+        (tokensByParent[pending.parentTaskId] ?? 0) + pending.estimate
+    }
+  }
+
+  const byParentTaskId: Record<string, ParentTaskCost> = {}
+  const ids = new Set<string>([
+    ...Object.keys(tokensByParent),
+    ...Object.keys(callsByParent),
+  ])
+  for (const id of ids) {
+    byParentTaskId[id] = Object.freeze({
+      tokens: tokensByParent[id] ?? 0,
+      providerCalls: callsByParent[id] ?? 0,
+    })
+  }
+  return Object.freeze({ byParentTaskId: Object.freeze(byParentTaskId) })
+}

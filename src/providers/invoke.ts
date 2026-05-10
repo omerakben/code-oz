@@ -141,6 +141,13 @@ export async function* invokeAgent(
           // it (their invocations still count against global / per-phase
           // budgets, just not per-role).
           ...(req.role !== undefined ? { role: req.role } : {}),
+          // 09-byterover-cli B3: orchestrator-operation correlation id.
+          // Set by REVIEW panel (via productionPanelistInvoker) and
+          // debate runtime (via requestDebate); other call sites omit
+          // it. Reducer `summarizeByParentTask` in cost.ts uses this to
+          // roll up per-provider costs back to a single panel run or
+          // debate without disturbing FIFO-by-phase budget pairing.
+          ...(req.parentTaskId !== undefined ? { parentTaskId: req.parentTaskId } : {}),
           manifest: prepared.manifest,
           filesSent: prepared.metrics.filesSent,
           bytesSent: prepared.metrics.bytesSent,
@@ -274,6 +281,12 @@ export async function* invokeAgent(
         agent: req.agent.name,
         ...(tokensUsed !== undefined ? { tokensUsed } : {}),
         ...(costActual !== undefined ? { costActualUSD: costActual } : {}),
+        // 09-byterover-cli B3: mirror parentTaskId on the completion row
+        // so reducer pairing keeps the parent correlation across the
+        // invoke/complete pair (FIFO-by-phase pairs by order, but
+        // explicit echo lets summarizeByParentTask join cleanly without
+        // assuming pairing semantics).
+        ...(req.parentTaskId !== undefined ? { parentTaskId: req.parentTaskId } : {}),
       },
       { skipLock: true },
     )

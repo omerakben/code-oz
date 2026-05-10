@@ -1284,6 +1284,10 @@ async function runReviewRoundLocked(
           projectRoot: opts.invokeCtx.projectRoot,
           resolvedBy: `${opts.reviewerAgent.name} (REVIEW debate scheduler, round ${opts.round})`,
           readySignal: REVIEW_READY_SIGNAL,
+          // 09-byterover-cli B3: thread the REVIEW operation's task id
+          // onto both debate turns so per-call cost rows roll up under
+          // one debate (orchestrator-operation correlation).
+          parentTaskId: opts.taskId,
         })
         for await (const _ev of runner) {
           // ProviderEvents already flow through invokeAgent's
@@ -2690,6 +2694,10 @@ async function runReviewPanelBranch(
         projectRoot: opts.invokeCtx.projectRoot,
         resolvedBy: `${opts.reviewerAgent.name} (REVIEW panel debate scheduler, round ${opts.round})`,
         readySignal: REVIEW_READY_SIGNAL,
+        // 09-byterover-cli B3: thread the REVIEW panel operation's task
+        // id so the panel-debate's invoke/complete rows roll up under
+        // the same parent.
+        parentTaskId: opts.taskId,
       })
       for await (const _ev of runner) {
         // ProviderEvents already flow through invokeAgent's appendEvent

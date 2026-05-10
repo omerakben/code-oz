@@ -487,6 +487,17 @@ export type PhaseEvent =
        *  'synthesis' = caller's DECISION-authoring turn; 'continuation'
        *  = caller's post-decision phase-continuation invocation. */
       readonly debateTurn?: 'opposing' | 'synthesis' | 'continuation'
+      /** 09-byterover-cli B3 (Codex thread `019e1318`):
+       *  orchestrator-operation correlation id (`T-NNN`). Set by fan-out
+       *  call sites — REVIEW panel via the production-seam invoker, debate
+       *  runtime via `requestDebate`. Per-provider cost rows under one
+       *  panel run or one debate now correlate back to the parent
+       *  orchestrator step instead of appearing as N detached billing
+       *  rows. Optional and forward-compatible: M14/M15 readers parse new
+       *  events identically; reducers in `src/providers/cost.ts` ignore
+       *  unknown fields. The runtime validator at `src/state/events.ts`
+       *  enforces the canonical task-id pattern when present. */
+      readonly parentTaskId?: string
     }
   | {
       readonly version: 1
@@ -509,6 +520,10 @@ export type PhaseEvent =
       /** M10 forward-compat correlation; mirrors agent_invoked. */
       readonly debateTopic?: string
       readonly debateTurn?: 'opposing' | 'synthesis' | 'continuation'
+      /** 09-byterover-cli B3: mirrors agent_invoked.parentTaskId so
+       *  reducer pairing keeps the parent correlation across the
+       *  invoke/complete pair. */
+      readonly parentTaskId?: string
     }
   | { readonly version: 1; readonly type: 'gate_written'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly file: string }
   | { readonly version: 1; readonly type: 'gate_required'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly blockedOn: string }
