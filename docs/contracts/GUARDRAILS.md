@@ -65,20 +65,43 @@ enabled: <bool, default true>
 event: <one of: PreToolUse | PostToolUse | UserPromptSubmit | Stop | SubagentStop>
 tool: <optional; one of: Edit | Write | MultiEdit | Bash | RepoContext | * — defaults to '*'>
 scope: <required; one of: runtime-tool-call | artifact-authoring>
-conditions:                # required, list of typed Condition objects
+conditions:                # required (non-empty) for non-Stop events
   - field: <one of: file_path | new_content | command | prompt | tool_input>
-    operator: <one of: equals | contains | prefix | suffix | glob | regex>
-    value: <string; for regex, also requires `maxLength`>
-    maxLength: <int; required when operator=regex; max input length to match>
+    operator: <one of: equals | contains | prefix | suffix | glob>
+                          # `regex` is deferred to v0.2 (see "Regex deferred" below)
+    value: <non-empty string; glob pattern length ≤ 256>
 action: <one of: warn | block — defaults to warn>
 message: <optional; if absent, the Markdown body becomes the message>
-dedupKey: <optional template; e.g., "{rule.name}:{file_path}">
+dedupKey: <optional template; warn-action rules only — e.g., "{rule.name}:{file_path}">
 maxMatchesPerRun: <optional int; default 100>
 priority: <optional int; default 100; higher fires first when multiple rules match>
 ---
 
 <optional Markdown body — used as the message when `message:` is absent>
 ```
+
+### Regex deferred to v0.2
+
+`operator: regex` is rejected at parse time in v0.1 with code
+`guardrail_operator_deferred`. The reason is concrete: JavaScript's
+synchronous `RegExp.test(input)` cannot be interrupted by a wall-time
+timeout, so the documented 50 ms cap is decorative (a catastrophic
+pattern blocks for seconds or minutes before any "timeout" is observed).
+v0.2 reintroduces the operator with a worker-bounded evaluator that can
+actually enforce the cap. v0.1 ships with deterministic operators only:
+`equals`, `contains`, `prefix`, `suffix`, `glob`. These are sufficient
+for the load-bearing use cases (block specific commands, warn on
+specific substrings in specific glob paths).
+
+### dedupKey is warn-only
+
+Block rules cannot dedup. A saturated dedup ledger on a `block` rule
+would silently downgrade the decision to `allow`, which is exactly the
+failure mode this contract exists to prevent. The parser rejects
+`dedupKey` on `action: block` with code
+`guardrail_dedup_on_block_disallowed`. If you need a block rule plus
+event-noise suppression, write two rules: one block (no dedup), one
+warn with dedup.
 
 ### Allowed `field` values per `event`
 

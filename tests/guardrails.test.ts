@@ -76,7 +76,7 @@ Production code should not include debug-print statements.
     expect(r.conditions).toHaveLength(1)
   })
 
-  test('rejects regex without maxLength', () => {
+  test('rejects the deferred regex operator (v0.1; v0.2 re-enables)', () => {
     const text = `---
 name: bad-regex
 event: PreToolUse
@@ -92,7 +92,151 @@ conditions:
       throw new Error('expected throw')
     } catch (err) {
       const e = err as GuardrailParseError
-      expect(e.issues.some((i) => i.code === 'guardrail_regex_missing_max_length')).toBe(true)
+      expect(e.issues.some((i) => i.code === 'guardrail_operator_deferred')).toBe(true)
+    }
+  })
+
+  test('rejects dedupKey on action=block (silent dedup-allow downgrade prevention)', () => {
+    const text = `---
+name: bad-block-dedup
+event: PreToolUse
+tool: Bash
+scope: runtime-tool-call
+action: block
+dedupKey: '{rule.name}:{command}'
+conditions:
+  - field: command
+    operator: contains
+    value: rm -rf
+---
+`
+    try {
+      parseGuardrailRule(text)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as GuardrailParseError
+      expect(
+        e.issues.some((i) => i.code === 'guardrail_dedup_on_block_disallowed'),
+      ).toBe(true)
+    }
+  })
+
+  test('warns on unknown dedupKey placeholder', () => {
+    const result = parseGuardrailRule(`---
+name: typo-dedup
+event: PreToolUse
+scope: runtime-tool-call
+dedupKey: '{rule.name}:{file_pat}'
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+`)
+    expect(result.warnings.some((w) => w.code === 'guardrail_dedup_template_invalid')).toBe(true)
+    expect(result.rule.dedupKey).toBe('{rule.name}:{file_pat}')
+  })
+
+  test('rejects condition.maxLength as unknown (regex deferred)', () => {
+    const text = `---
+name: stale-maxlen
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+    maxLength: 100
+---
+`
+    try {
+      parseGuardrailRule(text)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as GuardrailParseError
+      expect(
+        e.issues.some(
+          (i) =>
+            i.code === 'guardrail_unknown_frontmatter_key' && i.rule.includes('maxLength'),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test('uses distinct parse codes for invalid_enabled / invalid_tool / invalid_max_matches_per_run', () => {
+    const tries: Array<{ text: string; expected: string }> = [
+      {
+        text: `---
+name: bad-enabled
+enabled: yes
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+`,
+        expected: 'guardrail_invalid_enabled',
+      },
+      {
+        text: `---
+name: bad-tool
+event: PreToolUse
+tool: NotATool
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+`,
+        expected: 'guardrail_invalid_tool',
+      },
+      {
+        text: `---
+name: bad-max
+event: PreToolUse
+scope: runtime-tool-call
+maxMatchesPerRun: -1
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+`,
+        expected: 'guardrail_invalid_max_matches_per_run',
+      },
+    ]
+    for (const t of tries) {
+      try {
+        parseGuardrailRule(t.text)
+        throw new Error(`expected throw for ${t.expected}`)
+      } catch (err) {
+        const e = err as GuardrailParseError
+        expect(e.issues.some((i) => i.code === t.expected)).toBe(true)
+      }
+    }
+  })
+
+  test('rejects glob pattern over the length cap', () => {
+    const longPattern = 'a/'.repeat(200) + '*'
+    const text = `---
+name: long-glob
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: glob
+    value: '${longPattern}'
+---
+`
+    try {
+      parseGuardrailRule(text)
+      throw new Error('expected throw')
+    } catch (err) {
+      const e = err as GuardrailParseError
+      expect(e.issues.some((i) => i.code === 'guardrail_glob_pattern_too_long')).toBe(true)
     }
   })
 
@@ -446,14 +590,14 @@ conditions:
     }
   })
 
-  test('dedup: hit count >= maxMatchesPerRun marks the match as skipped', () => {
+  test('dedup below cap: rule fires normally; ledger hit < cap', () => {
     const r = rule(`---
-name: dedup-rule
+name: under-cap-warn
 event: PreToolUse
 scope: runtime-tool-call
 tool: Write
 dedupKey: '{rule.name}:{file_path}'
-maxMatchesPerRun: 2
+maxMatchesPerRun: 5
 conditions:
   - field: file_path
     operator: equals
@@ -461,7 +605,7 @@ conditions:
 ---
 `)
     const set = compileRuleSet([r])
-    const ledger = new Map<string, number>([['dedup-rule:src/foo.ts', 2]])
+    const ledger = new Map<string, number>([['under-cap-warn:src/foo.ts', 2]])
     const decision = evaluateGuardrails(
       set,
       ctx({
@@ -472,12 +616,9 @@ conditions:
         dedupLedger: ledger,
       }),
     )
-    expect(decision.outcome).toBe('allow')
-    // The match was registered as skipped='dedup' but the rule action was
-    // 'warn', so when ALL matches in the warn list are skipped, the
-    // overall outcome is 'allow'. (The skipped match is still observable
-    // by the wire-in slice via a separate API; here we just confirm the
-    // canonical decision.)
+    expect(decision.outcome).toBe('warn')
+    expect(decision.matches).toHaveLength(1)
+    expect(decision.matches[0]?.dedupKey).toBe('under-cap-warn:src/foo.ts')
   })
 
   test('disabled rule does not fire', () => {
@@ -529,17 +670,79 @@ conditions:
     expect(decision.outcome).toBe('allow')
   })
 
-  test('regex respects maxLength: input over the cap does not match', () => {
+  test('decision shape: matches and diagnostics are always present (allow)', () => {
     const r = rule(`---
-name: regex-cap
+name: never-fires
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: contains
+    value: never
+---
+`)
+    const set = compileRuleSet([r])
+    const decision = evaluateGuardrails(
+      set,
+      ctx({
+        event: 'PreToolUse',
+        scope: 'runtime-tool-call',
+        fields: { file_path: 'src/foo.ts' },
+      }),
+    )
+    expect(decision.outcome).toBe('allow')
+    expect(Array.isArray(decision.matches)).toBe(true)
+    expect(decision.matches).toHaveLength(0)
+    expect(Array.isArray(decision.diagnostics)).toBe(true)
+    expect(decision.diagnostics).toHaveLength(0)
+  })
+
+  test('dedup-skip emits a diagnostic; warn outcome downgrades to allow when ALL matches are skipped', () => {
+    const r = rule(`---
+name: dedup-warn-rule
+event: PreToolUse
+scope: runtime-tool-call
+tool: Write
+dedupKey: '{rule.name}:{file_path}'
+maxMatchesPerRun: 2
+conditions:
+  - field: file_path
+    operator: equals
+    value: src/foo.ts
+---
+`)
+    const set = compileRuleSet([r])
+    const ledger = new Map<string, number>([['dedup-warn-rule:src/foo.ts', 2]])
+    const decision = evaluateGuardrails(
+      set,
+      ctx({
+        event: 'PreToolUse',
+        scope: 'runtime-tool-call',
+        tool: 'Write',
+        fields: { file_path: 'src/foo.ts' },
+        dedupLedger: ledger,
+      }),
+    )
+    // Note: dedup applies only to warn rules (block + dedup is rejected at
+    // parse). A saturated dedup on a warn rule returns 'allow' but emits
+    // a 'dedup_skip' diagnostic so the wire-in slice can write a
+    // `guardrail_skipped_dedup` event.
+    expect(decision.outcome).toBe('allow')
+    expect(decision.diagnostics).toHaveLength(1)
+    expect(decision.diagnostics[0]?.kind).toBe('dedup_skip')
+    expect(decision.diagnostics[0]?.dedupKey).toBe('dedup-warn-rule:src/foo.ts')
+  })
+
+  test('newline normalization: contains operator matches CRLF input against LF value', () => {
+    const r = rule(`---
+name: warn-todo
 event: PreToolUse
 scope: runtime-tool-call
 tool: Write
 conditions:
   - field: new_content
-    operator: regex
-    value: 'forbidden'
-    maxLength: 32
+    operator: contains
+    value: "TODO\\nFIX"
 ---
 `)
     const set = compileRuleSet([r])
@@ -549,24 +752,44 @@ conditions:
         event: 'PreToolUse',
         scope: 'runtime-tool-call',
         tool: 'Write',
-        // Long input that contains the literal but exceeds maxLength: rule
-        // does not fire. This is conservative: long inputs are out-of-scope
-        // for the regex tier.
-        fields: { new_content: 'x'.repeat(64) + 'forbidden' },
+        // Input has CRLF; value has LF. Newline normalization should
+        // make this match.
+        fields: { new_content: 'foo\r\nTODO\r\nFIX bar' },
       }),
     )
-    expect(decision.outcome).toBe('allow')
+    expect(decision.outcome).toBe('warn')
+  })
 
-    const within = evaluateGuardrails(
+  test('glob normalizes consecutive `**/` (`src/**/**/foo.ts` matches `src/foo.ts`)', () => {
+    const r = rule(`---
+name: deep-glob
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: glob
+    value: src/**/**/foo.ts
+---
+`)
+    const set = compileRuleSet([r])
+    const direct = evaluateGuardrails(
       set,
       ctx({
         event: 'PreToolUse',
         scope: 'runtime-tool-call',
-        tool: 'Write',
-        fields: { new_content: 'a forbidden b' },
+        fields: { file_path: 'src/foo.ts' },
       }),
     )
-    expect(within.outcome).toBe('warn')
+    expect(direct.outcome).toBe('warn')
+    const nested = evaluateGuardrails(
+      set,
+      ctx({
+        event: 'PreToolUse',
+        scope: 'runtime-tool-call',
+        fields: { file_path: 'src/a/b/c/foo.ts' },
+      }),
+    )
+    expect(nested.outcome).toBe('warn')
   })
 })
 

@@ -59,6 +59,17 @@ export const GUARDRAIL_OPERATORS = [
 ] as const
 export type GuardrailOperator = (typeof GUARDRAIL_OPERATORS)[number]
 
+/**
+ * v0.1 deferred operators. The regex operator depends on a killable match
+ * boundary that synchronous JS RegExp cannot provide; per the post-impl
+ * Codex review (Category 4 finding 1), shipping regex with a non-enforced
+ * timeout is a block-push. v0.1 ships with regex rejected at parse time;
+ * v0.2 adds it back with worker-bounded evaluation. Glob remains available
+ * because the compiled regex it produces is anchored and non-recursive.
+ */
+export const GUARDRAIL_OPERATORS_DEFERRED_V0_1: ReadonlySet<GuardrailOperator> =
+  new Set(['regex'])
+
 export const GUARDRAIL_ACTIONS = ['warn', 'block'] as const
 export type GuardrailAction = (typeof GUARDRAIL_ACTIONS)[number]
 
@@ -82,12 +93,24 @@ export const GUARDRAIL_TOOL_BOUND_EVENTS: ReadonlySet<GuardrailEvent> = new Set(
   'PostToolUse',
 ])
 
-const REGEX_MAX_LENGTH_HARD_CAP = 65_536
-const REGEX_MATCH_TIMEOUT_MS_DEFAULT = 50
 const PRIORITY_DEFAULT = 100
 const PRIORITY_MIN = 0
 const PRIORITY_MAX = 1000
 const MAX_MATCHES_PER_RUN_DEFAULT = 100
+const GLOB_PATTERN_MAX_LENGTH = 256
+
+/** Known placeholders for dedupKey templates. Validated at parse time. */
+const DEDUP_KEY_KNOWN_PLACEHOLDERS = new Set<string>([
+  'rule.name',
+  'file_path',
+  'new_content',
+  'command',
+  'prompt',
+  'tool_input',
+])
+const DEDUP_KEY_PLACEHOLDER_RE = /\{([^}]+)\}/g
+/** Cap substituted field values inside a dedup key to keep event keys bounded. */
+const DEDUP_KEY_FIELD_VALUE_MAX = 128
 
 const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'name',
@@ -111,16 +134,13 @@ export interface GuardrailCondition {
   readonly field: GuardrailField
   readonly operator: GuardrailOperator
   readonly value: string
-  /** Required when operator === 'regex'; ignored otherwise. */
-  readonly maxLength?: number
 }
 
 export interface CompiledCondition {
   readonly field: GuardrailField
   readonly operator: GuardrailOperator
   readonly value: string
-  readonly maxLength: number | null
-  /** Pre-compiled RegExp when operator is 'regex' or 'glob'; null otherwise. */
+  /** Pre-compiled RegExp when operator is 'glob'; null otherwise. */
   readonly regex: RegExp | null
 }
 
@@ -273,7 +293,7 @@ export function parseGuardrailRule(
   let enabled = true
   if (enabledRaw !== undefined) {
     if (typeof enabledRaw !== 'boolean') {
-      pushIssue(issues, file, 'guardrail_invalid_action', 'enabled must be a boolean')
+      pushIssue(issues, file, 'guardrail_invalid_enabled', 'enabled must be a boolean')
     } else {
       enabled = enabledRaw
     }
@@ -309,7 +329,7 @@ export function parseGuardrailRule(
       pushIssue(
         issues,
         file,
-        'guardrail_invalid_action',
+        'guardrail_invalid_tool',
         `tool must be one of: ${GUARDRAIL_TOOLS.join(', ')}`,
       )
     } else {
@@ -391,7 +411,7 @@ export function parseGuardrailRule(
       pushIssue(
         issues,
         file,
-        'guardrail_invalid_action',
+        'guardrail_invalid_max_matches_per_run',
         'maxMatchesPerRun must be a positive integer',
       )
     } else {
@@ -404,10 +424,46 @@ export function parseGuardrailRule(
   let dedupKey: string | null = null
   if (dedupKeyRaw !== undefined) {
     if (typeof dedupKeyRaw !== 'string') {
-      pushIssue(issues, file, 'guardrail_dedup_template_invalid', 'dedupKey must be a string')
+      pushIssue(issues, file, 'guardrail_invalid_dedup_template', 'dedupKey must be a string')
     } else {
       dedupKey = dedupKeyRaw
+      // Validate placeholders. Unknown placeholders are warn-class per
+      // contract §"Validator rules"; a typo in `{file_path}` should not
+      // block the run, but the operator deserves a note.
+      for (const m of dedupKeyRaw.matchAll(DEDUP_KEY_PLACEHOLDER_RE)) {
+        const placeholder = m[1]
+        if (placeholder !== undefined && !DEDUP_KEY_KNOWN_PLACEHOLDERS.has(placeholder)) {
+          pushIssue(
+            issues,
+            file,
+            'guardrail_dedup_template_invalid',
+            `dedupKey references unknown placeholder '{${placeholder}}'; known: ${[
+              ...DEDUP_KEY_KNOWN_PLACEHOLDERS,
+            ]
+              .sort()
+              .map((p) => `{${p}}`)
+              .join(', ')}`,
+            'warn',
+          )
+        }
+      }
     }
+  }
+
+  // dedupKey on block: block-class rejection. Without this, a saturated
+  // dedup ledger silently downgrades a block rule to allow (Codex
+  // post-impl review Category 4 finding 2). Block rules cannot dedup.
+  if (
+    action === 'block' &&
+    dedupKey !== null &&
+    isStringEnumMember(actionRaw, GUARDRAIL_ACTIONS)
+  ) {
+    pushIssue(
+      issues,
+      file,
+      'guardrail_dedup_on_block_disallowed',
+      `dedupKey is not allowed on rules with action='block'; remove dedupKey or change action to 'warn'`,
+    )
   }
 
   // conditions (required, non-empty)
@@ -438,7 +494,17 @@ export function parseGuardrailRule(
       const fieldRaw = c['field']
       const operatorRaw = c['operator']
       const valueRaw = c['value']
-      const maxLengthRaw = c['maxLength']
+      // `maxLength` was the regex-tier guard; with regex deferred, it is
+      // unused in v0.1. Reject it explicitly so operators do not write
+      // dead frontmatter expecting it to do something.
+      if ('maxLength' in c) {
+        pushIssue(
+          issues,
+          file,
+          'guardrail_unknown_frontmatter_key',
+          `conditions[${i}].maxLength is unused in v0.1 (regex operator deferred)`,
+        )
+      }
 
       let okField = true
       if (!isStringEnumMember(fieldRaw, GUARDRAIL_FIELDS)) {
@@ -470,6 +536,19 @@ export function parseGuardrailRule(
         )
         continue
       }
+      if (GUARDRAIL_OPERATORS_DEFERRED_V0_1.has(operatorRaw)) {
+        // v0.1 defers regex per Codex post-impl review (synchronous
+        // RegExp.test cannot be interrupted, so the documented 50ms
+        // timeout is decorative). v0.2 re-introduces it with a
+        // worker-bounded evaluator.
+        pushIssue(
+          issues,
+          file,
+          'guardrail_operator_deferred',
+          `conditions[${i}].operator='${operatorRaw}' is deferred to v0.2; use deterministic operators (equals, contains, prefix, suffix, glob) instead`,
+        )
+        continue
+      }
       if (typeof valueRaw !== 'string' || valueRaw.length === 0) {
         pushIssue(
           issues,
@@ -479,31 +558,14 @@ export function parseGuardrailRule(
         )
         continue
       }
-      let maxLength: number | undefined
-      if (operatorRaw === 'regex') {
-        if (
-          typeof maxLengthRaw !== 'number' ||
-          !Number.isInteger(maxLengthRaw) ||
-          maxLengthRaw < 1
-        ) {
-          pushIssue(
-            issues,
-            file,
-            'guardrail_regex_missing_max_length',
-            `conditions[${i}].maxLength is required when operator='regex' and must be a positive integer`,
-          )
-          continue
-        }
-        if (maxLengthRaw > REGEX_MAX_LENGTH_HARD_CAP) {
-          pushIssue(
-            issues,
-            file,
-            'guardrail_regex_max_length_too_large',
-            `conditions[${i}].maxLength must be ≤ ${REGEX_MAX_LENGTH_HARD_CAP}`,
-          )
-          continue
-        }
-        maxLength = maxLengthRaw
+      if (operatorRaw === 'glob' && valueRaw.length > GLOB_PATTERN_MAX_LENGTH) {
+        pushIssue(
+          issues,
+          file,
+          'guardrail_glob_pattern_too_long',
+          `conditions[${i}].value exceeds glob max length ${GLOB_PATTERN_MAX_LENGTH}`,
+        )
+        continue
       }
       if (!okField) continue
       conds.push(
@@ -511,7 +573,6 @@ export function parseGuardrailRule(
           field: fieldRaw as GuardrailField,
           operator: operatorRaw,
           value: valueRaw,
-          ...(maxLength !== undefined ? { maxLength } : {}),
         }),
       )
     }
@@ -540,21 +601,34 @@ export function parseGuardrailRule(
 
 // --- compiler ------------------------------------------------------
 
+function normalizeGlobConsecutiveStarStars(glob: string): string {
+  // Collapse consecutive `**/` segments into a single `**/`. `**/**/x`
+  // means the same as `**/x` and avoids producing adjacent repeated
+  // groups in the compiled regex.
+  let prev: string
+  let cur = glob
+  do {
+    prev = cur
+    cur = cur.replace(/\*\*\/\*\*\//g, '**/')
+  } while (cur !== prev)
+  return cur
+}
+
 function globToRegex(glob: string): RegExp {
   // POSIX-ish glob with the `**/` zero-depth case:
   //   '**/'  -> '(?:[^/]+/)*'  (zero or more directory components)
   //   '**'   -> '.*'           (any sequence including separators)
   //   '*'    -> '[^/]*'        (one segment, no separators)
   //   '?'    -> '[^/]'
-  // Anchored at both ends.
+  // Anchored at both ends. Consecutive `**/` segments are normalized
+  // before compilation to avoid adjacent repeated groups.
+  const normalized = normalizeGlobConsecutiveStarStars(glob)
   let out = '^'
-  for (let i = 0; i < glob.length; i++) {
-    const ch = glob[i]!
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i]!
     if (ch === '*') {
-      if (glob[i + 1] === '*') {
-        // Look for the `**/` zero-depth form. `src/**/foo` should match
-        // both `src/foo` and `src/a/b/foo`.
-        if (glob[i + 2] === '/') {
+      if (normalized[i + 1] === '*') {
+        if (normalized[i + 2] === '/') {
           out += '(?:[^/]+/)*'
           i += 2
         } else {
@@ -580,28 +654,15 @@ export function compileRule(rule: GuardrailRule): CompiledRule {
   const conds: CompiledCondition[] = []
   for (const c of rule.conditions) {
     let regex: RegExp | null = null
-    if (c.operator === 'regex') {
-      try {
-        regex = new RegExp(c.value)
-      } catch (err) {
-        throw new GuardrailParseError([
-          {
-            file: rule.name,
-            code: 'guardrail_regex_compile_error',
-            rule: `rule '${rule.name}' regex compile failed for condition value: ${(err as Error).message}`,
-            severity: 'block',
-          },
-        ])
-      }
-    } else if (c.operator === 'glob') {
+    if (c.operator === 'glob') {
       regex = globToRegex(c.value)
     }
+    // regex operator is deferred (rejected at parse); no compile branch.
     conds.push(
       Object.freeze({
         field: c.field,
         operator: c.operator,
         value: c.value,
-        maxLength: c.maxLength ?? null,
         regex,
       }),
     )
@@ -648,30 +709,11 @@ export interface GuardrailEvalContext {
   /**
    * Per-rule dedup ledger. Keys are computed dedupKey expansions; values
    * are running hit counts. The caller owns the ledger across calls.
+   * Dedup is warn-only (block rules cannot dedup; rejected at parse time),
+   * so a saturated ledger never downgrades a block decision.
    */
   readonly dedupLedger: ReadonlyMap<string, number>
-  /**
-   * Optional clock for deterministic timeout testing. Returns ms since
-   * an arbitrary epoch.
-   */
-  readonly now?: () => number
-  /**
-   * Per-match timeout cap in milliseconds. Defaults to 50 ms per the
-   * contract.
-   */
-  readonly regexTimeoutMs?: number
 }
-
-export type GuardrailDecision =
-  | { readonly outcome: 'allow' }
-  | {
-      readonly outcome: 'warn'
-      readonly matches: readonly GuardrailMatch[]
-    }
-  | {
-      readonly outcome: 'block'
-      readonly matches: readonly GuardrailMatch[]
-    }
 
 export interface GuardrailMatch {
   readonly ruleName: string
@@ -679,7 +721,33 @@ export interface GuardrailMatch {
   readonly conditionsMatched: number
   readonly dedupKey: string | null
   readonly message: string
-  readonly skipped: 'dedup' | 'timeout' | null
+  /** Why this match exists. `matched` is the canonical case; `matcher_error`
+   *  means the matcher threw and the wire-in slice should treat the match
+   *  as a fail-closed block. */
+  readonly reason: 'matched' | 'matcher_error'
+}
+
+export interface GuardrailDiagnostic {
+  readonly kind: 'dedup_skip' | 'matcher_error_caught'
+  readonly ruleName: string
+  readonly ruleAction: GuardrailAction
+  readonly dedupKey?: string
+  readonly detail?: string
+}
+
+/**
+ * Evaluation result. `matches` and `diagnostics` are always present (may be
+ * empty). The wire-in slice consumes:
+ *   - `outcome` — drives whether the tool call proceeds.
+ *   - `matches` — outcome-affecting hits; emit `guardrail_warned` /
+ *     `guardrail_blocked` events.
+ *   - `diagnostics` — non-outcome-affecting observations; emit
+ *     `guardrail_skipped_dedup` / `guardrail_match_timeout` events.
+ */
+export interface GuardrailDecision {
+  readonly outcome: 'allow' | 'warn' | 'block'
+  readonly matches: readonly GuardrailMatch[]
+  readonly diagnostics: readonly GuardrailDiagnostic[]
 }
 
 function expandDedupKey(
@@ -687,51 +755,50 @@ function expandDedupKey(
   ruleName: string,
   fields: Partial<Record<GuardrailField, string>>,
 ): string {
+  // Bound substituted field values so dedup keys remain manageable inside
+  // events.jsonl. A pathological `new_content` of 100 KB would otherwise
+  // produce a 100 KB key per match.
+  const truncate = (s: string): string =>
+    s.length <= DEDUP_KEY_FIELD_VALUE_MAX
+      ? s
+      : `${s.slice(0, DEDUP_KEY_FIELD_VALUE_MAX)}…(+${s.length - DEDUP_KEY_FIELD_VALUE_MAX})`
   return template.replace(/\{rule\.name\}/g, ruleName).replace(
     /\{(file_path|new_content|command|prompt|tool_input)\}/g,
-    (_, key: GuardrailField) => fields[key] ?? '',
+    (_, key: GuardrailField) => truncate(fields[key] ?? ''),
   )
+}
+
+function normalizeNewlines(s: string): string {
+  return s.includes('\r\n') ? s.replace(/\r\n/g, '\n') : s
 }
 
 function matchCondition(
   c: CompiledCondition,
-  input: string | undefined,
-  regexTimeoutMs: number,
-  now: () => number,
-): { ok: boolean; timedOut: boolean } {
-  if (input === undefined) return { ok: false, timedOut: false }
+  rawInput: string | undefined,
+): boolean {
+  if (rawInput === undefined) return false
+  // Normalize CRLF to LF for non-pattern operators per contract
+  // §"Operator semantics" (newline-normalized for equals / contains
+  // / prefix / suffix). Glob operates on file paths, where CR is
+  // not legal in any sane environment; normalize there anyway for
+  // consistency.
+  const input = normalizeNewlines(rawInput)
   switch (c.operator) {
     case 'equals':
-      return { ok: input === c.value, timedOut: false }
+      return input === c.value
     case 'contains':
-      return { ok: input.includes(c.value), timedOut: false }
+      return input.includes(c.value)
     case 'prefix':
-      return { ok: input.startsWith(c.value), timedOut: false }
+      return input.startsWith(c.value)
     case 'suffix':
-      return { ok: input.endsWith(c.value), timedOut: false }
+      return input.endsWith(c.value)
     case 'glob':
-      // glob compiles to a non-catastrophic anchored pattern; no timeout.
-      return { ok: c.regex !== null && c.regex.test(input), timedOut: false }
-    case 'regex': {
-      if (c.regex === null) return { ok: false, timedOut: false }
-      if (c.maxLength !== null && input.length > c.maxLength) {
-        return { ok: false, timedOut: false }
-      }
-      const start = now()
-      let ok = false
-      try {
-        ok = c.regex.test(input)
-      } catch {
-        return { ok: false, timedOut: false }
-      }
-      const elapsed = now() - start
-      if (elapsed > regexTimeoutMs) {
-        return { ok: false, timedOut: true }
-      }
-      return { ok, timedOut: false }
-    }
+      return c.regex !== null && c.regex.test(input)
+    case 'regex':
+      // Defer to v0.2; rejected at parse time. Defensive: never matches.
+      return false
     default:
-      return { ok: false, timedOut: false }
+      return false
   }
 }
 
@@ -754,8 +821,14 @@ export function evaluateGuardrails(
   ruleSet: CompiledRuleSet,
   ctx: GuardrailEvalContext,
 ): GuardrailDecision {
-  const now = ctx.now ?? (() => Date.now())
-  const regexTimeoutMs = ctx.regexTimeoutMs ?? REGEX_MATCH_TIMEOUT_MS_DEFAULT
+  const matches: GuardrailMatch[] = []
+  const diagnostics: GuardrailDiagnostic[] = []
+  const freezeDecision = (outcome: GuardrailDecision['outcome']): GuardrailDecision =>
+    Object.freeze({
+      outcome,
+      matches: Object.freeze([...matches]),
+      diagnostics: Object.freeze([...diagnostics]),
+    })
 
   // Phase 1: select candidates by event, tool, scope, enabled.
   const candidates: CompiledRule[] = []
@@ -768,7 +841,7 @@ export function evaluateGuardrails(
     }
     candidates.push(r)
   }
-  if (candidates.length === 0) return { outcome: 'allow' }
+  if (candidates.length === 0) return freezeDecision('allow')
 
   // Phase 2: priority-descending order. Break ties by name for stability.
   candidates.sort((a, b) => {
@@ -778,80 +851,68 @@ export function evaluateGuardrails(
     return a.source.name.localeCompare(b.source.name)
   })
 
-  const matches: GuardrailMatch[] = []
   let sawBlock = false
   let sawWarn = false
 
   for (const r of candidates) {
     let allMatched = true
     let conditionsMatched = 0
-    let timedOut = false
     try {
       // Stop / SubagentStop with no conditions: treat as match-all on event.
       if (r.conditions.length === 0) {
         allMatched = true
       } else {
         for (const c of r.conditions) {
-          const result = matchCondition(c, ctx.fields[c.field], regexTimeoutMs, now)
-          if (result.timedOut) {
-            timedOut = true
-            allMatched = false
-            break
-          }
-          if (!result.ok) {
+          if (!matchCondition(c, ctx.fields[c.field])) {
             allMatched = false
             break
           }
           conditionsMatched++
         }
       }
-    } catch {
+    } catch (err) {
       // Fail-closed on matcher exception (contract §"Failure mode posture").
-      return {
-        outcome: 'block',
-        matches: Object.freeze([
-          ...matches,
-          Object.freeze({
-            ruleName: r.source.name,
-            ruleAction: 'block' as const,
-            conditionsMatched,
-            dedupKey: null,
-            message: `Matcher error evaluating rule '${r.source.name}'.`,
-            skipped: null,
-          }),
-        ]),
-      }
-    }
-
-    if (timedOut) {
+      // Surfaces as a `matcher_error` match (block) plus a diagnostic so
+      // operators can audit. The wire-in slice writes
+      // `NEEDS_INTERVENTION.json` from the match.
+      const detail = err instanceof Error ? err.message : 'unknown'
+      diagnostics.push(
+        Object.freeze({
+          kind: 'matcher_error_caught' as const,
+          ruleName: r.source.name,
+          ruleAction: r.source.action,
+          detail,
+        }),
+      )
       matches.push(
         Object.freeze({
           ruleName: r.source.name,
-          ruleAction: r.source.action,
+          ruleAction: 'block' as const,
           conditionsMatched,
           dedupKey: null,
-          message: r.source.message,
-          skipped: 'timeout' as const,
+          message: `Matcher error evaluating rule '${r.source.name}'.`,
+          reason: 'matcher_error' as const,
         }),
       )
-      continue
+      return freezeDecision('block')
     }
+
     if (!allMatched) continue
 
-    // Dedup check.
+    // Dedup check applies only to warn rules. Block rules with `dedupKey`
+    // are rejected at parse time (`guardrail_dedup_on_block_disallowed`),
+    // so a saturated dedup can never silently downgrade a block to allow.
     let dedupKey: string | null = null
     if (r.source.dedupKey !== null) {
       dedupKey = expandDedupKey(r.source.dedupKey, r.source.name, ctx.fields)
       const hit = ctx.dedupLedger.get(dedupKey) ?? 0
       if (hit >= r.source.maxMatchesPerRun) {
-        matches.push(
+        diagnostics.push(
           Object.freeze({
+            kind: 'dedup_skip' as const,
             ruleName: r.source.name,
             ruleAction: r.source.action,
-            conditionsMatched,
             dedupKey,
-            message: r.source.message,
-            skipped: 'dedup' as const,
           }),
         )
         continue
@@ -865,7 +926,7 @@ export function evaluateGuardrails(
         conditionsMatched,
         dedupKey,
         message: r.source.message,
-        skipped: null,
+        reason: 'matched' as const,
       }),
     )
     if (r.source.action === 'block') {
@@ -875,11 +936,7 @@ export function evaluateGuardrails(
     sawWarn = true
   }
 
-  if (sawBlock) {
-    return { outcome: 'block', matches: Object.freeze(matches) }
-  }
-  if (sawWarn) {
-    return { outcome: 'warn', matches: Object.freeze(matches) }
-  }
-  return { outcome: 'allow' }
+  if (sawBlock) return freezeDecision('block')
+  if (sawWarn) return freezeDecision('warn')
+  return freezeDecision('allow')
 }
