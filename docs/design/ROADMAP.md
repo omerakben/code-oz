@@ -401,7 +401,10 @@ Reshaped 2026-04-30 by the synthesis round (`docs/research/MERGE_PLAN.md`).
   - Real-world `IIntegration` interface (events-log-as-substrate): GitHub (read issues into INTENT.md, open PRs at SHIP), Slack (NEEDS_INTERVENTION notifications), Linear/Jira (ticket round-trip).
   - Tier-2 DSPy MIPRO compile for Prompter (opt-in via `code-oz run --deep`).
   - Concurrent runs + multi-active-run pointer (worktree-per-run isolation, Archon pattern).
-  - Optional `symbol` LSP integration for repo-context tools (deferred from M6).
+
+- **Deferred-with-trigger items** (not on the critical path; reopen only when the named trigger fires):
+  - `symbol` repo-context tool backend — Option D-reserved per the codegraph comparison synthesis. The slot stays reserved at the type union, rejected at config-load and at runtime, until the 4-condition AND telemetry signal in `docs/contracts/REPO_CONTEXT.md` § "Reservation and reopen-the-slot signal" fires (high search churn + manifest-cap saturation + phase result-tokens > 200k + downstream VERIFY/REVIEW failure attributable to missed semantic context, on three runs across two repos). When the signal fires, reopen the four-way decision in `docs/comparison/06-codegraph/COMPARISON.md` § "The real question Codex must answer" (LSP / native tree-sitter+SQLite / consume codegraph as MCP / extend the deferral). Replaces the prior "Optional `symbol` LSP integration" line.
+  - Framework-aware route detection (B5 from the codegraph comparison) — pattern that emits `route` nodes for 13 web frameworks, linking URL patterns to handler symbols. Reopen if a routing/API-surface audit persona enters the company roster (W4 candidate); until then no orchestrator persona consumes the data and the borrow does not earn its rule-20 cost.
 
 - **W4 — AUDIT depth + privacy hardening:**
   - Brownfield AUDIT phase fully implemented (`AUDIT.md` contract with architecture map, convention sniffer, dependency graph, hot-files report, test coverage map, doc extraction).
