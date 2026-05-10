@@ -218,10 +218,12 @@ export async function runEvalCase(
     }
   }
 
-  // recall@k where k = expectedPaths.length: the hit rate of the expected
-  // set restricted to the first k distinct returned paths in encounter
-  // order. If the harness returns expected paths after k in order, the
-  // metric drops below 1.0 — which is the desired behavior.
+  // recall@k where k = `new Set(expectedPaths).size`: the hit rate of
+  // the expected set restricted to the first k distinct returned paths
+  // in encounter order. If the harness returns expected paths after k
+  // in order, the metric drops below 1.0 — which is the desired
+  // behavior. Using the dedup'd set size keeps the metric well-defined
+  // when a fixture happens to list a path twice.
   const expectedSet = new Set(setup.expectedPaths)
   const k = expectedSet.size
   const topK = orderedReturnedPaths.slice(0, k)

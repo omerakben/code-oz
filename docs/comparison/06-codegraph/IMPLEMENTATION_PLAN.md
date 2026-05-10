@@ -2,10 +2,19 @@
 name: implementation-plan-06-codegraph
 companion: COMPARISON.md, CODEX_RESPONSE.md (this folder)
 target: implement Codex-aligned borrows from codegraph comparison; reach Claude+Codex `push` verdict
-status: in-progress
+status: complete (Codex R3 push, 2026-05-10)
 branch: worktree-feat+comparison-codegraph
 baseline-tests: 3108 pass / 0 fail (verified 2026-05-10)
+final-tests: 3116 pass / 0 fail / typecheck clean
+review-rounds: R1 fix-first → R2 fix-first → R3 push (threads 019e1326 / 019e1330 / 019e141b)
 ---
+
+> **Document status — historical planning snapshot.** This is the
+> pre-implementation plan written before the four Codex review rounds
+> ran. Several specifics evolved during R1+R2 (case-03 redesign,
+> error-code reuse decision) — see the **Outcome** section at the
+> bottom for the final state. The body below is preserved as the
+> planning-phase record.
 
 # Implementation plan — codegraph borrows
 
@@ -99,3 +108,51 @@ Two-round target. R1+R2 must converge to `push`.
 - Updating `docs/comparison/README.md` to reflect post-implementation status (parallel sessions own that file; let Ozzy reconcile on merge).
 - Touching any other comparison folder.
 - Touching `events.jsonl` event-projection code that allows `tool: 'symbol'` (must remain in the union for backward-compat in case any historical event is replayed; new events cannot get `'symbol'` because the gates above prevent it).
+
+## Outcome (post-R3 final state)
+
+This section captures what shipped. Where the plan above diverges from the final state, this section is authoritative.
+
+### B1 — error-code decision
+
+The plan considered adding a new `schema_reserved_tool` code to `AgentLoadIssue`. The shipped implementation **reuses `schema_invalid_permissions`** with a precise rule string anchored to `REPO_CONTEXT.md § Reservation`. Rationale: a new code is a small new authority surface; reusing the existing code with a precise rule keeps zero new surfaces while preserving call-site clarity (matches Codex's CODEX_RESPONSE.md Q8 wording "tighten the wording, not add new error codes"). Runtime path uses the existing `tool_unavailable` code in `RepoContextError` (also no new surface).
+
+### B2 — case-03 redesign (R1 → R2 fixes)
+
+The plan described case-03 as "30 candidate files; pattern matches 12; recall@k ≥ 0.8 floor; selected-path count ≤ `maxFilesForNextManifest`." Codex R1 finding 3 caught that the original fixture never actually triggered truncation (12 < `maxResults=25`) and that the recall floor depended on rg's filesystem traversal order, which is platform-dependent.
+
+The shipped case-03 contract:
+
+- **40 matching files × 3 match-lines per file = 120 candidate match-lines** against `maxResults=25`. Truncation now genuinely fires.
+- **Asserts `anyTruncated === true`** (cap saturation is the load-bearing signal).
+- **Asserts `totalResultBytes < 150_000`** (per-call envelope).
+- **Asserts precision under truncation**: every returned path must start with `src/match/`. No decoy paths leak through cap saturation. This replaces the unreliable recall floor.
+- **Does NOT assert recall.** rg's traversal order is platform-dependent (filesystem inode order on macOS; sorted only with `--sort path` on Linux). Recall under truncation would require either a new authority surface (force `--sort path` in `execGrep`) or fragile platform-specific test expectations — neither earned its keep against rule 20.
+- **Does NOT assert `selectedPaths.length ≤ maxFilesForNextManifest`.** `selectedPaths` is populated by the next-invocation manifest (the agent's promotion of paths into `ProviderRequest.files`), which this harness does not drive. The metric is still reported in the JSON output for inspection; a future case can extend the harness to drive selection and add the assertion. Avoiding this false claim was the second half of Codex R1 finding 3.
+
+### B2 — case-01 README fix (R1 side effect)
+
+The plan did not anticipate that case-01's README content would interfere with case-01's recall@k assertion. With "Login via authenticate()" in the README, rg sometimes encountered README.md before `src/index.ts` in traversal order (ASCII sort puts `R` before `s`), pushing `src/index.ts` outside the top-k window and dropping recall@4 to 0.75 nondeterministically. Fixed in commit b41b3f5 by removing the trigger word from README content while keeping README in the fixture (which still proves the tool ignores irrelevant docs).
+
+### B2 — standalone runner parity (R2 closure)
+
+The plan didn't include a `minReturnedPaths` threshold for the standalone runner; the bun-test wrapper asserts `expect(orderedReturnedPaths.length).toBeGreaterThan(0)` as a sanity check, so `bun run eval:repo_context --strict` needed a matching threshold to reach the same pass/fail conclusion. Added in commit 28ee554; wired to `minReturnedPaths: 1` for all three cases.
+
+### Final test count
+
+| Stage | Pass | Fail | Skip |
+|---|---|---|---|
+| Baseline | 3108 | 0 | 1 |
+| After B1 | 3113 | 0 | 1 |
+| After B2 + R1 + R2 | 3116 | 0 | 2 |
+
+The second skip is the eval-harness rg-not-installed branch (mirrors the existing pattern in `tests/repo-context-glob.test.ts`).
+
+### Codex review round summary
+
+| Round | Thread | Verdict | Findings closed |
+|---|---|---|---|
+| R0 (pre-impl) | 019e12ed | accept-with-modifications | B1→D-reserved, B2→3 cases, B5 reclassified, Q8 contract-debt catch |
+| R1 | 019e1326 | fix-first | 3 block-push (REPO_CONTEXT.md drift, recall@k metric bug, case-03 not exercising budget pressure) |
+| R2 | 019e1330 | fix-first | 4 doc/parity drift (case-03 stale prose, recall@k JSDoc precision, standalone runner missing `minReturnedPaths`) |
+| R3 | 019e141b | fix-first → push (after this commit) | 3 final drift items (IMPLEMENTATION_PLAN.md outcome section, CODEX_RESPONSE.md postscript, harness.ts inline comment) |

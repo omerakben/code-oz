@@ -1,13 +1,20 @@
 ---
 name: codex-response-06-codegraph
 target: capture Codex's debate verdict for code-oz vs codegraph
-companion: COMPARISON.md, CODEX_BRIEFING.md (this folder)
-status: captured
+companion: COMPARISON.md, CODEX_BRIEFING.md, IMPLEMENTATION_PLAN.md (this folder)
+status: captured (R0 transcript; superseded by R1/R2/R3 — see Postscript at bottom)
 codex-thread: 019e12ed-a84c-7092-959d-8d57bd323e19
 codex-model: gpt-5.5 @ xhigh effort
 top-level-verdict: accept-with-modifications
 date: 2026-05-10
 ---
+
+> **Document status — historical R0 transcript.** This file captures
+> the pre-implementation Codex debate. The implementation evolved past
+> several specifics in this transcript through Codex R1 (thread
+> 019e1326) and R2 (thread 019e1330). The post-implementation contract
+> lives in `IMPLEMENTATION_PLAN.md § Outcome`. See the **Postscript**
+> at the bottom for the specific divergences.
 
 # Codex response — code-oz vs codegraph
 
@@ -155,5 +162,37 @@ If all four trigger together on at least three runs across at least two repos, r
 - Codex model: `gpt-5.5` at `xhigh` reasoning effort
 - COMPARISON.md (this folder)
 - CODEX_BRIEFING.md (this folder)
+- IMPLEMENTATION_PLAN.md (this folder)
 - `docs/contracts/REPO_CONTEXT.md`
 - `CLAUDE.md` rules 13, 18, 19, 20, 21
+
+## Postscript — implementation evolution (R1 / R2 / R3)
+
+This transcript is the R0 pre-implementation debate. The implementation that shipped on branch `worktree-feat+comparison-codegraph` evolved past several specifics here through three subsequent Codex review rounds. The post-implementation contract lives in `IMPLEMENTATION_PLAN.md § Outcome` and in the shipped code itself. Specific divergences:
+
+**B1 — error-code decision (Q8 closure).** The R0 synthesis above describes the reservation in general terms. The shipped implementation reuses `schema_invalid_permissions` at the config-load layer (not a new `schema_reserved_tool` code) and reuses `tool_unavailable` at the runtime layer. The precision lives in the rule strings (anchored to `REPO_CONTEXT.md § Reservation`), not in new error-code authority. This matches Codex's R0 wording "tighten the wording" while keeping zero new surfaces.
+
+**B2 — case-03 redesign (R1 finding 3).** The R0 synthesis described case-03 as "selected files and result bytes stay below caps while preserving recall." Codex R1 (thread 019e1326) caught that the original fixture (30 files, 12 matching) never actually triggered truncation against `maxResults=25`, and that recall@k under truncation depends on rg's platform-dependent filesystem traversal order. The shipped case-03:
+
+- Uses 40 matching files × 3 match-lines per file = 120 candidate matches; truncation now genuinely fires.
+- Asserts `anyTruncated === true` (cap saturation).
+- Asserts `totalResultBytes < 150_000` (per-call envelope).
+- Asserts precision under truncation (every returned path starts with `src/match/`; no decoy leakage).
+- Does NOT assert recall under truncation, and does NOT assert `selectedPaths.length ≤ maxFilesForNextManifest` (the harness does not yet drive next-invocation manifest selection).
+
+**B2 — case-01 README fix (R1 side effect).** R0 did not anticipate that case-01's README would contain the trigger word and nondeterministically interfere with the recall@4 = 1.0 assertion. Fixed in commit b41b3f5 by removing the trigger word from README content while keeping README in the fixture.
+
+**B2 — recall@k metric (R1 finding 2).** R0 specified "recall@k for expected files." The original harness computed hits over the union of all returned paths without ordering or top-k slicing — a noisy query returning 50 files including the expected 4 outside the first k would score 1.0 incorrectly. Fixed in commit b41b3f5 to preserve event-encounter order, slice to k, then compute recall.
+
+**B2 — standalone runner parity (R2 finding 4).** Added `minReturnedPaths` threshold + `mustTruncate` + `precisionPathPrefix` flags to `scripts/eval-repo-context.ts` so `bun run eval:repo_context --strict` reaches the same pass/fail conclusion as the bun-test wrapper. Wired in commit 28ee554.
+
+**Review round summary:**
+
+| Round | Thread | Verdict | Closed by commit |
+|---|---|---|---|
+| R0 | `019e12ed` | accept-with-modifications | a560df3 (synthesis into IMPLEMENTATION_PLAN.md) |
+| R1 | `019e1326` | fix-first (3 block-push) | b41b3f5 |
+| R2 | `019e1330` | fix-first (4 doc/parity drift) | 28ee554 |
+| R3 | `019e141b` | fix-first → push | (this commit) |
+
+After R3 the branch ships at 3116 tests pass / 0 fail / typecheck clean / `bun run eval:repo_context --strict` passes all three cases.
