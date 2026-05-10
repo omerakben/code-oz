@@ -13,7 +13,7 @@ The Scientist is not a separate phase. It runs as a **phase-tail** after each pr
 
 The dossier behind the discipline: `docs/research/05-scientist-and-open-questions-agent.md`. The maestro skill it operationalizes is `requirement-restate` (every gate restates inputs, claims, and falsifiers).
 
-Related sibling discipline: [`CHECKLISTS.md`](./CHECKLISTS.md) captures static gate-readiness yes/no rubrics for SPEC.md and PLAN.md, while Scientist captures hypotheses and open questions. They are siblings, not competitors; both are advisory in v0.1. Pinned 2026-05-10 from `docs/comparison/11-mimir/SYNTHESIS.md` § "B5".
+Related sibling discipline: [`CHECKLISTS.md`](./CHECKLISTS.md) captures static gate-readiness yes/no rubrics for SPEC.md and PLAN.md, while Scientist captures hypotheses and open questions. They are siblings, not competitors; CHECKLISTS is advisory in v0.1, while Scientist remains governed by rule 15 and existing gate-preflight sidecar validation. Pinned 2026-05-10 from `docs/comparison/11-mimir/SYNTHESIS.md` § "B5".
 
 ## What ships in M6 vs. later
 
