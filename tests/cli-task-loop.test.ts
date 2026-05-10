@@ -1740,6 +1740,325 @@ describe('clearStaleGateFile — Bug 2: helper unit coverage', () => {
   })
 })
 
+// --- M16 C9 follow-on 4 Bug 6: attempt-boundary supersedence -------
+//
+// When `currentAttempt` is provided (BUILD / VERIFY dispatchers), the
+// resume guard fires only when a started event for `(currentTaskId,
+// currentAttempt)` exists — a fresh attempt N+1 (after review-needs-
+// revision OR verify-fail) sees no matching started event and clears
+// the prior attempt's stale gate. Bug 2 closed the cross-task case;
+// these tests close the within-task cross-attempt case.
+
+describe('clearStaleGateFile — Bug 6: attempt-boundary supersedence', () => {
+  test('build attempt 2 within same task with prior attempt-1 build_started + stale gate → cleared', async () => {
+    await initFreshRun()
+    // Bug 6 reproducer (BUILD path): T-001 BUILD a1 done, approve build,
+    // VERIFY a1 approved, REVIEW r1 needs_revision → BUILD a2 about to
+    // run. The prior approve build wrote GATE_BUILD_PASSED.json with a1
+    // sha; that file is now stale because BUILD a2 will overwrite the
+    // BUILD_REPORT.md the gate's sha was computed against.
+    const fakeSha = 'a'.repeat(64)
+    const gateContent = JSON.stringify(
+      {
+        version: 1,
+        runId: RUN,
+        phase: 'build',
+        artifact: 'BUILD_REPORT.md',
+        artifactSha256: fakeSha,
+        agent: 'builder',
+        approvedBy: 'test',
+        approvedAt: FIXED_TS,
+      },
+      null,
+      2,
+    )
+    await writeFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), gateContent + '\n')
+
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'build_started' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build' as const,
+        agent: 'builder',
+        attempt: 1,
+        baseCommitSha: 'a'.repeat(40),
+        taskId: 'T-001',
+      }),
+    ]
+    // Pre-Bug-6 behavior: helper short-circuited because build_started
+    // for T-001 existed at all. Post-fix: with currentAttempt=2 the
+    // helper sees no build_started for (T-001, 2) and clears the gate.
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-001',
+      currentAttempt: 2,
+    })
+    expect(result.cleared).toBe(true)
+    expect(result.priorArtifactSha256).toBe(fakeSha)
+    // Within-task attempt boundary: priorTaskId IS currentTaskId.
+    expect(result.priorTaskId).toBe('T-001')
+
+    let exists = true
+    try {
+      await readFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), 'utf8')
+    } catch {
+      exists = false
+    }
+    expect(exists).toBe(false)
+  })
+
+  test('verify attempt 2 within same task with prior attempt-1 verify_started + stale gate → cleared', async () => {
+    await initFreshRun()
+    // Bug 6 reproducer (VERIFY path): BUILD a1 → approve build → VERIFY a1
+    // → approve verify → GATE_VERIFY_PASSED.json (a1 sha). VERIFY a1
+    // failed somehow, BUILD a2 ran and completed → VERIFY a2 about to
+    // dispatch. The a1 gate file is stale.
+    const fakeSha = 'a'.repeat(64)
+    const gateContent = JSON.stringify(
+      {
+        version: 1,
+        runId: RUN,
+        phase: 'verify',
+        artifact: 'VERIFY.md',
+        artifactSha256: fakeSha,
+        agent: 'verifier',
+        approvedBy: 'test',
+        approvedAt: FIXED_TS,
+      },
+      null,
+      2,
+    )
+    await writeFile(join(runPaths.runDir, 'GATE_VERIFY_PASSED.json'), gateContent + '\n')
+
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'verify_started' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'verify' as const,
+        agent: 'verifier',
+        attempt: 1,
+        baseCommitSha: 'a'.repeat(40),
+        patchSha256: 'b'.repeat(64),
+        buildReportSha256: 'c'.repeat(64),
+        taskId: 'T-001',
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'verify',
+      events,
+      currentTaskId: 'T-001',
+      currentAttempt: 2,
+    })
+    expect(result.cleared).toBe(true)
+    expect(result.priorArtifactSha256).toBe(fakeSha)
+    expect(result.priorTaskId).toBe('T-001')
+  })
+
+  test('mid-attempt resume: build_started exists for (currentTaskId, currentAttempt) → no-op', async () => {
+    await initFreshRun()
+    // Idempotency: a re-invocation of dispatchBuild during the SAME
+    // attempt (e.g., transient process restart between build_started
+    // and build_completed) must not clear the gate. With
+    // currentAttempt=1 and a matching build_started(T-001, 1), the
+    // resume guard fires and the helper returns no-op.
+    const fakeSha = 'a'.repeat(64)
+    const gateContent = JSON.stringify(
+      {
+        version: 1,
+        runId: RUN,
+        phase: 'build',
+        artifact: 'BUILD_REPORT.md',
+        artifactSha256: fakeSha,
+        agent: 'builder',
+        approvedBy: 'test',
+        approvedAt: FIXED_TS,
+      },
+      null,
+      2,
+    )
+    await writeFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), gateContent + '\n')
+
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'build_started' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build' as const,
+        agent: 'builder',
+        attempt: 1,
+        baseCommitSha: 'a'.repeat(40),
+        taskId: 'T-001',
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-001',
+      currentAttempt: 1,
+    })
+    expect(result.cleared).toBe(false)
+
+    // The file remains intact.
+    const stillThere = await readFile(
+      join(runPaths.runDir, 'GATE_BUILD_PASSED.json'),
+      'utf8',
+    )
+    expect(stillThere.length).toBeGreaterThan(0)
+  })
+
+  test('first-task fresh attempt 1 with no prior task_completed and no started events → cleared if gate present', async () => {
+    await initFreshRun()
+    // Edge case: T-001 BUILD a1 → approve build → REVIEW r1 needs_revision
+    // → BUILD a2 dispatches. There is NO `task_completed` for any task
+    // yet (T-001 not done). The pre-Bug-6 task-boundary fast path
+    // returned no-op on `latestTaskCompletedTaskId === null`. Post-fix:
+    // when currentAttempt is provided, that fast path is bypassed and
+    // the started-event scan correctly identifies the boundary.
+    const fakeSha = 'a'.repeat(64)
+    const gateContent = JSON.stringify(
+      {
+        version: 1,
+        runId: RUN,
+        phase: 'build',
+        artifact: 'BUILD_REPORT.md',
+        artifactSha256: fakeSha,
+        agent: 'builder',
+        approvedBy: 'test',
+        approvedAt: FIXED_TS,
+      },
+      null,
+      2,
+    )
+    await writeFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), gateContent + '\n')
+
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'build_started' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build' as const,
+        agent: 'builder',
+        attempt: 1,
+        baseCommitSha: 'a'.repeat(40),
+        taskId: 'T-001',
+      }),
+      // No task_completed for any task yet — T-001 is mid-cycle.
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-001',
+      currentAttempt: 2,
+    })
+    expect(result.cleared).toBe(true)
+    expect(result.priorTaskId).toBe('T-001')
+    expect(result.priorArtifactSha256).toBe(fakeSha)
+  })
+
+  test('REVIEW path: omitting currentAttempt preserves task-boundary semantics (back-compat)', async () => {
+    await initFreshRun()
+    // REVIEW gate is special — only written on `ready` verdict, so
+    // within-task attempt-boundary cannot produce a stale gate. The
+    // dispatchReview wiring intentionally omits `currentAttempt` and
+    // falls back to the original task-only checks. This test asserts
+    // the back-compat path still no-ops on same-task / first-task
+    // even when stale-looking events exist.
+    const events: LoggedEvent[] = [
+      // No task_completed — first-task no-op.
+      Object.freeze({
+        version: 1 as const,
+        type: 'review_started' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'review' as const,
+        agent: 'reviewer',
+        attempt: 1,
+        baseCommitSha: 'a'.repeat(40),
+        patchSha256: 'b'.repeat(64),
+        buildReportSha256: 'c'.repeat(64),
+        verifyReportSha256: 'd'.repeat(64),
+        taskId: 'T-001',
+        buildFamily: 'fake',
+        reviewerFamily: 'fake',
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'review',
+      events,
+      currentTaskId: 'T-001',
+      // No currentAttempt — back-compat path.
+    })
+    expect(result.cleared).toBe(false)
+  })
+
+  test('attempt-aware: build_started for different task at same attempt → cleared (the started event scan still scopes to taskId)', async () => {
+    await initFreshRun()
+    // Defensive: a build_started for T-001 at attempt=1 must NOT
+    // satisfy the resume guard for currentTaskId=T-002 at attempt=1.
+    // Both fields must match.
+    const fakeSha = 'a'.repeat(64)
+    const gateContent = JSON.stringify(
+      {
+        version: 1,
+        runId: RUN,
+        phase: 'build',
+        artifact: 'BUILD_REPORT.md',
+        artifactSha256: fakeSha,
+        agent: 'builder',
+        approvedBy: 'test',
+        approvedAt: FIXED_TS,
+      },
+      null,
+      2,
+    )
+    await writeFile(join(runPaths.runDir, 'GATE_BUILD_PASSED.json'), gateContent + '\n')
+
+    const events: LoggedEvent[] = [
+      Object.freeze({
+        version: 1 as const,
+        type: 'task_completed' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        taskId: 'T-001',
+        taskIndex: 0,
+        reviewGatePath: '.code-oz/state/runs/abc/GATE_REVIEW_PASSED.json',
+      }),
+      Object.freeze({
+        version: 1 as const,
+        type: 'build_started' as const,
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build' as const,
+        agent: 'builder',
+        attempt: 1,
+        baseCommitSha: 'a'.repeat(40),
+        taskId: 'T-001', // different task
+      }),
+    ]
+    const result = await clearStaleGateFile({
+      runDir: runPaths.runDir,
+      phase: 'build',
+      events,
+      currentTaskId: 'T-002',
+      currentAttempt: 1,
+    })
+    expect(result.cleared).toBe(true)
+    expect(result.priorTaskId).toBe('T-001')
+  })
+})
+
 // --- M16 C9 follow-on Bug 2: validateRunIntegrity tolerates ---------
 // gate_written events superseded by gate_file_cleared. This is the
 // state-level invariant the dispatchers rely on for the multi-task
@@ -1827,6 +2146,92 @@ describe('validateRunIntegrity — Bug 2: cleared gates do not throw', () => {
     }
     expect(caught).toBeDefined()
     expect(String(caught)).toMatch(/sha256_mismatch|sha256/i)
+  })
+
+  test('gate_written → cleared → gate_written → cleared (Bug 6 trail): loadRun succeeds without throwing on the historical first gate_written', async () => {
+    // Bug 6 induces this exact sequence in events.jsonl:
+    //   1. approve build T-002 a1 → gate_written(build) #1
+    //   2. dispatchBuild T-002 a2 (review-needs-revision restart) →
+    //      gate_file_cleared(build) #1 (my new emission), unlinks file.
+    //
+    // The cross-task supersedence (Bug 2) trail extends this to four
+    // events when there's a prior task: gate_written(T-001 a1) → cleared
+    // (T-001 → T-002) → gate_written(T-002 a1) → cleared (T-002 a1 → a2).
+    // The pre-Bug-6 supersedence logic in validateRunIntegrity treated
+    // the FIRST gate_written as un-superseded because a LATER
+    // gate_written existed for the same phase, even though the LATER
+    // gate_written was itself superseded by a still-later cleared.
+    // Result: the validator tried to read GATE_BUILD_PASSED.json and
+    // found it missing.
+    //
+    // Post-fix: ALL gate_written(phase) events earlier than the latest
+    // are historical (they reference the same file as the latest), and
+    // when the latest gate_written is itself superseded by a later
+    // gate_file_cleared, that one is historical too. loadRun succeeds.
+    await initFreshRun()
+    await writeFile(join(artifactRoot, 'PLAN.md'), PLAN_TXT, 'utf8')
+
+    // Plant the four-event chain manually. We don't need to spin up
+    // real approve flows — the validator only inspects events + on-
+    // disk file state.
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_written',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build',
+        file: 'GATE_BUILD_PASSED.json',
+      },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_file_cleared',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build',
+        priorTaskId: 'T-001',
+        currentTaskId: 'T-002',
+        gateFile: 'GATE_BUILD_PASSED.json',
+        priorArtifactSha256: 'a'.repeat(64),
+      },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_written',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build',
+        file: 'GATE_BUILD_PASSED.json',
+      },
+    )
+    await appendEvent(
+      { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+      {
+        version: 1,
+        type: 'gate_file_cleared',
+        ts: FIXED_TS,
+        runId: RUN,
+        phase: 'build',
+        priorTaskId: 'T-002',
+        currentTaskId: 'T-002',
+        gateFile: 'GATE_BUILD_PASSED.json',
+        priorArtifactSha256: 'b'.repeat(64),
+      },
+    )
+    // No GATE_BUILD_PASSED.json on disk — the dispatcher unlinked it.
+
+    // loadRun must NOT throw. validateRunIntegrity skips ALL
+    // gate_written(build) events: the first because it's not the
+    // latest, the latest because it's superseded by the later
+    // gate_file_cleared.
+    const loaded = await loadRun(runPaths)
+    expect(loaded).not.toBeNull()
   })
 })
 

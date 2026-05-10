@@ -83,6 +83,7 @@ import {
   tryReadNeedsInterventionGate,
 } from './dispatch-build-helpers.ts'
 import {
+  findLatestBuildCompleted,
   findLatestVerifyCompleted,
   hasGateRequired,
   resolveVerifyArtifacts,
@@ -1151,13 +1152,16 @@ export async function dispatchBuild(
     })
   }
 
-  // M16 C9 follow-on (Bug 2) — task-boundary gate-file cleanup. When
-  // crossing into a new task (latest `task_completed.taskId !==
-  // taskId`), the prior task's `GATE_BUILD_PASSED.json` references an
-  // artifactSha256 that no longer matches the BUILD_REPORT.md the new
-  // task is about to write. Delete it now so the next `loadRun` (in
-  // the operator's eventual `code-oz approve build`) does not throw
-  // `gate_artifact_sha256_mismatch`. The deletion is recorded as a
+  // M16 C9 follow-on (Bug 2 + Bug 6) — boundary-aware gate-file cleanup.
+  // When the upcoming BUILD attempt's (taskId, attempt) does not match
+  // the underlying artifact behind `GATE_BUILD_PASSED.json`, the recorded
+  // artifactSha256 will mismatch the BUILD_REPORT.md the new attempt is
+  // about to overwrite. Bug 2 (c262efd) closed the cross-task case;
+  // Bug 6 (this commit) closes the within-task cross-attempt case
+  // (review-needs-revision restart, verify-fail restart). Passing
+  // `currentAttempt` enables attempt-aware supersedence — without it
+  // the helper would still short-circuit on a prior `build_started`
+  // for the same task. The deletion is recorded as a
   // `gate_file_cleared` event for audit. Idempotent on every non-
   // boundary path.
   const buildGateClearance = await clearStaleGateFile({
@@ -1165,6 +1169,7 @@ export async function dispatchBuild(
     phase: 'build',
     events,
     currentTaskId: taskId,
+    currentAttempt: attempt,
   })
   if (buildGateClearance.cleared) {
     await appendEvent(
@@ -1392,16 +1397,24 @@ export async function dispatchVerify(
     })
   }
 
-  // M16 C9 follow-on (Bug 2) — task-boundary gate-file cleanup. Mirrors
-  // dispatchBuild for `GATE_VERIFY_PASSED.json`. Deletes the prior
-  // task's verify gate so the operator's eventual `code-oz approve
-  // verify` does not throw `gate_artifact_sha256_mismatch` against the
-  // freshly-overwritten VERIFY.md.
+  // M16 C9 follow-on (Bug 2 + Bug 6) — boundary-aware gate-file cleanup
+  // for `GATE_VERIFY_PASSED.json`. Mirrors dispatchBuild's attempt-aware
+  // semantics: the upcoming VERIFY runs against the latest BUILD
+  // attempt for this task, so the helper short-circuits only when a
+  // `verify_started` event already exists for that exact (taskId,
+  // attempt). The verify-fail restart path overwrites VERIFY.md a2,
+  // and approve-verify a1's stale gate file would otherwise mismatch
+  // (Bug 6 mirror). When no `build_completed` exists yet, we still
+  // pass attempt=1 so the helper proceeds with the standard task-
+  // boundary check via started-event scan.
+  const verifyBuildLatest = findLatestBuildCompleted(events, opts.runId, taskId)
+  const verifyAttempt = verifyBuildLatest?.attempt ?? 1
   const verifyGateClearance = await clearStaleGateFile({
     runDir: runPaths.runDir,
     phase: 'verify',
     events,
     currentTaskId: taskId,
+    currentAttempt: verifyAttempt,
   })
   if (verifyGateClearance.cleared) {
     await appendEvent(

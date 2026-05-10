@@ -622,48 +622,69 @@ export interface ClearStaleGateFileInput {
   readonly phase: 'build' | 'verify' | 'review'
   readonly events: readonly LoggedEvent[]
   readonly currentTaskId: string
+  /**
+   * The attempt number the upcoming dispatch is about to run for
+   * `currentTaskId`. When provided (BUILD, VERIFY), the resume guard
+   * tightens: it short-circuits only when `<phase>_started` exists for
+   * the SAME `(currentTaskId, currentAttempt)` pair, treating a fresh
+   * attempt N+1 as a new boundary that requires clearing the prior
+   * attempt's stale gate file. When omitted (REVIEW), the resume guard
+   * stays at the task-only granularity — REVIEW gates are written only
+   * on `ready` verdict, so within-task attempt-boundary cannot produce
+   * a stale gate file. (M16 C9 follow-on 4 — Bug 6.)
+   */
+  readonly currentAttempt?: number
 }
 
 /**
  * Resolve and (if stale) delete the per-phase `GATE_<PHASE>_PASSED.json`
- * file at the boundary of a NEW task. Idempotent and safe to call on
- * every dispatcher invocation; returns `{cleared: false}` on every
- * non-boundary path:
+ * file when the upcoming dispatch's `(currentTaskId, currentAttempt)`
+ * does not match the gate file's underlying artifact. Idempotent and
+ * safe to call on every dispatcher invocation; returns `{cleared:
+ * false}` on every non-boundary path:
  *
- *   1. No prior `task_completed` event for the run → first task, nothing
- *      to clean. (`{cleared: false}`)
- *   2. The latest `task_completed.taskId` equals `currentTaskId` →
- *      same-task resume; the gate file from the prior approve is the
- *      authoritative one for this task. (`{cleared: false}`)
- *   3. A `<phase>_started` event already exists for `(runId, currentTaskId)`
- *      → the dispatcher is resuming a partially-started phase, not
- *      crossing a task boundary. (`{cleared: false}`)
- *   4. The gate file does not exist on disk → already cleaned by a
+ *   1. A `<phase>_started` event already exists for `(runId,
+ *      currentTaskId, currentAttempt)` (or `(runId, currentTaskId)` when
+ *      `currentAttempt` is omitted) → the dispatcher is resuming a
+ *      partially-started phase. The gate file (if any) belongs to this
+ *      task/attempt; a deletion here would race with whatever wrote the
+ *      started event. (`{cleared: false}`)
+ *   2. `currentAttempt` is omitted (REVIEW path) AND no prior
+ *      `task_completed` exists / the latest equals `currentTaskId` →
+ *      first-task / same-task no-op. (`{cleared: false}`)
+ *   3. The gate file does not exist on disk → already cleaned by a
  *      prior dispatcher / operator. (`{cleared: false}`)
  *
- * On a true task boundary the gate file is read for its
+ * On a true boundary (task or attempt) the gate file is read for its
  * `artifactSha256` field (used in the audit event payload), then
  * deleted. The dispatcher emits a `gate_file_cleared` event after this
  * function returns so the audit trail captures the deletion.
  *
  * Why this lives here: per-phase gate files are filename-keyed
- * (`GATE_<PHASE>_PASSED.json`) but task-keyed at the artifact-sha
- * level. After T-001 ships and T-002 BUILD writes a fresh
- * BUILD_REPORT.md, the prior gate's `artifactSha256` no longer matches
- * the artifact on disk; the very next `loadRun` would throw
- * `gate_artifact_sha256_mismatch` from `validateRunIntegrity`. The
- * dispatchers detect this at the task boundary and clear the stale
- * file before the new task's phase work can write fresh artifact bytes.
+ * (`GATE_<PHASE>_PASSED.json`) but task-AND-attempt-keyed at the
+ * artifact-sha level. Bug 2 (M16 C9 follow-on, c262efd) closed the
+ * cross-task case: after T-001 ships and T-002 BUILD writes a fresh
+ * BUILD_REPORT.md, the prior gate's `artifactSha256` no longer matches.
+ * Bug 6 (this commit, M16 C9 follow-on 4) closes the within-task
+ * cross-attempt case: T-002 BUILD a1 → approve build → REVIEW r1
+ * needs_revision → BUILD a2 overwrites BUILD_REPORT.md → approve build
+ * a2 must not see a stale a1 gate. Same `gate_file_cleared` event-driven
+ * supersedence in `validateRunIntegrity` (loadRun) handles both cases;
+ * only the trigger criteria here change.
  *
  * Throws `NeedsInterventionReadError`-shaped errors only on truly
  * unexpected conditions (gate file present but unreadable / unparseable
  * JSON / no `artifactSha256` field) — these signal corruption rather
- * than the routine task-boundary case the helper is designed for.
+ * than the routine boundary case the helper is designed for.
  */
 export async function clearStaleGateFile(
   input: ClearStaleGateFileInput,
 ): Promise<ClearStaleGateFileResult> {
-  // Find the latest `task_completed` event in events.jsonl order.
+  // Find the latest `task_completed` event in events.jsonl order. The
+  // task-boundary fast paths (no task_completed / same task) only apply
+  // when `currentAttempt` is omitted — under attempt-aware semantics,
+  // an in-flight task with prior approved attempts is itself a stale-
+  // gate trigger that must reach the started-event check below.
   let latestTaskCompletedTaskId: string | null = null
   for (const e of input.events) {
     if (!isKnownPhaseEvent(e)) continue
@@ -671,36 +692,49 @@ export async function clearStaleGateFile(
       latestTaskCompletedTaskId = e.taskId
     }
   }
-  if (latestTaskCompletedTaskId === null) {
-    // First task: no prior boundary to cross.
-    return Object.freeze({ cleared: false })
-  }
-  if (latestTaskCompletedTaskId === input.currentTaskId) {
-    // Same-task resume: the prior gate file IS this task's gate file.
-    return Object.freeze({ cleared: false })
+  if (input.currentAttempt === undefined) {
+    if (latestTaskCompletedTaskId === null) {
+      // First task: no prior boundary to cross.
+      return Object.freeze({ cleared: false })
+    }
+    if (latestTaskCompletedTaskId === input.currentTaskId) {
+      // Same-task resume: the prior gate file IS this task's gate file.
+      return Object.freeze({ cleared: false })
+    }
   }
 
   // Resume guard: if a `<phase>_started` event already exists for the
-  // current task, a prior dispatcher invocation must have run runBuild/
-  // runVerify/runReview at least once for this task. The gate file (if
-  // any) is still associated with the prior task, but a deletion here
-  // would race with whatever wrote the started event. Trust that the
-  // prior dispatcher already cleared (or had nothing to clear).
+  // current task (and, when provided, the current attempt), a prior
+  // dispatcher invocation already ran runBuild / runVerify / runReview
+  // for THIS attempt. The gate file (if any) is associated with this
+  // attempt; a deletion here would race with whatever wrote the started
+  // event. Trust that the prior dispatcher already cleared (or had
+  // nothing to clear).
+  //
+  // M16 C9 follow-on 4 (Bug 6): the original guard fired on `taskId`
+  // alone, treating any `build_started` for the current task as a
+  // resume. That's wrong for fresh attempt N+1 (review needs-revision
+  // restart, verify-fail restart) — the prior attempt's gate file is
+  // genuinely stale and must be cleared before the new attempt writes
+  // its artifact. Comparing on `(taskId, attempt)` lets the resume
+  // guard fire only for true mid-attempt resumes.
   const startedEventType =
     input.phase === 'build'
       ? 'build_started'
       : input.phase === 'verify'
         ? 'verify_started'
         : 'review_started'
-  const hasStartedForCurrentTask = input.events.some((e) => {
+  const hasStartedForCurrentAttempt = input.events.some((e) => {
     if (!isKnownPhaseEvent(e)) return false
     if (e.type !== startedEventType) return false
     if (e.type === 'build_started' || e.type === 'verify_started' || e.type === 'review_started') {
-      return e.taskId === input.currentTaskId
+      if (e.taskId !== input.currentTaskId) return false
+      if (input.currentAttempt !== undefined && e.attempt !== input.currentAttempt) return false
+      return true
     }
     return false
   })
-  if (hasStartedForCurrentTask) {
+  if (hasStartedForCurrentAttempt) {
     return Object.freeze({ cleared: false })
   }
 
@@ -749,9 +783,15 @@ export async function clearStaleGateFile(
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }
 
+  // Audit-event priorTaskId: when crossing a task boundary, this is
+  // the prior task; when crossing an attempt boundary within the same
+  // task (M16 C9 follow-on 4 — Bug 6), the gate file belongs to a
+  // prior attempt of the SAME task, so priorTaskId IS currentTaskId.
+  // Both cases populate the field with the meaningful prior owner.
+  const priorTaskId = latestTaskCompletedTaskId ?? input.currentTaskId
   return Object.freeze({
     cleared: true,
     priorArtifactSha256,
-    priorTaskId: latestTaskCompletedTaskId,
+    priorTaskId,
   })
 }

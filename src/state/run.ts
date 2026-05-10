@@ -1552,36 +1552,53 @@ async function validateRunIntegrity(
   // Gate-written validation only applies to known PhaseEvent variants.
   const known = events.filter(isKnownPhaseEvent)
 
-  // M16 C9 follow-on (Bug 2): identify gate_written events that have
-  // been superseded by a later `gate_file_cleared` for the same phase
-  // without a later `gate_written` re-affirming. Those events reference
-  // a gate file that has been deleted (or replaced with a new task's
-  // gate file) at the task boundary; validating them would falsely
-  // throw `gate_written_event_missing_file` (when the file is gone) or
-  // `gate_artifact_sha256_mismatch` (when the new task's gate file has
-  // a different sha). The dispatcher's `gate_file_cleared` event marks
-  // the prior gate_written as historical and the validator skips it.
+  // M16 C9 follow-on (Bug 2 + Bug 6): identify gate_written events that
+  // are historical relative to the file currently on disk. All
+  // gate_written(phase) events reference the SAME canonical filename
+  // (`GATE_<PHASE>_PASSED.json`); only the latest non-superseded one
+  // describes the file's actual on-disk state. Validating earlier
+  // gate_written events would either:
+  //
+  //   - falsely throw `gate_artifact_sha256_mismatch` when the file's
+  //     current contents reflect a later approve's artifact (Bug 2,
+  //     cross-task), or
+  //   - falsely throw `gate_written_event_missing_file` when the file
+  //     was cleared at an attempt boundary and no later approve has
+  //     re-written it yet (Bug 6, within-task cross-attempt).
+  //
+  // Skip rule per phase: when the LATEST gate-related event for the
+  // phase is `gate_file_cleared`, ALL gate_written(phase) events are
+  // historical — the file is absent on disk. When the latest is
+  // `gate_written`, only THAT event needs validation; every earlier
+  // gate_written(phase) is historical (the file's content reflects
+  // the latest approve, not theirs).
   const skipGateWrittenIndex = new Set<number>()
-  for (let i = 0; i < known.length; i++) {
-    const e = known[i]!
-    if (e.type !== 'gate_written') continue
-    let supersededByClear = false
-    for (let j = i + 1; j < known.length; j++) {
-      const later = known[j]!
-      if (later.type === 'gate_written' && later.phase === e.phase) {
-        // A later gate_written for the same phase re-affirms the gate;
-        // any `gate_file_cleared` between i and j is historical.
-        supersededByClear = false
-        break
-      }
-      if (later.type === 'gate_file_cleared' && later.phase === e.phase) {
-        supersededByClear = true
-        // Keep walking — a later gate_written (currently impossible for
-        // the same phase post-cleanup, but the loop is robust to that
-        // ordering and breaks cleanly above) would un-supersede.
+  for (const phase of PHASES) {
+    let latestGateWrittenIdx = -1
+    let latestGateClearedIdx = -1
+    for (let i = 0; i < known.length; i++) {
+      const e = known[i]!
+      if (e.type === 'gate_written' && e.phase === phase) {
+        latestGateWrittenIdx = i
+      } else if (e.type === 'gate_file_cleared' && e.phase === phase) {
+        latestGateClearedIdx = i
       }
     }
-    if (supersededByClear) skipGateWrittenIndex.add(i)
+    // Mark every gate_written(phase) earlier than the latest one as
+    // historical — they reference the same filename and the on-disk
+    // contents reflect only the latest approve.
+    for (let i = 0; i < known.length; i++) {
+      const e = known[i]!
+      if (e.type !== 'gate_written') continue
+      if (e.phase !== phase) continue
+      if (i !== latestGateWrittenIdx) skipGateWrittenIndex.add(i)
+    }
+    // If a `gate_file_cleared(phase)` is later than every gate_written,
+    // the file has been deleted with no follow-up approve; skip the
+    // latest gate_written too (the file is genuinely absent).
+    if (latestGateClearedIdx > latestGateWrittenIdx && latestGateWrittenIdx >= 0) {
+      skipGateWrittenIndex.add(latestGateWrittenIdx)
+    }
   }
 
   for (let i = 0; i < known.length; i++) {
