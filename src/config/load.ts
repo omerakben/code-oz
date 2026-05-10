@@ -200,21 +200,24 @@ function mergePreset(
 function applyPresetDefaults(preset: PresetName | undefined): CodeOzConfig {
   if (preset === undefined) return DEFAULT_CONFIG
   const values = PRESET_VALUES[preset]
-  return {
+  const permissions = Object.freeze({
+    ...DEFAULT_CONFIG.permissions,
+    ...values.permissions,
+  })
+  const global = Object.freeze({
+    ...DEFAULT_CONFIG.budgets.global,
+    softWarnAtRatio: values.softWarnAtRatio,
+  })
+  const budgets = Object.freeze({
+    ...DEFAULT_CONFIG.budgets,
+    global,
+  })
+  return Object.freeze({
     ...DEFAULT_CONFIG,
     preset,
-    permissions: {
-      ...DEFAULT_CONFIG.permissions,
-      ...values.permissions,
-    },
-    budgets: {
-      ...DEFAULT_CONFIG.budgets,
-      global: {
-        ...DEFAULT_CONFIG.budgets.global,
-        softWarnAtRatio: values.softWarnAtRatio,
-      },
-    },
-  }
+    permissions,
+    budgets,
+  })
 }
 
 // M12: company:block validation. Validates the entire shape at config-load

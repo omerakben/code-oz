@@ -185,18 +185,22 @@ export function validateEvent(
       // follow-up; this validator intentionally reads the resolved event
       // payload without making events.jsonl a parallel config authority
       // (CLAUDE.md rule 19; docs/comparison/06-codex/SYNTHESIS.md B4).
+      // TODO(run-start emitter follow-up): either widen this narrow payload
+      // beyond the preset-controlled fields to cover all resolved budgets
+      // (maxTurns, maxToolCallsPerTurn, toolCallBudgetMultiplier, perPhase,
+      // byRole, priceTable, etc.) or narrow the SYNTHESIS.md B4 wording.
       if (
         e.presetApplied !== null &&
         (typeof e.presetApplied !== 'string' ||
           !(PRESET_NAMES as readonly string[]).includes(e.presetApplied))
       ) {
-        return enumInvalid(
+        return {
           file,
-          'config_resolved.presetApplied',
-          [...PRESET_NAMES, 'null'],
-          e.presetApplied,
+          code: 'event_invalid_value',
+          rule: `config_resolved.presetApplied must be one of: ${PRESET_NAMES.join(' | ')}, or JSON null`,
+          detail: `got ${JSON.stringify(e.presetApplied)}`,
           line,
-        )
+        }
       }
       const permissions = e.permissions
       if (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions)) {
@@ -262,6 +266,8 @@ export function validateEvent(
           line,
         }
       }
+      // Zero is accepted here to mirror config-loader nonNegIntOrDefault
+      // semantics for resolved budgets; no stricter event-log rule.
       const budgetIssue =
         nonNegativeInteger(
           file,

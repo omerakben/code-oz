@@ -128,18 +128,6 @@ export interface GlobalBudget extends PhaseBudget {
   byRole?: Readonly<Partial<Record<CompanyRole, ByRoleBudget>>>
 }
 
-// B4 named approval presets are aliases that expand into explicit resolved
-// config, not hidden semantic modes. Per CLAUDE.md rule 19, budgets stay
-// concrete config values; per rule 20 and
-// docs/comparison/06-codex/SYNTHESIS.md B4, presets are limited to the
-// locked field set below and must not become a second authority surface.
-export const PRESET_CONTROLLED_FIELDS = Object.freeze({
-  permissions: Object.freeze(['allowEscapeHatch', 'requireApprovalForBuild'] as const),
-  budgets: Object.freeze({
-    global: Object.freeze(['softWarnAtRatio'] as const),
-  }),
-})
-
 export type PresetValues = Readonly<{
   permissions: Readonly<
     Pick<CodeOzConfig['permissions'], 'allowEscapeHatch' | 'requireApprovalForBuild'>
@@ -147,6 +135,13 @@ export type PresetValues = Readonly<{
   softWarnAtRatio: number
 }>
 
+// B4 named approval presets are aliases that expand into explicit resolved
+// config, not hidden semantic modes. Per CLAUDE.md rule 19, budgets stay
+// concrete config values; per rule 20 and
+// docs/comparison/06-codex/SYNTHESIS.md B4, presets are limited to this
+// typed shape: permissions.allowEscapeHatch,
+// permissions.requireApprovalForBuild, and budgets.global.softWarnAtRatio.
+// Presets must not become a second authority surface.
 export const PRESET_VALUES: Readonly<Record<PresetName, PresetValues>> = Object.freeze({
   auto: Object.freeze({
     permissions: Object.freeze({

@@ -141,9 +141,6 @@ permissions:
     await writeConfig('preset: interactive\n')
     const cfg = await loadConfig({ cwd: tmp })
     expect(cfg.preset).toBe('interactive')
-    expect(cfg.permissions.allowEscapeHatch).toBe(false)
-    expect(cfg.permissions.requireApprovalForBuild).toBe(true)
-    expect(cfg.budgets.global.softWarnAtRatio).toBe(0.75)
     expect(cfg.permissions).toEqual(DEFAULT_CONFIG.permissions)
     expect(cfg.budgets.global.softWarnAtRatio).toBe(
       DEFAULT_CONFIG.budgets.global.softWarnAtRatio,
@@ -162,6 +159,7 @@ budgets:
     const cfg = await loadConfig({ cwd: tmp })
     expect(cfg.preset).toBe('auto')
     expect(cfg.permissions.allowEscapeHatch).toBe(false)
+    // Partial override preserves preset values for non-overridden keys.
     expect(cfg.permissions.requireApprovalForBuild).toBe(false)
     expect(cfg.budgets.global.softWarnAtRatio).toBe(0.6)
   })
