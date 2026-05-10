@@ -286,23 +286,51 @@ describe('findLatestVerifyCompletedForReview', () => {
 })
 
 // --- findLatestReviewRemediation + resolveNextReviewRound ----------
+//
+// M16 C9 follow-on 6 (Bug 9) — the lookup walks BACK across the
+// BUILD-restart boundary. Round N's remediation is recorded at
+// `attempt = N`; the next REVIEW dispatch happens at `attempt = N + 1`
+// after the BUILD restart + VERIFY pass. The resolver matches on
+// `rec.attempt + 1 === currentAttempt`. Tests below codify that
+// carry-forward semantic.
 
 describe('findLatestReviewRemediation', () => {
   test('returns null when no events match', () => {
-    expect(findLatestReviewRemediation([], RUN, 'T-001', 1)).toBeNull()
+    expect(findLatestReviewRemediation([], RUN, 'T-001', 2)).toBeNull()
   })
 
-  test('matches on (runId, taskId, attempt) — different attempt is null', () => {
+  test('walks back across BUILD-restart boundary: attempt N remediation matches currentAttempt N+1', () => {
+    // round 1 at attempt 1 emitted needs-revision → remediation
+    // recorded with attempt=1, nextReviewRound=2. After BUILD restart
+    // landed attempt 2 + VERIFY passed, the next REVIEW dispatch keys
+    // currentAttempt=2 → finds the attempt=1 remediation.
     const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
-    expect(findLatestReviewRemediation([ev], RUN, 'T-001', 2)).toBeNull()
-    expect(findLatestReviewRemediation([ev], RUN, 'T-001', 1)?.nextReviewRound).toBe(2)
+    const result = findLatestReviewRemediation([ev], RUN, 'T-001', 2)
+    expect(result?.nextReviewRound).toBe(2)
+    expect(result?.attempt).toBe(1)
   })
 
-  test('returns the most recent when multiple match', () => {
+  test('returns null when remediation predecessor does not match currentAttempt - 1', () => {
+    // attempt=1 remediation; currentAttempt=1 means we are still at the
+    // ORIGINAL attempt — round-1 is the first round, no predecessor.
+    const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
+    expect(findLatestReviewRemediation([ev], RUN, 'T-001', 1)).toBeNull()
+  })
+
+  test('returns null when only a non-adjacent remediation exists', () => {
+    // attempt=1 remediation, currentAttempt=3 → nextBuildAttempt=2 ≠ 3
+    // → no matching predecessor, gap is real, fall back to round 1.
+    const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
+    expect(findLatestReviewRemediation([ev], RUN, 'T-001', 3)).toBeNull()
+  })
+
+  test('returns the most recent matching predecessor when multiple events qualify', () => {
+    // Defensive: orchestrator emits one remediation per round, but if
+    // two events shared attempt N (e.g., resume replay), last-wins.
     const ev1 = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
-    const ev2 = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 2, nextReviewRound: 3 })
-    const result = findLatestReviewRemediation([ev1, ev2], RUN, 'T-001', 1)
-    expect(result!.nextReviewRound).toBe(3)
+    const ev2 = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 3 })
+    const result = findLatestReviewRemediation([ev1, ev2], RUN, 'T-001', 2)
+    expect(result?.nextReviewRound).toBe(3)
   })
 })
 
@@ -311,16 +339,52 @@ describe('resolveNextReviewRound', () => {
     expect(resolveNextReviewRound([], RUN, 'T-001', 1)).toBe(1)
   })
 
-  test('returns nextReviewRound from latest remediation event', () => {
-    const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
-    expect(resolveNextReviewRound([ev], RUN, 'T-001', 1)).toBe(2)
+  test('returns 1 at the original attempt (no predecessor)', () => {
+    // currentAttempt=1 — REVIEW round 1 dispatched against attempt 1's
+    // artifacts. No predecessor remediation exists at attempt=0.
+    expect(resolveNextReviewRound([], RUN, 'T-001', 1)).toBe(1)
   })
 
-  test('returns 1 for a different attempt even when remediation exists for another', () => {
-    // attempt 1 has a remediation pointing at round 3; attempt 2 has none
-    // → attempt 2 is round 1.
-    const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 2, nextReviewRound: 3 })
-    expect(resolveNextReviewRound([ev], RUN, 'T-001', 2)).toBe(1)
+  test("returns the remediation's nextReviewRound when dispatching at attempt N+1", () => {
+    // The Bug 9 regression scenario:
+    //   round 1 at attempt 1 → needs-revision → remediation@a1{nextReviewRound=2}
+    //   BUILD restart attempt 2 + VERIFY pass
+    //   REVIEW dispatch at currentAttempt=2 → must return round 2.
+    const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
+    expect(resolveNextReviewRound([ev], RUN, 'T-001', 2)).toBe(2)
+  })
+
+  test('walks across multiple attempts and returns latest predecessor', () => {
+    // Chain: round 1 needs-revision → a2 → round 2 needs-revision → a3.
+    // At currentAttempt=3, the predecessor is the attempt=2 remediation
+    // (which says "next round is 3"), not the attempt=1 one.
+    const ev1 = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
+    const ev2 = reviewRemediation({ taskId: 'T-001', attempt: 2, reviewRound: 2, nextReviewRound: 3 })
+    expect(resolveNextReviewRound([ev1, ev2], RUN, 'T-001', 3)).toBe(3)
+  })
+
+  test('walks past mismatched-predecessor remediation to find the adjacent one', () => {
+    // currentAttempt=3 with both attempt=1 and attempt=2 remediations
+    // present. The attempt=1 remediation's nextBuildAttempt=2 ≠ 3 — the
+    // resolver MUST walk past it and pick attempt=2 (whose
+    // nextBuildAttempt=3 matches).
+    const ev1 = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
+    const ev2 = reviewRemediation({ taskId: 'T-001', attempt: 2, reviewRound: 2, nextReviewRound: 3 })
+    expect(resolveNextReviewRound([ev1, ev2], RUN, 'T-001', 3)).toBe(3)
+  })
+
+  test('returns 1 when only a non-adjacent remediation exists (gap fallback)', () => {
+    // attempt=1 remediation, dispatching at currentAttempt=3 with no
+    // attempt=2 remediation between → no qualifying predecessor → fall
+    // back to round 1. (resolveReviewArtifacts will surface the gap as
+    // a separate drift if one exists at the artifact layer.)
+    const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
+    expect(resolveNextReviewRound([ev], RUN, 'T-001', 3)).toBe(1)
+  })
+
+  test('does not match remediation for a different taskId', () => {
+    const ev = reviewRemediation({ taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2 })
+    expect(resolveNextReviewRound([ev], RUN, 'T-002', 2)).toBe(1)
   })
 })
 
@@ -552,8 +616,12 @@ describe('dispatchReview — refusal cases', () => {
   })
 
   test('round > 1 with missing prior REVIEW.md → EXIT_INTERVENTION', async () => {
-    // Set up: BUILD/VERIFY artifacts present + sha-matched events + a
-    // prior remediation pointing at round 2 — but no REVIEW.md on disk.
+    // Set up the realistic carry-forward chain:
+    //   round 1 at attempt 1 → needs-revision → remediation@a1{nextReviewRound=2}
+    //   BUILD restart attempt 2 + VERIFY pass attempt 2
+    //   REVIEW dispatch at currentAttempt=2 → resolver finds the
+    //     attempt=1 predecessor → round 2.
+    // No REVIEW.md on disk → EXIT_INTERVENTION with `round 2` in stderr.
     await writePlan()
     const buildText = 'BR\n'
     const verifyText = 'V\n'
@@ -562,10 +630,10 @@ describe('dispatchReview — refusal cases', () => {
     await writeFile(join(artifactRoot, 'BUILD_REPORT.md'), buildText, 'utf8')
     await writeFile(join(artifactRoot, 'VERIFY.md'), verifyText, 'utf8')
     await appendEventLine(runPaths.eventsFile, buildCompleted({
-      taskId: 'T-001', attempt: 1, buildReportSha: buildSha, promptSha: 'b'.repeat(64),
+      taskId: 'T-001', attempt: 2, buildReportSha: buildSha, promptSha: 'b'.repeat(64),
     }))
     await appendEventLine(runPaths.eventsFile, verifyCompleted({
-      taskId: 'T-001', attempt: 1, verifyReportSha: verifySha,
+      taskId: 'T-001', attempt: 2, verifyReportSha: verifySha,
     }))
     await appendEventLine(runPaths.eventsFile, reviewRemediation({
       taskId: 'T-001', attempt: 1, reviewRound: 1, nextReviewRound: 2,

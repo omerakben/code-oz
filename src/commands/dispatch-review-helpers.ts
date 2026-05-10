@@ -4,9 +4,13 @@
 // these load-bearing concerns this module addresses:
 //
 //   1. `nextReviewRound` is persisted via a new `review_remediation_recorded`
-//      event. `resolveNextReviewRound` reads the latest such event for the
-//      current `(runId, taskId, attempt)` and returns the next round number
-//      (1 when no prior remediation exists).
+//      event. `resolveNextReviewRound` walks back to the latest such event
+//      for `(runId, taskId)` whose `attempt + 1 === currentAttempt` (i.e.,
+//      the remediation that fired the BUILD restart producing the current
+//      attempt's artifacts) and returns its `nextReviewRound`. Returns 1
+//      when no predecessor exists (first round). M16 C9 follow-on 6 fixed
+//      a contract drift where the lookup used strict `attempt` equality
+//      and dropped the predecessor across the BUILD-restart boundary.
 //   2. `resolveReviewArtifacts` re-validates BUILD_REPORT.md sha against the
 //      latest `build_completed.buildReportSha256` and VERIFY.md sha against
 //      `verify_completed.verifyReportSha256`. Operator hand-edits between
@@ -46,15 +50,26 @@ export interface ReviewRemediationRecord {
 
 /**
  * Returns the most recent `review_remediation_recorded` event for the
- * given `(runId, taskId, attempt)` or `null` when none exists. "Most
- * recent" is last-occurrence in event order (events.jsonl is append-
- * only); equal rounds keep last-wins.
+ * given `(runId, taskId)` whose `attempt` field equals
+ * `currentAttempt - 1` — i.e., the remediation that fired the BUILD
+ * restart producing `currentAttempt`'s artifacts. Returns `null` when no
+ * such event exists. "Most recent" is last-occurrence in event order
+ * (events.jsonl is append-only); equal rounds keep last-wins.
+ *
+ * M16 C9 follow-on 6 (Bug 9) — the prior implementation filtered on
+ * strict `rec.attempt === currentAttempt`. That contract contradicted the
+ * durable carry-forward chain: REVIEW round N at attempt N records
+ * remediation `{attempt: N, nextReviewRound: N+1}`, then BUILD restarts
+ * at attempt N+1 and VERIFY passes; when REVIEW dispatches against the
+ * new attempt N+1 artifacts, the resolver must walk back across the
+ * attempt boundary to read the round-N remediation. Strict equality
+ * dropped that event and silently returned 1, re-running round 1.
  */
 export function findLatestReviewRemediation(
   events: readonly LoggedEvent[],
   runId: string,
   taskId: string,
-  attempt: number,
+  currentAttempt: number,
 ): ReviewRemediationRecord | null {
   let latest: ReviewRemediationRecord | null = null
   let latestIndex = -1
@@ -65,7 +80,13 @@ export function findLatestReviewRemediation(
     if (e.runId !== runId) continue
     const rec = e as Extract<LoggedEvent, { type: 'review_remediation_recorded' }>
     if (rec.taskId !== taskId) continue
-    if (rec.attempt !== attempt) continue
+    // Strict carry-forward: the remediation that fired the BUILD restart
+    // producing `currentAttempt`'s artifacts has `attempt === currentAttempt - 1`
+    // (its `nextBuildAttempt` is `attempt + 1`). Walk across attempts
+    // looking for that exact predecessor; later events overwrite earlier
+    // ones if both qualify (defensive — the orchestrator emits exactly
+    // one remediation per round).
+    if (rec.attempt + 1 !== currentAttempt) continue
     if (i > latestIndex) {
       latest = Object.freeze({
         reviewRound: rec.reviewRound,
@@ -82,10 +103,10 @@ export function findLatestReviewRemediation(
 }
 
 /**
- * Resolve the REVIEW round number to drive next for a given
- * `(runId, taskId, attempt)`. Reads the latest
- * `review_remediation_recorded` event and returns its `nextReviewRound`,
- * or `1` when no prior remediation exists.
+ * Resolve the REVIEW round number to drive next for `(runId, taskId)` at
+ * `currentAttempt`. Walks back to the latest `review_remediation_recorded`
+ * event whose `attempt + 1 === currentAttempt` and returns its
+ * `nextReviewRound`, or `1` when no such predecessor exists (first round).
  *
  * Codex C8 Mod #1 — round resolution must read durably-persisted
  * remediation state, not re-derive from `priorRound + 1`. The
@@ -93,14 +114,20 @@ export function findLatestReviewRemediation(
  * REVIEW round N and REVIEW round N+1; without persistence the resumed
  * dispatch would have to re-run `decideReviewRemediation` against the
  * pre-restart REVIEW.md (and re-walk the canonical findings) every time.
+ *
+ * M16 C9 follow-on 6 (Bug 9) — fixed contract drift where the lookup
+ * used strict `rec.attempt === currentAttempt`. Round N's remediation is
+ * recorded at `attempt = N`; the next REVIEW dispatch happens at
+ * `attempt = N + 1` (after BUILD restart + VERIFY pass). Strict equality
+ * dropped the event and silently returned 1.
  */
 export function resolveNextReviewRound(
   events: readonly LoggedEvent[],
   runId: string,
   taskId: string,
-  attempt: number,
+  currentAttempt: number,
 ): number {
-  const rec = findLatestReviewRemediation(events, runId, taskId, attempt)
+  const rec = findLatestReviewRemediation(events, runId, taskId, currentAttempt)
   if (rec === null) return 1
   return rec.nextReviewRound
 }

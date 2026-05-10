@@ -1757,9 +1757,13 @@ export async function dispatchReview(
   const attempt = artifacts.artifacts.attempt
 
   // Codex Mod #1 — resolve the round number from persisted remediation.
-  // Round 1 when no prior `review_remediation_recorded` event exists for
-  // this (runId, taskId, attempt). The find lookup keys off the
-  // build_completed.attempt the artifacts agreed on.
+  // Walks back to the predecessor `review_remediation_recorded` event
+  // (the one whose `attempt + 1` equals the current artifact attempt —
+  // i.e., the remediation that fired the BUILD restart producing these
+  // artifacts) and returns its `nextReviewRound`. Returns 1 when no
+  // predecessor exists (first round). M16 C9 follow-on 6 (Bug 9) fixed
+  // a contract drift where strict attempt equality dropped the cross-
+  // boundary predecessor and silently re-dispatched round 1.
   const round = resolveNextReviewRound(events, opts.runId, taskId, attempt)
 
   // Read prior REVIEW.md when round > 1 (the canonical artifact at
