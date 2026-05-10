@@ -34,6 +34,26 @@ export function intersectPermissions(opts: {
   readonly projectRoot: string
 }): IntersectedRequest {
   const { agentPermissions, request, projectRoot } = opts
+  // Defense-in-depth for the reserved-but-not-permissionable slot. Config
+  // load (validateRepoContext) already rejects 'symbol' in tools[]; this
+  // guard catches any caller that builds a request directly bypassing the
+  // type union (JSON-decoded payloads, untyped tests, future call sites
+  // that take untrusted input). Aligned with docs/contracts/REPO_CONTEXT.md
+  // § "Reservation and reopen-the-slot signal". The cast through `string`
+  // is intentional: `RepoContextRequest` does NOT include a 'symbol' arm,
+  // so this check is unreachable from typed callers and only fires when
+  // someone reaches the runtime with an untyped `tool` field.
+  if ((request.tool as string) === 'symbol') {
+    throw new RepoContextError([
+      {
+        code: 'tool_unavailable',
+        rule:
+          "'symbol' is RESERVED and not permissionable in v0.x. " +
+          'See docs/contracts/REPO_CONTEXT.md § "Reservation and reopen-the-slot signal".',
+        tool: 'symbol',
+      },
+    ])
+  }
   const tu = agentPermissions.tool_use?.repo_context
   if (tu === undefined) {
     throw new RepoContextError([

@@ -113,6 +113,11 @@ export async function runRepoContextTool(
 
   if (err !== null) return { status: 'error', error: err }
   if (result === null) {
+    // Unreachable in v0.x: 'glob' / 'grep' / 'read' all set `result` above,
+    // and 'symbol' is rejected by intersectPermissions before we reach the
+    // dispatch (see permissions.ts § "Defense-in-depth for the
+    // reserved-but-not-permissionable slot"). Kept as a typed safety net
+    // so future tool additions cannot regress the invariant silently.
     return {
       status: 'error',
       error: new Error(`runRepoContextTool: unsupported tool '${request.tool}'`),
