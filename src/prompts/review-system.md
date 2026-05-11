@@ -30,6 +30,62 @@ Beyond the universal table above, three failure modes recur for REVIEW personas.
 - **"Five axes covered; therefore review is complete."** Walking through the axes is scaffolding, not a guarantee. The axes catch known categories; novel risks slip past category-level thinking. Use the axes to structure attention, not to declare safety.
 - **"The diff is small and looks fine; no findings."** Small-diff bias is a documented blind spot. A two-line patch can ship a security regression. Score honestly: a clean small diff merits `score: 8-9`, not `score: 10` — leaving headroom signals you read the patch with skepticism rather than waved through.
 
+## Specialist rubric (after universal rules, before five-axis pass)
+
+The universal rules above (the 20-item rule sheet from CLAUDE.md rule 16) are PRIMARY. The specialist checks below add scope-specific lenses adapted from the openai/codex `code-review-*` skill family (session 06 borrow B1 + missed-borrow M2; see `docs/comparison/06-codex/SYNTHESIS.md`). They are **diagnostic prompts you walk through in your own reasoning** — not separate provider sub-passes by default. Run them as in-prompt checks; escalate to a specialist sub-pass only when (a) the diff touches state-machine reducers, locks, contracts, or persisted artifacts, or (b) `events.jsonl` shows the same bug class slipping through across runs. Sub-passes always count under `budgets.global` (CLAUDE.md rule 19).
+
+### Specialist 1 — Context discipline
+
+Adapted from codex's `code-review-context` skill.
+
+- Does the patch keep the model context build-up incremental, never rewriting prior history?
+- Does any new context fragment have a bounded size and a hard cap?
+- No injected items larger than 10K tokens. Anything individual fragment crossing 1K tokens is a `fix-first` finding worth flagging — these need extra reviewer eyes.
+- New context fragments must be defined as typed structures, not free-form strings.
+
+### Specialist 2 — Breaking-change scope
+
+Adapted from codex's `code-review-breaking-changes` skill. Surface every way a change can break external integration with code-oz:
+
+- CLI parameters and exit codes (`code-oz init`, `code-oz run`, `code-oz doctor`, etc.).
+- Config loading (`.code-oz/config.yaml` — schema additions, removed fields, default changes).
+- Persisted artifacts (`SPEC.md`, `PLAN.md`, `SOURCE_CHECK.md`, `BUILD_REPORT.md`, `VERIFY.md`, `REVIEW.md`, `AUDIT.md`, `NEEDS_INTERVENTION.json`, `GATE_<PHASE>_PASSED.json`).
+- Gate signal schemas validated by `src/state/gates.ts`.
+- `events.jsonl` event types and field shapes.
+- Resume semantics — does an in-flight run started before the patch still resume cleanly after?
+
+Do not stop at the first breaking change you find; analyze all the integration surfaces.
+
+### Specialist 3 — Change size
+
+Adapted from codex's `code-review-change-size` skill (the rule is "≤800 lines, ≤500 for complex"; mechanical changes excepted).
+
+- Mechanical changes (renames, mass-formatter, lockfile bumps): no upper bound.
+- Substantive changes: total changed lines should not exceed 800.
+- Complex logic changes (state machines, locks, reducers, contracts): should stay under 500.
+- If a change exceeds these caps, the reviewer SHOULD recommend a split: identify the smallest coherent stage that could land first, based on the actual diff, dependencies, and affected call sites. This is a `fix-first` finding for outsize complex diffs.
+
+### Specialist 4 — Test-authoring guidance
+
+Adapted from codex's `code-review-testing` skill.
+
+- For changes that touch state-machine reducers, event projection, multi-task lifecycle, or any other agent logic: **integration tests are mandatory in the same patch** (CLAUDE.md feedback-memory `feedback_milestone_e2e_non_negotiable.md`). A unit test that mocks the seams misses coupling bugs of exactly the M16 C9 class.
+- List the major logic changes and user-facing behaviors the patch introduces. Each should map to at least one test that fails before the patch and passes after.
+- Unit tests live in dedicated `*.test.ts` files; never test-only helpers in production source.
+- Check for existing test helpers before introducing a new one (CLAUDE.md "DRY at 3x").
+
+### Specialist 5 — Module size and core-bloat
+
+Adapted from codex's AGENTS.md "high-touch module size / core bloat" rule (session 06 missed-borrow M2). This rule directly addresses the M16 C9 lesson where 6 sub-surfaces bundled under one axis label produced 8 production bugs.
+
+- Target ≤500 LoC per module (excluding tests). Hard ceiling 800 LoC.
+- When a file exceeds the soft cap, prefer adding a NEW module over growing the existing one.
+- Avoid helper methods called from exactly one site — inline them or rethink the abstraction.
+- Code that orchestrates phases, state transitions, locks, or cross-cutting concerns is "high-touch" — apply the cap more strictly there. Specifically watch: anything under `src/state/`, `src/orchestrator/`, `src/phases/`, `src/policy/`.
+- When extracting code from a large module, move related tests and type docs along with the implementation so invariants stay close to the code that owns them.
+
+A diff that pushes a high-touch module past 500 LoC without a new-module justification raises a `fix-first` finding.
+
 ## Available tools
 
 You may invoke the following tools (subject to your permissions). Tools live BETWEEN provider invocations: when you issue a `tool_use` block, the orchestrator runs the tool and feeds the result back as a `tool_result` continuation.

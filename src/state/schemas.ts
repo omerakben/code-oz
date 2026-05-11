@@ -1,6 +1,8 @@
 // Shared schemas and types for the M3 state machine, event log, and gate writers.
 // The canonical contract is pinned in docs/references/file-based-gates.md.
 
+import type { PresetName } from '../config/schema.ts'
+
 export const PHASES = ['define', 'plan', 'build', 'verify', 'review', 'ship', 'audit'] as const
 export type Phase = (typeof PHASES)[number]
 
@@ -91,6 +93,11 @@ export function generateUlid(opts: UlidOptions = {}): string {
 
 export const EVENT_TYPES = [
   'run_started',
+  // B4 — resolved config telemetry. This event is a mirror of the already
+  // resolved config object, not an enforcement authority. The run-start
+  // emitter is intentionally deferred to the follow-up that owns that path
+  // (docs/comparison/06-codex/SYNTHESIS.md B4; CLAUDE.md rule 19).
+  'config_resolved',
   'phase_entered',
   'phase_exited',
   'agent_invoked',
@@ -444,6 +451,26 @@ type OptionalActorAttributed<T> = T & OptionalActorAttribution
 // contract pinned in docs/references/file-based-gates.md § 13.
 export type PhaseEvent =
   | OptionalActorAttributed<{ readonly version: 1; readonly type: 'run_started'; readonly ts: string; readonly runId: string; readonly profile: Profile }>
+  | OptionalActorAttributed<{
+      readonly version: 1
+      readonly type: 'config_resolved'
+      readonly ts: string
+      readonly runId: string
+      readonly presetApplied: PresetName | null
+      readonly permissions: {
+        readonly allowEscapeHatch: boolean
+        readonly requireApprovalForBuild: boolean
+      }
+      readonly budgets: {
+        readonly global: {
+          readonly softWarnAtRatio: number
+          readonly maxReviewRounds: number
+          readonly maxProviderCalls: number
+          readonly maxTokensEstimate: number
+          readonly maxWallTimeMinutes: number
+        }
+      }
+    }>
   | OptionalActorAttributed<{ readonly version: 1; readonly type: 'phase_entered'; readonly ts: string; readonly runId: string; readonly phase: Phase }>
   | OptionalActorAttributed<{ readonly version: 1; readonly type: 'phase_exited'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly outcome: PhaseOutcome }>
   | {
