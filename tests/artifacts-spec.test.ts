@@ -1010,11 +1010,21 @@ describe('lintSpecQuality', () => {
     expect(issues.some((issue) => issue.code === 'spec_vague_language')).toBe(false)
   })
 
-  test('named control in the same bullet suppresses a vague-language match', () => {
-    const issues = lintSpecQuality(specForLint({
+  test('named control suppresses vague language, but generic uppercase acronyms do not', () => {
+    const namedControlIssues = lintSpecQuality(specForLint({
       acceptance: ['The login flow must be secure with OAuth.'],
     }))
-    expect(issues.some((issue) => issue.code === 'spec_vague_language')).toBe(false)
+    expect(namedControlIssues.some((issue) => issue.code === 'spec_vague_language')).toBe(false)
+
+    const genericAcronymIssues = lintSpecQuality(specForLint({
+      acceptance: ['REST API should be fast for search.'],
+    }))
+    expect(genericAcronymIssues).toContainEqual({
+      code: 'spec_vague_language',
+      section: 'acceptance',
+      bulletIndex: 0,
+      term: 'fast',
+    })
   })
 
   test('Goals with 2+ bullets do not trigger goals underspecified', () => {
@@ -1037,6 +1047,26 @@ describe('lintSpecQuality', () => {
         '',
         '- Go.',
         '- Do.',
+      ].join('\n'),
+    )
+    const issues = lintSpecQuality(parseSpec(text))
+    const goalsUnder = issues.filter((i) => i.code === 'spec_goals_underspecified')
+    expect(goalsUnder.length).toBe(0)
+  })
+
+  test('QH2: Goals with 2 bullets and at least 15 words does NOT warn', () => {
+    const text = VALID.replace(
+      [
+        '## Goals',
+        '',
+        '- Help a parent name their newborn.',
+        '- Suggest names balanced across given-name and surname pairings.',
+      ].join('\n'),
+      [
+        '## Goals',
+        '',
+        '- Deliver a measurable onboarding workflow that records parent preferences.',
+        '- Produce ranked candidate names before final approval by the parent.',
       ].join('\n'),
     )
     const issues = lintSpecQuality(parseSpec(text))

@@ -618,10 +618,10 @@ const VAGUE_TERMS = [
 ] as const
 
 // Bullet is exempt when it contains an explicit metric (digit + unit-ish token)
-// or a named-control identifier (uppercase tokens like OAuth, RBAC, SOC2, bcrypt).
+// or a named-control identifier from the contract-pinned allow-list.
 // The intent is the source comparison's "explicit metric or named control" rule.
 const METRIC_RE = /\d+\s*(?:ms|s|m|h|%|MB|GB|KB|kb|req|rps|qps|hz|min|sec|seconds?|minutes?|hours?|days?|users?|requests?|rows?|bytes?|tokens?)\b/i
-const NAMED_CONTROL_RE = /\b[A-Z][A-Z0-9]{2,}\b|\b(?:OAuth|bcrypt|argon2|scrypt|TLS|HMAC|SAML|JWT)\b/
+const NAMED_CONTROL_RE = /\b(?:OAuth|OIDC|SAML|JWT|MFA|TOTP|RBAC|ABAC|ACL|TLS|mTLS|HMAC|AES|RSA|ECDSA|HKDF|PBKDF2|bcrypt|argon2|scrypt|SOC2|HIPAA|GDPR|PCI|CSP|CORS|CSRF)\b/
 
 function bulletWordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length

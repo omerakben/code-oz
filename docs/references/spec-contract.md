@@ -299,7 +299,37 @@ The matching pattern is:
 \b(?:should\s+be\s+|must\s+be\s+|needs?\s+to\s+be\s+)?(fast|quick|slow|good|bad|poor|user-friendly|easy|simple|secure|safe|scalable|flexible|performant|efficient)\b
 ```
 
-The optional lead-in is `should be`, `must be`, or `need(s) to be`. Warnings are suppressed for any bullet containing an explicit metric (digits plus a unit-like token) or a named-control reference (an uppercase/control identifier like `OAuth`, `RBAC`, `SOC2`, `bcrypt`).
+The optional lead-in is `should be`, `must be`, or `need(s) to be`. Warnings are suppressed for any bullet containing an explicit metric (digits plus a unit-like token) or a named-control reference from this allow-list:
+
+```text
+OAuth
+OIDC
+SAML
+JWT
+MFA
+TOTP
+RBAC
+ABAC
+ACL
+TLS
+mTLS
+HMAC
+AES
+RSA
+ECDSA
+HKDF
+PBKDF2
+bcrypt
+argon2
+scrypt
+SOC2
+HIPAA
+GDPR
+PCI
+CSP
+CORS
+CSRF
+```
 
 ### Goals sufficiency (rule QH2)
 

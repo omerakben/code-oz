@@ -86,7 +86,7 @@ If at any point the implementation drifts toward `SpecLoadError`, a new event ty
 ## Doc updates that ship now (this synthesis session)
 
 - `docs/comparison/08-prd-taskmaster/COMPARISON.md` — corrected to use the 15-term vocabulary, restate prd-taskmaster's wider runtime authority, tighten the `learn-accuracy` claim, mark TaskMaster as required-for-default-path, and align debate inputs with the seven briefing questions.
-- `docs/comparison/README.md` — add the session 08 row with date and decision; remove `prd-taskmaster` from the unaudited backlog.
+- README index update happens in a separate cleanup commit on main, not in this PR (parallel-session safety).
 
 ## Implementation closure
 
@@ -96,5 +96,17 @@ If at any point the implementation drifts toward `SpecLoadError`, a new event ty
   - `080b01a9b0aa1d372ad9a4b4e9062f8202872bdc` feat(spec): add lintSpecQuality diagnostic helper (M-SPEC1 B1+B2)
   - `5f27f056f22d6f84615b1abe27137156c2f21e3f` feat(define): surface lintSpecQuality warnings in DEFINE completion (M-SPEC1)
   - `a1fc14ff47a213104d1cc480b150905cde807c94` test(spec): add lintSpecQuality coverage (M-SPEC1)
-- Test count delta: 3109 total before (3108 pass, 1 skip) to 3119 total after (3118 pass, 1 skip).
+  - `50575bfe8035a738508de9c280d1c062b9eefc2e` docs(comparison): close M-SPEC1 implementation in prd-taskmaster synthesis
+  - `ea5593bd0a867d75fba1e32e6eda948b2fa80152` fix(spec): address Opus review F1+F2+F3 (regex clarity, AND-arm test, header comment)
+  - `PENDING_R1_FIX_SHA` fix(spec): close R1 findings — closure freshness, companion docs, QH2 healthy-arm test, narrow NAMED_CONTROL_RE
+- Files touched:
+  - `docs/references/spec-contract.md`
+  - `src/artifacts/spec.ts`
+  - `src/phases/define.ts`
+  - `tests/artifacts-spec.test.ts`
+  - `docs/comparison/08-prd-taskmaster/SYNTHESIS.md`
+  - `docs/comparison/08-prd-taskmaster/COMPARISON.md`
+  - `docs/comparison/08-prd-taskmaster/CODEX_BRIEFING.md`
+  - `docs/comparison/08-prd-taskmaster/CODEX_RESPONSE.md`
+- Test count delta: 3109 total before (3108 pass, 1 skip) to 3121 total after R1 (3120 pass, 1 skip).
 - Confirmation: no `SpecLoadErrorCode`, no event schema, no config knob, and no new gate file was added.
