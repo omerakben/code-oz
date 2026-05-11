@@ -16,7 +16,8 @@
     "build:binaries": "bun run scripts/build-binaries.ts",
     "smoke": "bun run scripts/smoke-test.ts",
     "typecheck": "tsc --noEmit",
-    "eval:repo_context": "bun run scripts/eval-repo-context.ts"
+    "eval:repo_context": "bun run scripts/eval-repo-context.ts",
+    "demo:todo-cli": "bun run scripts/demo/01-todo-cli/run-demo.ts"
   },
   "engines": {
     "bun": ">=1.3.0"
