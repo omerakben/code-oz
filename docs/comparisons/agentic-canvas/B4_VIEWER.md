@@ -92,6 +92,7 @@ The viewer is one of the rare code-oz surfaces that exposes process state over H
 - **Loopback-only shutdown.** `GET /api/shutdown` only accepts the request when the remote address is loopback. The check runs in-process before the handler.
 - **No CORS for cross-origin.** The server does not set permissive CORS headers. The only origin that talks to the API is the embedded `index.html` served from the same loopback bind.
 - **Open question — Unix domain socket.** Binding to a Unix domain socket (instead of TCP loopback) tightens the trust boundary further (file-system permissions instead of network ACLs). Costs cross-platform support: Bun's UDS support and Windows compatibility need verification. Tracked as open question 4.
+- **Browser http:// -> file:// navigation is blocked.** Modern browsers refuse to navigate from an http:// origin to a file:// URL even on explicit click; the file:// link strategy in § "Evidence-kind rendering" cannot land as-is. B4 implementation must replace plain file:// anchors with a click handler that either (a) calls a loopback-only `/api/reveal?path=<repo-relative>` endpoint that returns the path text for clipboard, (b) emits an OS `open` via a custom protocol handler (defer; requires per-platform install), or (c) renders the absolute path and a "copy to clipboard" affordance. Option (c) is the v0.1 default — it preserves "server never serves the file" while accepting the browser constraint. Open question 5.
 
 ## Cost estimate
 

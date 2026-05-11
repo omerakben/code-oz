@@ -64,12 +64,15 @@ export interface UrlPayload {
 
 export interface HumanNotePayload {
   readonly author: string            // operator id, never a model name
-  readonly note: string              // ≤ 500 chars; longer goes to a sidecar path
+  readonly note: string              // ≤ 500 chars; longer goes to a sidecar
+  readonly notePath?: string         // repo-relative path to sidecar when note > 500 chars
 }
 
 export interface MutationGatePayload {
   readonly status: 'pass' | 'fail' | 'not-applicable'
   readonly notes: string             // mirrors VERIFY.md § Mutation
+  readonly score?: number            // mutation kill rate 0..1 when available
+  readonly threshold?: number        // gate threshold 0..1; status='pass' iff score >= threshold
 }
 ```
 
