@@ -147,6 +147,191 @@ describe('scripts/install.sh', () => {
   })
 })
 
+describe('scripts/install.sh — SHA256 tool chain (W3a)', () => {
+  test('fails closed when no SHA256 tool is available', async () => {
+    const bundle = await createBundle()
+    const result = await runInstall(bundle, { CODE_OZ_SHA_TOOL: 'none' })
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('no SHA256 tool found')
+    expect(result.stderr).toContain('sha256sum')
+    expect(result.stderr).toContain('shasum')
+    expect(result.stderr).toContain('openssl')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+
+  test('rejects invalid SHA tool override', async () => {
+    const bundle = await createBundle()
+    const result = await runInstall(bundle, { CODE_OZ_SHA_TOOL: 'md5sum' })
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('invalid CODE_OZ_SHA_TOOL')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+
+  test('verifies SHA via sha256sum (Linux primary tool)', async () => {
+    const binaryText = '#!/bin/sh\necho hello-sha256sum\n'
+    const bundle = await createBundle({ binaryText })
+    await writeFakeSha256sum(bundle.toolsDir, sha256(binaryText))
+    const result = await runInstall(bundle, { CODE_OZ_SHA_TOOL: 'sha256sum' })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+  })
+
+  test('verifies SHA via shasum (macOS primary tool)', async () => {
+    const binaryText = '#!/bin/sh\necho hello-shasum\n'
+    const bundle = await createBundle({ binaryText })
+    const result = await runInstall(bundle, { CODE_OZ_SHA_TOOL: 'shasum' })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+  })
+
+  test('verifies SHA via openssl (cross-platform fallback)', async () => {
+    const binaryText = '#!/bin/sh\necho hello-openssl\n'
+    const bundle = await createBundle({ binaryText })
+    await writeFakeOpenssl(bundle.toolsDir, sha256(binaryText))
+    const result = await runInstall(bundle, { CODE_OZ_SHA_TOOL: 'openssl' })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+  })
+
+  test('fails on SHA mismatch under sha256sum branch', async () => {
+    const bundle = await createBundle({ manifestSha256: '0'.repeat(64) })
+    await writeFakeSha256sum(bundle.toolsDir, sha256('#!/bin/sh\necho hello\n'))
+    const result = await runInstall(bundle, { CODE_OZ_SHA_TOOL: 'sha256sum' })
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('sha256 mismatch')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+})
+
+describe('scripts/install.sh — Linux detection (W3a)', () => {
+  test('installs on linux-x64 with x86_64 uname', async () => {
+    const binaryText = '#!/bin/sh\necho linux-x64\n'
+    const bundle = await createBundle({
+      binaryRelativePath: 'linux-x64/code-oz',
+      binaryText,
+      targets: [
+        {
+          os: 'linux',
+          arch: 'x64',
+          bunTarget: 'bun-linux-x64',
+          binaryRelativePath: 'linux-x64/code-oz',
+          sha256: sha256(binaryText),
+          sizeBytes: Buffer.byteLength(binaryText),
+          version: VERSION,
+        },
+      ],
+    })
+    const result = await runInstall(bundle, {
+      OS_OVERRIDE: 'linux',
+      ARCH_OVERRIDE: 'x86_64',
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+    expect(await readFile(join(bundle.installDir, 'code-oz'), 'utf8')).toBe(binaryText)
+  })
+
+  test('installs on linux-arm64 with aarch64 alias', async () => {
+    const binaryText = '#!/bin/sh\necho linux-arm64\n'
+    const bundle = await createBundle({
+      binaryRelativePath: 'linux-arm64/code-oz',
+      binaryText,
+      targets: [
+        {
+          os: 'linux',
+          arch: 'arm64',
+          bunTarget: 'bun-linux-arm64',
+          binaryRelativePath: 'linux-arm64/code-oz',
+          sha256: sha256(binaryText),
+          sizeBytes: Buffer.byteLength(binaryText),
+          version: VERSION,
+        },
+      ],
+    })
+    const result = await runInstall(bundle, {
+      OS_OVERRIDE: 'linux',
+      ARCH_OVERRIDE: 'aarch64',
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+  })
+
+  test('does not invoke xattr on linux installs', async () => {
+    const binaryText = '#!/bin/sh\necho linux-no-xattr\n'
+    const bundle = await createBundle({
+      binaryRelativePath: 'linux-x64/code-oz',
+      binaryText,
+      targets: [
+        {
+          os: 'linux',
+          arch: 'x64',
+          bunTarget: 'bun-linux-x64',
+          binaryRelativePath: 'linux-x64/code-oz',
+          sha256: sha256(binaryText),
+          sizeBytes: Buffer.byteLength(binaryText),
+          version: VERSION,
+        },
+      ],
+    })
+    const xattrLog = join(bundle.toolsDir, 'xattr.log')
+    await writeFakeXattr(bundle.toolsDir, xattrLog)
+    const result = await runInstall(bundle, {
+      OS_OVERRIDE: 'linux',
+      ARCH_OVERRIDE: 'x86_64',
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(existsSync(xattrLog)).toBe(false)
+  })
+
+  test('fails closed on unsupported OS', async () => {
+    const bundle = await createBundle()
+    const result = await runInstall(bundle, {
+      OS_OVERRIDE: 'freebsd',
+      ARCH_OVERRIDE: 'x86_64',
+    })
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('unsupported OS')
+    expect(result.stderr.toLowerCase()).toContain('darwin')
+    expect(result.stderr.toLowerCase()).toContain('linux')
+  })
+})
+
+describe('scripts/install.sh — CLI flags (W3a)', () => {
+  test('--help prints usage and exits 0', async () => {
+    const bundle = await createBundle()
+    const result = await runInstall(bundle, {}, ['--help'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.toLowerCase()).toContain('usage')
+    expect(result.stdout).toContain('--version')
+  })
+
+  test('--version flag is accepted in bundle-local mode', async () => {
+    const bundle = await createBundle()
+    const result = await runInstall(bundle, {}, ['--version', 'v0.20.0-alpha.0'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+  })
+
+  test('unknown flag fails closed', async () => {
+    const bundle = await createBundle()
+    const result = await runInstall(bundle, {}, ['--nope'])
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('unknown argument')
+  })
+})
+
 async function createBundle(opts: {
   binaryRelativePath?: string
   binaryText?: string
@@ -227,11 +412,33 @@ async function writeFakeShasum(toolsDir: string, sha: string): Promise<void> {
   await chmod(path, 0o755)
 }
 
+async function writeFakeSha256sum(toolsDir: string, sha: string): Promise<void> {
+  const path = join(toolsDir, 'sha256sum')
+  await writeFile(path, `#!/bin/sh\necho "${sha}  $1"\n`)
+  await chmod(path, 0o755)
+}
+
+async function writeFakeOpenssl(toolsDir: string, sha: string): Promise<void> {
+  const path = join(toolsDir, 'openssl')
+  await writeFile(
+    path,
+    `#!/bin/sh\nif [ "$1" = "dgst" ] && [ "$2" = "-sha256" ]; then\n  echo "SHA2-256(\${3})= ${sha}"\nelse\n  exit 1\nfi\n`,
+  )
+  await chmod(path, 0o755)
+}
+
+async function writeFakeXattr(toolsDir: string, logPath: string): Promise<void> {
+  const path = join(toolsDir, 'xattr')
+  await writeFile(path, `#!/bin/sh\necho "$@" >> "${logPath}"\n`)
+  await chmod(path, 0o755)
+}
+
 async function runInstall(
   bundle: InstallBundle,
   env: Record<string, string> = {},
+  args: readonly string[] = [],
 ): Promise<CommandResult> {
-  return runCommand(['sh', './install.sh'], bundle.root, {
+  return runCommand(['sh', './install.sh', ...args], bundle.root, {
     ...process.env,
     HOME: bundle.homeDir,
     CODE_OZ_INSTALL_DIR: bundle.installDir,

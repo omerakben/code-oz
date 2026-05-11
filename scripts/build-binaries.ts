@@ -26,7 +26,7 @@ export const TARGETS = [
 
 const HANDOFF_README_TEMPLATE = `# code-oz <version>
 
-A multi-target binary distribution of code-oz for macOS (arm64 + x64).
+A multi-target binary distribution of code-oz for macOS and Linux (arm64 + x64).
 
 ## Install
 
@@ -35,9 +35,10 @@ sh ./install.sh
 \`\`\`
 
 The script:
-- Detects your CPU architecture (\`uname -m\`).
+- Detects your OS (\`uname -s\`) and CPU architecture (\`uname -m\`).
+- Verifies the binary SHA256 against \`manifest.json\` using \`sha256sum\` (Linux primary), \`shasum -a 256\` (macOS primary), or \`openssl dgst -sha256\` (fallback). Refuses to install when none of these tools is available.
 - Copies the matching binary to \`~/.local/bin/code-oz\`.
-- Strips the macOS quarantine attribute.
+- Strips the macOS quarantine attribute on darwin only.
 - Prints a \`PATH\` hint if \`~/.local/bin\` is not on your \`$PATH\`.
 
 It does NOT modify your shell startup files. If you need to add \`~/.local/bin\` to your \`PATH\`, add this line to the rc file you actually use (\`~/.zshrc\` or \`~/.bashrc\`):
@@ -75,13 +76,17 @@ CODE_OZ_INSTALL_DIR="$HOME/bin" sh ./install.sh
 |-- README.md
 |-- darwin-arm64/
 |   \`-- code-oz
-\`-- darwin-x64/
+|-- darwin-x64/
+|   \`-- code-oz
+|-- linux-arm64/
+|   \`-- code-oz
+\`-- linux-x64/
     \`-- code-oz
 \`\`\`
 
 ## Status
 
-This is a W3-lite scaffold release for friends-tomorrow demo. Formal W3.1 (npm + Homebrew + Scoop + curl|sh-from-network + GitHub Actions) lands in a separate cycle.
+This is a W3a alpha distribution. The official curl|sh, npm, and Homebrew channels for the release tag land alongside this bundle on the GitHub release. Windows + Scoop is deferred to v0.20.1.
 `
 
 export interface ManifestRow {
