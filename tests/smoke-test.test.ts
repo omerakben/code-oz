@@ -165,15 +165,16 @@ async function createSmokeFixture(): Promise<SmokeFixture> {
   const installDir = join(root, 'bin')
   const homeDir = join(root, 'home')
   const projectDir = join(root, 'project')
-  await mkdir(join(bundleDir, 'darwin-arm64'), { recursive: true })
-  await mkdir(join(bundleDir, 'darwin-x64'), { recursive: true })
+  // W3a commit 1: fixture covers all 4 TARGETS so validateHandoffLayout
+  // (which iterates TARGETS) accepts the bundle.
+  for (const triple of ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64']) {
+    await mkdir(join(bundleDir, triple), { recursive: true })
+    await writeFile(join(bundleDir, `${triple}/code-oz`), `#!/bin/sh\necho ${triple}\n`)
+    await chmod(join(bundleDir, `${triple}/code-oz`), 0o755)
+  }
   await mkdir(installDir, { recursive: true })
   await mkdir(homeDir, { recursive: true })
   await mkdir(projectDir, { recursive: true })
-  await writeFile(join(bundleDir, 'darwin-arm64/code-oz'), '#!/bin/sh\necho arm\n')
-  await writeFile(join(bundleDir, 'darwin-x64/code-oz'), '#!/bin/sh\necho x64\n')
-  await chmod(join(bundleDir, 'darwin-arm64/code-oz'), 0o755)
-  await chmod(join(bundleDir, 'darwin-x64/code-oz'), 0o755)
   await writeFile(join(bundleDir, 'install.sh'), '#!/bin/sh\necho install\n')
   await chmod(join(bundleDir, 'install.sh'), 0o755)
   await writeFile(join(bundleDir, 'README.md'), renderHandoffReadme(VERSION))
@@ -200,6 +201,24 @@ async function createSmokeFixture(): Promise<SmokeFixture> {
             bunTarget: 'bun-darwin-x64',
             binaryRelativePath: 'darwin-x64/code-oz',
             sha256: 'b'.repeat(64),
+            sizeBytes: 19,
+            version: VERSION,
+          },
+          {
+            os: 'linux',
+            arch: 'x64',
+            bunTarget: 'bun-linux-x64',
+            binaryRelativePath: 'linux-x64/code-oz',
+            sha256: 'c'.repeat(64),
+            sizeBytes: 19,
+            version: VERSION,
+          },
+          {
+            os: 'linux',
+            arch: 'arm64',
+            bunTarget: 'bun-linux-arm64',
+            binaryRelativePath: 'linux-arm64/code-oz',
+            sha256: 'd'.repeat(64),
             sizeBytes: 19,
             version: VERSION,
           },

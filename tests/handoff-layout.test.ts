@@ -93,12 +93,14 @@ async function createHandoffFixture(opts: {
   const root = await mkdtemp(join(tmpdir(), 'code-oz-handoff-layout-'))
   tempDirs.push(root)
   const version = opts.version ?? VERSION
-  await mkdir(join(root, 'darwin-arm64'), { recursive: true })
-  await mkdir(join(root, 'darwin-x64'), { recursive: true })
-  await writeFile(join(root, 'darwin-arm64/code-oz'), '#!/bin/sh\necho arm\n')
-  await writeFile(join(root, 'darwin-x64/code-oz'), '#!/bin/sh\necho x64\n')
-  await chmod(join(root, 'darwin-arm64/code-oz'), 0o755)
-  await chmod(join(root, 'darwin-x64/code-oz'), 0o755)
+  // W3a commit 1 expanded TARGETS to 4 (darwin-{arm64,x64} + linux-{x64,arm64});
+  // validateHandoffLayout iterates all TARGETS, so the fixture must include
+  // all four binary dirs + manifest rows.
+  for (const triple of ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64']) {
+    await mkdir(join(root, triple), { recursive: true })
+    await writeFile(join(root, `${triple}/code-oz`), `#!/bin/sh\necho ${triple}\n`)
+    await chmod(join(root, `${triple}/code-oz`), 0o755)
+  }
   await writeFile(join(root, 'install.sh'), '#!/bin/sh\necho install\n')
   await chmod(join(root, 'install.sh'), 0o755)
   await writeFile(join(root, 'README.md'), renderHandoffReadme(version))
@@ -125,6 +127,24 @@ async function createHandoffFixture(opts: {
             bunTarget: 'bun-darwin-x64',
             binaryRelativePath: 'darwin-x64/code-oz',
             sha256: 'b'.repeat(64),
+            sizeBytes: 19,
+            version,
+          },
+          {
+            os: 'linux',
+            arch: 'x64',
+            bunTarget: 'bun-linux-x64',
+            binaryRelativePath: 'linux-x64/code-oz',
+            sha256: 'c'.repeat(64),
+            sizeBytes: 19,
+            version,
+          },
+          {
+            os: 'linux',
+            arch: 'arm64',
+            bunTarget: 'bun-linux-arm64',
+            binaryRelativePath: 'linux-arm64/code-oz',
+            sha256: 'd'.repeat(64),
             sizeBytes: 19,
             version,
           },

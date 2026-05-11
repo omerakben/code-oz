@@ -32,6 +32,12 @@ const BUILT_AT = '2026-05-02T04:30:00.000Z'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+// Tests focus on darwin behavior and use bounded fixtures. Production buildAll
+// defaults to all 4 TARGETS (darwin-{arm64,x64} + linux-{x64,arm64}); tests
+// opt into the darwin-only subset by passing the `targets` option introduced
+// in W3a commit 1. Linux target coverage lives in CI integration (release.yml).
+const DARWIN_TARGETS = [TARGETS[0], TARGETS[1]] as const
+
 describe('targetForHost', () => {
   test('maps darwin arm64 to the arm64 target row', () => {
     expect(targetForHost({ os: 'darwin', arch: 'arm64' })).toEqual(TARGETS[0])
@@ -45,12 +51,24 @@ describe('targetForHost', () => {
     expect(targetForHost({ os: 'darwin', arch: 'x64' })).toEqual(TARGETS[1])
   })
 
-  test('returns null for linux x64', () => {
-    expect(targetForHost({ os: 'linux', arch: 'x64' })).toBeNull()
+  test('maps linux x64 to the linux-x64 target row', () => {
+    expect(targetForHost({ os: 'linux', arch: 'x64' })).toEqual(TARGETS[2])
+  })
+
+  test('maps linux x86_64 to the linux-x64 target row', () => {
+    expect(targetForHost({ os: 'linux', arch: 'x86_64' })).toEqual(TARGETS[2])
+  })
+
+  test('maps linux arm64 to the linux-arm64 target row', () => {
+    expect(targetForHost({ os: 'linux', arch: 'arm64' })).toEqual(TARGETS[3])
   })
 
   test('returns null for unsupported darwin arch', () => {
     expect(targetForHost({ os: 'darwin', arch: 'ppc' })).toBeNull()
+  })
+
+  test('returns null for windows (deferred to v0.20.1 per W3a synthesis)', () => {
+    expect(targetForHost({ os: 'win32', arch: 'x64' })).toBeNull()
   })
 })
 
@@ -122,7 +140,12 @@ describe('manifest helpers', () => {
   })
 
   test('formatTargetTriple returns os-arch', () => {
-    expect(TARGETS.map(formatTargetTriple)).toEqual(['darwin-arm64', 'darwin-x64'])
+    expect(TARGETS.map(formatTargetTriple)).toEqual([
+      'darwin-arm64',
+      'darwin-x64',
+      'linux-x64',
+      'linux-arm64',
+    ])
   })
 })
 
@@ -145,6 +168,7 @@ describe('buildAll', () => {
     })
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd: tmp,
@@ -181,6 +205,7 @@ describe('buildAll', () => {
     }
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd,
@@ -209,6 +234,7 @@ describe('buildAll', () => {
     )
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd,
@@ -236,6 +262,7 @@ describe('buildAll', () => {
     const runner = runnerWritingOutputs(fs, bytesByTarget)
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd,
@@ -304,6 +331,7 @@ describe('buildAll', () => {
     )
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd,
@@ -373,6 +401,7 @@ describe('buildAll', () => {
     )
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd,
@@ -428,6 +457,7 @@ describe('buildAll', () => {
     )
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd,
@@ -486,6 +516,7 @@ describe('buildAll', () => {
     }
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd: tmp,
@@ -528,6 +559,7 @@ describe('buildAll', () => {
     }
 
     const result = await buildAll({
+      targets: DARWIN_TARGETS,
       runner,
       version: VERSION,
       cwd: tmp,

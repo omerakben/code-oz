@@ -20,6 +20,8 @@ export interface Target {
 export const TARGETS = [
   { os: 'darwin', arch: 'arm64', bunTarget: 'bun-darwin-arm64', binaryRelativePath: 'darwin-arm64/code-oz' },
   { os: 'darwin', arch: 'x64', bunTarget: 'bun-darwin-x64', binaryRelativePath: 'darwin-x64/code-oz' },
+  { os: 'linux', arch: 'x64', bunTarget: 'bun-linux-x64', binaryRelativePath: 'linux-x64/code-oz' },
+  { os: 'linux', arch: 'arm64', bunTarget: 'bun-linux-arm64', binaryRelativePath: 'linux-arm64/code-oz' },
 ] as const satisfies ReadonlyArray<Target>
 
 const HANDOFF_README_TEMPLATE = `# code-oz <version>
@@ -132,7 +134,8 @@ export interface BuildFs {
 export function targetForHost(uname: { os: string; arch: string }): Target | null {
   const os = uname.os.toLowerCase()
   const arch = normalizeArch(uname.arch)
-  if (os !== 'darwin' || arch === null) return null
+  if (arch === null) return null
+  if (os !== 'darwin' && os !== 'linux') return null
   return TARGETS.find((target) => target.os === os && target.arch === arch) ?? null
 }
 
@@ -187,13 +190,21 @@ export async function buildAll(opts: {
   mode: 'force' | 'ensure'
   fs: BuildFs
   now: () => Date
+  /**
+   * Optional target filter. Defaults to all TARGETS (production behavior:
+   * build all 4 binaries — darwin-arm64, darwin-x64, linux-x64, linux-arm64).
+   * Tests pass a subset (e.g. darwin-only) to keep fixtures bounded.
+   * Locked W3a: must be a subset of TARGETS; unknown bunTargets reject.
+   */
+  targets?: ReadonlyArray<Target>
 }): Promise<BuildResult> {
+  const targets = opts.targets ?? TARGETS
   const distRoot = join(opts.cwd, 'dist')
   const handoffRoot = join(distRoot, 'handoff')
   const manifestPath = join(handoffRoot, 'manifest.json')
 
   if (opts.mode === 'force') {
-    for (const target of TARGETS) {
+    for (const target of targets) {
       await opts.fs.rm(join(distRoot, formatTargetTriple(target)), {
         recursive: true,
         force: true,
@@ -214,7 +225,7 @@ export async function buildAll(opts: {
   const rows: ManifestRow[] = []
   let rebuiltAny = false
 
-  for (const target of TARGETS) {
+  for (const target of targets) {
     const localBinaryPath = join(distRoot, formatTargetTriple(target), 'code-oz')
     const handoffBinaryPath = join(handoffRoot, target.binaryRelativePath)
     const existingRow = findMatchingRow(existingManifest, target, opts.version)
