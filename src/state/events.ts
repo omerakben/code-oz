@@ -46,6 +46,7 @@ import {
 import { EventLogError, type EventLogIssue } from './errors.ts'
 import { LockBusyError, withLock } from './lock.ts'
 import { M12_COMPANY_ROLES, PRESET_NAMES } from '../config/schema.ts'
+import { EFFORT_LEVELS, EFFORT_MULTIPLIERS } from '../config/effort.ts'
 
 // M13 (Codex Q8 lock, CODEX_RESPONSE_M13.md, thread 019de672): role
 // discriminator on `budget_warning` is only meaningful for metrics that
@@ -2349,8 +2350,106 @@ export function validateEvent(
       }
       break
     }
+
+    case 'effort_envelope_applied': {
+      // B1a Commit 2 — rule 23 forensics. Strict on the pair (effort +
+      // multiplier must agree); schema-light on the budget snapshots
+      // (the loader is the schema-of-record for `CodeOzConfig['budgets']`).
+      if (
+        typeof e.effort !== 'string' ||
+        !(EFFORT_LEVELS as readonly string[]).includes(e.effort)
+      ) {
+        return enumInvalid(
+          file,
+          'effort_envelope_applied.effort',
+          EFFORT_LEVELS,
+          e.effort,
+          line,
+        )
+      }
+      const expectedMultiplier =
+        EFFORT_MULTIPLIERS[e.effort as (typeof EFFORT_LEVELS)[number]]
+      if (
+        typeof e.multiplier !== 'number' ||
+        !Number.isFinite(e.multiplier) ||
+        e.multiplier !== expectedMultiplier
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `effort_envelope_applied.multiplier must equal EFFORT_MULTIPLIERS['${e.effort}'] (${expectedMultiplier})`,
+          detail: `got ${JSON.stringify(e.multiplier)}`,
+          line,
+        }
+      }
+      const originalIssue = budgetsSnapshotInvalid(
+        file,
+        e.originalBudgets,
+        'effort_envelope_applied.originalBudgets',
+        line,
+      )
+      if (originalIssue) return originalIssue
+      const effectiveIssue = budgetsSnapshotInvalid(
+        file,
+        e.effectiveBudgets,
+        'effort_envelope_applied.effectiveBudgets',
+        line,
+      )
+      if (effectiveIssue) return effectiveIssue
+      break
+    }
   }
 
+  return null
+}
+
+// B1a Commit 2 — top-level shape validator for the `originalBudgets` /
+// `effectiveBudgets` snapshots on `effort_envelope_applied`. The loader
+// owns deep validation of `CodeOzConfig['budgets']`; the event log only
+// asserts the snapshot is a non-array object with `global` and `perPhase`
+// objects. `byRole`, when present, lives NESTED under `global` per
+// `GlobalBudget.byRole` in `src/config/schema.ts` — NOT at top level
+// (Codex R0 F6 / R1 follow-through).
+function budgetsSnapshotInvalid(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be a non-array object`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
+  const v = value as Record<string, unknown>
+  if (
+    v.global === null ||
+    typeof v.global !== 'object' ||
+    Array.isArray(v.global)
+  ) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field}.global must be a non-array object`,
+      line,
+    }
+  }
+  if (
+    v.perPhase === null ||
+    typeof v.perPhase !== 'object' ||
+    Array.isArray(v.perPhase)
+  ) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field}.perPhase must be a non-array object`,
+      line,
+    }
+  }
   return null
 }
 

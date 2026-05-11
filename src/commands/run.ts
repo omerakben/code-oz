@@ -35,6 +35,12 @@ import {
 import { canonicalRoleFromAgent } from '../agents/role.ts'
 import { loadConfig } from '../config/load.ts'
 import {
+  applyEffort,
+  EFFORT_LEVELS,
+  type EffortLevel,
+} from '../config/effort.ts'
+import type { Budgets, CodeOzConfig } from '../config/schema.ts'
+import {
   initRun,
   loadRun,
   readActiveRun,
@@ -126,7 +132,14 @@ export async function runCommand(args: string[]): Promise<void> {
   // CODEX_RESPONSE_M12.md (thread 019de4bb): the prior order built the
   // registry first and the company:block arrived too late to affect
   // routing.
-  const config = await loadConfig({ cwd })
+  //
+  // B1a Commit 2 (rule 23) — apply the `--effort` envelope to the loaded
+  // config before any consumer sees it. Fresh runs use the parsed value;
+  // active-run dispatchers reconstruct from the recorded
+  // `effort_envelope_applied` event so the envelope DEFINE saw is the
+  // envelope every later phase sees.
+  const rawConfig = await loadConfig({ cwd })
+  const config = applyEffort(rawConfig, parsed.effort)
   const ctx = await bootstrap({ cwd, config })
 
   if (!existsSync(ctx.paths.root)) {
@@ -164,6 +177,28 @@ export async function runCommand(args: string[]): Promise<void> {
 
   const active = await readActiveRun(ctx.paths.activeRun)
   if (active !== null) {
+    // B1a Commit 2 (rule 23) — mismatch detection. When `--effort` was
+    // supplied AND the recorded envelope's effort differs, exit code 2
+    // (CLI usage error) BEFORE any other side effects. Mirror-style:
+    // pre-checked here so the dispatcher tree below never has to know
+    // about the flag.
+    if (parsed.effortFlagPresent) {
+      const activeRunPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, active)
+      const recorded = await readRecordedEffort(activeRunPaths)
+      if (recorded === null) {
+        // Codex R0 F5 — legacy active run with no recorded envelope.
+        // Accepting --effort here would be silently ignored at replay
+        // (applyRecordedEffort returns the unchanged config when no
+        // envelope event exists). Reject explicitly so the user sees
+        // the mismatch instead of getting a phantom no-op.
+        rejectEffortOnLegacyRunToStderr(parsed.effort)
+        process.exit(EXIT_USAGE)
+      }
+      if (recorded !== parsed.effort) {
+        rejectEffortMismatchToStderr(recorded)
+        process.exit(EXIT_USAGE)
+      }
+    }
     // M16 C11 — emit the `fake_provider_warning_emitted` event for the
     // active-run branch: appendEvent acquires the per-run lock, so the
     // event lands in the correct events.jsonl. Best-effort: if the
@@ -266,7 +301,19 @@ export async function runCommand(args: string[]): Promise<void> {
   // safely — anything after must follow through to a clean exit.
   const runId = generateUlid()
   const runPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, runId)
-  await initRun({ paths: runPaths, profile: 'greenfield', runId })
+  // B1a Commit 2 (rule 23) — record the effort envelope as the second
+  // event (between run_started and phase_entered) per design doc
+  // § "Event order lock". originalBudgets = the loader output before
+  // applyEffort; effectiveBudgets = the post-applyEffort `config` bound
+  // above (the same object every consumer below this line reads).
+  await initRun({
+    paths: runPaths,
+    profile: 'greenfield',
+    runId,
+    effort: parsed.effort,
+    originalBudgets: rawConfig.budgets,
+    effectiveBudgets: config.budgets,
+  })
   // M16 C11 — companion event for the fresh-run branch. Emitted after
   // initRun so the per-run events.jsonl exists. Mirrors the active-run
   // branch above; both surfaces guarantee the banner + event fire once
@@ -346,6 +393,15 @@ interface ParsedOk {
    *  against PLAN.md's TASK_ID_PATTERN at parse time; the dispatcher
    *  rejects with EXIT_USAGE if the id is not present in PLAN.md. */
   readonly taskOverride?: string
+  /** B1a Commit 2 — `--effort` value (rule 23). Default `'balanced'`
+   *  when the flag is absent. Active-run reload sites assert the
+   *  recorded effort matches; mismatched flag values exit code 2. */
+  readonly effort: EffortLevel
+  /** B1a Commit 2 — true when `--effort` was supplied on this CLI
+   *  invocation; false when the default applied. Active-run mismatch
+   *  detection only fires when the flag was explicit (a `--effort`-less
+   *  resume is always permitted). */
+  readonly effortFlagPresent: boolean
 }
 interface ParsedError {
   readonly kind: 'error'
@@ -368,6 +424,7 @@ export function parseRunArgs(
   let providerOverride: ProviderOverride | undefined
   let fakeScriptPath: string | null = null
   let taskOverride: string | null = null
+  let effort: EffortLevel | null = null
   let help = false
 
   for (let i = 0; i < args.length; i++) {
@@ -446,6 +503,28 @@ export function parseRunArgs(
       taskOverride = a.slice('--task='.length)
       continue
     }
+    if (a === '--effort') {
+      const value = args[i + 1]
+      if (value === undefined) {
+        return {
+          kind: 'error',
+          message: `--effort requires one of: ${EFFORT_LEVELS.join(' | ')}`,
+          help: true,
+        }
+      }
+      const parsedEffort = parseEffortLevel(value)
+      if (parsedEffort.kind === 'error') return parsedEffort
+      effort = parsedEffort.value
+      i++
+      continue
+    }
+    if (a.startsWith('--effort=')) {
+      const value = a.slice('--effort='.length)
+      const parsedEffort = parseEffortLevel(value)
+      if (parsedEffort.kind === 'error') return parsedEffort
+      effort = parsedEffort.value
+      continue
+    }
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
   }
 
@@ -501,8 +580,15 @@ export function parseRunArgs(
       }
     }
   }
+  const effortFlagPresent = effort !== null
+  const resolvedEffort: EffortLevel = effort ?? 'balanced'
   const base = (input: InputMode): ParsedOk => {
-    const out: ParsedOk = { kind: 'ok', input }
+    const out: ParsedOk = {
+      kind: 'ok',
+      input,
+      effort: resolvedEffort,
+      effortFlagPresent,
+    }
     return Object.freeze({
       ...out,
       ...(providerOverride !== undefined ? { providerOverride } : {}),
@@ -530,6 +616,119 @@ function parseProviderOverride(value: string): { kind: 'ok'; value: ProviderOver
     message: `--provider only accepts 'fake' in v0.1 (got ${JSON.stringify(value)})`,
     help: false,
   }
+}
+
+function parseEffortLevel(
+  value: string,
+): { kind: 'ok'; value: EffortLevel } | ParsedError {
+  if ((EFFORT_LEVELS as readonly string[]).includes(value)) {
+    return { kind: 'ok', value: value as EffortLevel }
+  }
+  return {
+    kind: 'error',
+    message: `--effort must be one of: ${EFFORT_LEVELS.join(' | ')} (got ${JSON.stringify(value)}; see code-oz run --help)`,
+    help: true,
+  }
+}
+
+// B1a Commit 2 (rule 23) — active-run reload helper. Reads the run's
+// events.jsonl, finds the latest `effort_envelope_applied` event, and
+// replays the RECORDED `effectiveBudgets` directly (NOT re-applies
+// `applyEffort` to the currently-loaded config). Per Codex R0 R0-B1
+// (thread 019e17f8): editing `.code-oz/config.yaml` mid-run must NOT
+// change the active-run envelope; only the recorded snapshot governs.
+// Legacy runs (no `effort_envelope_applied` event, e.g., a v0.17 run
+// resumed after upgrade) fall back to the currently-loaded config
+// unchanged. The mismatch entry-point upstream rejects `--effort` on
+// legacy runs so this branch is only reached for legacy resume without
+// `--effort`. Read-only; no events appended. Fail-closed on read
+// errors (Codex R0 F3): `readEvents` throws on malformed logs and we
+// let that surface rather than silently treating it as "no envelope".
+async function applyRecordedEffort(
+  config: CodeOzConfig,
+  runPaths: RunPaths,
+): Promise<{ readonly config: CodeOzConfig; readonly recordedEffort: EffortLevel | null }> {
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  const recorded = findLatestEffortEnvelopeEvent(events)
+  if (recorded === null) {
+    return Object.freeze({
+      config,
+      recordedEffort: null,
+    })
+  }
+  // The recorded snapshot is a JSON round-trip of a previously-typed
+  // `Budgets` value. The event validator is schema-light (top-level
+  // shape only; see `src/state/schemas.ts:1452-1457`) so nested types
+  // are not narrowed in the public LoggedEvent union. Cast through
+  // `unknown` to express "trust the snapshot we wrote" without losing
+  // the surface assertion that we are replacing `config.budgets`.
+  return Object.freeze({
+    config: { ...config, budgets: recorded.effectiveBudgets as unknown as Budgets },
+    recordedEffort: recorded.effort,
+  })
+}
+
+async function readRecordedEffort(
+  runPaths: RunPaths,
+): Promise<EffortLevel | null> {
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  const recorded = findLatestEffortEnvelopeEvent(events)
+  return recorded?.effort ?? null
+}
+
+interface RecordedEnvelope {
+  readonly effort: EffortLevel
+  readonly effectiveBudgets: {
+    readonly global: Record<string, unknown>
+    readonly perPhase: Record<string, unknown>
+  }
+}
+
+function findLatestEffortEnvelopeEvent(
+  events: readonly LoggedEvent[],
+): RecordedEnvelope | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'effort_envelope_applied') continue
+    return {
+      effort: e.effort,
+      effectiveBudgets: e.effectiveBudgets,
+    }
+  }
+  return null
+}
+
+// B1a Commit 2 — mismatch detection on active-run reload. When
+// `--effort` was supplied AND a recorded envelope exists AND the values
+// differ, exit with code 2 (CLI usage error, never NEEDS_INTERVENTION).
+// The caller passes a `writeStderr`-shaped function and an `exit` cb so
+// `dispatchBuild` / `dispatchVerify` / `dispatchReview` (which return
+// structured `DispatchResult` objects) can surface the same rejection
+// without process-exiting from inside a dispatcher.
+function rejectEffortMismatchToStderr(
+  recorded: EffortLevel,
+): void {
+  process.stderr.write(
+    `code-oz run: this run was started with --effort ${recorded}; pass the same value or omit the flag\n`,
+  )
+}
+
+// Codex R0 F5 — legacy active run (pre-B1a or no `effort_envelope_applied`
+// event in the log) rejects explicit `--effort`. Without this guard the
+// flag would be silently no-op'd at replay time.
+function rejectEffortOnLegacyRunToStderr(
+  passed: EffortLevel,
+): void {
+  process.stderr.write(
+    `code-oz run: this active run pre-dates the --effort flag (no envelope recorded); passing --effort ${passed} would be ignored at replay. Resume without --effort to keep the legacy envelope, or start a fresh run.\n`,
+  )
 }
 
 interface InputSource {
@@ -950,10 +1149,14 @@ async function dispatchPlan(
   fakeScriptEntries?: readonly FakeScriptEntry[],
 ): Promise<void> {
   const cwd = process.cwd()
+  const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
   // M12: same flip as runCommand. Load config BEFORE bootstrap so the
   // resumed PLAN dispatch sees company:block routing on the registry.
   // Per Codex Risk #2 in CODEX_RESPONSE_M12.md (thread 019de4bb).
-  const config = await loadConfig({ cwd })
+  // B1a Commit 2 (rule 23): re-apply the recorded effort envelope so
+  // PLAN sees the same envelope DEFINE saw.
+  const rawConfig = await loadConfig({ cwd })
+  const { config } = await applyRecordedEffort(rawConfig, runPaths)
   const ctx = await bootstrap({ cwd, config })
   const lead = ctx.registry.getByName('lead')
   const scientist = ctx.registry.getByName('scientist')
@@ -977,7 +1180,6 @@ async function dispatchPlan(
   if (fakeScriptEntries !== undefined && fakeProvider !== undefined) {
     applyFakeScript(fakeProvider, fakeScriptEntries)
   }
-  const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
     runPaths,
@@ -1080,7 +1282,11 @@ export async function dispatchBuild(
     })
   }
 
-  const config = await loadConfig({ cwd })
+  // B1a Commit 2 (rule 23): reconstruct the effort envelope from the
+  // recorded `effort_envelope_applied` event before bootstrap and
+  // before any consumer reads `config.budgets`.
+  const rawConfig = await loadConfig({ cwd })
+  const { config } = await applyRecordedEffort(rawConfig, runPaths)
   const ctx = await bootstrap({ cwd, config })
   const builder = ctx.registry.getByName('builder')
   const scientist = ctx.registry.getByName('scientist')
@@ -1384,7 +1590,10 @@ export async function dispatchVerify(
     })
   }
 
-  const config = await loadConfig({ cwd })
+  // B1a Commit 2 (rule 23): reconstruct the effort envelope before
+  // bootstrap and any consumer reads.
+  const rawConfig = await loadConfig({ cwd })
+  const { config } = await applyRecordedEffort(rawConfig, runPaths)
   const ctx = await bootstrap({ cwd, config })
   const verifier = ctx.registry.getByName('verifier')
   const scientist = ctx.registry.getByName('scientist')
@@ -1691,7 +1900,10 @@ export async function dispatchReview(
     })
   }
 
-  const config = await loadConfig({ cwd })
+  // B1a Commit 2 (rule 23): reconstruct the effort envelope before
+  // bootstrap and any consumer reads.
+  const rawConfig = await loadConfig({ cwd })
+  const { config } = await applyRecordedEffort(rawConfig, runPaths)
   const ctx = await bootstrap({ cwd, config })
   const reviewer = ctx.registry.getByName('reviewer')
   const scientist = ctx.registry.getByName('scientist')
@@ -2152,6 +2364,16 @@ Options:
   --task <T-NNN>           Override the BUILD task selection. Defaults to the first
                            pending task in PLAN.md. Validated against PLAN.md's
                            TASK_ID_PATTERN; only applies to the BUILD phase.
+  --effort <level>         Scale the run's budget envelope. One of:
+                             lite     0.4x  (smaller scope; tighter caps)
+                             balanced 1.0x  (default; equivalent to no flag)
+                             max      2.5x  (larger scope; broader caps)
+                             beast    6.0x  (full headroom; longest runs)
+                           Scales budget envelope only; does not change phase
+                           behavior or audit strictness (rule 23). Active runs
+                           reconstruct the recorded envelope from events.jsonl;
+                           passing a different value than the run was started
+                           with exits with code 2.
   -h, --help               Show this help.
 
 --request and --request-file are mutually exclusive.

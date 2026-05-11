@@ -199,9 +199,54 @@ write either (`docs/references/provider-contract.md` rule 1).
 - Full billing modeling (prompt caching, server-side tools, batch
   discounts, gateway markup) — post-v0.1.
 
+## Effort multipliers (B1a)
+
+`code-oz run --effort <level>` scales the run's budget envelope at run
+start. The flag emits one `effort_envelope_applied` event immediately
+after `run_started` (recording original + effective `CodeOzConfig['budgets']`)
+and does not fire again. Active-run continuations reconstruct the
+effective envelope from this event; passing a different `--effort` on
+an active run exits with code 2.
+
+| Level      | Multiplier |
+|------------|------------|
+| `lite`     | 0.4x       |
+| `balanced` | 1.0x (default; equivalent to no flag) |
+| `max`      | 2.5x       |
+| `beast`    | 6.0x       |
+
+Rounding: `Math.floor(original * multiplier)` with a minimum of 1 when
+the original was strictly positive. Explicit zero is preserved.
+
+### Scaled set (`applyEffort` multiplies these)
+
+- `budgets.global.maxTurns`
+- `budgets.global.maxProviderCalls`
+- `budgets.global.maxTokensEstimate`
+- `budgets.global.maxWallTimeMinutes`
+- `budgets.global.byRole.<role>.maxProviderCalls` (every present row)
+- `budgets.global.byRole.<role>.maxTokensEstimate` (every present row)
+- `budgets.perPhase.<phase>.maxTurns` (every phase)
+- `budgets.perPhase.<phase>.maxProviderCalls` (every phase)
+- `budgets.perPhase.<phase>.maxTokensEstimate` (every phase)
+
+### Invariant set (byte-identical pre / post `applyEffort`)
+
+- `budgets.global.maxReviewRounds`
+- `budgets.global.maxToolCallsPerTurn`
+- `budgets.global.toolCallBudgetMultiplier`
+- `budgets.global.softWarnAtRatio`
+- `budgets.global.priceTable`
+
+The flag does not change phase behavior or audit strictness. Increasing
+assurance under high effort is a separate milestone (B1b).
+
+See CLAUDE.md rule 23 for the full invariant.
+
 ## See also
 
 - [`docs/contracts/COMPANY.md`](../contracts/COMPANY.md) — `M12_COMPANY_ROLES`, role-to-provider routing
 - [`docs/references/provider-contract.md`](./provider-contract.md) — `ProviderError` codes, NEEDS_INTERVENTION discipline, cost-budget pre-call check
 - [`docs/contracts/PROVIDERS.md`](../contracts/PROVIDERS.md) — provider adapters and capabilities
 - [`docs/research/CODEX_RESPONSE_M13.md`](../research/CODEX_RESPONSE_M13.md) — M13 planning round + locked decisions
+- [`docs/design/B1A_EFFORT_FLAG.md`](../design/B1A_EFFORT_FLAG.md) — `--effort` design doc + Codex pre-design review

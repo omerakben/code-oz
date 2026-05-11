@@ -54,6 +54,11 @@ import {
   projectTaskCursor,
 } from './task-cursor.ts'
 import { parsePlan, type PlanArtifact } from '../artifacts/plan.ts'
+import {
+  EFFORT_MULTIPLIERS,
+  type EffortLevel,
+} from '../config/effort.ts'
+import type { Budgets } from '../config/schema.ts'
 
 // --- paths ---------------------------------------------------------
 
@@ -119,6 +124,22 @@ function lastIndexOf<T>(arr: readonly T[], pred: (e: T) => boolean): number {
   return -1
 }
 
+// B1a Commit 2 — narrow `Budgets` to the JSON-shape the
+// `effort_envelope_applied` validator expects. The runtime-validator on
+// the event log only checks the top-level shape; the loader is the
+// schema-of-record for the full `CodeOzConfig['budgets']`. JSON
+// round-trip drops `undefined` keys and is type-stable across the
+// schema's `Readonly` modifiers.
+function budgetsToSnapshot(b: Budgets): {
+  readonly global: Record<string, unknown>
+  readonly perPhase: Record<string, unknown>
+} {
+  return JSON.parse(JSON.stringify(b)) as {
+    readonly global: Record<string, unknown>
+    readonly perPhase: Record<string, unknown>
+  }
+}
+
 // --- pure reducer --------------------------------------------------
 
 /**
@@ -182,15 +203,46 @@ export function reduceEvents(events: readonly LoggedEvent[]): RunState | null {
 
 /**
  * Initialize a fresh run: create the run subdirectory, write run_started +
- * phase_entered(initial) events, build current.json, and update the
- * active-run pointer. The per-run lock and the active-pointer lock are held
- * sequentially (never concurrently) to avoid deadlocks.
+ * effort_envelope_applied + phase_entered(initial) events, build
+ * current.json, and update the active-run pointer. The per-run lock and
+ * the active-pointer lock are held sequentially (never concurrently) to
+ * avoid deadlocks.
+ *
+ * B1a Commit 2 — `effort_envelope_applied` is the second event in the
+ * fresh-run sequence (immediately after `run_started`, before
+ * `phase_entered`) and lands inside the same `withLock` block. Order is
+ * locked per rule 23 + `docs/design/B1A_EFFORT_FLAG.md` § "Event order
+ * lock": the envelope describes the run, not the first phase, so it is
+ * captured at run start ahead of any phase work. The caller passes
+ * `effort` (default `'balanced'`) plus the pre-/post-`applyEffort`
+ * `Budgets` snapshots. **Emission is conditional on at least one of
+ * `originalBudgets` / `effectiveBudgets` being supplied** (Codex R0 F4,
+ * thread 019e17f8): the CLI path always supplies both, so production
+ * fresh runs always record the envelope; low-level `initRun` callers
+ * (state-machine unit tests, fixture helpers) that omit budgets emit no
+ * envelope event — those callers test the state shape, not the
+ * envelope contract. Active-run reload sites read this event via
+ * `applyRecordedEffort` in `src/commands/run.ts` to reconstruct the
+ * recorded `effectiveBudgets` after every `loadConfig({ cwd })`.
  */
 export async function initRun(opts: {
   readonly paths: RunPaths
   readonly profile: Profile
   readonly runId: string
   readonly now?: () => string
+  /** B1a — `--effort` value applied to this run. Default `'balanced'`. */
+  readonly effort?: EffortLevel
+  /** B1a — pre-`applyEffort` `CodeOzConfig['budgets']`. Required for the
+   *  envelope event to fire. When both `originalBudgets` and
+   *  `effectiveBudgets` are omitted, no event is appended (Codex R1
+   *  thread 019e1807, F4 doc honesty). CLI fresh runs always supply
+   *  both; low-level state-machine unit tests / fixture helpers may
+   *  omit them. When only one is supplied, the other defaults to it
+   *  (no-op pair) and the event still fires. */
+  readonly originalBudgets?: Budgets
+  /** B1a — post-`applyEffort` `CodeOzConfig['budgets']`. Same supply
+   *  semantics as `originalBudgets` (see above). */
+  readonly effectiveBudgets?: Budgets
 }): Promise<RunState> {
   if (!isUlid(opts.runId)) {
     throw new EventLogError([
@@ -218,6 +270,21 @@ export async function initRun(opts: {
   const now = opts.now ?? (() => new Date().toISOString())
   const eventPaths = eventPathsFor(opts.paths)
 
+  // B1a Commit 2 — record the effort envelope when budgets are supplied.
+  // When the caller passes only `effort` (default `'balanced'`) without
+  // budgets, the `if` below skips the append. CLI fresh runs (the only
+  // production path through `initRun`) ALWAYS pass both `originalBudgets`
+  // and `effectiveBudgets`, so the envelope event always lands in
+  // production. Low-level state-machine tests and fixture helpers that
+  // omit budgets get no envelope event — that surface tests state shape
+  // rather than the envelope contract (Codex R0 F4, thread 019e17f8).
+  // The caller is the single authority that ran `applyEffort`; we pass
+  // the snapshots through verbatim.
+  const effort: EffortLevel = opts.effort ?? 'balanced'
+  const multiplier = EFFORT_MULTIPLIERS[effort]
+  const effectiveBudgets = opts.effectiveBudgets ?? opts.originalBudgets
+  const originalBudgets = opts.originalBudgets ?? effectiveBudgets
+
   const state = await withLock(opts.paths.lockDir, async () => {
     await appendEvent(
       eventPaths,
@@ -230,6 +297,27 @@ export async function initRun(opts: {
       },
       { skipLock: true },
     )
+    // B1a Commit 2 (rule 23) — emit the effort envelope between
+    // `run_started` and `phase_entered`. Order is locked per design doc
+    // § "Event order lock"; the envelope is a run-shape property
+    // captured before any phase work begins. Tests and active-run reload
+    // sites assume position 2.
+    if (originalBudgets !== undefined && effectiveBudgets !== undefined) {
+      await appendEvent(
+        eventPaths,
+        {
+          version: 1,
+          type: 'effort_envelope_applied',
+          ts: now(),
+          runId: opts.runId,
+          effort,
+          multiplier,
+          originalBudgets: budgetsToSnapshot(originalBudgets),
+          effectiveBudgets: budgetsToSnapshot(effectiveBudgets),
+        },
+        { skipLock: true },
+      )
+    }
     await appendEvent(
       eventPaths,
       {
