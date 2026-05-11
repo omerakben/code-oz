@@ -2,8 +2,8 @@
 name: comparison-agenticSeek
 companion-docs:
   - ../README.md (sessions index + decision values)
-  - ../../CLAUDE.md (influence library; non-negotiable rules)
-  - ../../docs/product/AI_SOFTWARE_COMPANY_THESIS.md (product north star)
+  - ../../../CLAUDE.md (influence library; non-negotiable rules)
+  - ../../product/AI_SOFTWARE_COMPANY_THESIS.md (product north star)
 target: head-to-head against `~/Projects/agents/templates/agenticSeek` (Fosowl, GPL-3.0, GitHub-trending side-project)
 status: converged 2026-05-10 — round 3 confirmed 0 deltas from both Opus and Codex
 date: 2026-05-10
@@ -118,7 +118,7 @@ Each is a *pattern* (not code), with milestone disposition. None of these is gra
 
 **Disposition:** candidate, but the *trained classifier* itself is not borrowed; we would use the existing provider on a structured prompt with a 5-shot example block. Risk-reduction claim must be measured before promotion.
 
-### B3. MCP-tool discovery sub-agent
+### B3. MCP finder authority (MCP-tool discovery sub-agent)
 
 **Pattern:** agenticSeek has a `mcpFinder.py` tool that lets an agent search a registry for an MCP server that fits the current task and dynamically install it.
 
