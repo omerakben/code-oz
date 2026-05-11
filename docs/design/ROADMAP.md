@@ -132,7 +132,7 @@ Files (`budgets.global` extension):
 
 Acceptance:
 - PLAN cannot pass without `SOURCE_CHECK.md` naming spec, reference (or explicit none-found rationale), and docs (or explicit no-library rationale); PLAN emits atomic tasks with file targets, validation commands, risk notes; gate waits before BUILD-lite.
-- Repo-context tools (`glob`, `grep`, `read`; `symbol` optional) callable by PLAN persona under `tool_use.repo_context` scope; results cap at configurable defaults; selected paths flow into next-invocation `ProviderRequest.files`; `repo_context_searched` events log every call.
+- Repo-context tools `glob`, `grep`, `read` callable by PLAN persona under `tool_use.repo_context` scope; `'symbol'` reserved-but-not-permissionable in v0.x per `docs/contracts/REPO_CONTEXT.md` § "Reservation and reopen-the-slot signal" (reopen gated on the 4-condition AND telemetry signal); results cap at configurable defaults; selected paths flow into next-invocation `ProviderRequest.files`; `repo_context_searched` events log every call.
 - HYPOTHESES.md and OPEN_QUESTIONS.md atomic writes survive crashes; PLAN's gate preflight validates both sidecars before writing `GATE_PLAN_PASSED.json`; overdue open questions block the gate.
 - Cumulative `budgets.global` enforces wall-time + token + call caps with soft warnings at 75% and hard kills at 100%.
 - DEFINE retro-seed (HYPOTHESES.md / OPEN_QUESTIONS.md generated from SPEC.md) is opt-in via `phases.scientist.retroSeedDefine: true`; never reopens M5.
@@ -402,7 +402,10 @@ Reshaped 2026-04-30 by the synthesis round (`docs/research/MERGE_PLAN.md`).
   - Real-world `IIntegration` interface (events-log-as-substrate): GitHub (read issues into INTENT.md, open PRs at SHIP), Slack (NEEDS_INTERVENTION notifications), Linear/Jira (ticket round-trip).
   - Tier-2 DSPy MIPRO compile for Prompter (opt-in via `code-oz run --deep`).
   - Concurrent runs + multi-active-run pointer (worktree-per-run isolation, Archon pattern).
-  - Optional `symbol` LSP integration for repo-context tools (deferred from M6).
+
+- **Deferred-with-trigger items** (not on the critical path; reopen only when the named trigger fires):
+  - `symbol` repo-context tool backend — Option D-reserved per the codegraph comparison synthesis. The slot stays reserved at the type union, rejected at config-load and at runtime, until the 4-condition AND telemetry signal in `docs/contracts/REPO_CONTEXT.md` § "Reservation and reopen-the-slot signal" fires (high search churn + manifest-cap saturation + phase result-tokens > 200k + downstream VERIFY/REVIEW failure attributable to missed semantic context, on three runs across two repos). When the signal fires, reopen the four-way decision in `docs/comparison/06-codegraph/COMPARISON.md` § "The real question Codex must answer" (LSP / native tree-sitter+SQLite / consume codegraph as MCP / extend the deferral). Replaces the prior "Optional `symbol` LSP integration" line.
+  - Framework-aware route detection (B5 from the codegraph comparison) — pattern that emits `route` nodes for 13 web frameworks, linking URL patterns to handler symbols. Reopen if a routing/API-surface audit persona enters the company roster (W4 candidate); until then no orchestrator persona consumes the data and the borrow does not earn its rule-20 cost.
 
 - **W4 — AUDIT depth + privacy hardening:**
   - Brownfield AUDIT phase fully implemented (`AUDIT.md` contract with architecture map, convention sniffer, dependency graph, hot-files report, test coverage map, doc extraction).
