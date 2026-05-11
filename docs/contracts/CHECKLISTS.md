@@ -106,7 +106,7 @@ If future work promotes an item to blocking preflight, the implementation belong
 ## Reference
 
 - Source decision: `docs/comparison/11-mimir/SYNTHESIS.md` section "B5".
-- Mimir source pattern: `/Users/ozzy-mac/Projects/agents/templates/Mimir/docs/agents/v2/00-ecko-preamble.md:11-18` and `:77-122`.
+- Mimir source pattern: `<templates-root>/Mimir/docs/agents/v2/00-ecko-preamble.md:11-18` and `:77-122`.
 - Related code-oz contracts: `docs/contracts/SPEC.md`, `docs/contracts/PLAN.md`, `docs/contracts/SOURCE_CHECK.md`, `docs/contracts/SCIENTIST.md`.
 - Borrowed checklist structure only. No code dependency.
 

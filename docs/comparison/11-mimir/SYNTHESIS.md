@@ -5,6 +5,8 @@
 **Inputs:** `COMPARISON.md` (initial verdict + borrow set), `CODEX_RESPONSE.md` (verbatim adversarial review)
 **Status:** locks the borrow set + acceptance criteria for the Mimir comparison. No implementation work begins until the listed acceptance criteria are met.
 
+**Path notation:** `<templates-root>` refers to the influence-library root documented in `CLAUDE.md` ("Influence library" section, default `~/Projects/agents/templates/`). All citations into Mimir source use `<templates-root>/Mimir/...` so the synthesis is portable across operator machines.
+
 ---
 
 ## Verdict (locked)
@@ -23,7 +25,7 @@ Codex concurred with the verdict shape but rejected the milestone pricing on thr
 
 2. **B2 (OpenAI-compat) inverts the timing.** Land *after* PE-2 brings the second concrete HTTP adapter, then extract `OpenAICompatProvider` from two passing adapters. Codex cited concrete divergence quirks per provider (Together, Fireworks, OpenRouter, Groq, Ollama) that would force the abstraction to diverge if extracted from xAI alone.
 
-3. **B3 (rate-limit queue) is an honest gap, not a production bug.** Defer until PE-2 or first real 429. Implement as a bounded per-`(provider, model)` FIFO wrapper around `IAgentProvider.invoke` with timeout/cancel + `events.jsonl` telemetry. Do not copy Mimir's hour-window singleton (`/Users/ozzy-mac/Projects/agents/templates/Mimir/src/orchestrator/rate-limit-queue.ts:21-26`).
+3. **B3 (rate-limit queue) is an honest gap, not a production bug.** Defer until PE-2 or first real 429. Implement as a bounded per-`(provider, model)` FIFO wrapper around `IAgentProvider.invoke` with timeout/cancel + `events.jsonl` telemetry. Do not copy Mimir's hour-window singleton (`<templates-root>/Mimir/src/orchestrator/rate-limit-queue.ts:21-26`).
 
 4. **The COMPARISON conflated Claudette prompt aliases with MCP tool names.** Claudette teaches `discover/store/link/recall` as cognitive aliases (`.agents/claudette-mimir-v3.yaml:67-77`); the MCP server actually exposes `memory_node`, `memory_edge`, `index_folder`, vector search, and todo tools (`README.md:451-474`). Synthesis below uses the corrected names.
 

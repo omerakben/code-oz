@@ -132,7 +132,7 @@ M17 must settle:
 ## Reference
 
 - Source decision: `docs/comparison/11-mimir/SYNTHESIS.md` section "B4".
-- Borrowed pattern source: `/Users/ozzy-mac/Projects/agents/templates/Mimir/.agents/claudette-mimir-v3.yaml:28-51`.
+- Borrowed pattern source: `<templates-root>/Mimir/.agents/claudette-mimir-v3.yaml:28-51`.
 - Borrowed pattern, not borrowed code. The Mimir source uses graph memory relationships; code-oz pins a per-repo file-based rubric with no DB.
 
 Pinned 2026-05-10 from the Mimir comparison.

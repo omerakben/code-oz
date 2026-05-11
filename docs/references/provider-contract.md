@@ -394,7 +394,7 @@ type BaseEvent = {
   readonly version: 1
   readonly ts: string
   readonly runId: string
-  readonly phase: PhaseName
+  readonly phase: Phase
   readonly agent: string
 }
 
