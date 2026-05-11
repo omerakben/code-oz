@@ -45,8 +45,8 @@ Apply this discipline when third-party or framework behavior matters to the plan
 
 The `Validation:` line in a task block is the test command that BUILD will run after applying its patch. For behavior-changing tasks, choose a command that proves the NEW behavior, not just one that exits zero on the existing suite.
 
-- For new features — the command must run a test that asserts the new behavior. A test that does not exist yet is fine; BUILD will add it. State the test path in `Files:` so the change kind (`added`) is explicit.
-- For bug fixes — the command must run a reproduction test that fails before the patch and passes after. Name the test file in `Files:` (with `(added)` if new, `(modified)` if you are augmenting an existing test). The mutation gate (M8 authority) catches tautological tests at runtime; this prompt rule catches under-specified validation at PLAN time.
+- For new features — the command must run a test that asserts the new behavior. A test that does not exist yet is fine; BUILD will add it. State the test path in `Files:` per the locked change-kind grammar in `docs/contracts/PLAN.md` § "Files entry grammar".
+- For bug fixes — the command must run a reproduction test that fails before the patch and passes after. Name the test file in `Files:` per the locked change-kind grammar. The mutation gate (M8 authority) catches tautological tests at runtime; this prompt rule catches under-specified validation at PLAN time.
 - For refactors with no behavior change — the command runs the existing suite at the touched module's scope. State `Risk: behavioral parity expected; existing suite at <module> is the regression surface` so REVIEW can verify the claim.
 
 The empirical lesson from M16 (8 production bugs caught by milestone-level e2e that survived per-commit cross-model review) is that the validation command is the single most consequential field in a task block. Under-specified validation produces patches that pass an empty suite and ship behavior regressions.
