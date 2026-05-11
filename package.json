@@ -6,7 +6,7 @@
   "main": "src/cli.ts",
   "module": "src/cli.ts",
   "bin": {
-    "code-oz": "./dist/code-oz"
+    "code-oz": "./npm-wrapper/index.cjs"
   },
   "scripts": {
     "test": "bun test",
@@ -20,6 +20,7 @@
     "demo:todo-cli": "bun run scripts/demo/01-todo-cli/run-demo.ts"
   },
   "engines": {
+    "node": ">=18",
     "bun": ">=1.3.0"
   },
   "license": "MIT",
@@ -42,8 +43,7 @@
     "cli"
   ],
   "files": [
-    "dist/",
-    "src/",
+    "npm-wrapper/",
     "README.md",
     "LICENSE"
   ],
