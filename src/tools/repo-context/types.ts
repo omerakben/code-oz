@@ -6,6 +6,12 @@
 // flow into the NEXT invocation's ProviderRequest.files (preserving rule 13's
 // explicit-manifest invariant).
 
+// `'symbol'` is RESERVED and not permissionable in v0.x — `validateRepoContext`
+// rejects it at config-load and `intersectPermissions` rejects it at runtime
+// with `tool_unavailable`. The type-union member is kept so the schema slot
+// is callable for backward-compat when the 4-condition AND telemetry signal
+// in docs/contracts/REPO_CONTEXT.md § "Reservation and reopen-the-slot
+// signal" fires. Closes Codex contract-debt catch (thread 019e12ed Q8).
 export type RepoContextToolName = 'glob' | 'grep' | 'read' | 'symbol'
 
 export interface GlobArgs {

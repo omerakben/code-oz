@@ -49,6 +49,19 @@ const NAME_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 export const REPO_CONTEXT_TOOL_NAMES = ['glob', 'grep', 'read', 'symbol'] as const
 export type RepoContextToolName = (typeof REPO_CONTEXT_TOOL_NAMES)[number]
 
+// Subset of REPO_CONTEXT_TOOL_NAMES that is RESERVED — the type-union member
+// is preserved so the schema slot is callable for backward-compat when the
+// telemetry signal in docs/contracts/REPO_CONTEXT.md § "Reservation and
+// reopen-the-slot signal" fires (4-condition AND on three runs across two
+// repos), but the config-load and runtime paths reject any agent that
+// declares a reserved tool. Closes the contract-debt catch from Codex
+// review thread 019e12ed (`docs/comparison/06-codegraph/CODEX_RESPONSE.md`
+// Q8). Until the reopen condition fires this list is the explicit
+// no-go list; touching it requires a synthesis update to the contract.
+export const RESERVED_REPO_CONTEXT_TOOLS: readonly RepoContextToolName[] = Object.freeze([
+  'symbol',
+])
+
 // Hard caps from CODEX_RESPONSE_M6.md decision 1. Agents may declare lower
 // values; declaring higher than these is rejected at schema-validation time.
 export const REPO_CONTEXT_HARD_CAPS = Object.freeze({
@@ -830,6 +843,17 @@ function validateRepoContext(value: unknown, file: string): AgentLoadIssue | nul
         file,
         code: 'schema_invalid_permissions',
         rule: `'permissions.tool_use.repo_context.tools' entries must be one of: ${REPO_CONTEXT_TOOL_NAMES.join(', ')}`,
+        detail: JSON.stringify(t),
+      }
+    }
+    if ((RESERVED_REPO_CONTEXT_TOOLS as readonly string[]).includes(t)) {
+      return {
+        file,
+        code: 'schema_invalid_permissions',
+        rule:
+          `'permissions.tool_use.repo_context.tools' entry '${t}' is RESERVED ` +
+          `and not permissionable in v0.x. ` +
+          `See docs/contracts/REPO_CONTEXT.md § "Reservation and reopen-the-slot signal".`,
         detail: JSON.stringify(t),
       }
     }
