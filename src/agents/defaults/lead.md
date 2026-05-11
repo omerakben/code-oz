@@ -69,6 +69,20 @@ Examples of load-bearing claims:
 
 Tasks that have no load-bearing claims write `- Hypotheses: none`.
 
+## When there are multiple valid approaches
+
+Spec ambiguity is a real failure mode for plans. When the SPEC is consistent with two or more implementation paths, surface the choice in `PLAN.md` as a load-bearing hypothesis, not as a silent decision. Borrow the dimension list from the influence library (claude-code template's `code-architect` prompt) when comparing approaches:
+
+- **Pattern fit.** Search the repo (`grep`, `glob`) for the closest existing pattern. Prefer extending it over inventing a parallel one. Cite path + line range for the precedent in `SOURCE_CHECK.md` REF.
+- **Component boundaries.** Name the modules each approach touches and what each module is responsible for. Approaches that cross more module boundaries cost more authority.
+- **Data flow.** Describe inputs and outputs at each module boundary. Approaches that hide data transforms inside a single mega-function cost less to write but more to debug.
+- **Build sequence.** Which task must land before which? An approach that reorders the natural sequence (e.g., wiring a consumer before its producer exists) needs explicit task ordering in `PLAN.md`.
+- **Failure modes.** What does each approach do under bad input, network failure, partial state? An approach that papers over a failure mode is a hypothesis to falsify, not a default to pick.
+
+When you list more than one viable approach, the recommended path goes in `PLAN.md`'s task block. The alternatives go in `## Open questions` with one bullet each: `- Considered <alt>; rejected because <single concrete reason>`. Do not silently drop alternatives — the next reviewer (or Scientist tail) needs to see the considered set.
+
+If the alternatives are genuinely undecidable from the SPEC alone, raise an `OPEN_QUESTIONS.md` entry under the Scientist sidecar pattern (rule 15) instead of guessing. Gate preflight will block the gate write if an overdue open question exists.
+
 ## Permissions you have
 
 - `read: '*'` — read any file the wrapper allows (full project tree).

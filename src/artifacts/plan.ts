@@ -21,10 +21,17 @@
 //   - Risk: <one-line risk note>
 //   - Hypotheses: <comma-separated H-NNN ids, or "none">
 //   - Sources: <comma-separated source ids from SOURCE_CHECK.md>
+//   - Bugfix: <single existing test path>   (optional; PR #15 Codex P2 fix-soon)
 //
 // Files entries: M8 added an optional `(modified|added|deleted)` change-kind
 // annotation per entry. Unannotated entries default to `modified` for backward
 // compatibility; serialization always emits explicit annotations.
+//
+// The optional `Bugfix:` bullet lets a bug-fix task declare the pre-existing
+// failing test it reuses as validation. The task may then omit that test path
+// from `Files:` (since the test file is not edited) and keep `Files:` focused
+// on the source-under-test changes. If present, `Bugfix:` must be the last
+// bullet in the block and name exactly one test path.
 //
 // All other H2 sections are bullets-only (mirroring SPEC.md).
 
@@ -67,6 +74,19 @@ export const SOURCE_ID_PATTERN = /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE)-\d{3,}$/
 
 export const TASK_BULLET_KEYS = ['Files', 'Validation', 'Risk', 'Hypotheses', 'Sources'] as const
 
+// Optional bullets accepted after the five required keys. Appear last if
+// present, in the canonical order declared here. Closes Codex PR #15 P2
+// fix-soon: bug-fix tasks reusing a pre-existing failing test can now
+// declare that test path explicitly without forcing it into `Files:`
+// (which would carry a misleading `(modified)` annotation when the test
+// is left untouched and only source-under-test changes).
+export const OPTIONAL_TASK_BULLET_KEYS = ['Bugfix'] as const
+
+export const ALL_TASK_BULLET_KEYS = [
+  ...TASK_BULLET_KEYS,
+  ...OPTIONAL_TASK_BULLET_KEYS,
+] as const
+
 export const FILE_CHANGE_KINDS = ['modified', 'added', 'deleted'] as const
 export type FileChangeKind = (typeof FILE_CHANGE_KINDS)[number]
 
@@ -75,6 +95,10 @@ export const DEFAULT_FILE_CHANGE_KIND: FileChangeKind = 'modified'
 export interface PlanTaskFile {
   readonly path: string
   readonly change: FileChangeKind
+}
+
+export interface PlanTaskBugfix {
+  readonly existingTest: string
 }
 
 export interface PlanTask {
@@ -86,6 +110,7 @@ export interface PlanTask {
   readonly risk: string                        // one-line; literal 'none' allowed
   readonly hypotheses: readonly string[]       // [] when persona wrote "none"
   readonly sources: readonly string[]          // ≥ 1 source id
+  readonly bugfix?: PlanTaskBugfix             // optional; pre-existing failing test reuse
   readonly startLine?: number                  // 1-indexed, the line of `### T-NNN:`
 }
 
@@ -604,12 +629,16 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
         const seenKeys = new Set<string>()
         let prevIdx = -1
         for (const bullet of block.bulletLines) {
-          const idx = (TASK_BULLET_KEYS as readonly string[]).indexOf(bullet.key)
+          // ALL_TASK_BULLET_KEYS = required five (Files..Sources) + optional
+          // tail (Bugfix). Optional keys must appear after the required ones;
+          // the ordering check below enforces that because they sit at higher
+          // indices in ALL_TASK_BULLET_KEYS.
+          const idx = (ALL_TASK_BULLET_KEYS as readonly string[]).indexOf(bullet.key)
           if (idx === -1) {
             issues.push({
               file,
               code: 'plan_task_malformed',
-              rule: `task bullet key must be one of: ${TASK_BULLET_KEYS.join(', ')}`,
+              rule: `task bullet key must be one of: ${ALL_TASK_BULLET_KEYS.join(', ')}`,
               detail: bullet.key,
               line: bullet.line,
               taskId: block.id,
@@ -631,7 +660,7 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
             issues.push({
               file,
               code: 'plan_task_malformed',
-              rule: `task bullets must appear in canonical order: ${TASK_BULLET_KEYS.join(', ')}`,
+              rule: `task bullets must appear in canonical order: ${ALL_TASK_BULLET_KEYS.join(', ')}`,
               detail: bullet.key,
               line: bullet.line,
               taskId: block.id,
@@ -703,6 +732,30 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
                 })
               }
             }
+          } else if (bullet.key === 'Bugfix') {
+            // Optional bullet — value must be a single, non-empty, comma-free
+            // path naming the pre-existing failing test that this bug-fix
+            // task reuses as its reproduction. Whitespace-tolerant; rejects
+            // comma-separated lists (one test per task) and leading dashes.
+            const v = bullet.value.trim()
+            if (v.length === 0) {
+              issues.push({
+                file,
+                code: 'plan_task_malformed',
+                rule: `task ${block.id}: Bugfix bullet must name a single existing test path`,
+                line: bullet.line,
+                taskId: block.id,
+              })
+            } else if (v.includes(',')) {
+              issues.push({
+                file,
+                code: 'plan_task_malformed',
+                rule: `task ${block.id}: Bugfix bullet must name exactly one existing test path (no commas)`,
+                detail: v,
+                line: bullet.line,
+                taskId: block.id,
+              })
+            }
           }
         }
         for (const required of TASK_BULLET_KEYS) {
@@ -738,7 +791,12 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
     const map = new Map<string, string>()
     for (const b of block.bulletLines) map.set(b.key, b.value)
     const fileChanges = parseFileEntries(map.get('Files') ?? '')
-    return Object.freeze({
+    const bugfixRaw = map.get('Bugfix')
+    const bugfix: PlanTaskBugfix | undefined =
+      bugfixRaw === undefined || bugfixRaw.trim().length === 0
+        ? undefined
+        : Object.freeze({ existingTest: bugfixRaw.trim() })
+    const built: PlanTask = {
       id: block.id,
       title: block.title,
       files: Object.freeze(fileChanges.map((f) => f.path)),
@@ -747,8 +805,10 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
       risk: map.get('Risk') ?? '',
       hypotheses: Object.freeze(parseIdList(map.get('Hypotheses') ?? '')),
       sources: Object.freeze(splitCsv(map.get('Sources') ?? '')),
+      ...(bugfix === undefined ? {} : { bugfix }),
       startLine: block.startLine,
-    }) satisfies PlanTask
+    }
+    return Object.freeze(built)
   })
 
   const lookup = (key: PlanSectionKey): readonly string[] => {
@@ -801,6 +861,9 @@ export function serializePlan(plan: PlanArtifact): string {
         out.push(`- Risk: ${task.risk}`)
         out.push(`- Hypotheses: ${task.hypotheses.length === 0 ? 'none' : task.hypotheses.join(', ')}`)
         out.push(`- Sources: ${task.sources.join(', ')}`)
+        if (task.bugfix !== undefined) {
+          out.push(`- Bugfix: ${task.bugfix.existingTest}`)
+        }
       })
       continue
     }

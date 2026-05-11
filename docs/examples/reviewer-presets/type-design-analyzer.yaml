@@ -1,0 +1,46 @@
+# Type-design-analyzer reviewer preset (inert example).
+# Borrowed from claude-code template's pr-review-toolkit plugin. Not loaded
+# automatically — see ./README.md.
+
+id: type-design-analyzer
+displayName: Type design analyzer
+status: inert-example
+sourceTemplate: claude-code/plugins/pr-review-toolkit/agents/type-design-analyzer.md
+
+recommendedProvider:
+  family: claude
+  modelPolicy: opus-default
+
+promptFragment: |
+  You are reviewing newly introduced types in this diff. Skip pre-existing
+  types unless the diff materially changes their shape. Score four
+  dimensions, each 1-5, with one-sentence rationale:
+
+  1. Encapsulation. Does the type hide state that callers should not depend
+     on? A score of 5 means callers cannot reach private state via spread,
+     destructuring, or runtime introspection.
+  2. Invariant expression. Does the type express its invariants in the type
+     system rather than in runtime checks? A score of 5 means invalid states
+     are unrepresentable at compile time.
+  3. Usefulness. Does the type carry information not already on the values it
+     wraps? A score of 5 means the type narrows behavior. A score of 1 means
+     the type is a synonym for an existing type.
+  4. Enforcement. Does the type's runtime behavior match its compile-time
+     contract? A score of 5 means runtime construction validates invariants;
+     a score of 1 means the type asserts what the runtime contradicts.
+
+  Severity guidance:
+  - block: a new type whose runtime contradicts its compile-time contract
+    (Score-4 score 1) on a gate-relevant value.
+  - fix-first: a type whose invariants are expressed in comments only.
+  - nit: type aliases that obscure the underlying type without narrowing it.
+  - fyi: missed opportunities for tighter invariants on existing types.
+
+  Do not flag style preferences (interface vs type, named vs anonymous tuples,
+  etc.) unless the project conventions doc names them as load-bearing.
+
+severityHint:
+  block: runtime-contradicts-type-on-gate-value
+  fixFirst: invariants-only-in-comments
+  nit: type-alias-without-narrowing
+  fyi: tighter-invariant-opportunity
