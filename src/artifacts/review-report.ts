@@ -63,6 +63,26 @@ export type ReviewSeverity = (typeof REVIEW_SEVERITIES)[number]
 export const REVIEW_VERDICTS = ['ready', 'needs-revision', 'block'] as const
 export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number]
 
+/**
+ * B1-lite advisory metadata (claude-code template comparison §4.1, SYNTHESIS
+ * §1.2, decision matrix B1-lite). Recorded by an optional same-family
+ * validator pass after the reviewer writes findings; never affects the
+ * canonical verdict in the lite tier. Filtering would be a new authority axis
+ * (B1-full) and is out of scope here.
+ */
+export const REVIEW_VALIDATION_OUTCOMES = [
+  'confirmed',
+  'unconfirmed',
+  'disagreed',
+] as const
+export type ReviewValidationOutcome = (typeof REVIEW_VALIDATION_OUTCOMES)[number]
+
+export function isReviewValidationOutcome(
+  value: string,
+): value is ReviewValidationOutcome {
+  return (REVIEW_VALIDATION_OUTCOMES as readonly string[]).includes(value)
+}
+
 /** CLAUDE.md non-negotiable rule 6: max 4 rounds, exit on score≥6 + verdict=ready. */
 export const REVIEW_ROUND_CAP = 4
 export const REVIEW_SCORE_MIN = 6
@@ -120,6 +140,12 @@ export interface ReviewFinding {
   readonly roundRaised: number           // 1..4
   /** Round number when resolved, or 'unresolved'. */
   readonly roundResolved: number | 'unresolved'
+  /**
+   * B1-lite advisory metadata: optional outcome of a same-family
+   * validator pass over the finding. Absent until a validator runs.
+   * Never affects canonical verdict (filtering is B1-full, deferred).
+   */
+  readonly validationOutcome?: ReviewValidationOutcome
 }
 
 export interface ReviewScore {
@@ -221,6 +247,12 @@ export function serializeReviewReport(data: ReviewReportData): string {
       lines.push(`- Recommendation: ${f.recommendation}`)
       lines.push(`- Round raised: ${f.roundRaised}`)
       lines.push(`- Round resolved: ${f.roundResolved}`)
+      // B1-lite advisory metadata: emit only when validator has populated
+      // it. Absent bullet preserves byte-for-byte determinism with
+      // pre-B1-lite serialized REVIEW.md files.
+      if (f.validationOutcome !== undefined) {
+        lines.push(`- Validation outcome: ${f.validationOutcome}`)
+      }
       if (i < data.findings.length - 1) lines.push('')
     }
     lines.push('')
@@ -957,6 +989,22 @@ function parseFindings(
       })
       return null
     }
+    // B1-lite optional advisory bullet. Absent → undefined (back-compat).
+    let validationOutcome: ReviewValidationOutcome | undefined
+    const validationOutcomeStr = m.get('Validation outcome')
+    if (validationOutcomeStr !== undefined) {
+      if (!isReviewValidationOutcome(validationOutcomeStr)) {
+        issues.push({
+          file,
+          code: 'review_validation_outcome_invalid',
+          rule: `Validation outcome must be one of: ${REVIEW_VALIDATION_OUTCOMES.join(', ')}`,
+          detail: `${id} got ${validationOutcomeStr}`,
+          line: block.headingLine,
+        })
+        return null
+      }
+      validationOutcome = validationOutcomeStr
+    }
     out.push(
       Object.freeze({
         id,
@@ -967,6 +1015,7 @@ function parseFindings(
         recommendation,
         roundRaised,
         roundResolved,
+        ...(validationOutcome !== undefined ? { validationOutcome } : {}),
       }),
     )
   }
@@ -1234,6 +1283,14 @@ export function canonicalizeFindings(
         recommendation: draft.recommendation,
         roundRaised,
         roundResolved,
+        // B1-lite advisory metadata round-trips through the canonicalizer.
+        // Without this spread the field was silently dropped on draft
+        // → canonical conversion, breaking REVIEW.md round-trip
+        // (parse → canonicalize → serialize → parse) on any finding
+        // whose validator had already populated `validationOutcome`.
+        ...(draft.validationOutcome !== undefined
+          ? { validationOutcome: draft.validationOutcome }
+          : {}),
       }),
     )
   }
@@ -1698,6 +1755,10 @@ export function serializeReviewPanelReport(data: ReviewReportPanelData): string 
       lines.push(`- Recommendation: ${f.recommendation}`)
       lines.push(`- Round raised: ${f.roundRaised}`)
       lines.push(`- Round resolved: ${f.roundResolved}`)
+      // B1-lite advisory metadata mirrors single-mode serializer.
+      if (f.validationOutcome !== undefined) {
+        lines.push(`- Validation outcome: ${f.validationOutcome}`)
+      }
       if (i < data.findings.length - 1) lines.push('')
     }
     lines.push('')
@@ -2655,6 +2716,22 @@ function parsePanelFindings(
       })
       return null
     }
+    // B1-lite optional advisory bullet (panel-mode mirror).
+    let validationOutcome: ReviewValidationOutcome | undefined
+    const validationOutcomeStr = m.get('Validation outcome')
+    if (validationOutcomeStr !== undefined) {
+      if (!isReviewValidationOutcome(validationOutcomeStr)) {
+        issues.push({
+          file,
+          code: 'review_validation_outcome_invalid',
+          rule: `Validation outcome must be one of: ${REVIEW_VALIDATION_OUTCOMES.join(', ')}`,
+          detail: `${id} got ${validationOutcomeStr}`,
+          line: block.headingLine,
+        })
+        return null
+      }
+      validationOutcome = validationOutcomeStr
+    }
     out.push(
       Object.freeze({
         id,
@@ -2667,6 +2744,7 @@ function parsePanelFindings(
         roundResolved,
         authorityImpact: authorityImpactStr,
         sources: Object.freeze(sources),
+        ...(validationOutcome !== undefined ? { validationOutcome } : {}),
       }),
     )
   }

@@ -751,3 +751,48 @@ describe('fix-first locked rule (M9 commit 1 strict)', () => {
     expect(() => parseReviewReport(text)).not.toThrow()
   })
 })
+
+describe('B1-lite advisory validation outcome (claude-code template borrow)', () => {
+  test('serializer omits the bullet when validationOutcome is absent (back-compat)', () => {
+    const text = serializeReviewReport(validData())
+    expect(text).not.toMatch(/Validation outcome:/)
+  })
+
+  test('round-trips a finding with validationOutcome=confirmed', () => {
+    const data = validData({
+      findings: Object.freeze([
+        Object.freeze({
+          id: 'F-001',
+          title: 'Tighten guard for trailing whitespace',
+          file: 'src/scoring/syllable.ts',
+          line: '42-58',
+          severity: 'nit' as const,
+          recommendation: 'Trim before checking length.',
+          roundRaised: 1,
+          roundResolved: 'unresolved' as const,
+          validationOutcome: 'confirmed' as const,
+        }),
+      ]),
+    })
+    const text = serializeReviewReport(data)
+    expect(text).toMatch(/- Validation outcome: confirmed\n/)
+    const parsed = parseReviewReport(text)
+    expect(parsed.findings[0]?.validationOutcome).toBe('confirmed')
+    expect(parsed).toEqual(data)
+  })
+
+  test('parser rejects an invalid validationOutcome value', () => {
+    const text = serializeReviewReport(validData()).replace(
+      /- Round resolved: unresolved\n/,
+      '- Round resolved: unresolved\n- Validation outcome: pending\n',
+    )
+    expect(() => parseReviewReport(text)).toThrow(ReviewReportLoadError)
+  })
+
+  test('parser accepts a finding without validationOutcome (no schema break)', () => {
+    // The default validData() has no validationOutcome on its finding.
+    const text = serializeReviewReport(validData())
+    const parsed = parseReviewReport(text)
+    expect(parsed.findings[0]?.validationOutcome).toBeUndefined()
+  })
+})
