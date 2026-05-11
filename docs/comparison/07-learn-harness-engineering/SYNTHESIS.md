@@ -24,7 +24,7 @@ Five revisions to the original borrow / reject set:
 | B2 | Borrow course's "2–3 tasks, with-vs-without" sketch under `RULE21_BENCHMARK.md` | **Promote B2 to rank-1 and mark blocking** for any future parallel-provider surface. **Generalize `DEBATE_POLICY.md`'s existing methodology** (control/treatment events, corrective-rate floor 0.10, new-actionable-finding floor 0.30, no-signal rate, cost/latency overhead) into `RULE21_BENCHMARK.md` rather than borrowing the looser course playbook | The course's "tokens/time/rework" sketch is too loose to gate a load-bearing rule. M15 already shipped the rigor bar; B2 is generalization, not invention |
 | B3 | Pin "Hook trust is all-or-nothing" to `REPO_CONTEXT.md` | **Defer** until the first hook/extension contract milestone | `REPO_CONTEXT.md` is scope-locked to `tool_use.repo_context` (network denied, manifest-bound). Cross-loading hook semantics into a sub-scoped contract would violate the contract's own discipline. Pinning the hook invariant in a hook-less contract today is speculative |
 | B4 | Front-load trigger language in `src/prompts/universal-rules.md` | **Move out of universal-rules.md** to skill-authoring guidance (a separate doc, not the anti-slop sheet) | Description-budget mechanics are skill-metadata advice; `universal-rules.md` is execution discipline (rule 16 anti-slop). Mixing the two dilutes rule 16 |
-| R3 | Reject AGENTS.md + CLAUDE.md split | **Flip to borrow-modified**: code-oz already has `AGENTS.md` as a one-line pointer to `CLAUDE.md` (`/Users/ozzy-mac/Projects/code-oz/AGENTS.md`). Confirm and document this pattern as the canonical cross-agent compatibility shape | Original analysis missed an existing artifact. The pointer-file pattern (vs. content duplication) is the right cross-tool-compatibility solution and is already deployed |
+| R3 | Reject AGENTS.md + CLAUDE.md split | **Flip to borrow-modified**: code-oz already has `AGENTS.md` as a one-line pointer to `CLAUDE.md` (`<repo-root>/AGENTS.md`). Confirm and document this pattern as the canonical cross-agent compatibility shape | Original analysis missed an existing artifact. The pointer-file pattern (vs. content duplication) is the right cross-tool-compatibility solution and is already deployed |
 
 One addition Codex flagged as the strongest missed borrow:
 
@@ -63,7 +63,7 @@ These three remain in the influence library as informational; no commit insertio
 
 1. **B2 is the only blocking borrow.** It must land before any future M-series milestone proposes a new parallel-provider surface. The methodology generalization work uses `DEBATE_POLICY.md` § "Rule-21 metric definitions" as the source spec.
 2. **B5 (fail-closed tool registry) is now the second-priority borrow.** Codex was correct that the original comparison underweighted concrete tool-safety mechanics. B5 lands as a sibling contract, not as a fold-in to `REPO_CONTEXT.md`.
-3. **R3 flipped, but the work is already done.** `AGENTS.md` exists at the repo root as a one-line pointer (`/Users/ozzy-mac/Projects/code-oz/AGENTS.md:1`). The borrow is *documenting* the pattern, not adding a file.
+3. **R3 flipped, but the work is already done.** `AGENTS.md` exists at the repo root as a one-line pointer (`<repo-root>/AGENTS.md:1`). The borrow is *documenting* the pattern, not adding a file.
 4. **B3 is removed from the active borrow set.** It re-enters at the first hook/extension milestone (no current roadmap entry).
 5. **B4 is preserved but relocated.** Skill-authoring guidance is a separate concern from rule-16 anti-slop discipline.
 6. **All four original rejects hold** (R1, R2, R4 confirmed; R3 flipped).
@@ -87,7 +87,7 @@ Cross-references for the next implementer:
 - B2 source spec: `docs/contracts/DEBATE_POLICY.md` § "Rule-21 metric definitions" (lines 128–164 in v0.17.0-alpha.0)
 - B5 source pattern: `~/Projects/agents/templates/learn-harness-engineering/skills/harness-creator/references/tool-registry-pattern.md`
 - B1 source rubric: `~/Projects/agents/templates/learn-harness-engineering/skills/harness-creator/SKILL.md.en` § Phase 2 (lines 70–82)
-- R3-flipped existing artifact: `/Users/ozzy-mac/Projects/code-oz/AGENTS.md` (1 line, pointer to CLAUDE.md)
+- R3-flipped existing artifact: `<repo-root>/AGENTS.md` (1 line, pointer to CLAUDE.md)
 - B4 source: gotchas.md § 12 (front-load distinctive trigger language)
 
 ## Closing note for the influence library

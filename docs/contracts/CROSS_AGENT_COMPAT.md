@@ -3,7 +3,7 @@ name: cross-agent compatibility (AGENTS.md as pointer)
 companion-docs: ../../CLAUDE.md (single source of truth), ../../AGENTS.md (the existing pointer file)
 target: any agent tool that does not read CLAUDE.md (Cursor, Codex CLI, generic agents); cross-tool ecosystem compatibility
 status: convention — already deployed; this doc codifies the shape so future contributors don't break it
-source: existing `/Users/ozzy-mac/Projects/code-oz/AGENTS.md` (7 lines, last modified 2026-04-30); Codex Q9 in `docs/comparison/07-learn-harness-engineering/CODEX_RESPONSE.md`
+source: existing `<repo-root>/AGENTS.md` (7 lines, last modified 2026-04-30); Codex Q9 in `docs/comparison/07-learn-harness-engineering/CODEX_RESPONSE.md`
 ---
 
 # CROSS_AGENT_COMPAT.md — AGENTS.md as pointer file
@@ -34,7 +34,7 @@ The original comparison's instinct (reject duplication) was correct; the missed 
 
 ## 3. The pointer file shape (canonical example)
 
-The existing `/Users/ozzy-mac/Projects/code-oz/AGENTS.md` is the canonical example. Verbatim:
+The existing `<repo-root>/AGENTS.md` is the canonical example. Verbatim:
 
 ```markdown
 # AGENTS.md — code-oz

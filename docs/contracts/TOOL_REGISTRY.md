@@ -21,7 +21,7 @@ This contract is the **generalized** safety surface. The sub-scope contracts (`R
 - The runtime classification function for per-call concurrency partitioning.
 - The five-layer permission evaluation pipeline with strict priority order and stateful side effects.
 - The protected-paths and protected-commands lists that bypass auto-approve.
-- The audit event shape for `tool_concurrency_partitioned` and `tool_protected_pattern_matched`.
+- The audit event shape for `tool_concurrency_partitioned` and `tool_protected_pattern_matched` (declared in this contract; neither is in the v0.1 event schema at `src/state/schemas.ts` — they land alongside the first non-`repo_context` `tool_use.*` sub-scope that earns the registry).
 - The tool-safety review checklist any new `tool_use.*` sub-scope must satisfy before its sub-scope contract is accepted.
 
 **Does NOT define (lives in the sub-scope contract):**
@@ -153,9 +153,9 @@ The runtime then partitions the batch into consecutive groups: contiguous safe c
 
 Registering a tool with a static concurrency flag and trusting the flag without re-checking inputs at dispatch. The source pattern shows this in its `toolRegistry.register('shell', { concurrentSafe: false })` example (`tool-registry-pattern.md:79`). For `shell`, that's the right call — but for any tool whose argument space includes both safe and unsafe inputs, a static flag is wrong. The classification function MUST run per call.
 
-### Audit event
+### Audit event (proposed; not in v0.1 schema)
 
-When classification changes the dispatch shape — i.e., when the runtime would have parallelized N calls but partitioned into M > 1 segments because of unsafe calls in the batch — emit `tool_concurrency_partitioned` to `events.jsonl`:
+When classification changes the dispatch shape — i.e., when the runtime would have parallelized N calls but partitioned into M > 1 segments because of unsafe calls in the batch — emit `tool_concurrency_partitioned` to `events.jsonl`. The event type is **declared here, not in `src/state/schemas.ts` v0.1**; it lands in the schema in the same change that adds the first non-`repo_context` `tool_use.*` sub-scope:
 
 ```ts
 {
@@ -188,12 +188,12 @@ The permission evaluator is **multi-source** and **stateful**. Each call re-runs
 ### Strict priority order (top to bottom = highest to lowest)
 
 1. **Policy** — org-wide settings. Empty in v0.1; reserved for future SaaS / multi-tenant deployments.
-2. **User settings** — `~/.code-oz/config.yaml` (per-user, applies across all projects).
-3. **Project rules** — `<repo>/.code-oz/config.yaml` (committed; applies to everyone working on the project).
-4. **Local overrides** — `<repo>/.code-oz/config.local.yaml` (gitignored; per-developer machine-local overrides).
+2. **User settings** *(Proposed — v0.2)* — `~/.code-oz/config.yaml` (per-user, applies across all projects). Not loaded by `src/config/load.ts` in v0.1; the seam is declared so the next sub-scope contract can opt in without re-litigating the priority order.
+3. **Project rules** — `<repo>/.code-oz/config.yaml` (committed; applies to everyone working on the project). This is the only layer `loadConfig` reads in v0.1.
+4. **Local overrides** *(Proposed — v0.2)* — `<repo>/.code-oz/config.local.yaml` (gitignored; per-developer machine-local overrides). Not loaded in v0.1; same seam-only status as layer 2.
 5. **Session grants** — in-memory grants from the current run (e.g., the agent asked for permission and the operator granted it for this session).
 
-Each layer returns one of three results: `allow` / `deny` / `defer` (consult the next layer). A layer's `allow` or `deny` is final; only `defer` continues. The first non-`defer` result wins.
+Each layer returns one of three results: `allow` / `deny` / `defer` (consult the next layer). A layer's `allow` or `deny` is final; only `defer` continues. The first non-`defer` result wins. Layers marked **Proposed (v0.2)** evaluate to `defer` in v0.1 — the priority order still holds; the layers are simply empty until the next `tool_use.*` sub-scope earns them.
 
 ```ts
 async function evaluatePermission(
@@ -316,10 +316,10 @@ The list is conservative; matching a pattern does not mean the command is destru
 
 ### Implementation contract
 
-Pattern lists live in `src/runtime/protected-patterns.ts` (the file is downstream; this contract DECLARES its expected exports — implementation lands when the next `tool_use.*` sub-scope earns it):
+Pattern lists live in `src/tools/protected-patterns.ts` (the file is downstream; neither the file nor the `src/runtime/` directory exists in v0.1 — this contract DECLARES the expected exports and the canonical path. Implementation lands when the next `tool_use.*` sub-scope earns the registry; until then, only sub-scope-level checks at the call sites in `src/tools/repo-context/` enforce the patterns):
 
 ```ts
-// src/runtime/protected-patterns.ts (declared, not implemented in v0.1)
+// src/tools/protected-patterns.ts (declared, not implemented in v0.1)
 export const CONTRACT_WIDE_PROTECTED_PATHS: readonly string[]
 export const CONTRACT_WIDE_PROTECTED_COMMANDS: readonly string[]
 
@@ -340,9 +340,9 @@ When a call matches a protected pattern:
 - When `--no-confirm` is set on the run (or when the run is non-interactive AND no confirmation source is configured), the result transforms to `'deny'`. The call never runs.
 - The session-grants layer CANNOT auto-approve a protected match. An operator may grant permission for the single call, but the grant does not extend to subsequent calls matching the same pattern (they re-trigger Step 0 fresh).
 
-### Audit event
+### Audit event (proposed; not in v0.1 schema)
 
-Every protected-pattern match emits `tool_protected_pattern_matched` to `events.jsonl`, whether the call ultimately runs or not:
+Every protected-pattern match emits `tool_protected_pattern_matched` to `events.jsonl`, whether the call ultimately runs or not. Same status as `tool_concurrency_partitioned` (Section 3): **declared here, not in `src/state/schemas.ts` v0.1**; added to the schema by the sub-scope that earns the registry:
 
 ```ts
 {
@@ -389,14 +389,14 @@ A new `tool_use.*` sub-scope MUST satisfy this checklist before its sub-scope co
 - [ ] Default permission mode set in registration (the registration default falls out of `isReadOnly` + `isConcurrentSafe` per Section 4 Step 7; document the resolved default explicitly).
 - [ ] Bypass-immune patterns (Section 5) defined — at minimum, the contract-wide lists apply; the sub-scope MAY extend them via `ToolDefinition`.
 - [ ] Custom `permissionCheck` implemented (when sub-scope-specific logic is required beyond the five layers).
-- [ ] Audit logging enabled — at minimum, `tool_concurrency_partitioned` (when classification fires) and `tool_protected_pattern_matched` (always). Sub-scopes MAY add their own audit events (e.g., `repo_context_searched`).
+- [ ] Audit logging enabled — at minimum, `tool_concurrency_partitioned` (when classification fires) and `tool_protected_pattern_matched` (always). Both events are **proposed** in this contract and not yet in the v0.1 event schema (`src/state/schemas.ts`); the sub-scope that earns the registry adds them to the schema in the same change. Sub-scopes MAY add their own audit events (e.g., `repo_context_searched`, which IS in the v0.1 schema).
 - [ ] Cross-referenced from `REPO_CONTEXT.md` or `DEBATE_POLICY.md` as a worked example IF the new sub-scope is structurally similar; otherwise, the sub-scope's own contract serves as its worked example.
 
 ### Testing
 
 - [ ] Tested with safe inputs — pipeline returns `allow`, handler runs, no `tool_protected_pattern_matched` event.
 - [ ] Tested with unsafe inputs — pipeline returns `ask` or `deny`, handler does NOT run when result is `deny`, `tool_protected_pattern_matched` event emitted.
-- [ ] Tested concurrent execution — batches with mixed safe/unsafe calls partition correctly; `tool_concurrency_partitioned` event emitted; serial segments respect order.
+- [ ] Tested concurrent execution — batches with mixed safe/unsafe calls partition correctly; `tool_concurrency_partitioned` event emitted (once the sub-scope adds the event to the schema per Section 6 § "Permission requirements"); serial segments respect order.
 - [ ] Tested error handling — handler failures are caught, logged via the existing `ProviderError` path or sub-scope-specific error type; state remains consistent (no partial side effects when serial ordering matters).
 - [ ] Tested protected-pattern matching — every pattern in the contract-wide list AND every sub-scope-added pattern has at least one matching test fixture.
 
