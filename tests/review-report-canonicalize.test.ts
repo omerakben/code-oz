@@ -304,6 +304,67 @@ describe('canonicalizeFindings — ping-pong reopen', () => {
   })
 })
 
+describe('canonicalizeFindings — B1-lite validationOutcome round-trip', () => {
+  // Regression for the Codex P2 round-trip drop: the canonicalizer rebuilt
+  // each output object explicitly and silently dropped the optional
+  // `validationOutcome` advisory metadata field. A parse → canonicalize →
+  // serialize → parse cycle stripped the field even when the persona
+  // populated it.
+
+  test('preserves validationOutcome on a fresh F-NEW draft', () => {
+    const result = canonicalizeFindings({
+      draftFindings: [
+        f({
+          title: 'has outcome',
+          file: 'a.ts',
+          validationOutcome: 'confirmed',
+        }),
+      ],
+      priorFindings: [],
+      round: 1,
+    })
+    expect(result.findings).toHaveLength(1)
+    expect(result.findings[0]?.validationOutcome).toBe('confirmed')
+  })
+
+  test('preserves validationOutcome when the id carries across rounds', () => {
+    const result = canonicalizeFindings({
+      draftFindings: [
+        f({
+          id: 'F-001',
+          title: 'x',
+          file: 'a.ts',
+          roundRaised: 1,
+          roundResolved: 2,
+          validationOutcome: 'disagreed',
+        }),
+      ],
+      priorFindings: [
+        f({
+          id: 'F-001',
+          title: 'x',
+          file: 'a.ts',
+          roundRaised: 1,
+          roundResolved: 'unresolved',
+        }),
+      ],
+      round: 2,
+    })
+    expect(result.findings[0]?.validationOutcome).toBe('disagreed')
+  })
+
+  test('omits validationOutcome when draft did not set it', () => {
+    const result = canonicalizeFindings({
+      draftFindings: [f({ title: 'no outcome', file: 'a.ts' })],
+      priorFindings: [],
+      round: 1,
+    })
+    // Field is absent (not undefined), preserving byte-for-byte
+    // determinism with pre-B1-lite serialized REVIEW.md files.
+    expect('validationOutcome' in result.findings[0]!).toBe(false)
+  })
+})
+
 describe('canonicalizeFindings — error paths', () => {
   test('rejects duplicate ids in draft (after canonicalization)', () => {
     expect(() =>

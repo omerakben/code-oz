@@ -1283,6 +1283,14 @@ export function canonicalizeFindings(
         recommendation: draft.recommendation,
         roundRaised,
         roundResolved,
+        // B1-lite advisory metadata round-trips through the canonicalizer.
+        // Without this spread the field was silently dropped on draft
+        // → canonical conversion, breaking REVIEW.md round-trip
+        // (parse → canonicalize → serialize → parse) on any finding
+        // whose validator had already populated `validationOutcome`.
+        ...(draft.validationOutcome !== undefined
+          ? { validationOutcome: draft.validationOutcome }
+          : {}),
       }),
     )
   }
