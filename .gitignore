@@ -29,9 +29,9 @@ bun.lockb
 # remember plugin (Claude Code) — per-project session-state cache
 .remember/
 
-# Claude Code Ralph loop host state (per-session orchestrator scratch)
-.claude/ralph-loop.local.md
-.claude/ralph-loop.json
+# Claude Code host scratch (settings, worktrees, ralph-loop state). Nothing in
+# .claude/ is repo-owned; it is per-machine per-user orchestrator state.
+.claude/
 
 # Serena MCP — per-project symbol index and cache (created by activate_project)
 .serena/
