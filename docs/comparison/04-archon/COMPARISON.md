@@ -116,7 +116,7 @@ code-oz already extracted the two patterns that mattered (provider abstraction s
   - **B3** — Fire-and-forget in-process event emitter for hook fan-out only (NOT for gates). Same events that `appendEvent` writes; subscribers are advisory; listener errors swallowed. Suitable for the eventual `code-oz watch` / dashboard surface — defer until that demand exists. Track as candidate, do not borrow yet.
   - **B5** (optional, **refined in round-2**) — Add matching `toolCallId` to the `tool_result` event variant for call/result pairing under concurrency (call side already has `ProviderToolCall.id`; gap is on the result side). Could land in PE-2 if HTTP mid-turn tool visibility opens.
 
-**Score**: code-oz is ahead of Archon on 13 disciplinary axes, even with Archon's 4 candidate borrows (B1, B2, B3, B5) ported. The two seed borrows (`IAgentProvider`, worktree isolation) have absorbed M11/M13/M16 evolution cleanly without drifting from Archon's intent — verifying the influence-library policy works.
+**Score**: code-oz is ahead of Archon on 13 disciplinary axes, even with the post-round-2 borrow set (B1, B2, B5 active borrows; B3, B6, B7 tracked as candidates) folded in. The two seed borrows (`IAgentProvider`, worktree isolation) have absorbed M11/M13/M16 evolution cleanly without drifting from Archon's intent — verifying the influence-library policy works.
 
 **Ranked borrow set**:
 
