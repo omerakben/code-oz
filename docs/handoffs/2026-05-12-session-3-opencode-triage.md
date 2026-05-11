@@ -132,7 +132,8 @@ Local branch state (3 worktrees, 3 branches):
 
 Both retained worktrees are now merged but kept for archival until the next worktree-cleanup pass. The stash `stash@{0}: On worktree-opencode-fixfirst: Q7 lineage observability work for separate landing (Session 3 split)` lives on; `stash@{1}` is the pre-existing pre-merge-stash-pi-mono-borrows from before this 3-session plan started.
 
-Local main is **15 commits ahead of `origin/main`**:
+Local main is **16 commits ahead of `origin/main`**:
+- Pre-Session-2 worktree-side, now reachable via Session 3 merge (1): `4870a32` (opencode Commit A 1/3, merged via `6fae670`)
 - Session 1 (3): `2e2bdbc`, `daa891c`, `2e49704`
 - Session 2 worktree-side, merged in (5): `1176d5d`, `252baac`, `b605f48`, `0595a99`, `c075e60`
 - Session 2 main-side (3): `3926963` (merge B1a), `a7f0c57` (v0.18 hygiene), `184fa4d` (Session 2 handoff)
@@ -143,7 +144,7 @@ Local main is **15 commits ahead of `origin/main`**:
 
 ## Final state
 
-- **Local main:** 15 commits ahead of `origin/main`. No push.
+- **Local main:** 16 commits ahead of `origin/main`. No push.
 - **Tests:** 3299 pass / 2 skip / 0 fail. Stable across the merge.
 - **Typecheck:** silent.
 - **Tag:** v0.18.0-alpha.0 (latest). No new tag in this session.
