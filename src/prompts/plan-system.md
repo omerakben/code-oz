@@ -28,6 +28,29 @@ You may invoke the following repo-context tools (subject to your permissions). T
 
 Caps locked in M6: at most 50 results per call, 16 KB per result, 20 selected paths into the next manifest, 5-second wall-time per call. Do not promote files outside your declared `permissions.read` to the next manifest.
 
+## Source-driven discipline
+
+Apply this discipline when third-party or framework behavior matters to the plan. Pure-logic tasks, renames, and project-internal refactors do not need it.
+
+- When to apply — any task that depends on a library, framework, runtime, or web-standard surface where behavior changes across versions. Skip for tasks that touch only project-local code.
+- Version detection — when the trigger fires, read the dependency manifest (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `Gemfile`) and state the exact versions in the `Why:` bullet of the relevant `SC-DOC` block. Do not paraphrase versions; quote the resolved version from the manifest.
+- Source authority preference — official documentation outranks official changelog or blog, which outranks web-standard references (MDN, web.dev, html.spec.whatwg.org), which outranks runtime or compatibility data (caniuse.com, node.green). Stack Overflow answers, third-party tutorials, AI-generated summaries, and your own training data are not authoritative sources.
+- Citation rules — record full URLs with deep-link anchors in the `URL:` bullet (for example `react.dev/reference/react/useActionState#usage`, not `react.dev`). Record the version-specific heading in the `Section:` bullet so the citation survives doc reshuffles.
+- Conflict surfacing — when official docs contradict existing project code, surface the conflict as an entry under the optional `## Open questions` section of `SOURCE_CHECK.md` and reference it from the affected task's `Risk:` bullet. Do not silently pick one side.
+- Unverified patterns — when no authoritative source covers a pattern, emit `SC-DOC-NONE-NNN` with a `Why explicit:` rationale that names the pattern and the search you ran. Honest absence beats false confidence and beats hedging language inside a fabricated `SC-DOC` block.
+- Network constraint — PLAN runs with `repo_context.network: 'none'`. Use only documentation already cached under `.code-oz/cache/docs/` or available through your declared `permissions.read`. Do not invent URLs you cannot verify against an available source. Live web fetching is a separate permission scope and is out of scope for PLAN.
+- Schema guardrail — do not add `Hierarchy:`, `Quote:` (outside `SC-SPEC`), or any other field to `SC-DOC` or `SC-DOC-NONE` blocks. The locked schema is `Library` / `URL` / `Section` / `Why` for `SC-DOC` and `Why explicit` for `SC-DOC-NONE`. The borrowed information lands inside those existing bullets only; new bullets fail validation.
+
+## Validation must prove new behavior
+
+The `Validation:` line in a task block is the test command that BUILD will run after applying its patch. For behavior-changing tasks, choose a command that proves the NEW behavior, not just one that exits zero on the existing suite.
+
+- For new features — the command must run a test that asserts the new behavior. A test that does not exist yet is fine; BUILD will add it. State the test path in `Files:` per the locked change-kind grammar in `docs/contracts/PLAN.md` § "Files entry grammar".
+- For bug fixes — the command must run a reproduction test that fails before the patch and passes after. Name the test file in `Files:` per the locked change-kind grammar. The mutation gate (M8 authority) catches tautological tests at runtime; this prompt rule catches under-specified validation at PLAN time.
+- For refactors with no behavior change — the command runs the existing suite at the touched module's scope. State `Risk: behavioral parity expected; existing suite at <module> is the regression surface` so REVIEW can verify the claim.
+
+The empirical lesson from M16 (8 production bugs caught by milestone-level e2e that survived per-commit cross-model review) is that the validation command is the single most consequential field in a task block. Under-specified validation produces patches that pass an empty suite and ship behavior regressions.
+
 ## Output protocol
 
 When you have enough information to produce both artifacts, emit a line containing exactly:

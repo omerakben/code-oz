@@ -355,6 +355,78 @@ Adapters never bypass the `ProviderError` model on HTTP failures — every failu
 
 **Test-injection seam.** Mirroring the subprocess `runner` seam, HTTP adapters take an injectable fetch-like function as a constructor option (`runner` for symmetry, or a more specific name per the adapter). Default is Bun's global `fetch`; tests inject mocks that return canned `Response` objects, keeping the offline-test discipline (rule 8) intact. Live tests against the real upstream endpoint are gated behind an opt-in env flag.
 
+## HTTP adapter abstraction extraction discipline (C-MIMIR-3)
+
+A shared `OpenAICompatProvider`, or any HTTP adapter base class, is extracted only after at least two concrete HTTP adapters pass independently with their own `docs/research/CODEX_REVIEW_PE<n>.md` audit.
+
+PE-1's `XaiProvider` is one data point. Extracting from xAI alone would crystallize the base class around accidental xAI shape. Two passing adapters give two data points for the real abstraction axis.
+
+Trust-boundary preservation is mandatory:
+
+- The PE-1 strict request-body allowlist is additive only across subclasses.
+- Each subclass may extend the allowlist for provider-specific fields.
+- No subclass may relax, bypass, or replace the baseline allowlist.
+- A subclass test must assert the frozen baseline allowlist before provider-specific additions are applied.
+
+Every new HTTP adapter ships with its own Codex review at `docs/research/CODEX_REVIEW_PE<n>.md`. The review checks:
+
+- request body shape;
+- header set, including auth-header redaction;
+- env-key read site;
+- provider-specific divergence from the OpenAI-compatible shape;
+- failure mapping into `ProviderError`.
+
+Known divergence axes from Codex's Mimir review:
+
+| Provider | Divergence axis |
+|---|---|
+| Together | Parameter and response-shape differences, ignored OpenAI fields, Together-specific usage and reasoning shapes. |
+| Fireworks | Extra request and response fields, different context-overflow behavior. |
+| OpenRouter | `models`, `route`, and `provider` routing fields. |
+| Groq | Prompt-caching changes usage and rate-limit interpretation. |
+| Ollama | OpenAI shape locally, but SDK setup requires an unused API key. |
+
+Pinned 2026-05-10 from Mimir comparison (`docs/comparison/11-mimir/SYNTHESIS.md` section "C-MIMIR-3"). This section codifies extraction timing before B2 lands.
+
+## Telemetry visibility for runtime queues (C-MIMIR-2)
+
+Any pre-execution gating or queueing wrapper around `IAgentProvider.invoke` must emit typed events into `events.jsonl` with the same visibility as rule-19 cumulative budget enforcement.
+
+Covered wrappers include:
+
+- rate-limit queues;
+- cost throttles;
+- retry backoff;
+- future scheduler primitives that delay, drop, or reorder provider calls before invocation.
+
+Rate-limit-specific event names are reserved now:
+
+```ts
+type BaseEvent = {
+  readonly version: 1
+  readonly ts: string
+  readonly runId: string
+  readonly phase: Phase
+  readonly agent: string
+}
+
+// BaseEvent provides the standard events.jsonl envelope: version, ts, runId, phase, agent.
+type RuntimeQueueEvent = BaseEvent & (
+  | { readonly type: 'rate_limit_queued'; readonly provider: ProviderId; readonly model: string; readonly queueDepth: number }
+  | { readonly type: 'rate_limit_waited'; readonly provider: ProviderId; readonly model: string; readonly waitMs: number }
+  | { readonly type: 'rate_limit_dispatched'; readonly provider: ProviderId; readonly model: string; readonly queueDepth: number }
+  | { readonly type: 'rate_limit_dropped'; readonly provider: ProviderId; readonly model: string; readonly reason: string }
+)
+```
+
+The exact event schema lands with B3, but the visibility rule is locked here: queue state, wait time, dispatch, and drop decisions are not hidden in process memory.
+
+Justification: rule 19 already makes cumulative budget state visible by reducing `events.jsonl` per call. Invisible runtime queues beside visible budget enforcement create a discoverability hole. Queue-scoped runtime state follows the same convention.
+
+This section codifies the constraint before any queue code lands. A future B3 implementation must satisfy it.
+
+Pinned 2026-05-10 from Mimir comparison (`docs/comparison/11-mimir/SYNTHESIS.md` section "C-MIMIR-2").
+
 ## Lock boundaries
 
 The per-run lock from `src/state/lock.ts` (M3) is held briefly for atomic event-log + gate-file transactions. The wrapper's interaction with the lock:

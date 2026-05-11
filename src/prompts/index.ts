@@ -224,11 +224,14 @@ export interface ComposePlanPromptPureInput {
   readonly availableTools: readonly string[]
 }
 
-const TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze({
+export const TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze({
   glob: '**glob** — list files matching a pattern. Args: `{ pattern, roots? }`. Returns paths relative to project root.',
   grep: '**grep** — search file contents. Args: `{ pattern, roots?, regex?, ignoreCase? }`. Returns `{ path, line, snippet }` per match (snippet capped at 200 chars).',
   read: '**read** — read a file slice. Args: `{ path, lineRange? }`. Returns content capped at 16 KB.',
-  symbol: '**symbol** — LSP symbol search. Reserved for W3+; do not call in M6.',
+  symbol:
+    '**symbol** — RESERVED. Not permissionable in v0.x. ' +
+    'See `docs/contracts/REPO_CONTEXT.md` § "Reservation and reopen-the-slot signal" ' +
+    'for the 4-condition AND telemetry signal that would reopen the slot.',
 })
 
 export function composePlanPromptPure(args: ComposePlanPromptPureInput): string {
