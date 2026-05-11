@@ -86,7 +86,7 @@ The deeper question is: when *should* a code-oz run end abandoned? Maestro's ~10
 
 **Codex finding:** Reject is right; the blocker is VCS/PR authority, not rule 21.
 
-**Synthesis decision:** Accepted. Rejection grounded in "no GitHub PR pipeline integration" instead of rule 21.
+**Synthesis decision:** Codex framing accepted; borrow stays rejected. The rejection is grounded in "no GitHub PR pipeline integration" instead of rule 21.
 
 **Status:** Rejected for v0.x. Reopen if code-oz starts integrating with a PR-gated team workflow.
 

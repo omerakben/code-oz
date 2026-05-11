@@ -2,7 +2,7 @@
 template: maestro
 location: ~/Projects/agents/templates/maestro
 audited: 2026-05-10
-status: live (debate pending)
+status: closed (Codex debate and synthesis complete; see SYNTHESIS.md)
 companion: ../../CLAUDE.md (influence library), ../README.md (comparison index)
 authors: code-oz primary, Codex debate to follow
 ---
