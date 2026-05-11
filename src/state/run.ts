@@ -232,11 +232,16 @@ export async function initRun(opts: {
   readonly now?: () => string
   /** B1a — `--effort` value applied to this run. Default `'balanced'`. */
   readonly effort?: EffortLevel
-  /** B1a — pre-`applyEffort` `CodeOzConfig['budgets']`. Required when
-   *  `effort` is supplied; defaulted to `effectiveBudgets` (no-op pair)
-   *  when both are omitted, so the event fires unconditionally. */
+  /** B1a — pre-`applyEffort` `CodeOzConfig['budgets']`. Required for the
+   *  envelope event to fire. When both `originalBudgets` and
+   *  `effectiveBudgets` are omitted, no event is appended (Codex R1
+   *  thread 019e1807, F4 doc honesty). CLI fresh runs always supply
+   *  both; low-level state-machine unit tests / fixture helpers may
+   *  omit them. When only one is supplied, the other defaults to it
+   *  (no-op pair) and the event still fires. */
   readonly originalBudgets?: Budgets
-  /** B1a — post-`applyEffort` `CodeOzConfig['budgets']`. */
+  /** B1a — post-`applyEffort` `CodeOzConfig['budgets']`. Same supply
+   *  semantics as `originalBudgets` (see above). */
   readonly effectiveBudgets?: Budgets
 }): Promise<RunState> {
   if (!isUlid(opts.runId)) {

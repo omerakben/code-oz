@@ -1443,18 +1443,22 @@ export type PhaseEvent =
   // immediately after `run_started` (and before `phase_entered(<initial>)`)
   // so the originals + multiplier + effective envelope are durable from
   // run start, ahead of any phase work. Reducer is a no-op (rule 23:
-  // forensics-only); active-run replay reads this event to reconstruct
-  // the effective `CodeOzConfig['budgets']` shape after every
-  // `loadConfig({ cwd })` (active dispatch reload sites). Recording is
-  // unconditional — `--effort` flag absent records `effort='balanced'`
-  // with `multiplier=1.0`, so legacy projections always have an envelope
-  // pair to consume.
+  // forensics-only); active-run replay reads `effectiveBudgets` from
+  // this event directly (Codex R0 B1, thread 019e17f8) — replay does
+  // NOT re-apply `applyEffort` to the currently-loaded config. Editing
+  // `.code-oz/config.yaml` mid-run cannot change the recorded envelope.
+  // Recording is conditional on `initRun` being called with budgets
+  // supplied (Codex R1 F4, thread 019e1807): CLI fresh runs always
+  // supply both `originalBudgets` and `effectiveBudgets`; low-level
+  // state-machine tests / fixture helpers that omit them emit no
+  // envelope event.
   //
   // Schema-light on `originalBudgets` / `effectiveBudgets`: the loader
   // is the schema-of-record for `CodeOzConfig['budgets']`. The validator
   // checks only the top-level shape (`global` object + `perPhase`
-  // object; optional `byRole`) to keep the event-log validator from
-  // duplicating the loader's invariants.
+  // object). `byRole` lives NESTED under `global` per
+  // `GlobalBudget.byRole` in `src/config/schema.ts` — NOT at top level
+  // (Codex R0 F6, thread 019e17f8).
   | {
       readonly version: 1
       readonly type: 'effort_envelope_applied'

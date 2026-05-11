@@ -2196,7 +2196,9 @@ export function validateEvent(
 // `effectiveBudgets` snapshots on `effort_envelope_applied`. The loader
 // owns deep validation of `CodeOzConfig['budgets']`; the event log only
 // asserts the snapshot is a non-array object with `global` and `perPhase`
-// objects (optional `byRole`).
+// objects. `byRole`, when present, lives NESTED under `global` per
+// `GlobalBudget.byRole` in `src/config/schema.ts` — NOT at top level
+// (Codex R0 F6 / R1 follow-through).
 function budgetsSnapshotInvalid(
   file: string,
   value: unknown,
