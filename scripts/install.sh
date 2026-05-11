@@ -2,6 +2,7 @@
 
 fail() {
   echo "install.sh: $1" >&2
+  cleanup_tmp
   exit 1
 }
 
@@ -9,21 +10,33 @@ warn() {
   echo "install.sh: warning: $1" >&2
 }
 
+cleanup_tmp() {
+  if [ -n "${INSTALL_TMP_ROOT:-}" ] && [ -d "$INSTALL_TMP_ROOT" ]; then
+    rm -rf "$INSTALL_TMP_ROOT"
+    INSTALL_TMP_ROOT=""
+  fi
+}
+
+trap cleanup_tmp EXIT
+
 print_usage() {
   cat <<'EOF'
 usage: install.sh [--version TAG] [--help]
 
-  --version TAG   pin to release tag (e.g. v0.20.0-alpha.0). Default: latest.
-                  Reserved for network-mode (curl|sh) fetches; ignored when
-                  install.sh is run from an unpacked bundle.
+  --version TAG   pin to release tag (e.g. v0.20.0-alpha.0). Required when
+                  no local bundle is present (network-mode install via
+                  curl|sh). Ignored when install.sh is run from an
+                  unpacked bundle.
   --help, -h      print this message and exit.
 
 environment overrides:
-  CODE_OZ_INSTALL_DIR   install destination (default: $HOME/.local/bin)
-  CODE_OZ_SHA_TOOL      force SHA256 tool: sha256sum | shasum | openssl
-                        (test-only; auto-detected when unset)
-  OS_OVERRIDE           override host OS detection
-  ARCH_OVERRIDE         override host arch detection
+  CODE_OZ_INSTALL_DIR        install destination (default: $HOME/.local/bin)
+  CODE_OZ_SHA_TOOL           force SHA256 tool: sha256sum | shasum | openssl
+                             (test-only; auto-detected when unset)
+  CODE_OZ_RELEASE_BASE_URL   base URL for tarball + checksums.txt fetches
+                             (test-only; defaults to GitHub release URL)
+  OS_OVERRIDE                override host OS detection
+  ARCH_OVERRIDE              override host arch detection
 EOF
 }
 
@@ -60,9 +73,6 @@ parse_target() {
   ' "$manifest_path"
 }
 
-# Tagged-release URL constants. Network-mode (curl|sh) fetch logic lands with
-# the release workflow (W3a release.yml); kept here so flag parsing and asset
-# naming stay coherent across install.sh + npm wrapper + Homebrew formula.
 GH_OWNER="omerakben"
 GH_REPO="code-oz"
 RELEASE_VERSION="${CODE_OZ_RELEASE_VERSION:-latest}"
@@ -125,15 +135,6 @@ compute_sha256() {
   esac
 }
 
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$script_dir/manifest.json" ]; then
-  bundle_root="$script_dir"
-elif [ -f "$script_dir/../dist/handoff/manifest.json" ]; then
-  bundle_root="$(cd "$script_dir/../dist/handoff" && pwd)"
-else
-  fail "cannot find manifest.json relative to $script_dir. Network-mode fetch (curl|sh) lands with the W3a release workflow; for now, run install.sh from an unpacked bundle."
-fi
-
 raw_os="${OS_OVERRIDE:-$(uname -s)}"
 os="$(printf '%s' "$raw_os" | tr '[:upper:]' '[:lower:]')"
 raw_arch="${ARCH_OVERRIDE:-$(uname -m)}"
@@ -157,6 +158,71 @@ case "$raw_arch" in
     fail "unsupported architecture: $raw_arch. Supported: arm64, aarch64, x86_64."
     ;;
 esac
+
+fetch_release_bundle() {
+  if [ "$RELEASE_VERSION" = "latest" ]; then
+    fail "no local bundle found; --version <TAG> is required for network-mode install (e.g. --version v0.20.0-alpha.0)."
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    DOWNLOADER="curl"
+  elif command -v wget >/dev/null 2>&1; then
+    DOWNLOADER="wget"
+  else
+    fail "neither curl nor wget is installed; cannot fetch release asset. Install one and retry, or download the tarball manually."
+  fi
+
+  version_num="${RELEASE_VERSION#v}"
+  base_url="${CODE_OZ_RELEASE_BASE_URL:-https://github.com/${GH_OWNER}/${GH_REPO}/releases/download/${RELEASE_VERSION}}"
+  asset_name="code-oz-v${version_num}-${os}-${arch}.tar.gz"
+  stage_name="code-oz-v${version_num}-${os}-${arch}"
+
+  INSTALL_TMP_ROOT="$(mktemp -d 2>/dev/null || mktemp -d -t code-oz-install)"
+  [ -d "$INSTALL_TMP_ROOT" ] || fail "failed to create temporary download directory"
+
+  download_to() {
+    target="$1"
+    url="$2"
+    if [ "$DOWNLOADER" = "curl" ]; then
+      curl -fsSL -o "$target" "$url"
+    else
+      wget -q -O "$target" "$url"
+    fi
+  }
+
+  download_to "$INSTALL_TMP_ROOT/$asset_name" "$base_url/$asset_name" \
+    || fail "failed to download release asset from $base_url/$asset_name"
+  download_to "$INSTALL_TMP_ROOT/checksums.txt" "$base_url/checksums.txt" \
+    || fail "failed to download checksums.txt from $base_url/checksums.txt"
+
+  expected_sha="$(awk -v file="$asset_name" '
+    $2 == file || $2 == "*"file { print $1; exit }
+  ' "$INSTALL_TMP_ROOT/checksums.txt")"
+  [ -n "$expected_sha" ] || fail "no checksum entry for $asset_name in checksums.txt at $base_url"
+
+  actual_sha="$(compute_sha256 "$INSTALL_TMP_ROOT/$asset_name")"
+  [ -n "$actual_sha" ] || fail "sha256 computation produced empty output using $sha_tool"
+  if [ "$expected_sha" != "$actual_sha" ]; then
+    fail "checksum mismatch for $asset_name: expected $expected_sha, got $actual_sha"
+  fi
+
+  (cd "$INSTALL_TMP_ROOT" && tar -xzf "$asset_name") \
+    || fail "failed to extract $asset_name"
+
+  extracted_dir="$INSTALL_TMP_ROOT/$stage_name"
+  [ -d "$extracted_dir" ] || fail "tarball did not contain expected directory: $stage_name"
+  [ -f "$extracted_dir/manifest.json" ] || fail "extracted tarball is missing manifest.json"
+  echo "$extracted_dir"
+}
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$script_dir/manifest.json" ]; then
+  bundle_root="$script_dir"
+elif [ -f "$script_dir/../dist/handoff/manifest.json" ]; then
+  bundle_root="$(cd "$script_dir/../dist/handoff" && pwd)"
+else
+  bundle_root="$(fetch_release_bundle)"
+fi
 
 manifest_path="$bundle_root/manifest.json"
 binary_relative_path="$(parse_target "$manifest_path" "$os" "$arch" "binaryRelativePath")"

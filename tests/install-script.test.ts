@@ -332,6 +332,128 @@ describe('scripts/install.sh — CLI flags (W3a)', () => {
   })
 })
 
+describe('scripts/install.sh — network mode (W3a)', () => {
+  test('fetches tarball + checksums and installs from tagged release URL', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho network-install\n',
+    })
+
+    const result = await runInstall(
+      bundle,
+      { CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}` },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+    expect(await readFile(join(bundle.installDir, 'code-oz'), 'utf8')).toBe(
+      '#!/bin/sh\necho network-install\n',
+    )
+  })
+
+  test('requires --version flag when no local bundle is present', async () => {
+    const bundle = await createNetworkBundle()
+    const result = await runInstall(bundle, {})
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('--version')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+
+  test('fails closed on tampered tarball checksum', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho original\n',
+    })
+    // Overwrite the tarball with garbage but keep the original checksums.txt entry.
+    await writeFile(
+      join(release.dir, release.assetName),
+      Buffer.from('tampered-bytes-not-a-real-tarball'),
+    )
+
+    const result = await runInstall(
+      bundle,
+      { CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}` },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toLowerCase()).toContain('checksum mismatch')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+
+  test('fails closed when checksum entry is absent', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho any\n',
+    })
+    await writeFile(
+      join(release.dir, 'checksums.txt'),
+      `0000000000000000000000000000000000000000000000000000000000000000  unrelated.tar.gz\n`,
+    )
+
+    const result = await runInstall(
+      bundle,
+      { CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}` },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toLowerCase()).toContain('no checksum entry')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+
+  test('fails closed when tarball download fails', async () => {
+    const bundle = await createNetworkBundle()
+    const result = await runInstall(
+      bundle,
+      {
+        CODE_OZ_RELEASE_BASE_URL: `file:///nonexistent-release-store-${Date.now()}`,
+      },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toLowerCase()).toContain('download')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+
+  test('routes through linux-x64 when host is linux', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'linux',
+      arch: 'x64',
+      binaryText: '#!/bin/sh\necho linux-network\n',
+    })
+
+    const result = await runInstall(
+      bundle,
+      {
+        CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}`,
+        OS_OVERRIDE: 'linux',
+        ARCH_OVERRIDE: 'x86_64',
+      },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(await readFile(join(bundle.installDir, 'code-oz'), 'utf8')).toBe(
+      '#!/bin/sh\necho linux-network\n',
+    )
+  })
+})
+
 async function createBundle(opts: {
   binaryRelativePath?: string
   binaryText?: string
@@ -404,6 +526,75 @@ function targetRows(opts: {
       version: VERSION,
     },
   ]
+}
+
+async function createNetworkBundle(): Promise<InstallBundle> {
+  // Mirror createBundle's layout but omit manifest.json + binary so the
+  // installer enters network mode.
+  const root = await mkdtemp(join(tmpdir(), 'install-test-net-'))
+  tempDirs.push(root)
+  const installDir = join(root, 'bin')
+  const homeDir = join(root, 'home')
+  const toolsDir = join(root, 'tools')
+  await mkdir(homeDir, { recursive: true })
+  await mkdir(toolsDir, { recursive: true })
+  await copyFile(join(process.cwd(), 'scripts/install.sh'), join(root, 'install.sh'))
+  return { root, installDir, homeDir, toolsDir }
+}
+
+interface ReleaseStore {
+  readonly dir: string
+  readonly assetName: string
+  readonly assetSha256: string
+}
+
+async function createReleaseStore(opts: {
+  version: string
+  os: string
+  arch: string
+  binaryText: string
+}): Promise<ReleaseStore> {
+  const versionNum = opts.version.startsWith('v') ? opts.version.slice(1) : opts.version
+  const stageName = `code-oz-v${versionNum}-${opts.os}-${opts.arch}`
+  const assetName = `${stageName}.tar.gz`
+  const releaseDir = await mkdtemp(join(tmpdir(), 'release-store-'))
+  tempDirs.push(releaseDir)
+  const stageDir = join(releaseDir, stageName)
+  await mkdir(stageDir, { recursive: true })
+  await writeFile(join(stageDir, 'code-oz'), opts.binaryText)
+  await chmod(join(stageDir, 'code-oz'), 0o755)
+  await writeFile(
+    join(stageDir, 'manifest.json'),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        version: versionNum,
+        builtAt: '2026-05-12T00:00:00.000Z',
+        targets: [
+          {
+            os: opts.os,
+            arch: opts.arch,
+            bunTarget: `bun-${opts.os}-${opts.arch}`,
+            binaryRelativePath: 'code-oz',
+            sha256: sha256(opts.binaryText),
+            sizeBytes: Buffer.byteLength(opts.binaryText),
+            version: versionNum,
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  )
+  await runCommand(
+    ['tar', '-C', releaseDir, '-czf', join(releaseDir, assetName), stageName],
+    releaseDir,
+  )
+  const tarballBytes = new Uint8Array(await readFile(join(releaseDir, assetName)))
+  const assetSha256 = createHash('sha256').update(tarballBytes).digest('hex')
+  await writeFile(join(releaseDir, 'checksums.txt'), `${assetSha256}  ${assetName}\n`)
+  await rm(stageDir, { recursive: true, force: true })
+  return { dir: releaseDir, assetName, assetSha256 }
 }
 
 async function writeFakeShasum(toolsDir: string, sha: string): Promise<void> {
