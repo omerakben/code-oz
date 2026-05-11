@@ -24,7 +24,7 @@
 
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 import { runRepoContextTool } from '../../../src/tools/repo-context/runner.ts'
@@ -120,7 +120,11 @@ export async function runEvalCase(
   const project = await mkdtemp(join(tmpdir(), `codeoz-eval-${caseName}-`))
   for (const [rel, content] of setup.files) {
     const abs = join(project, rel)
-    const dir = abs.slice(0, abs.lastIndexOf('/'))
+    // `dirname` is platform-aware (Windows uses `\`, POSIX uses `/`). The
+    // earlier `abs.lastIndexOf('/')` would return -1 on Windows where
+    // `join` produces backslashes, computing an invalid parent and
+    // breaking fixture setup before any tool ran.
+    const dir = dirname(abs)
     if (dir.length > project.length) {
       await mkdir(dir, { recursive: true })
     }
