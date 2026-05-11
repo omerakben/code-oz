@@ -457,6 +457,7 @@ Runs the same fixture in single-mode (one reviewer) then panel-mode (configured 
 
 ## Reference
 
-- **Linked contracts:** [`REVIEW.md`](./REVIEW.md) (single-reviewer baseline), [`BUILD.md`](./BUILD.md), [`VERIFY.md`](./VERIFY.md), [`COMPANY.md`](./COMPANY.md) (roster routing), [`PROVIDERS.md`](./PROVIDERS.md) (capability + family), [`GATES.md`](./GATES.md)
+- **Linked contracts:** [`REVIEW.md`](./REVIEW.md) (single-reviewer baseline), [`REVIEWER_MEMORY.md`](./REVIEWER_MEMORY.md), [`BUILD.md`](./BUILD.md), [`VERIFY.md`](./VERIFY.md), [`COMPANY.md`](./COMPANY.md) (roster routing), [`PROVIDERS.md`](./PROVIDERS.md) (capability + family), [`GATES.md`](./GATES.md)
+- **M17 Reviewer Memory pointer:** [`REVIEWER_MEMORY.md`](./REVIEWER_MEMORY.md) captures the file-based lesson hygiene rubric for reusable panel and single-review findings; panel synthesis remains the M14 artifact authority.
 - **Non-negotiable rules:** `CLAUDE.md` rules 1 (file-based gates), 2 (cross-family review), 6 (4-round cap), 7 (Markdown contracts), 11 (`NEEDS_INTERVENTION.json`), 13 (privacy by default; manifest equality), 19 (run-level budget), 20 (one new authority boundary per milestone), 21 (measurable risk reduction in events.jsonl)
 - **Cross-model peer review trail:** [`CODEX_BRIEFING_M14.md`](../research/CODEX_BRIEFING_M14.md), [`CODEX_RESPONSE_M14.md`](../research/CODEX_RESPONSE_M14.md), [`SESSION_M14_KICKOFF.md`](../design/SESSION_M14_KICKOFF.md)

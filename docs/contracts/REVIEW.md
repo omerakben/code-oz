@@ -237,7 +237,8 @@ SHIP does not read findings, scores, round timelines, or upstream refs; those ar
 
 ## Reference
 
-- **Linked contracts:** [`BUILD.md`](./BUILD.md), [`VERIFY.md`](./VERIFY.md), [`PLAN.md`](./PLAN.md), [`SOURCE_CHECK.md`](./SOURCE_CHECK.md), [`SCIENTIST.md`](./SCIENTIST.md), [`PROVIDERS.md`](./PROVIDERS.md), [`GATES.md`](./GATES.md)
+- **Linked contracts:** [`BUILD.md`](./BUILD.md), [`VERIFY.md`](./VERIFY.md), [`PLAN.md`](./PLAN.md), [`SOURCE_CHECK.md`](./SOURCE_CHECK.md), [`SCIENTIST.md`](./SCIENTIST.md), [`REVIEWER_MEMORY.md`](./REVIEWER_MEMORY.md), [`PROVIDERS.md`](./PROVIDERS.md), [`GATES.md`](./GATES.md)
+- **M17 Reviewer Memory pointer:** [`REVIEWER_MEMORY.md`](./REVIEWER_MEMORY.md) captures the file-based lesson hygiene rubric for reusable REVIEW findings; this contract remains the per-run REVIEW artifact authority.
 - **Non-negotiable rules:** `CLAUDE.md` rules 1 (file-based gates), 2 (cross-family review at REVIEW gate), 6 (4-round loop cap), 7 (Markdown contracts), 11 (`NEEDS_INTERVENTION.json` on cap), 13 (privacy by default), 15 (Scientist tail), 19 (run-level budget enforcement), 20 (one new authority boundary per milestone)
 - **Design rationale:** [`docs/research/CODEX_RESPONSE_M7_M10_SHAPE.md`](../research/CODEX_RESPONSE_M7_M10_SHAPE.md) (thread `019ddea0`, 2026-04-30) — M9 = cross-family REVIEW authority, contract-shape-before-implementation thesis
 - **Roadmap:** [`docs/design/ROADMAP.md`](../design/ROADMAP.md) § Pre-M7 (this contract), § M9 (REVIEW-lite implementation), § M10 (Debate runtime — separate from REVIEW)
