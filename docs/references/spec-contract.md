@@ -267,6 +267,78 @@ The composer module (`src/prompts/index.ts`) loads the asset bytes via `Bun.file
 10. `fieldsRemovedByScope` stays 0 unless the phase logic narrows a manifest entry (does not happen in M5).
 11. Bundled prompt assets are reached via static Bun asset imports in production-reachable code paths.
 
+## Quality heuristics (diagnostic-only)
+
+These checks are warnings only. They do not block `GATE_DEFINE_PASSED.json`, `code-oz approve define`, or any other gate write.
+
+### Vague-language vocabulary (rule QH1)
+
+The pinned vocabulary is:
+
+```text
+fast
+quick
+slow
+good
+bad
+poor
+user-friendly
+easy
+simple
+secure
+safe
+scalable
+flexible
+performant
+efficient
+```
+
+The matching pattern is:
+
+```regex
+\b(?:should\s+be\s+|must\s+be\s+|needs?\s+to\s+be\s+)?(fast|quick|slow|good|bad|poor|user-friendly|easy|simple|secure|safe|scalable|flexible|performant|efficient)\b
+```
+
+The optional lead-in is `should be`, `must be`, or `need(s) to be`. Warnings are suppressed for any bullet containing an explicit metric (digits plus a unit-like token) or a named-control reference from this allow-list:
+
+```text
+OAuth
+OIDC
+SAML
+JWT
+MFA
+TOTP
+RBAC
+ABAC
+ACL
+TLS
+mTLS
+HMAC
+AES
+RSA
+ECDSA
+HKDF
+PBKDF2
+bcrypt
+argon2
+scrypt
+SOC2
+HIPAA
+GDPR
+PCI
+CSP
+CORS
+CSRF
+```
+
+### Goals sufficiency (rule QH2)
+
+Warn when Goals has fewer than 2 bullets AND fewer than 15 total words across all Goals bullets. The hard contract remains unchanged: Goals must have at least 1 bullet.
+
+### Diagnostic output discipline
+
+Each `SpecLintIssue` carries `code`, `section`, `bulletIndex`, and, for QH1, `term`. No surrounding text is logged. Counters are 0-N issues per SPEC, with no aggregation.
+
 ## What this file is not
 
 - **Not the M5 implementation plan.** See `docs/design/SESSION_M5_KICKOFF.md` and `docs/design/CODEX_RESPONSE_M5.md`.
