@@ -56,7 +56,7 @@ Each milestone introduces exactly one new authority boundary (rule 20).
 1. **S1 storage contract** — lesson entry markdown format on disk.
 2. **S2 event-type addition** — `lesson_consumed` event in `events.jsonl`.
 3. **S3 read-path API** — retrieval API surface consumed by phase prompts.
-4. **S4 ID-generation** — content-hash-derived IDs, collision detection, warm-start seed.
+4. **S4 ID-generation** — warm-start-seeded counter IDs in the canonical `[<slug>-<5-digit>]` form (counter seeded from the maximum loaded ID per slug at boot), with collision detection against persisted state.
 
 Each sub-surface has a distinct rollback shape and ships with its own acceptance test. M17 stays one authority because S1-S4 are *all aspects of read substrate*; no LLM mutator authority is introduced. If any sub-surface needs to be deferred, it splits cleanly to a follow-up milestone without touching the others.
 
