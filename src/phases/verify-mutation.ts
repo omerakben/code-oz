@@ -183,12 +183,12 @@ export function mutationStatusFromResult(input: {
       if (result.exitCode === expectedExitCode) {
         return Object.freeze({
           status: 'fail',
-          notes: `reverted code passed the new tests (exit ${result.exitCode} === expected ${expectedExitCode}); test does not catch the source change (tautological).`,
+          notes: `reverted code passed the validation command (exit ${result.exitCode} === expected ${expectedExitCode}); validation does not catch the source change (tautological).`,
         })
       }
       return Object.freeze({
         status: 'pass',
-        notes: `reverted code failed the new tests (exit ${result.exitCode} !== expected ${expectedExitCode}); mutation gate satisfied.`,
+        notes: `reverted code failed the validation command (exit ${result.exitCode} !== expected ${expectedExitCode}); mutation gate satisfied.`,
       })
     }
   }

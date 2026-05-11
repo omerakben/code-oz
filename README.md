@@ -17,7 +17,7 @@ Shipped through M16 + PE-1 + B1a:
 - Reviewer panel v1 with cross-family quorum (M14); first simultaneous-provider surface, with `RULE21_BENCHMARK.md` as the canonical risk-reduction measurement methodology.
 - PE-1: `XaiProvider` direct HTTP adapter reading `XAI_API_KEY`, posting to `api.x.ai/v1/chat/completions` with strict request-body allowlist, full secret redaction, typed error class.
 - `code-oz run --effort lite|balanced|max|beast` (B1a) scales `budgets.global` and `budgets.perPhase` uniformly; never changes assurance invariants (review rounds, panel slot count, mutation gate threshold). Run-shape envelope locked at run start; active-run replay reads the recorded snapshot, not the live config.
-- 22 template-comparison borrows landed across the influence library; `docs/contracts/MCP_TRUST_BOUNDARY.md` ships as design-only with implementation demand-gated.
+- 22-template comparison sweep produced 12 substantive borrows landed across the influence library (named approval presets, REVIEW specialist rubric, parentTaskId fan-out cost rollup, actor-attribution event discipline, agent-skills PLAN bug-fix bullet, etc.) plus 4 new CLAUDE.md rules (22 consumer-first/RED-first TDD; 23 `--effort` budget-only invariant; expansions to rules 1, 9, 16). `docs/contracts/MCP_TRUST_BOUNDARY.md` ships as design-only with implementation demand-gated. Two opencode candidate slots (deny-dominant wildcard permissions, M-CANCEL cancellation/timeout/recursion guard) reserved on the roadmap.
 
 ## What it is
 

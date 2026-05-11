@@ -17,7 +17,7 @@ A single Bun TypeScript script that drives `code-oz` through one full DEFINE →
 | 5 | `code-oz approve plan` | — | Gate writer binds PLAN.md + SOURCE_CHECK.md sha256 |
 | 6 | `code-oz run --provider fake --fake-script <path>` | `builder`, `scientist` | BUILD T-001 — Builder emits new-file diff for src/todo.ts + tests/todo.test.ts |
 | 7 | `code-oz approve build` | — | Gate writer binds BUILD_REPORT.md sha256 |
-| 8 | `code-oz run --provider fake --fake-script <path>` | `verifier`, `scientist` | VERIFY — runs validation command `true`, verifier emits ready + rationale |
+| 8 | `code-oz run --provider fake --fake-script <path>` | `verifier`, `scientist` | VERIFY — runs validation command (`test -f src/todo.ts` in this demo), mutation gate revert+replay, verifier emits ready + rationale |
 | 9 | `code-oz approve verify` | — | Gate writer binds VERIFY.md sha256 |
 | 10 | `code-oz run --provider fake --fake-script <path>` | `reviewer`, `scientist` | REVIEW — reviewer emits ready + score 8 |
 | 11 | `code-oz approve review` | — | Advances to SHIP, cursor.allCompleted=true |
@@ -131,9 +131,9 @@ The actual `src/todo.ts` and `tests/todo.test.ts` content live as string constan
 
 ### 4. Verifier → VERIFY.md
 
-`<verify-ready/>\n## Rationale\nvalidation command \`true\` exited 0; no test files added so mutation gate is not-applicable.\n` — same as `VERIFIER_RESPONSE` in the multi-task helper. Reusable verbatim (validation command is `true` per the PLAN).
+`<verify-ready/>\n## Rationale\nvalidation command \`test -f src/todo.ts\` exited 0; mutation gate passed (reverted code fails the file check).\n` — short single-line rationale per `VERIFY_RATIONALE_MAX_CHARS = 200`.
 
-Note: PLAN's validation command is `true` (not `bun test`) so VERIFY's runner passes without actually running tests against the demo file. The asciicast shows "validation passed" without needing to ship a real testable artifact. Honest trade-off: the BUILD diff is real code, but VERIFY's pass is via the no-op runner.
+**As-built note (post-Codex retro fix-first #1):** PLAN's validation command is `test -f src/todo.ts` (not `true` or `bun test`). The file-existence check makes the mutation gate non-tautological: when the BUILDER's patch is reverted, src/todo.ts is gone, the command exits non-zero, the gate concludes 'pass' (validation correctly detected the source-change). With the old `Validation: true` draft, mutation status was 'fail-tautological' because the no-op command passed even on reverted source. This forced `computedVerdict='fail'`, which required the verifier response to include `## Failure summary` + `## Constraint` (per `parseVerifyPersonaResponse`); the draft failed parse1 and the repair turn got the FakeProvider default fallback. One-line PLAN fix unblocked the cycle.
 
 ### 5. Reviewer → REVIEW.md
 
@@ -217,8 +217,8 @@ Add to `scripts`:
 
 ## Acceptance criteria for step 3 closure
 
-- `bun run demo:todo-cli --effort lite` exits 0; `docs/demo/01-todo-cli/output/lite/events.jsonl` contains `effort_envelope_applied` with multiplier 0.5 (or whatever `EFFORT_MULTIPLIERS.lite` is) and scaled `effectiveBudgets`.
-- Same for `--effort beast` with the corresponding multiplier.
+- `bun run demo:todo-cli --effort lite` exits 0; `docs/demo/01-todo-cli/output/lite/events.jsonl` contains `effort_envelope_applied` with multiplier 0.4 (`EFFORT_MULTIPLIERS.lite`) and scaled `effectiveBudgets` (maxTurns 40, maxTokens 800k).
+- `bun run demo:todo-cli --effort beast` exits 0; `docs/demo/01-todo-cli/output/beast/events.jsonl` contains `effort_envelope_applied` with multiplier 6.0 and scaled `effectiveBudgets` (maxTurns 600, maxTokens 12M).
 
 ## Notes for the next session
 

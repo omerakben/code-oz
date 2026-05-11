@@ -73,7 +73,7 @@ In `output/balanced/artifacts/REVIEW.md`:
 - Cross-family check: passed (BUILD family: claude; reviewer family: codex)
 ```
 
-BUILD ran on the Claude family; REVIEW ran on the Codex family. The orchestrator's `M14 Reviewer panel` enforcement requires the cross-family check before letting any `verdict: ready` close a task. Same-family panelists are advisory only.
+BUILD ran on the Claude family; REVIEW ran on the Codex family. The family labels come from the registry route — both invocations execute through FakeProvider scripts in this demo, so the cross-family check is real (the orchestrator's `M14 Reviewer panel` enforcement actually compares the registered family IDs) but the underlying LLM responses are scripted. Swap the FakeProvider for live Anthropic + xAI providers and the same enforcement applies against live LLM output. Same-family panelists are advisory only; cross-family quorum is required for `verdict: ready`.
 
 ### 3. The `--effort` flag
 

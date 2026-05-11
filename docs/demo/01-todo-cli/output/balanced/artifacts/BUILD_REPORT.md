@@ -9,13 +9,13 @@
 
 ## Base
 
-- Worktree: /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-demo-todo-4klnaG/project/.code-oz/runs/01KRC8EGW6REW6Q40H64PVQ0D3/worktree
-- Base commit: 40a844fd022860518ce7428fd0368871fb6b3eab
+- Worktree: /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-demo-todo-G9AeRL/project/.code-oz/runs/01KRC95A2KMQTN9QKZJ678K1T3/worktree
+- Base commit: 7f8a5594f92cc5bced31c11acb63c9f1f7fe17d6
 - Dirty tree at base: false
 
 ## Patch
 
-- Patch path: /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-demo-todo-4klnaG/project/.code-oz/runs/01KRC8EGW6REW6Q40H64PVQ0D3/patches/T-001-attempt-1.patch
+- Patch path: /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-demo-todo-G9AeRL/project/.code-oz/runs/01KRC95A2KMQTN9QKZJ678K1T3/patches/T-001-attempt-1.patch
 - Patch sha256: 662a93563e3a34b0cabc71838ea6d751dcc99196d23295e3b16731a81ea1bec5
 - Patch byte count: 3716
 
@@ -27,7 +27,7 @@
 ## Validation command
 
 - Command: test -f src/todo.ts
-- Working directory: /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-demo-todo-4klnaG/project/.code-oz/runs/01KRC8EGW6REW6Q40H64PVQ0D3/worktree
+- Working directory: /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-demo-todo-G9AeRL/project/.code-oz/runs/01KRC95A2KMQTN9QKZJ678K1T3/worktree
 - Timeout (ms): 60000
 - Expected exit code: 0
 
