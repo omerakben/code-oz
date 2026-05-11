@@ -147,10 +147,10 @@ Cross-session reminder (per synthesis): Sessions 2 and 3 are strictly serial —
 /Users/ozzy-mac/Projects/code-oz/.claude/worktrees/opencode-fixfirst    4870a32 [worktree-opencode-fixfirst]
 ```
 
-Local main is 5 commits ahead of `origin/main`:
-- 2e2bdbc, daa891c, 2e49704 (Session 1 doc + gitignore + planning corpus)
-- 3926963 (Session 2 B1a merge)
-- a7f0c57 (Session 2 v0.18 hygiene)
+Local main is 11 commits ahead of `origin/main`:
+- Session 1: 2e2bdbc, daa891c, 2e49704 (handoff move + gitignore + planning corpus)
+- Session 2 worktree-side (visible in main log post-merge): 1176d5d (audit + design), 252baac (Commit 1: applyEffort), b605f48 (Commit 2: wiring + R0), 0595a99 (R1 doc/comment drift), c075e60 (R2 trail)
+- Session 2 main-side: 3926963 (merge B1a), a7f0c57 (v0.18 hygiene), 184fa4d (this handoff)
 
 `git status --short` on main: empty.
 
