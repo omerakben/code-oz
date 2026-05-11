@@ -74,12 +74,25 @@ describe('AgentPermissions.tool_use.repo_context — happy path', () => {
     expect(def.permissions.tool_use!.repo_context!.maxResults).toBe(25)
   })
 
-  test('symbol tool is allowed in the schema (M6 optional)', () => {
-    const def = validateAgent(
-      fm(withRepoContext({ ...VALID_RC, tools: ['glob', 'grep', 'read', 'symbol'] })),
-      FILE,
-    )
-    expect(def.permissions.tool_use!.repo_context!.tools).toContain('symbol')
+  test('symbol tool is RESERVED and rejected at config-load (codegraph synthesis 2026-05-10)', () => {
+    // Codex thread 019e12ed Q8: the reserved-but-unsupported `symbol` slot is
+    // already contract debt today. The type-union member is preserved so the
+    // schema slot is callable for backward-compat when the 4-condition AND
+    // telemetry signal in REPO_CONTEXT.md fires; until then, declaring
+    // `'symbol'` in tools[] is a config-load error.
+    let captured: AgentLoadError | null = null
+    try {
+      validateAgent(
+        fm(withRepoContext({ ...VALID_RC, tools: ['glob', 'grep', 'read', 'symbol'] })),
+        FILE,
+      )
+    } catch (e) {
+      captured = e as AgentLoadError
+    }
+    expect(captured).toBeInstanceOf(AgentLoadError)
+    expect(captured!.issues[0]!.code).toBe('schema_invalid_permissions')
+    expect(captured!.issues[0]!.rule).toContain('RESERVED')
+    expect(captured!.issues[0]!.rule).toContain('REPO_CONTEXT.md')
   })
 })
 
