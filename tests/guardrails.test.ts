@@ -8,6 +8,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   parseGuardrailRule,
+  parseGuardrailRuleFile,
   compileRuleSet,
   evaluateGuardrails,
   GuardrailParseError,
@@ -959,3 +960,106 @@ conditions:
   })
 })
 
+describe('parseGuardrailRuleFile — fail-open posture (Codex P1)', () => {
+  // docs/contracts/GUARDRAILS.md §"Failure mode posture":
+  //   - Fail-closed on malformed block rules.
+  //   - Fail-open on malformed warn rules.
+  // The wrapper turns the asymmetric posture into an explicit ok/skip
+  // result and lets the multi-file loader log + continue.
+
+  test('returns ok:true on a valid warn rule', () => {
+    const text = `---
+name: ok-warn
+event: PreToolUse
+scope: runtime-tool-call
+action: warn
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+`
+    const r = parseGuardrailRuleFile(text)
+    expect(r.ok).toBe(true)
+  })
+
+  test('returns ok:false with intendedAction=warn on a malformed warn rule', () => {
+    // Default action is warn; the body fails to parse because conditions
+    // is missing required fields. The wrapper must report skip, not throw.
+    const text = `---
+name: bad-warn
+event: PreToolUse
+scope: runtime-tool-call
+action: warn
+conditions:
+  - field: file_path
+    operator: contains
+---
+`
+    const r = parseGuardrailRuleFile(text)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.intendedAction).toBe('warn')
+      expect(r.issues.length).toBeGreaterThan(0)
+      expect(r.issues.some((i) => i.severity === 'block')).toBe(true)
+    }
+  })
+
+  test('treats default action (omitted) as warn intent → fail-open', () => {
+    // No `action` key → contract default is warn → fail-open.
+    const text = `---
+name: bad-default
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: not_a_real_op
+    value: x
+---
+`
+    const r = parseGuardrailRuleFile(text)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.intendedAction).toBe('warn')
+  })
+
+  test('fail-closed (rethrows) on a malformed block rule', () => {
+    const text = `---
+name: bad-block
+event: PreToolUse
+tool: Bash
+scope: runtime-tool-call
+action: block
+conditions:
+  - field: command
+    operator: not_a_real_op
+    value: rm
+---
+`
+    expect(() => parseGuardrailRuleFile(text)).toThrow(GuardrailParseError)
+  })
+
+  test('fail-closed on an unreadable rule file (cannot prove warn intent)', () => {
+    // No frontmatter at all → we cannot peek the action key → fall back
+    // to fail-closed so we never silently drop a rule the operator
+    // believed was a block rule.
+    const text = `not a rule file at all`
+    expect(() => parseGuardrailRuleFile(text)).toThrow(GuardrailParseError)
+  })
+
+  test('fail-closed when the action key is present but not a known enum value', () => {
+    // `action: enforce` is neither warn nor block; we cannot prove warn
+    // intent, so fail-closed.
+    const text = `---
+name: bad-action
+event: PreToolUse
+scope: runtime-tool-call
+action: enforce
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+`
+    expect(() => parseGuardrailRuleFile(text)).toThrow(GuardrailParseError)
+  })
+})

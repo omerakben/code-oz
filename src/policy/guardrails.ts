@@ -624,6 +624,81 @@ export function parseGuardrailRule(
   return { rule, warnings: Object.freeze(issues.filter((i) => i.severity === 'warn')) }
 }
 
+/**
+ * Fail-open wrapper around `parseGuardrailRule` for the asymmetric posture
+ * the contract mandates (docs/contracts/GUARDRAILS.md §"Failure mode
+ * posture"):
+ *
+ *   - **Fail-closed on malformed block rules.** A rule whose intended
+ *     `action` is `block` that fails to parse is treated as a parse
+ *     error — the caller rethrows and the run does not start. The rule
+ *     was supposed to block something; falling through to "rule disabled"
+ *     would silently downgrade a block to allow.
+ *
+ *   - **Fail-open on malformed warn rules.** A rule whose intended action
+ *     is `warn` (explicit or default) and that fails to parse is reported
+ *     as `{ ok: false, intendedAction: 'warn', issues }`. The caller logs
+ *     a `guardrail_parse_error` event and proceeds with that rule
+ *     disabled.
+ *
+ * Intent detection is intentionally narrow: we peek the `action` key of
+ * the parsed frontmatter when available. If the frontmatter cannot be
+ * read at all (no `---` delimiters, YAML parse error, etc.), we fall
+ * back to fail-closed because we cannot prove the rule was warn-intent.
+ *
+ * This is the entry point for multi-file rule-set loaders. Single-rule
+ * tests and callers that want hard validation continue to use
+ * `parseGuardrailRule` directly.
+ */
+export type ParseGuardrailRuleFileResult =
+  | { readonly ok: true; readonly rule: GuardrailRule; readonly warnings: readonly GuardrailParseIssue[] }
+  | {
+      readonly ok: false
+      readonly intendedAction: GuardrailAction
+      readonly issues: readonly GuardrailParseIssue[]
+    }
+
+/**
+ * Peek the `action` key of a rule file's frontmatter without running the
+ * full validator. Returns the explicit action when present and well-typed,
+ * `'warn'` as the default (per contract — `action` defaults to warn), or
+ * `null` when the frontmatter is unreadable (no delimiters / YAML error).
+ */
+function peekIntendedAction(text: string): GuardrailAction | null {
+  const split = splitFrontmatter(text)
+  if (split === null) return null
+  const actionRaw = split.fm['action']
+  if (actionRaw === undefined) return 'warn'
+  if (isStringEnumMember(actionRaw, GUARDRAIL_ACTIONS)) return actionRaw
+  // Action key is present but not a known enum value. The full parser
+  // surfaces this as `guardrail_invalid_action`. We cannot prove warn
+  // intent, so callers should fail-closed.
+  return null
+}
+
+export function parseGuardrailRuleFile(
+  text: string,
+  file = 'guardrail.md',
+): ParseGuardrailRuleFileResult {
+  try {
+    const { rule, warnings } = parseGuardrailRule(text, file)
+    return { ok: true, rule, warnings }
+  } catch (err) {
+    if (!(err instanceof GuardrailParseError)) throw err
+    const intended = peekIntendedAction(text)
+    if (intended !== 'warn') {
+      // Fail-closed for block-intent rules and unreadable rules. The
+      // caller (or our own rethrow here) keeps the parse-error posture.
+      throw err
+    }
+    return {
+      ok: false,
+      intendedAction: 'warn',
+      issues: err.issues,
+    }
+  }
+}
+
 // --- compiler ------------------------------------------------------
 
 function normalizeGlobConsecutiveStarStars(glob: string): string {
