@@ -14,7 +14,11 @@ This folder records head-to-head comparisons between code-oz and each project un
 For every template:
 
 1. Read structure, README, and 1-2 core implementation files.
+<<<<<<< HEAD
 2. Map ACE-style features against code-oz's current and roadmapped surfaces.
+=======
+2. Map template features against code-oz's current and roadmapped surfaces.
+>>>>>>> origin/main
 3. Decide: do we already meet the bar this template sets, or do we need to borrow / debate?
 4. Run a Codex debate (briefing → response → synthesis) under the project's cross-model peer review rule.
 5. Record the borrow set as a ranked list with milestone targets.
@@ -27,6 +31,7 @@ For every template:
 
 ## Sessions
 
+<<<<<<< HEAD
 Each row is owned by one session. PRs from other sessions add their own rows; this PR only owns row `02 | agenticSeek`.
 
 | #  | Template    | Date       | Decision                                                                                                                                                                                                                                                                       | Folder                              |
@@ -38,3 +43,24 @@ Each row is owned by one session. PRs from other sessions add their own rows; th
 Audited (CLAUDE.md influence library, not yet compared in this session): `agent-skills`, `opencode`, `Archon`, `pi-mono`, `maestro`, `Auto-claude-code-research-in-sleep`, `claude-code`.
 
 Unaudited (on-disk, no entry in CLAUDE.md): `agentic-canvas`, `byterover-cli`, `Chorus`, `claude-coder`, `codegraph`, `codex`, `gptme`, `learn-harness-engineering`, `Mimir`, `prd-taskmaster`, `skills`.
+=======
+| # | Template | Date | Decision | Folder |
+|---|----------|------|----------|--------|
+| 07 | maestro | 2026-05-10 | YES, with selective borrows (B1 narrowed wave-verify; B2 heartbeat deferred as projection; B3 PLAN_DIFF blocked on SHIP contract; B4 separated from B5; B5 `outcome=abandoned` use-case-gated; B7 maestro bash loop rejected, `code-oz watch` deferred with contract draft); Codex `fix-first` thread `019e12ee` — all 6 findings closed in synthesis (rule-21 misapplication corrected → rule 20, RUN_OUTCOMES schema risk surfaced, SHIP-contract gap identified, Bun-native CI added to deferred set); maestro is the parent template — three load-bearing rules already absorbed (rules 1/3/4) | [07-maestro/](07-maestro/) |
+
+> Other comparison sessions (01-06, 08+) are landing in parallel PRs from their own branches; they will append rows to this table on merge.
+
+## Open questions surfaced by comparisons (decisions, not milestones)
+
+These are decisions the project owner makes outside any single milestone. Each is sourced to the comparison row that surfaced it.
+
+- **SHIP contract** — does SHIP get its own `docs/contracts/SHIP.md`? Blocks 07-maestro/B3 (`PLAN_DIFF.md`) and 07-maestro/B4 (`NEXT_RUN.md`). Surfaced 2026-05-10 by Codex during maestro debate (thread `019e12ee`).
+- **`outcome=abandoned`** — what is the use case that justifies extending `RUN_OUTCOMES` (currently `shipped | stopped | paused` at `src/state/schemas.ts:421`)? Blocks 07-maestro/B5. Surfaced 2026-05-10.
+- **`code-oz watch` demand signal** — defined as a recurring unattended use case beyond W3-lite scope. Reopens 07-maestro/B7. Surfaced 2026-05-10.
+
+## Backlog
+
+Audited (CLAUDE.md influence library, not yet compared in this PR set): `opencode`, `pi-mono`, `claude-code`.
+
+Unaudited (on-disk, no entry in CLAUDE.md): templates not in the influence library are surveyed by parallel sessions; see those PRs for verdicts.
+>>>>>>> origin/main
