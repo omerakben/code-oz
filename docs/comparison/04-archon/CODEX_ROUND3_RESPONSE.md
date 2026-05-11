@@ -4,7 +4,7 @@ companion-docs: COMPARISON.md, CODEX_ROUND2_RESPONSE.md
 target: Codex round-3 faithfulness verification of round-2 corrections in COMPARISON.md
 status: received 2026-05-10; verbatim transcript below; verdict `one-more-pass-needed` (small cleanup) then lock-final
 codex-config: gpt-5.5, model_reasoning_effort=high, sandbox=read-only
-verdict: one-more-pass-needed → lock-final after stale B5 references removed at COMPARISON.md:71/117/125 and convergence sentence added to ### Closure paragraph
+verdict: "one-more-pass-needed -> lock-final after stale B5 references refined at COMPARISON.md:71/117/125 and convergence sentence added to '### Closure' paragraph"
 tokens-used: 25,909
 ---
 
