@@ -81,12 +81,14 @@ Sections appear in canonical order. **`## Tasks` is the only section whose body 
 - Risk: <one-line risk note>
 - Hypotheses: <comma-separated H-NNN ids, or `- Hypotheses: none` if none claimed>
 - Sources: <comma-separated source ids from SOURCE_CHECK.md>
+- Bugfix: <single existing test path>   (optional)
 ```
 
 - **`T-NNN` ids are run-scoped and stable.** Allocated by the orchestrator (`allocateTaskId`) per run; persist across edits. Cross-run identity is W2 territory.
 - Each task block has all five required bullets in the order shown.
 - Bullets are one line each. Multi-line task descriptions are not allowed; split into two tasks instead.
 - The Risk bullet is required; if there is no significant risk, write `- Risk: none`.
+- The optional `Bugfix:` bullet is permitted as the sixth and last bullet. It declares that the task is reusing a single pre-existing failing test as its validation (the test file is not edited; only source-under-test changes). When present, the test path lives in `Bugfix:` and does NOT need to appear in `Files:` (which would force a misleading `(modified)` annotation on an untouched file). Closes Codex PR #15 P2 fix-soon — the schema was previously too rigid for bug-fix tasks that reuse a failing test verbatim.
 
 ### Files entry grammar (M8 extension)
 

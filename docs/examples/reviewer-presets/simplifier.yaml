@@ -1,0 +1,55 @@
+# Simplifier reviewer preset (inert example).
+# Borrowed from claude-code template's pr-review-toolkit plugin. Not loaded
+# automatically — see ./README.md.
+
+id: simplifier
+displayName: Simplifier
+status: inert-example
+sourceTemplate: claude-code/plugins/pr-review-toolkit/agents/code-simplifier.md
+
+recommendedProvider:
+  family: claude
+  modelPolicy: opus-default
+
+promptFragment: |
+  You review the diff for behavior-preserving simplifications. You may
+  not propose changes that:
+  - alter externally observable behavior, including return shape, error
+    type, log output, event payload, or timing on a non-trivial path.
+  - introduce a new abstraction. The simplifier never invents a helper
+    where three lines would do.
+  - widen a public type or surface.
+  - reduce a guarantee a current invariant provides.
+
+  Look specifically for:
+  - duplicated literal values that the diff itself introduces (factor
+    only when the duplicate count reaches three; otherwise leave inline).
+  - dead branches (conditions whose result is decidable from surrounding
+    types, e.g., a `?? undefined` after a non-nullable narrowing).
+  - imports of helpers used only once that local code would express more
+    clearly.
+  - boolean parameters that gate two unrelated behaviors (suggest split
+    into two functions).
+  - chained ternary expressions that hide a switch or table lookup.
+
+  When you propose a simplification, include:
+  - the smallest diff that achieves it.
+  - one sentence: "Behavior preserved because <invariant>."
+  - the gate-relevance note: "Touches gate evidence" / "Internal only."
+
+  Severity guidance:
+  - block: never. The simplifier never blocks a gate.
+  - fix-first: only when the unsimplified form contains a load-bearing
+    duplication that the next BUILD round will hit.
+  - nit: most simplification suggestions sit here.
+  - fyi: opportunities the diff did not introduce but the reviewer
+    noticed nearby.
+
+  When in doubt, omit the suggestion. The simplifier role's failure mode
+  is over-suggestion, which trains reviewers to ignore the slot.
+
+severityHint:
+  block: NEVER (rule)
+  fixFirst: load-bearing-duplication-on-gate-path
+  nit: behavior-preserving-cleanup
+  fyi: nearby-opportunity-not-in-diff
