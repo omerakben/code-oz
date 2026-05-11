@@ -152,9 +152,15 @@ The runner is honest about this trade-off: the FakeProvider's responses are pre-
 
 The `docs/contracts/MCP_TRUST_BOUNDARY.md` contract on `main` defines how a future MCP consumer would land in `code-oz`. Demand-gated: the contract ships now so a future implementation milestone can budget against it; nothing in this demo invokes MCP.
 
-## Recording an asciicast
+## Asciicast
 
-**Status:** the cast (`cast.cast`) is not yet recorded — `v0.19.0-alpha.0` ships the runner + captured artifacts under `output/` but defers the recording to a follow-up release. Scope amendment recorded in `docs/design/CODEX_RESPONSE_RETRO_3SESSION_SWEEP.md` and reflected in the locked synthesis acceptance (SPEC + README + output captures is sufficient for this tag; SPEC + cast + README acceptance restores on the next demo release). To record locally:
+The cast is committed at [`cast.cast`](cast.cast). Replay it:
+
+```sh
+asciinema play docs/demo/01-todo-cli/cast.cast
+```
+
+To re-record after demo changes (the runner output drives the cast content):
 
 ```sh
 # Install asciinema if needed

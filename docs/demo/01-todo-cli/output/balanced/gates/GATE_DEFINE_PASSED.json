@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "runId": "01KRC95A2KMQTN9QKZJ678K1T3",
+  "runId": "01KRCFHR2N2GYBHG9JWMJR61A5",
   "phase": "define",
   "artifact": "SPEC.md",
   "agent": "ba",
   "agentProvider": "claude",
   "approvedBy": "user",
-  "approvedAt": "2026-05-11T19:45:25.141Z",
+  "approvedAt": "2026-05-11T21:37:04.151Z",
   "artifactSha256": "218ab1760edbd54c57cd342bc3202e77b203b3914dfc67fb3ad52ca02f30ac91"
 }
