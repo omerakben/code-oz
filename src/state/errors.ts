@@ -43,6 +43,7 @@ export class GateLoadError extends Error {
 }
 
 export type EventLogErrorCode =
+  | 'actor_attribution_missing'
   | 'event_invalid_json'
   | 'event_invalid_version'
   | 'event_missing_field'

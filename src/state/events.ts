@@ -19,6 +19,7 @@
 
 import { open, readFile } from 'node:fs/promises'
 import { Buffer } from 'node:buffer'
+import { dirname, join } from 'node:path'
 import {
   EVENT_TYPES,
   PHASE_OUTCOMES,
@@ -37,7 +38,9 @@ import {
   isPhase,
   isProfile,
   isIsoTimestamp,
+  isKnownPhaseEvent,
   type PhaseEvent,
+  type EventType,
   type LoggedEvent,
 } from './schemas.ts'
 import { EventLogError, type EventLogIssue } from './errors.ts'
@@ -91,6 +94,86 @@ const DEBATE_TOPIC_MAX_LEN = 48
 const DEBATE_RATIONALE_SUMMARY_MAX_LEN = 200
 // Forward-compat correlation values (D3 lock).
 const DEBATE_TURN_VALUES = ['opposing', 'synthesis', 'continuation'] as const
+
+// §3.5 Chorus borrow: event types that lack an existing `agent` actor field
+// now accept optional `actor?: string`. Missing values are pre-warnings until
+// v0.2; present values are hard-validated below.
+export const ACTOR_ATTRIBUTION_RECOMMENDED_EVENT_TYPES = [
+  'run_started',
+  'phase_entered',
+  'phase_exited',
+  'gate_written',
+  'gate_required',
+  'intervention',
+  'run_ended',
+  'ask_me_user_input',
+  'science_emitted',
+  'hypothesis_added',
+  'hypothesis_updated',
+  'question_added',
+  'question_resolved',
+  'question_deferred',
+  'budget_warning',
+  'worktree_created',
+  'worktree_failed',
+  'worktree_patch_applied',
+  'worktree_patch_failed',
+  'worktree_forensics_preserved',
+  'worktree_destroyed',
+  'build_provider_recorded',
+  'verify_restart_initiated',
+  'panel_quorum_rejected_same_family_vote',
+  'review_panel_baseline_completed',
+  'debate_policy_baseline_completed',
+  'task_started',
+  'task_review_passed',
+  'task_completed',
+  'fake_provider_warning_emitted',
+  'gate_file_cleared',
+] as const satisfies readonly EventType[]
+
+type ActorAttributionRecommendedEventType =
+  (typeof ACTOR_ATTRIBUTION_RECOMMENDED_EVENT_TYPES)[number]
+
+const ACTOR_ATTRIBUTION_RECOMMENDED_SET = new Set<string>(
+  ACTOR_ATTRIBUTION_RECOMMENDED_EVENT_TYPES,
+)
+
+const RECOMMENDED_ACTOR_BY_EVENT_TYPE: Readonly<
+  Record<ActorAttributionRecommendedEventType, string>
+> = Object.freeze({
+  run_started: 'orchestrator',
+  phase_entered: 'orchestrator',
+  phase_exited: 'orchestrator',
+  gate_written: 'orchestrator',
+  gate_required: 'orchestrator',
+  intervention: 'orchestrator',
+  run_ended: 'orchestrator',
+  ask_me_user_input: 'user',
+  science_emitted: 'scientist',
+  hypothesis_added: 'scientist',
+  hypothesis_updated: 'scientist',
+  question_added: 'scientist',
+  question_resolved: 'scientist',
+  question_deferred: 'scientist',
+  budget_warning: 'orchestrator',
+  worktree_created: 'orchestrator',
+  worktree_failed: 'orchestrator',
+  worktree_patch_applied: 'orchestrator',
+  worktree_patch_failed: 'orchestrator',
+  worktree_forensics_preserved: 'orchestrator',
+  worktree_destroyed: 'orchestrator',
+  build_provider_recorded: 'orchestrator',
+  verify_restart_initiated: 'orchestrator',
+  panel_quorum_rejected_same_family_vote: 'orchestrator',
+  review_panel_baseline_completed: 'doctor',
+  debate_policy_baseline_completed: 'doctor',
+  task_started: 'orchestrator',
+  task_review_passed: 'orchestrator',
+  task_completed: 'orchestrator',
+  fake_provider_warning_emitted: 'orchestrator',
+  gate_file_cleared: 'orchestrator',
+})
 
 /**
  * Validate an in-memory event object against the v1 schema. Returns null when
@@ -158,6 +241,9 @@ export function validateEvent(
   if (!isKnown) {
     return null
   }
+
+  const actorIssue = validateOptionalActorAttribution(file, e, line)
+  if (actorIssue) return actorIssue
 
   // No defense-in-depth check for newlines in event string fields:
   // appendEvent serializes via JSON.stringify(event) + '\n', and
@@ -2274,6 +2360,47 @@ function validateDebateTopic(
   return null
 }
 
+function validateOptionalActorAttribution(
+  file: string,
+  e: Record<string, unknown>,
+  line?: number,
+): EventLogIssue | null {
+  if (e.actor === undefined) return null
+  if (typeof e.actor !== 'string' || e.actor.trim().length === 0) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: 'event.actor must be a non-blank string when present',
+      detail: `got ${JSON.stringify(e.actor)}`,
+      line,
+    }
+  }
+  return null
+}
+
+function actorAttributionMissingPrewarn(
+  file: string,
+  event: LoggedEvent,
+  line: number,
+): EventLogIssue | null {
+  if (!isKnownPhaseEvent(event)) return null
+  if (!ACTOR_ATTRIBUTION_RECOMMENDED_SET.has(event.type)) return null
+
+  const actor = (event as Record<string, unknown>).actor
+  if (actor !== undefined) return null
+
+  const eventType = event.type as ActorAttributionRecommendedEventType
+  return {
+    file,
+    code: 'actor_attribution_missing',
+    rule:
+      `${event.type}.actor is recommended for §3.5 actor attribution ` +
+      '(optional now, required in v0.2)',
+    detail: `recommendedActor=${RECOMMENDED_ACTOR_BY_EVENT_TYPE[eventType]}`,
+    line,
+  }
+}
+
 function strArrInvalid(file: string, field: string, line?: number): EventLogIssue {
   return {
     file,
@@ -2565,4 +2692,25 @@ export async function readEvents(paths: EventLogPaths): Promise<readonly LoggedE
   }
 
   return Object.freeze(events.map((e) => Object.freeze(e)))
+}
+
+/**
+ * §3.5 Chorus borrow audit helper. Reads an events.jsonl file and returns
+ * soft pre-warnings for known events that lack the recommended `actor`
+ * binding. Missing actor is allowed until v0.2, so this never feeds into
+ * readEvents() hard-fail behavior.
+ */
+export async function findEventsMissingRecommendedActorBinding(
+  eventsJsonlPath: string,
+): Promise<readonly EventLogIssue[]> {
+  const events = await readEvents({
+    file: eventsJsonlPath,
+    lockDir: join(dirname(eventsJsonlPath), '.lock'),
+  })
+  const warnings: EventLogIssue[] = []
+  for (let i = 0; i < events.length; i++) {
+    const warning = actorAttributionMissingPrewarn(eventsJsonlPath, events[i]!, i + 1)
+    if (warning !== null) warnings.push(warning)
+  }
+  return Object.freeze(warnings.map((warning) => Object.freeze({ ...warning })))
 }
