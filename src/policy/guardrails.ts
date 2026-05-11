@@ -196,7 +196,10 @@ export class GuardrailParseError extends Error {
 
 // --- parser --------------------------------------------------------
 
-const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*(?:\n([\s\S]*))?$/
+// CRLF-tolerant per Copilot review (rule files saved on Windows use \r\n
+// line endings; an LF-only anchor mis-classifies the file as having no
+// frontmatter and surfaces as `guardrail_frontmatter_missing`).
+const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n([\s\S]*))?$/
 
 interface RawFrontmatter {
   readonly fm: Record<string, unknown>
@@ -524,10 +527,16 @@ export function parseGuardrailRule(
 
       let okField = true
       if (!isStringEnumMember(fieldRaw, GUARDRAIL_FIELDS)) {
+        // The condition's `field` value is malformed; this is a
+        // condition-shape error, not an operator error. The original
+        // implementation routed it through `guardrail_invalid_operator`,
+        // which makes operator diagnostics ambiguous (a typo in `field:`
+        // surfaced as "invalid operator"). Per Copilot review, route to
+        // its own code `guardrail_invalid_condition_field`.
         pushIssue(
           issues,
           file,
-          'guardrail_invalid_operator',
+          'guardrail_invalid_condition_field',
           `conditions[${i}].field must be one of: ${GUARDRAIL_FIELDS.join(', ')}`,
         )
         okField = false

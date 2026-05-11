@@ -142,12 +142,25 @@ operators only.
 The `regex` operator is rejected at parse time in v0.1 with code
 `guardrail_operator_deferred`. JavaScript's synchronous `RegExp.test`
 cannot be interrupted by a wall-time timeout, so any documented
-millisecond cap on regex matching would be decorative. v0.2 reintroduces
-the operator with a worker-bounded evaluator that can actually enforce
-the cap. The `maxLength` condition field, `guardrail_regex_compile_error`,
-`guardrail_regex_missing_max_length`, `guardrail_regex_max_length_too_large`,
-and `guardrail_match_timeout` event are not part of v0.1; they return
-when v0.2 lands.
+millisecond cap on regex matching would be decorative. v0.1 has no
+runtime regex behavior to specify — the parser rejects the operator
+before any matching occurs.
+
+#### Future behavior (v0.2 — deferred, not specified yet)
+
+> **Deferred.** The items in this subsection are placeholders for the
+> v0.2 work. They are not part of the v0.1 runtime contract. The
+> ergonomics, validator codes, and event names listed here may change
+> when the worker-bounded evaluator is designed.
+
+When the v0.2 worker-bounded evaluator lands, the `regex` operator will
+be re-enabled. Names that are reserved for that work — and are NOT part
+of the v0.1 contract — include: the `maxLength` condition field, the
+validator codes `guardrail_regex_compile_error`,
+`guardrail_regex_missing_max_length`, and
+`guardrail_regex_max_length_too_large`, and the event
+`guardrail_match_timeout`. The actual v0.2 spec, including whether each
+of these survives the design, lands when v0.2 lands.
 
 ### Scope semantics
 
@@ -275,6 +288,7 @@ on first parse if any issue is `block`-class:
 | `guardrail_invalid_operator` | block | operator name not in enum |
 | `guardrail_invalid_event` | block | event name not in enum |
 | `guardrail_invalid_action` | block | action not warn or block |
+| `guardrail_invalid_condition_field` | block | a `conditions[i].field` value is not in the `GuardrailField` enum |
 | `guardrail_invalid_condition_shape` | block | a `conditions[i]` entry is not an object with field/operator/value |
 | `guardrail_invalid_scope` | block | scope not runtime-tool-call or artifact-authoring |
 | `guardrail_invalid_enabled` | block | enabled not a boolean |

@@ -897,3 +897,65 @@ conditions:
     ).not.toThrow()
   })
 })
+
+describe('FRONTMATTER_RE — CRLF tolerance (Copilot review)', () => {
+  // Rule files saved on Windows use \r\n line endings. The original
+  // LF-only frontmatter anchor mis-classified those files as having no
+  // frontmatter, surfacing as guardrail_frontmatter_missing.
+
+  test('accepts a rule file written with CRLF line endings', () => {
+    const lf = `---
+name: crlf-rule
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: file_path
+    operator: contains
+    value: foo
+---
+
+CRLF rule body.
+`
+    const crlf = lf.replace(/\n/g, '\r\n')
+    const r = rule(crlf)
+    expect(r.name).toBe('crlf-rule')
+    expect(r.conditions).toHaveLength(1)
+    expect(r.message).toContain('CRLF rule body.')
+  })
+})
+
+describe('parseGuardrailRule — invalid condition.field error code', () => {
+  // Copilot review: a condition-shape error (bad `field` enum value) was
+  // routed through `guardrail_invalid_operator`, masking operator
+  // diagnostics. The error now has its own code.
+
+  test('flags an unknown condition.field as guardrail_invalid_condition_field', () => {
+    const text = `---
+name: bad-field
+event: PreToolUse
+scope: runtime-tool-call
+conditions:
+  - field: not_a_field
+    operator: contains
+    value: x
+---
+`
+    try {
+      parseGuardrailRule(text)
+      throw new Error('expected throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(GuardrailParseError)
+      const e = err as GuardrailParseError
+      expect(
+        e.issues.some((i) => i.code === 'guardrail_invalid_condition_field'),
+      ).toBe(true)
+      // The operator code stays for actual operator typos only.
+      expect(
+        e.issues.some(
+          (i) => i.code === 'guardrail_invalid_operator' && i.rule.includes('field must be'),
+        ),
+      ).toBe(false)
+    }
+  })
+})
+
