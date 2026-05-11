@@ -4,19 +4,20 @@ Repo-native agentic SDLC runtime that makes AI code pass through debate, evidenc
 
 ## Status
 
-`v0.8.0-alpha.0` - M8 milestone. DEFINE, PLAN, BUILD-lite, and VERIFY-lite are implemented with file-based gates, worktree isolation, patch contracts, verification evidence, mutation gating, and restart-on-fail policy. See `docs/design/ROADMAP.md` for the full plan.
+`v0.18.0-alpha.0` - the full greenfield SDLC spine ships. 3299 tests pass offline; live xAI integration gated behind opt-in env flags. See `docs/design/ROADMAP.md` for the milestone plan and `docs/demo/01-todo-cli/` for a runnable end-to-end demo.
 
-What works in `v0.8`:
+Shipped through M16 + PE-1 + B1a:
 
-- `code-oz init` - scaffolds `.code-oz/` with greenfield/brownfield detection.
-- `code-oz run` - DEFINE phase via the BA persona; on `code-oz approve define`, advances to PLAN; PLAN phase via the Lead persona, with the Scientist phase-tail emitting `HYPOTHESES.md` + `OPEN_QUESTIONS.md` and gate-preflight blocking on overdue or blocking-importance open questions.
-- BUILD-lite - applies one PLAN task through a patch contract inside an isolated run worktree and writes `BUILD_REPORT.md`.
-- VERIFY-lite - executes the recorded validation command through `tool_use.execute`, captures evidence in `VERIFY.md`, runs mutation gating for new-behavior tests, and restarts failed attempts from a clean worktree with forensics preserved.
-- `code-oz doctor providers` - provider auth + CLI presence probe.
-- `code-oz doctor tools` - checks `rg` (ripgrep) is on PATH for the M6 repo-context tools.
-- `tool_use.repo_context` - `glob`, `grep`, `read` available to personas at locked caps (50 / 16 KB / 20 / 5 s / `network: 'none'`).
-- `tool_use.execute` - no-shell, argv-only validation execution with scrubbed environment, timeouts, stream caps, and termination reasons.
-- `budgets.global` - `maxTurns`, `maxProviderCalls`, `maxTokensEstimate`, `maxWallTimeMinutes`; soft warnings at `softWarnAtRatio` (default 0.75); optional `priceTable` for dollar telemetry.
+- `code-oz init` / `code-oz run` / `code-oz approve <phase>` / `code-oz doctor` - full production CLI for the DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP cycle on greenfield multi-task PLANs (M16).
+- File-based gates with sha256 binding; orchestrator never approves an unparseable artifact (M1-M5).
+- `tool_use.repo_context` (`glob` / `grep` / `read` at locked caps; `symbol` reserved for a future codegraph backend) and `tool_use.execute` (no-shell argv-only with scrubbed env, timeouts, stream caps).
+- BUILD-lite + VERIFY-lite + REVIEW-lite end-to-end with patch contracts, worktree-per-run isolation, mutation gating, restart-on-fail policy, cross-family REVIEW (BUILD and REVIEW provider families must differ), and review-needs-revision restart routing (M7-M9).
+- Debate runtime (`requestDebate()`) with topic-collision detection + concurrent-limit caps; debate-policy scheduler triggers debate on score grey-zone and panel disagreement (M10, M15).
+- Provider capability contract (M11) + company roster mapping persona roles to providers (M12) + role-cost policy under `budgets.global.byRole` (M13).
+- Reviewer panel v1 with cross-family quorum (M14); first simultaneous-provider surface, with `RULE21_BENCHMARK.md` as the canonical risk-reduction measurement methodology.
+- PE-1: `XaiProvider` direct HTTP adapter reading `XAI_API_KEY`, posting to `api.x.ai/v1/chat/completions` with strict request-body allowlist, full secret redaction, typed error class.
+- `code-oz run --effort lite|balanced|max|beast` (B1a) scales `budgets.global` and `budgets.perPhase` uniformly; never changes assurance invariants (review rounds, panel slot count, mutation gate threshold). Run-shape envelope locked at run start; active-run replay reads the recorded snapshot, not the live config.
+- 22 template-comparison borrows landed across the influence library; `docs/contracts/MCP_TRUST_BOUNDARY.md` ships as design-only with implementation demand-gated.
 
 ## What it is
 
@@ -34,7 +35,7 @@ Greenfield: `DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP`.
 
 Brownfield: `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP`. Auto-detected on boot.
 
-## Try it (M8 alpha)
+## Try it
 
 ```bash
 # Clone and install
@@ -53,7 +54,19 @@ ls -la .code-oz/
 ~/Projects/code-oz/dist/code-oz doctor tools
 ```
 
-REVIEW-lite lands in M9. Debate runtime lands in M10. See `docs/design/ROADMAP.md` for the milestone plan.
+See `docs/design/ROADMAP.md` for the milestone plan beyond v0.18.
+
+## Demo
+
+A 5-minute runnable end-to-end walkthrough lives in [`docs/demo/01-todo-cli/`](docs/demo/01-todo-cli/README.md). It drives one full DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP cycle on a greenfield todo CLI example via the `FakeProvider`, with all 5 gate files, cross-family REVIEW (BUILD on Claude family, REVIEW on Codex family), `--effort` envelope captures at three levels, and the full `events.jsonl` ledger.
+
+```sh
+bun run demo:todo-cli                # default (balanced)
+bun run demo:todo-cli --effort lite  # multiplier 0.4
+bun run demo:todo-cli --effort beast # multiplier 6.0
+```
+
+Captured outputs from all three effort levels are committed under `docs/demo/01-todo-cli/output/` so you can read the produced artifacts without running anything.
 
 ## Influence library
 
