@@ -317,6 +317,12 @@ export const EVENT_TYPES = [
   //     artifactSha256 the deleted gate referenced. Operators can
   //     correlate against the previous task's gate audit trail.
   'gate_file_cleared',
+  // B1a Commit 2 — `--effort` flag forensics. Reducer no-op; the event
+  // records the original + effective `CodeOzConfig['budgets']` snapshots
+  // so active-run dispatchers can reconstruct the post-`applyEffort`
+  // envelope after every `loadConfig({ cwd })`. See PhaseEvent variant
+  // below for the full payload shape and validator invariants.
+  'effort_envelope_applied',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -1432,6 +1438,51 @@ export type PhaseEvent =
       readonly currentTaskId: string
       readonly gateFile: string
       readonly priorArtifactSha256: string
+    }
+  // B1a Commit 2 — `--effort` flag forensics. Emitted by `initRun`
+  // immediately after `run_started` (and before `phase_entered(<initial>)`)
+  // so the originals + multiplier + effective envelope are durable from
+  // run start, ahead of any phase work. Reducer is a no-op (rule 23:
+  // forensics-only); active-run replay reads this event to reconstruct
+  // the effective `CodeOzConfig['budgets']` shape after every
+  // `loadConfig({ cwd })` (active dispatch reload sites). Recording is
+  // unconditional — `--effort` flag absent records `effort='balanced'`
+  // with `multiplier=1.0`, so legacy projections always have an envelope
+  // pair to consume.
+  //
+  // Schema-light on `originalBudgets` / `effectiveBudgets`: the loader
+  // is the schema-of-record for `CodeOzConfig['budgets']`. The validator
+  // checks only the top-level shape (`global` object + `perPhase`
+  // object; optional `byRole`) to keep the event-log validator from
+  // duplicating the loader's invariants.
+  | {
+      readonly version: 1
+      readonly type: 'effort_envelope_applied'
+      readonly ts: string
+      readonly runId: string
+      /** `lite` | `balanced` | `max` | `beast` (mirrors `EFFORT_LEVELS`
+       *  in `src/config/effort.ts`). */
+      readonly effort: 'lite' | 'balanced' | 'max' | 'beast'
+      /** Numeric multiplier from `EFFORT_MULTIPLIERS[effort]`; the
+       *  validator asserts the pair is consistent with the level. */
+      readonly multiplier: number
+      /** Pre-`applyEffort` `CodeOzConfig['budgets']` snapshot. Shape
+       *  mirrors the loader output: `{ global, perPhase }`. The `byRole`
+       *  field, when present, lives NESTED under `global` (see
+       *  `GlobalBudget.byRole` in `src/config/schema.ts`). The validator
+       *  is schema-light on the nested shape per the comment above. */
+      readonly originalBudgets: {
+        readonly global: Record<string, unknown>
+        readonly perPhase: Record<string, unknown>
+      }
+      /** Post-`applyEffort` `CodeOzConfig['budgets']` snapshot — what
+       *  every consumer in the run reads (assertWithinBudget, byRole
+       *  preflight, debate-policy scheduler aggregate preflight, etc.).
+       *  Same shape rules as `originalBudgets`. */
+      readonly effectiveBudgets: {
+        readonly global: Record<string, unknown>
+        readonly perPhase: Record<string, unknown>
+      }
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

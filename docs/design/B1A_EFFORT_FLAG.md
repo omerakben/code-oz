@@ -15,7 +15,7 @@ Codex pre-design review (thread 019e1318) caught four load-bearing bugs:
 1. **`budgets.perPhase` was missed entirely.** The loader has `budgets.perPhase.<phase>` at `src/config/load.ts:525-527, :786-840` enforced by `src/providers/cost.ts:221-285, :581-632, :857-907`. **Must scale.** Original design listed only `budgets.global` and `byRole`.
 2. **Active-run reload sites bypass the derived config.** A run spans multiple CLI invocations; active dispatch reloads raw config at `src/commands/run.ts:956, 1083, 1387, 1694`. Without event-replay, only DEFINE gets the effective envelope.
 3. **`initRun()` owns the initial event sequence** at `src/state/run.ts:221-243`. Must be in the touchlist as the fresh-run emission owner.
-4. **Rule 22 was too absolute.** "MUST NOT increase" blocks B1b from amending the rule. Add escape clause.
+4. **Rule 23 was too absolute.** "MUST NOT increase" blocks B1b from amending the rule. Add escape clause. (Renumbered from rule 22 in this design doc; rule 22 on `main` is now consumer-first/RED-first TDD per `CLAUDE.md:50`.)
 
 Codex also confirmed: `applyEffort()` in own file, floor + min-1 (preserve explicit 0), `maxToolCallsPerTurn` stays invariant, `maxWallTimeMinutes` scales, standalone event (not a `run_started` field).
 
@@ -75,7 +75,25 @@ The four scalable run-shape caps + the two scalable per-role caps + the three sc
 
 - **Parsing**: `src/commands/run.ts` arg-parser loop (alongside `--request`, `--task`, etc., around line 375+). New cases: `--effort` and `--effort=...`. Validates the value is one of the four levels; rejects anything else with a `--help`-cite error.
 - **Application**: between `loadConfig()` and any consumer. The application function lives in `src/config/load.ts` (or a sibling file `src/config/effort.ts` — TBD with Codex) and takes `(resolved: ResolvedConfig, effort: EffortLevel) → ResolvedConfig` returning a new object with the scaled fields. Pure function, no side effects.
-- **Logging**: emit a new event `effort_envelope_applied` at run start *before* any phase work, carrying `{ effort: EffortLevel, multiplier: number, originalGlobal: BudgetsGlobalEnvelope, effectiveGlobal: BudgetsGlobalEnvelope, originalByRole: ByRoleEnvelope, effectiveByRole: ByRoleEnvelope }`. The original envelope is recorded *only* in this event; the rest of the run (including `assertWithinBudget`) reads from the effective envelope.
+- **Logging**: emit a new event `effort_envelope_applied` at run start *before* any phase work, carrying `{ effort: EffortLevel, multiplier: number, originalBudgets: CodeOzConfig['budgets'], effectiveBudgets: CodeOzConfig['budgets'] }`. Both snapshots are full `CodeOzConfig['budgets']` JSON values (i.e., `{ global, perPhase }`; `byRole` lives nested under `global` per the loader shape, NOT at top level). The original envelope is recorded *only* in this event; active-run reload reads `effectiveBudgets` directly from the event (Codex R0 B1; replay does NOT re-apply `applyEffort` to the currently-loaded config). The rest of the run (including `assertWithinBudget`) reads from the effective envelope.
+
+## Event order lock (synthesis step 3, 2026-05-12)
+
+`initRun()` emits three events into `events.jsonl` at run start, inside one `withLock` block:
+
+1. `run_started` (always)
+2. `effort_envelope_applied` (when budgets are supplied; CLI path always supplies)
+3. `phase_entered(<initial>)` (always)
+
+**Position 2 is locked.** The envelope describes the run, not the first phase, so it is captured at run start ahead of any phase work. Three authorities concur on this order:
+
+- CLAUDE.md rule 23 text: "emits `effort_envelope_applied` immediately after `run_started`"
+- This design doc § "Where the flag lives" Logging bullet: "at run start *before* any phase work"
+- `docs/references/budgets.md` § "Effort multipliers (B1a)": "emits one `effort_envelope_applied` event immediately after `run_started`"
+
+Consumers may rely on this order: `tests/e2e/cli-effort-envelope.test.ts` asserts `events[1].type === 'effort_envelope_applied'` and `events[2].type === 'phase_entered'`. Active-run reload sites (`src/commands/run.ts`) scan by `type === 'effort_envelope_applied'` so position is informational for them, but the test is the hard constraint.
+
+Codex R0 may push back on this lock; if so, the alternative is position 3 (after `phase_entered`) and the design doc + rule 23 text + budgets.md prose must all be reworded in the same fix-first commit.
 
 ## File touchlist (split across two commits)
 
@@ -98,25 +116,25 @@ The four scalable run-shape caps + the two scalable per-role caps + the three sc
 6. `src/state/run.ts` — `initRun()` at `:221-243` is the fresh-run sequence owner. Emit `effort_envelope_applied` immediately after `run_started`. The event payload includes `effort`, `multiplier`, `originalBudgets`, `effectiveBudgets` where `*Budgets` is shaped exactly like `CodeOzConfig['budgets']` (i.e., contains `global`, `perPhase`, `byRole`).
 7. `src/state/events.ts` — add `effort_envelope_applied` to the event union and schema validator. Projection (`reduceEvents`) is a no-op for this event (it does not change state machine fields; it only records forensics). Schema requires `effort` ∈ `EFFORT_LEVELS`, `multiplier` matching the table, `originalBudgets` / `effectiveBudgets` shaped per `CodeOzConfig['budgets']`.
 8. `src/commands/run.ts` active-run reload sites (~lines 956, 1083, 1387, 1694) — after each `loadConfig()`, reconstruct the effective config by reading the `effort_envelope_applied` event from `events.jsonl` and re-applying the same `applyEffort()` transform. If `--effort` is passed on an active run and differs from the recorded effort, reject with a clear error: *"this run was started with --effort <recorded>; pass the same value or omit the flag"*.
-9. `tests/cli-effort-envelope.test.ts` (NEW) — binary-spawn e2e per `feedback_milestone_e2e_non_negotiable.md`:
+9. `tests/e2e/cli-effort-envelope.test.ts` (NEW) — binary-spawn e2e per `feedback_milestone_e2e_non_negotiable.md`:
    - Spawn `code-oz run --effort lite|balanced|max|beast` four times
    - Parse `events.jsonl` after run start
    - Assert exactly one `effort_envelope_applied` event with the correct payload
    - Assert the next phase consumes the effective envelope (run a no-op phase that emits a budget telemetry event)
    - Assert active-run continuation preserves the effective envelope (resume the run; new phase still sees the effective budgets)
    - Assert active-run with mismatched `--effort` rejects with the documented error
-10. `CLAUDE.md` — add **rule 22** with the revised invariant text below.
+10. `CLAUDE.md` — add **rule 23** with the revised invariant text below. (Renumbered from rule 22; main's rule 22 is consumer-first/RED-first TDD.)
 11. `docs/references/budgets.md` (NEW or APPEND if exists) — "Effort multipliers" section documenting the table, the scaled set, and the invariant.
 
 Touchlist count: 9 code sub-surfaces (excluding the two new test files). Single authority axis: the existing rule-19 `budgets.global` envelope. No new gate, no new phase, no new provider surface.
 
 Codex pre-design count: 6 minimum sub-surfaces (CLI parse/help, config transform, run-start event schema/validation, fresh-run wiring, active-run replay wiring, budget-consumer proof). The 9-count above is conservative (counts each active-run site, each test file separately).
 
-## Rule 22 (proposed) — Effort-flag invariant
+## Rule 23 (proposed) — Effort-flag invariant
 
 The constraint lands at the Commit 2 of B1a (per `feedback_canonical_doc_precedence_chain.md` — canonical-doc precedence stays consistent within the milestone). Revised per Codex pre-design feedback (was too absolute; B1b would have conflicted):
 
-> **22. The `--effort` flag scales budgets only, never assurance.** The flag may multiply scalable `budgets.global` caps, `budgets.global.byRole` rows, and `budgets.perPhase.<phase>` rows. It MUST NOT change `maxReviewRounds`, panel slot count, mutation gate threshold, BUILD restart attempt cap, debate-policy thresholds (M15), or AUDIT strictness for brownfield runs — until an **assurance-aware effort contract (deferred B1b)** amends this rule with its own milestone-gated invariants. The flag emits `effort_envelope_applied` immediately after `run_started`, recording both the original and the effective envelope (each shaped as `CodeOzConfig['budgets']`). Active-run continuations reconstruct the effective envelope from this event; mismatched `--effort` on an active run is rejected. The rest of the run reads only from the effective envelope. Validated by `tests/config-effort-unit.test.ts` (transform correctness) and `tests/cli-effort-envelope.test.ts` (binary-spawn assertion across fresh-run + active-run + reject-on-mismatch).
+> **23. The `--effort` flag scales budgets only, never assurance.** The flag may multiply scalable `budgets.global` caps, `budgets.global.byRole` rows, and `budgets.perPhase.<phase>` rows. It MUST NOT change `maxReviewRounds`, panel slot count, mutation gate threshold, BUILD restart attempt cap, debate-policy thresholds (M15), or AUDIT strictness for brownfield runs — until an **assurance-aware effort contract (deferred B1b)** amends this rule with its own milestone-gated invariants. The flag emits `effort_envelope_applied` immediately after `run_started`, recording both the original and the effective envelope (each shaped as `CodeOzConfig['budgets']`). Active-run continuations reconstruct the effective envelope from this event; mismatched `--effort` on an active run is rejected. The rest of the run reads only from the effective envelope. Validated by `tests/config-effort-unit.test.ts` (transform correctness) and `tests/e2e/cli-effort-envelope.test.ts` (binary-spawn assertion across fresh-run + active-run + reject-on-mismatch).
 
 ## Acceptance criteria (from SYNTHESIS + Codex pre-design)
 
@@ -131,7 +149,7 @@ The constraint lands at the Commit 2 of B1a (per `feedback_canonical_doc_precede
 - [ ] `docs/references/budgets.md` (or equivalent) gains an "Effort multipliers" section that explicitly states: *the flag does not change phase behavior or audit strictness*
 - [ ] **Codex approval condition** (from thread 019e1318): all of the following test files pass:
   - `bun test tests/config-effort-unit.test.ts`
-  - `bun test tests/cli-effort-envelope.test.ts`
+  - `bun test tests/e2e/cli-effort-envelope.test.ts`
   - `bun test tests/providers-cost.test.ts tests/cost-byrole.test.ts tests/cost-debate-scheduler-preflight.test.ts`
   - `bun test tests/review-panel-orchestrator.test.ts tests/state-events.test.ts tests/state-run.test.ts`
   - `bun run typecheck` clean
@@ -164,6 +182,6 @@ Per `feedback_per_commit_cross_model_review.md` — the rule is: budgets are sha
 
 ## Bug classes the design is intended to close
 
-- ARIS-reported "draft-quality `beast` output" (effort-contract.md:46-68): closed by the project-level invariant (rule 22) that effort cannot decrease assurance. B1b will close the other half (effort cannot accidentally increase assurance without a contract).
+- ARIS-reported "draft-quality `beast` output" (effort-contract.md:46-68): closed by the project-level invariant (rule 23) that effort cannot decrease assurance. B1b will close the other half (effort cannot accidentally increase assurance without a contract).
 - Codex pre-design review section 2 B1 bug class: "`--effort beast` 8x globals but per-phase/role caps unscaled, fail mid-run." Closed by the synthesis acceptance criterion (b) — *all* budget caps scale together — and verified by the unit test on `applyEffort()` matching every scalable-set field.
 - Pre-existing concern: per `feedback_explicit_at_writer_and_reader.md`, when `applyEffort()` writes a derived envelope, every reader should consume from the derived envelope. The plan: the rest of the run (including `assertWithinBudget`) reads from the returned config; the original is captured only in the single `effort_envelope_applied` event for forensics.
