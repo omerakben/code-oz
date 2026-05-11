@@ -271,6 +271,18 @@ The command never crashes on a single failed health probe; failures are aggregat
 
 v0.1 supports two auth shapes: subprocess delegation to upstream CLIs (Claude / Codex), and direct API-key transmission for HTTP adapters that have no upstream-CLI option (PE-1: xAI). The two shapes share the same `IAgentProvider` contract; only their auth substrates differ.
 
+### Trust-boundary lock (v0.1, session 06 L1)
+
+> **Code-Oz does not provide general shell execution; code-oz-owned execution is limited to no-shell argv runners or manifest-gated skill scripts, while provider CLIs own their subprocess sandbox/approval model.**
+
+Pinned 2026-05-10 from the codex-template comparison (`docs/comparison/06-codex/SYNTHESIS.md` L1, Codex thread `019e12ec`). The lock has three concrete consequences for the v0.1 surface:
+
+1. **No shell-string execution.** Code-oz uses `argv`-form subprocess primitives only — primarily `Bun.spawn`, with `node:child_process.spawn` in a small set of well-defined paths (repo-context glob via `rg`, doctor probes for upstream-CLI versions). All callsites pass explicit `argv` arrays; no callsite passes a shell string. There is no `sh -c "<user-string>"` path anywhere in the codebase, and there will not be one. If a future feature needs shell composition, it lands as a typed builder that produces an argv array, never a free-form string.
+2. **Skill scripts are manifest-gated.** Any executable runner shipped with a skill (per CLAUDE.md rule 9, generalized in session 06 to cover any executable, not only `.ts`) declares its `command`, `interpreter`, `cwd`, `file_roots`, `network`, `env`, `secrets`, `timeout`, and `output_caps` before invocation. The orchestrator refuses to run skills whose manifest is absent or invalid.
+3. **Provider CLIs own their sandbox/approval model.** When code-oz spawns Claude (`claude --print --output-format json`) or Codex (`codex exec --skip-git-repo-check --sandbox read-only`), the upstream CLI's sandbox and approval policy apply to its own subprocesses. Code-oz does not wrap these in an additional sandbox layer; doing so would create a second-authority surface that violates the principle that one party owns each authority. The CLIs' built-in flags (`--sandbox read-only` for Codex, `--no-session-persistence` for Claude, etc.) are the trust boundary on the upstream side; code-oz's role is to invoke them with the right flags and trust the result.
+
+This is the affirmative form of session 06 R1 (rejected: importing codex's sandboxing crates). Code-oz does not need its own `bwrap` / `linux-sandbox` / `process-hardening` because it does not run general shells. The trust boundary is the sum of (a) no shell-string execution + (b) manifest-gated skill scripts + (c) provider-CLI sandbox/approval.
+
 ### Subprocess delegation (Claude, Codex)
 
 Subprocess-backed adapters delegate auth entirely to the upstream CLIs. code-oz never reads, parses, or transmits an OAuth token, and never knows what platform-specific storage backend (auth.json file, OS credential store, etc.) the CLI uses.

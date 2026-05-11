@@ -1,6 +1,8 @@
 // Shared schemas and types for the M3 state machine, event log, and gate writers.
 // The canonical contract is pinned in docs/references/file-based-gates.md.
 
+import type { PresetName } from '../config/schema.ts'
+
 export const PHASES = ['define', 'plan', 'build', 'verify', 'review', 'ship', 'audit'] as const
 export type Phase = (typeof PHASES)[number]
 
@@ -91,6 +93,11 @@ export function generateUlid(opts: UlidOptions = {}): string {
 
 export const EVENT_TYPES = [
   'run_started',
+  // B4 — resolved config telemetry. This event is a mirror of the already
+  // resolved config object, not an enforcement authority. The run-start
+  // emitter is intentionally deferred to the follow-up that owns that path
+  // (docs/comparison/06-codex/SYNTHESIS.md B4; CLAUDE.md rule 19).
+  'config_resolved',
   'phase_entered',
   'phase_exited',
   'agent_invoked',
@@ -431,14 +438,41 @@ export interface AgentManifest {
   readonly files: readonly AgentManifestEntry[]
 }
 
+export interface OptionalActorAttribution {
+  /** Optional now, required in v0.2. Names the event emitter for §3.5 actor attribution. */
+  readonly actor?: string
+}
+
+type OptionalActorAttributed<T> = T & OptionalActorAttribution
+
 // PhaseEvent is the STRICT write-side type. Code that constructs and appends
 // events uses this discriminated union of every known event variant. The
 // agent_invoked variant requires manifest + four metric fields per the M4
 // contract pinned in docs/references/file-based-gates.md § 13.
 export type PhaseEvent =
-  | { readonly version: 1; readonly type: 'run_started'; readonly ts: string; readonly runId: string; readonly profile: Profile }
-  | { readonly version: 1; readonly type: 'phase_entered'; readonly ts: string; readonly runId: string; readonly phase: Phase }
-  | { readonly version: 1; readonly type: 'phase_exited'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly outcome: PhaseOutcome }
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'run_started'; readonly ts: string; readonly runId: string; readonly profile: Profile }>
+  | OptionalActorAttributed<{
+      readonly version: 1
+      readonly type: 'config_resolved'
+      readonly ts: string
+      readonly runId: string
+      readonly presetApplied: PresetName | null
+      readonly permissions: {
+        readonly allowEscapeHatch: boolean
+        readonly requireApprovalForBuild: boolean
+      }
+      readonly budgets: {
+        readonly global: {
+          readonly softWarnAtRatio: number
+          readonly maxReviewRounds: number
+          readonly maxProviderCalls: number
+          readonly maxTokensEstimate: number
+          readonly maxWallTimeMinutes: number
+        }
+      }
+    }>
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'phase_entered'; readonly ts: string; readonly runId: string; readonly phase: Phase }>
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'phase_exited'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly outcome: PhaseOutcome }>
   | {
       readonly version: 1
       readonly type: 'agent_invoked'
@@ -525,11 +559,11 @@ export type PhaseEvent =
        *  invoke/complete pair. */
       readonly parentTaskId?: string
     }
-  | { readonly version: 1; readonly type: 'gate_written'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly file: string }
-  | { readonly version: 1; readonly type: 'gate_required'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly blockedOn: string }
-  | { readonly version: 1; readonly type: 'intervention'; readonly ts: string; readonly runId: string; readonly code: string; readonly phase?: Phase }
-  | { readonly version: 1; readonly type: 'run_ended'; readonly ts: string; readonly runId: string; readonly outcome: RunOutcome }
-  | {
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'gate_written'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly file: string }>
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'gate_required'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly blockedOn: string }>
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'intervention'; readonly ts: string; readonly runId: string; readonly code: string; readonly phase?: Phase }>
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'run_ended'; readonly ts: string; readonly runId: string; readonly outcome: RunOutcome }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'ask_me_user_input'
       readonly ts: string
@@ -537,7 +571,7 @@ export type PhaseEvent =
       readonly phase: Phase
       readonly turn: number
       readonly input: string
-    }
+    }>
   | {
       readonly version: 1
       readonly type: 'ask_me_persona_reply'
@@ -564,7 +598,7 @@ export type PhaseEvent =
       readonly resultBytes: number
       readonly resultTokensEstimate: number
     }
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'science_emitted'
       readonly ts: string
@@ -572,8 +606,8 @@ export type PhaseEvent =
       readonly phase: Phase
       readonly hypothesesCount: number
       readonly openQuestionsCount: number
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'hypothesis_added'
       readonly ts: string
@@ -582,8 +616,8 @@ export type PhaseEvent =
       readonly id: string
       readonly status: 'open' | 'confirmed' | 'rejected' | 'obsolete'
       readonly falsifier: string
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'hypothesis_updated'
       readonly ts: string
@@ -593,8 +627,8 @@ export type PhaseEvent =
       readonly prevStatus: 'open' | 'confirmed' | 'rejected' | 'obsolete'
       readonly nextStatus: 'open' | 'confirmed' | 'rejected' | 'obsolete'
       readonly changedFields: readonly string[]
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'question_added'
       readonly ts: string
@@ -604,8 +638,8 @@ export type PhaseEvent =
       readonly status: 'open' | 'resolved' | 'deferred'
       readonly importance: 'low' | 'medium' | 'high' | 'blocking'
       readonly dueBy: string | null
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'question_resolved'
       readonly ts: string
@@ -614,8 +648,8 @@ export type PhaseEvent =
       readonly id: string
       readonly resolvedAt: string
       readonly resolution: string
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'question_deferred'
       readonly ts: string
@@ -623,8 +657,8 @@ export type PhaseEvent =
       readonly phase: Phase
       readonly id: string
       readonly deferredAt: string
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'budget_warning'
       readonly ts: string
@@ -647,9 +681,9 @@ export type PhaseEvent =
        *  are global-only metrics (no per-role dimension); a `role` value
        *  paired with either is rejected. */
       readonly role?: string
-    }
+    }>
   // M7 worktree events (orchestrator-owned).
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'worktree_created'
       readonly ts: string
@@ -660,8 +694,8 @@ export type PhaseEvent =
       /** Absolute path to the worktree directory. */
       readonly worktreePath: string
       readonly dirtyTreePolicy: 'clean-base' | 'stash-and-pin'
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'worktree_failed'
       readonly ts: string
@@ -672,8 +706,8 @@ export type PhaseEvent =
       readonly step: 1 | 2 | 3 | 4
       readonly code: string
       readonly reason: string
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'worktree_patch_applied'
       readonly ts: string
@@ -685,8 +719,8 @@ export type PhaseEvent =
       readonly patchPath: string
       readonly attempt: number
       readonly taskId: string
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'worktree_patch_failed'
       readonly ts: string
@@ -696,8 +730,8 @@ export type PhaseEvent =
       readonly attempt: number
       readonly taskId: string
       readonly reason: string
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'worktree_forensics_preserved'
       readonly ts: string
@@ -708,8 +742,8 @@ export type PhaseEvent =
       readonly forensicsPath: string
       /** Names of files written under forensicsPath. */
       readonly entries: readonly string[]
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'worktree_destroyed'
       readonly ts: string
@@ -724,7 +758,7 @@ export type PhaseEvent =
        */
       readonly attempt: number
       readonly worktreePath: string
-    }
+    }>
   // M7 BUILD phase events (per docs/contracts/BUILD.md).
   | {
       readonly version: 1
@@ -788,7 +822,7 @@ export type PhaseEvent =
   // agent's frontmatter; family is the resolved ProviderFamily via
   // src/providers/families.ts familyOf(); model is the agent's optional
   // `model` field, omitted when the agent did not pin a model.
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'build_provider_recorded'
       readonly ts: string
@@ -799,7 +833,7 @@ export type PhaseEvent =
       readonly provider: string
       readonly family: string
       readonly model?: string
-    }
+    }>
   // M8 VERIFY phase events (per docs/contracts/VERIFY.md § "Event types
   // emitted"). All four bind to the BUILD attempt being verified via
   // taskId + attempt; verify_started additionally carries the BUILD ref
@@ -858,7 +892,7 @@ export type PhaseEvent =
       /** Persona-authored Failure summary line; ≤ 200 chars per VERIFY.md grammar. */
       readonly failureSummary: string
     }
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'verify_restart_initiated'
       readonly ts: string
@@ -876,7 +910,7 @@ export type PhaseEvent =
       readonly nextAttempt?: number
       /** Absolute path to the preserved forensics/<N>/ directory for the failed attempt. */
       readonly forensicsPath: string
-    }
+    }>
   // M9 REVIEW phase events. All four bind to the BUILD attempt that
   // produced the artifact under review via taskId + attempt; review_started
   // additionally records the cross-family pair (buildFamily, reviewerFamily)
@@ -1144,7 +1178,7 @@ export type PhaseEvent =
       /** Optional structured details per disagreement kind. */
       readonly detail?: string
     }
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'panel_quorum_rejected_same_family_vote'
       readonly ts: string
@@ -1158,7 +1192,7 @@ export type PhaseEvent =
       /** Which of the 5-layer defense rejected the vote. */
       readonly layer: PanelQuorumRejectionLayer
       readonly detail?: string
-    }
+    }>
   | {
       readonly version: 1
       readonly type: 'review_panel_completed'
@@ -1179,7 +1213,7 @@ export type PhaseEvent =
       readonly voterCount: number
       readonly advisoryCount: number
     }
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'review_panel_baseline_completed'
       readonly ts: string
@@ -1210,7 +1244,7 @@ export type PhaseEvent =
       /** Telemetry; non-gating. */
       readonly costOverheadRatio: number
       readonly wallClockOverheadMs: number
-    }
+    }>
   // M15 Debate-policy scheduler events. See docs/contracts/DEBATE_POLICY.md
   // (commit 7) for the surface + defense-in-depth + common errors. The
   // scheduler is mechanical orchestrator code at the post-REVIEW call site;
@@ -1322,7 +1356,7 @@ export type PhaseEvent =
        *  rule-21 new-actionable-finding-rate metric numerator. */
       readonly actionableFindingsAddedCount: number
     }
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'debate_policy_baseline_completed'
       readonly ts: string
@@ -1359,14 +1393,14 @@ export type PhaseEvent =
       readonly latencyOverheadAvgMs: number
       /** `correctiveDeltaRate >= 0.10 && newActionableFindingRate >= 0.30`. */
       readonly passedRuleTwentyOne: boolean
-    }
+    }>
   // M16 — Per-task lifecycle cursor events (Codex R0 Risk #1 closure).
   // `taskIndex` is 0-based position in PLAN.md tasks declared order;
   // `taskId` is the canonical `T-NNN` id (validated against
   // src/artifacts/plan.ts TASK_ID_PATTERN). Both fields are carried so
   // the cursor projection can validate consistency between event log
   // and current PLAN.md without re-parsing PLAN per event.
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'task_started'
       readonly ts: string
@@ -1375,8 +1409,8 @@ export type PhaseEvent =
       readonly taskId: string
       /** 0-based index in PLAN.md tasks declared order at time of emit. */
       readonly taskIndex: number
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'task_review_passed'
       readonly ts: string
@@ -1391,8 +1425,8 @@ export type PhaseEvent =
       /** 64-char lower-case hex of the canonical REVIEW.md content for
        *  the round that resolved as ready. */
       readonly reviewReportSha256: string
-    }
-  | {
+    }>
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'task_completed'
       readonly ts: string
@@ -1404,7 +1438,7 @@ export type PhaseEvent =
        *  signal — emitted ONLY after the gate file write succeeds, so
        *  rule 1 (file-based gate signals) is honored. */
       readonly reviewGatePath: string
-    }
+    }>
   // M16 C11 — `--provider fake` warning event. CI safety net: surfaces
   // accidental fake-provider runs in production logs. Banner stderr text
   // + this event fire ONCE per `code-oz run` invocation (not once per
@@ -1418,7 +1452,7 @@ export type PhaseEvent =
   //   `fakeScriptPath` — present only when `--fake-script <path>` was
   //     supplied alongside `--provider fake`. Operators can grep the
   //     event log to find which fixture script ran.
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'fake_provider_warning_emitted'
       readonly ts: string
@@ -1426,7 +1460,7 @@ export type PhaseEvent =
       readonly providerAlias: 'fake'
       readonly providerFamily: 'fake'
       readonly fakeScriptPath?: string
-    }
+    }>
   // M16 C9 follow-on — task-boundary gate-file lifecycle audit event.
   // Emitted by `dispatchBuild` / `dispatchVerify` / `dispatchReview` when
   // a stale `GATE_<PHASE>_PASSED.json` file from a prior `task_completed`
@@ -1437,7 +1471,7 @@ export type PhaseEvent =
   // Idempotent on the dispatcher side — when the file does not exist or
   // when the latest gate's recorded sha equals the current artifact's
   // sha, no event is emitted.
-  | {
+  | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'gate_file_cleared'
       readonly ts: string
@@ -1447,7 +1481,7 @@ export type PhaseEvent =
       readonly currentTaskId: string
       readonly gateFile: string
       readonly priorArtifactSha256: string
-    }
+    }>
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)
 // accepts events whose `type` is a non-empty string it doesn't recognize, so

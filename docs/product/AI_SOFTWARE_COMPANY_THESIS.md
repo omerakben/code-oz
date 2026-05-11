@@ -203,6 +203,16 @@ Caution promoted to product rule:
 10. Human approval gates remain part of v0.1 discipline.
 11. **No new parallel-provider surface lands without a measurable risk-reduction effect in `events.jsonl` against the simpler baseline.** (Agentless caution promoted to rule.)
 
+## Reversed Conversation
+
+The shape of every code-oz phase is the same: AI proposes, the user verifies. This is the inverse of the prompt-and-execute loop where a human types an instruction and the agent runs to completion. The principle is named **Reversed Conversation**, after AWS's [AI-Driven Development Lifecycle](https://aws.amazon.com/blogs/devops/ai-driven-development-life-cycle/). Chorus (`~/Projects/agents/templates/Chorus`) shipped Reversed Conversation as an explicit philosophy in v0.7.0; code-oz already practiced it without naming it.
+
+The principle maps directly onto existing gates. DEFINE runs an ask-me conversation through the BA persona; the user verifies `SPEC.md` before it locks. PLAN runs 3-source verification through the Lead persona; the user verifies `PLAN.md` plus `SOURCE_CHECK.md` before BUILD touches a worktree. SHIP requires a final human approval gate before the run closes. In every case the agent drafts, the user accepts or rejects, and the gate writer binds the approved artifact by sha256.
+
+Naming the principle changes nothing about behavior. The DEFINE / PLAN / SHIP gates are the same as before. What is new is that contributors and reviewers now have a single phrase for the discipline. A future PR can cite "Reversed Conversation" instead of restating the AI-proposes-humans-verify shape from scratch.
+
+This is not rebranding. The named principle is a cross-reference target for the universal-rules.md persona prompt block (Rule 16) and for the maestro discipline (Rule 17). Both already encode the same shape at a per-persona level; the principle now has a project-level home that the rules can point at.
+
 ## Roadmap placement
 
 Do not interrupt M9 or M10 to implement the full company-roster concept.

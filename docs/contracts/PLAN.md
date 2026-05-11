@@ -2,6 +2,8 @@
 
 User-facing summary of the artifact the PLAN phase produces. The contract below is authoritative for v0.1; a future deeper pinned spec at `docs/references/plan-contract.md` will track parser internals when M6 lands.
 
+*Gate philosophy: Reversed Conversation (see [`docs/product/AI_SOFTWARE_COMPANY_THESIS.md`](../product/AI_SOFTWARE_COMPANY_THESIS.md)).*
+
 ## What PLAN.md is
 
 The output of the PLAN phase. A plain Markdown document at `.code-oz/artifacts/PLAN.md` that decomposes an approved SPEC.md into atomic, independently testable tasks with named files, validation commands, risk notes, hypothesis citations, and source citations.
