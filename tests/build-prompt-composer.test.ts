@@ -139,7 +139,8 @@ describe('builder.md persona', () => {
     const body = fmEnd === -1 ? text : text.slice(fmEnd + 5)
     expect(body.length).toBeGreaterThan(2500)
     // Codex's reject-of-decision-6 guidance: ~3.5k-4.5k. We allow some
-    // slack since prose-density varies; cap at 6k as the upper bound.
-    expect(body.length).toBeLessThan(6000)
+    // slack since prose-density varies; cap at 7k as the upper bound after
+    // rule 22(b) RED-first detail and rule-9 enforcement layer landed.
+    expect(body.length).toBeLessThan(7000)
   })
 })

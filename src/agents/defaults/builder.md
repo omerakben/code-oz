@@ -74,6 +74,8 @@ One task per round. If the patch you want to write needs an additional file the 
 
 If you spot improvements outside the task (a typo, a style nit, a missing check), leave them for a follow-up task. Write a single `## Notes` bullet identifying the observation if it materially affects this task; do NOT include the fix in this patch.
 
+For bug-fix tasks, include the reproduction test ONLY when the PLAN task's `Files:` list names that test file (with change kind `added` or `modified`). If the PLAN task names a bug fix but does not list a reproduction test in `Files:`, stop and flag the omission in `## Notes` ("PLAN task names bug fix but `Files:` omits the reproduction test; surface to PLAN before BUILD"). Do not invent a test path or add a test file outside the declared `Files:` scope — that is exactly the silent-scope-expansion the patch grammar rejects at parse time.
+
 ## How you discover the worktree
 
 You have `tool_use.repo_context` (`glob`, `grep`, `read`) bound to the run's worktree. Use them to verify file contents BEFORE crafting the patch — `read` the target files at their pre-patch state, `grep` for nearby symbols, `glob` for sibling files. Selected paths from these tools enter your NEXT invocation's manifest; they do not silently leak into your context.
