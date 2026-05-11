@@ -19,6 +19,7 @@
 
 import { open, readFile } from 'node:fs/promises'
 import { Buffer } from 'node:buffer'
+import { dirname, join } from 'node:path'
 import {
   EVENT_TYPES,
   PHASE_OUTCOMES,
@@ -37,12 +38,14 @@ import {
   isPhase,
   isProfile,
   isIsoTimestamp,
+  isKnownPhaseEvent,
   type PhaseEvent,
+  type EventType,
   type LoggedEvent,
 } from './schemas.ts'
 import { EventLogError, type EventLogIssue } from './errors.ts'
 import { LockBusyError, withLock } from './lock.ts'
-import { M12_COMPANY_ROLES } from '../config/schema.ts'
+import { M12_COMPANY_ROLES, PRESET_NAMES } from '../config/schema.ts'
 
 // M13 (Codex Q8 lock, CODEX_RESPONSE_M13.md, thread 019de672): role
 // discriminator on `budget_warning` is only meaningful for metrics that
@@ -91,6 +94,86 @@ const DEBATE_TOPIC_MAX_LEN = 48
 const DEBATE_RATIONALE_SUMMARY_MAX_LEN = 200
 // Forward-compat correlation values (D3 lock).
 const DEBATE_TURN_VALUES = ['opposing', 'synthesis', 'continuation'] as const
+
+// §3.5 Chorus borrow: event types that lack an existing `agent` actor field
+// now accept optional `actor?: string`. Missing values are pre-warnings until
+// v0.2; present values are hard-validated below.
+export const ACTOR_ATTRIBUTION_RECOMMENDED_EVENT_TYPES = [
+  'run_started',
+  'phase_entered',
+  'phase_exited',
+  'gate_written',
+  'gate_required',
+  'intervention',
+  'run_ended',
+  'ask_me_user_input',
+  'science_emitted',
+  'hypothesis_added',
+  'hypothesis_updated',
+  'question_added',
+  'question_resolved',
+  'question_deferred',
+  'budget_warning',
+  'worktree_created',
+  'worktree_failed',
+  'worktree_patch_applied',
+  'worktree_patch_failed',
+  'worktree_forensics_preserved',
+  'worktree_destroyed',
+  'build_provider_recorded',
+  'verify_restart_initiated',
+  'panel_quorum_rejected_same_family_vote',
+  'review_panel_baseline_completed',
+  'debate_policy_baseline_completed',
+  'task_started',
+  'task_review_passed',
+  'task_completed',
+  'fake_provider_warning_emitted',
+  'gate_file_cleared',
+] as const satisfies readonly EventType[]
+
+type ActorAttributionRecommendedEventType =
+  (typeof ACTOR_ATTRIBUTION_RECOMMENDED_EVENT_TYPES)[number]
+
+const ACTOR_ATTRIBUTION_RECOMMENDED_SET = new Set<string>(
+  ACTOR_ATTRIBUTION_RECOMMENDED_EVENT_TYPES,
+)
+
+const RECOMMENDED_ACTOR_BY_EVENT_TYPE: Readonly<
+  Record<ActorAttributionRecommendedEventType, string>
+> = Object.freeze({
+  run_started: 'orchestrator',
+  phase_entered: 'orchestrator',
+  phase_exited: 'orchestrator',
+  gate_written: 'orchestrator',
+  gate_required: 'orchestrator',
+  intervention: 'orchestrator',
+  run_ended: 'orchestrator',
+  ask_me_user_input: 'user',
+  science_emitted: 'scientist',
+  hypothesis_added: 'scientist',
+  hypothesis_updated: 'scientist',
+  question_added: 'scientist',
+  question_resolved: 'scientist',
+  question_deferred: 'scientist',
+  budget_warning: 'orchestrator',
+  worktree_created: 'orchestrator',
+  worktree_failed: 'orchestrator',
+  worktree_patch_applied: 'orchestrator',
+  worktree_patch_failed: 'orchestrator',
+  worktree_forensics_preserved: 'orchestrator',
+  worktree_destroyed: 'orchestrator',
+  build_provider_recorded: 'orchestrator',
+  verify_restart_initiated: 'orchestrator',
+  panel_quorum_rejected_same_family_vote: 'orchestrator',
+  review_panel_baseline_completed: 'doctor',
+  debate_policy_baseline_completed: 'doctor',
+  task_started: 'orchestrator',
+  task_review_passed: 'orchestrator',
+  task_completed: 'orchestrator',
+  fake_provider_warning_emitted: 'orchestrator',
+  gate_file_cleared: 'orchestrator',
+})
 
 /**
  * Validate an in-memory event object against the v1 schema. Returns null when
@@ -159,6 +242,9 @@ export function validateEvent(
     return null
   }
 
+  const actorIssue = validateOptionalActorAttribution(file, e, line)
+  if (actorIssue) return actorIssue
+
   // No defense-in-depth check for newlines in event string fields:
   // appendEvent serializes via JSON.stringify(event) + '\n', and
   // JSON.stringify escapes literal newlines as `\n`. A newline in a
@@ -179,6 +265,123 @@ export function validateEvent(
         }
       }
       break
+
+    case 'config_resolved': {
+      // B4 telemetry-only mirror. The emitter is deferred to the run-start
+      // follow-up; this validator intentionally reads the resolved event
+      // payload without making events.jsonl a parallel config authority
+      // (CLAUDE.md rule 19; docs/comparison/06-codex/SYNTHESIS.md B4).
+      // TODO(run-start emitter follow-up): either widen this narrow payload
+      // beyond the preset-controlled fields to cover all resolved budgets
+      // (maxTurns, maxToolCallsPerTurn, toolCallBudgetMultiplier, perPhase,
+      // byRole, priceTable, etc.) or narrow the SYNTHESIS.md B4 wording.
+      if (
+        e.presetApplied !== null &&
+        (typeof e.presetApplied !== 'string' ||
+          !(PRESET_NAMES as readonly string[]).includes(e.presetApplied))
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: `config_resolved.presetApplied must be one of: ${PRESET_NAMES.join(' | ')}, or JSON null`,
+          detail: `got ${JSON.stringify(e.presetApplied)}`,
+          line,
+        }
+      }
+      const permissions = e.permissions
+      if (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.permissions must be an object',
+          detail: `got ${JSON.stringify(permissions)}`,
+          line,
+        }
+      }
+      const p = permissions as Record<string, unknown>
+      if (typeof p.allowEscapeHatch !== 'boolean') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.permissions.allowEscapeHatch must be a boolean',
+          detail: `got ${JSON.stringify(p.allowEscapeHatch)}`,
+          line,
+        }
+      }
+      if (typeof p.requireApprovalForBuild !== 'boolean') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.permissions.requireApprovalForBuild must be a boolean',
+          detail: `got ${JSON.stringify(p.requireApprovalForBuild)}`,
+          line,
+        }
+      }
+      const budgets = e.budgets
+      if (budgets === null || typeof budgets !== 'object' || Array.isArray(budgets)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.budgets must be an object',
+          detail: `got ${JSON.stringify(budgets)}`,
+          line,
+        }
+      }
+      const global = (budgets as Record<string, unknown>).global
+      if (global === null || typeof global !== 'object' || Array.isArray(global)) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.budgets.global must be an object',
+          detail: `got ${JSON.stringify(global)}`,
+          line,
+        }
+      }
+      const g = global as Record<string, unknown>
+      if (
+        typeof g.softWarnAtRatio !== 'number' ||
+        !Number.isFinite(g.softWarnAtRatio) ||
+        g.softWarnAtRatio <= 0 ||
+        g.softWarnAtRatio >= 1
+      ) {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'config_resolved.budgets.global.softWarnAtRatio must be a number in (0, 1)',
+          detail: `got ${JSON.stringify(g.softWarnAtRatio)}`,
+          line,
+        }
+      }
+      // Zero is accepted here to mirror config-loader nonNegIntOrDefault
+      // semantics for resolved budgets; no stricter event-log rule.
+      const budgetIssue =
+        nonNegativeInteger(
+          file,
+          g.maxReviewRounds,
+          'config_resolved.budgets.global.maxReviewRounds',
+          line,
+        ) ??
+        nonNegativeInteger(
+          file,
+          g.maxProviderCalls,
+          'config_resolved.budgets.global.maxProviderCalls',
+          line,
+        ) ??
+        nonNegativeInteger(
+          file,
+          g.maxTokensEstimate,
+          'config_resolved.budgets.global.maxTokensEstimate',
+          line,
+        ) ??
+        nonNegativeInteger(
+          file,
+          g.maxWallTimeMinutes,
+          'config_resolved.budgets.global.maxWallTimeMinutes',
+          line,
+        )
+      if (budgetIssue) return budgetIssue
+      break
+    }
 
     case 'phase_entered':
       if (!isPhase(e.phase)) {
@@ -297,6 +500,10 @@ export function validateEvent(
         file, e.debateTopic, e.debateTurn, 'agent_invoked', line,
       )
       if (debateCorrelationIssue) return debateCorrelationIssue
+      const parentTaskIssue = validateOptionalTaskId(
+        file, e.parentTaskId, 'agent_invoked.parentTaskId', line,
+      )
+      if (parentTaskIssue) return parentTaskIssue
       break
     }
 
@@ -328,6 +535,10 @@ export function validateEvent(
         file, e.debateTopic, e.debateTurn, 'agent_completed', line,
       )
       if (debateCorrelationIssue) return debateCorrelationIssue
+      const parentTaskIssue = validateOptionalTaskId(
+        file, e.parentTaskId, 'agent_completed.parentTaskId', line,
+      )
+      if (parentTaskIssue) return parentTaskIssue
       break
     }
 
@@ -2234,6 +2445,33 @@ function validateDebateCorrelation(
 }
 
 /**
+ * 09-byterover-cli B3 — optional `parentTaskId` validator. The field is
+ * absent on most agent_invoked / agent_completed events (project-local
+ * personas, single-call phase invocations, and PLAN-side debates where no
+ * T-NNN task is in scope); when present it must match the canonical
+ * `T-NNN` task-id pattern shared with `src/artifacts/plan.ts`. Codex
+ * thread `019e1318` design memo.
+ */
+function validateOptionalTaskId(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (value === undefined) return null
+  if (typeof value !== 'string' || !TASK_ID_PATTERN.test(value)) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must match ${TASK_ID_PATTERN.source} when present`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
+  return null
+}
+
+/**
  * Topic slug grammar validator. Per DEBATE.md § "Topic slug grammar":
  * lowercase-kebab-case, ≤ 48 characters, descriptive. Phase prefix is the
  * caller's responsibility (e.g., `plan-source-priority`); this validator
@@ -2272,6 +2510,47 @@ function validateDebateTopic(
     }
   }
   return null
+}
+
+function validateOptionalActorAttribution(
+  file: string,
+  e: Record<string, unknown>,
+  line?: number,
+): EventLogIssue | null {
+  if (e.actor === undefined) return null
+  if (typeof e.actor !== 'string' || e.actor.trim().length === 0) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: 'event.actor must be a non-blank string when present',
+      detail: `got ${JSON.stringify(e.actor)}`,
+      line,
+    }
+  }
+  return null
+}
+
+function actorAttributionMissingPrewarn(
+  file: string,
+  event: LoggedEvent,
+  line: number,
+): EventLogIssue | null {
+  if (!isKnownPhaseEvent(event)) return null
+  if (!ACTOR_ATTRIBUTION_RECOMMENDED_SET.has(event.type)) return null
+
+  const actor = (event as Record<string, unknown>).actor
+  if (actor !== undefined) return null
+
+  const eventType = event.type as ActorAttributionRecommendedEventType
+  return {
+    file,
+    code: 'actor_attribution_missing',
+    rule:
+      `${event.type}.actor is recommended for §3.5 actor attribution ` +
+      '(optional now, required in v0.2)',
+    detail: `recommendedActor=${RECOMMENDED_ACTOR_BY_EVENT_TYPE[eventType]}`,
+    line,
+  }
 }
 
 function strArrInvalid(file: string, field: string, line?: number): EventLogIssue {
@@ -2565,4 +2844,25 @@ export async function readEvents(paths: EventLogPaths): Promise<readonly LoggedE
   }
 
   return Object.freeze(events.map((e) => Object.freeze(e)))
+}
+
+/**
+ * §3.5 Chorus borrow audit helper. Reads an events.jsonl file and returns
+ * soft pre-warnings for known events that lack the recommended `actor`
+ * binding. Missing actor is allowed until v0.2, so this never feeds into
+ * readEvents() hard-fail behavior.
+ */
+export async function findEventsMissingRecommendedActorBinding(
+  eventsJsonlPath: string,
+): Promise<readonly EventLogIssue[]> {
+  const events = await readEvents({
+    file: eventsJsonlPath,
+    lockDir: join(dirname(eventsJsonlPath), '.lock'),
+  })
+  const warnings: EventLogIssue[] = []
+  for (let i = 0; i < events.length; i++) {
+    const warning = actorAttributionMissingPrewarn(eventsJsonlPath, events[i]!, i + 1)
+    if (warning !== null) warnings.push(warning)
+  }
+  return Object.freeze(warnings.map((warning) => Object.freeze({ ...warning })))
 }

@@ -596,3 +596,71 @@ export function hasMinimumContent(spec: SpecArtifact): boolean {
     spec.nonGoals.length >= 1
   )
 }
+
+// Quality heuristics: diagnostic-only checks surfaced AFTER GATE_DEFINE_PASSED is
+// written. These do NOT participate in parseSpec / SpecLoadError / approval flow
+// (rule 20: zero new gate authority). Pinned in docs/references/spec-contract.md
+// under "Quality heuristics (diagnostic-only)".
+
+export type SpecLintCode = 'spec_vague_language' | 'spec_goals_underspecified'
+
+export interface SpecLintIssue {
+  readonly code: SpecLintCode
+  readonly section: SpecSectionKey
+  readonly bulletIndex: number
+  readonly term?: string
+}
+
+const VAGUE_TERMS = [
+  'fast', 'quick', 'slow', 'good', 'bad', 'poor',
+  'user-friendly', 'easy', 'simple', 'secure', 'safe',
+  'scalable', 'flexible', 'performant', 'efficient',
+] as const
+
+// Bullet is exempt when it contains an explicit metric (digit + unit-ish token)
+// or a named-control identifier from the contract-pinned allow-list.
+// The intent is the source comparison's "explicit metric or named control" rule.
+const METRIC_RE = /\d+\s*(?:ms|s|m|h|%|MB|GB|KB|kb|req|rps|qps|hz|min|sec|seconds?|minutes?|hours?|days?|users?|requests?|rows?|bytes?|tokens?)\b/i
+const NAMED_CONTROL_RE = /\b(?:OAuth|OIDC|SAML|JWT|MFA|TOTP|RBAC|ABAC|ACL|TLS|mTLS|HMAC|AES|RSA|ECDSA|HKDF|PBKDF2|bcrypt|argon2|scrypt|SOC2|HIPAA|GDPR|PCI|CSP|CORS|CSRF)\b/
+
+function bulletWordCount(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length
+}
+
+function findVagueTerms(bullet: string): readonly string[] {
+  // Match the prd-taskmaster regex: optional `should be|must be|need(s) to be` lead-in,
+  // then any of the 15 terms as a whole word, case-insensitive.
+  const pattern = new RegExp(
+    String.raw`\b(?:should\s+be\s+|must\s+be\s+|needs?\s+to\s+be\s+)?(` +
+      VAGUE_TERMS.join('|') +
+      String.raw`)\b`,
+    'gi',
+  )
+  if (METRIC_RE.test(bullet) || NAMED_CONTROL_RE.test(bullet)) return []
+  const found: string[] = []
+  let m: RegExpExecArray | null
+  while ((m = pattern.exec(bullet)) !== null) {
+    found.push(m[1]!.toLowerCase())
+  }
+  return found
+}
+
+export function lintSpecQuality(spec: SpecArtifact): readonly SpecLintIssue[] {
+  const issues: SpecLintIssue[] = []
+  // QH1: vague language across all six sections
+  for (const section of SPEC_SECTION_KEYS) {
+    const bullets = spec[section]
+    bullets.forEach((bullet, bulletIndex) => {
+      for (const term of findVagueTerms(bullet)) {
+        issues.push({ code: 'spec_vague_language', section, bulletIndex, term })
+      }
+    })
+  }
+  // QH2: Goals sufficiency; both arms must fail
+  const goalBullets = spec.goals.length
+  const goalWords = spec.goals.reduce((n, b) => n + bulletWordCount(b), 0)
+  if (goalBullets < 2 && goalWords < 15) {
+    issues.push({ code: 'spec_goals_underspecified', section: 'goals', bulletIndex: 0 })
+  }
+  return Object.freeze(issues)
+}

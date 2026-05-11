@@ -7,7 +7,8 @@
 //   - On success: serialize the validated SpecArtifact to canonical
 //     Markdown, atomically write `<artifactRoot>/SPEC.md`, then call
 //     requireGate(define, ...) to record a gate_required event and rebuild
-//     current.json. NEVER a SPEC.draft.md on the success path.
+//     current.json, then add diagnostic SPEC quality warnings to the CLI
+//     message. NEVER a SPEC.draft.md on the success path.
 //
 //   - On validation_failed: write the unvalidated draft to
 //     `<artifactRoot>/SPEC.draft.md`, write NEEDS_INTERVENTION.json
@@ -27,7 +28,7 @@
 import { join } from 'node:path'
 
 import { runAskMe, type AskMeResult } from './ask-me.ts'
-import { serializeSpec } from '../artifacts/spec.ts'
+import { lintSpecQuality, serializeSpec } from '../artifacts/spec.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import { CANONICAL_ARTIFACTS } from '../state/schemas.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
@@ -181,13 +182,25 @@ export async function runDefine(opts: RunDefineOptions): Promise<DefineResult> {
         blockedOn: 'user approval via `code-oz approve define`',
         now,
       })
+      const lintIssues = lintSpecQuality(askMeResult.spec)
+      const userMessage = [
+        `DEFINE phase complete. Review ${target}, then run:`,
+        `  code-oz approve define`,
+      ]
+      if (lintIssues.length > 0) {
+        userMessage.push(
+          '',
+          'Quality heuristics (diagnostic-only - not blocking):',
+          ...lintIssues.map((issue) => {
+            const termSuffix = issue.term !== undefined ? ` (term: "${issue.term}")` : ''
+            return `  - ${issue.code} in ${issue.section}[${issue.bulletIndex}]${termSuffix}`
+          }),
+        )
+      }
       return Object.freeze({
         status: 'complete',
         specPath: target,
-        userMessage: [
-          `DEFINE phase complete. Review ${target}, then run:`,
-          `  code-oz approve define`,
-        ].join('\n'),
+        userMessage: userMessage.join('\n'),
       })
     }
 
