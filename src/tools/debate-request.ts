@@ -116,6 +116,13 @@ export interface DebateRequestInput {
   readonly resolvedBy: string
   /** Ready signal for prompts (passed through to composer). */
   readonly readySignal?: string
+  /** 09-byterover-cli B3 (Codex thread `019e1318`):
+   *  orchestrator-operation correlation id (`T-NNN`) threaded onto both
+   *  the opposing-party turn and the caller's synthesis turn so per-call
+   *  cost rows roll up under one debate. Set by REVIEW debate fire paths
+   *  (`src/phases/review.ts`); plan-side `requestDebate` callers omit it
+   *  because no `T-NNN` task id is in scope at PLAN debate time. */
+  readonly parentTaskId?: string
 }
 
 export interface DebateResult {
@@ -536,6 +543,11 @@ async function* run(
       runId: req.runId,
       prompt: `${opposingPrompt}\n\n## BRIEFING.md\n\nSee the file manifest. Author your RESPONSE.${familyToSide(opposingFamily)}.md per the schema above.`,
       files: opposingFiles,
+      // 09-byterover-cli B3: synthetic opposing turns carry the caller's
+      // parent task so the debate's two `agent_invoked` events correlate
+      // back to one orchestrator step. Roles still differ (the opposing
+      // turn omits role per M13 risk closure); parentTaskId is shared.
+      ...(req.parentTaskId !== undefined ? { parentTaskId: req.parentTaskId } : {}),
     }
     let collected = ''
     for await (const ev of invokeAgent(ctx, opposingReq)) {
@@ -590,6 +602,9 @@ async function* run(
     prompt: `${synthesisPrompt}\n\n## You wrote BRIEFING.md and received RESPONSE.${opposingSide}.md\n\nAuthor DECISION.md per the schema. The orchestrator will validate dual-verdict frontmatter, the five required H2 sections, rationale length (>= 50 chars substantive), and reject exact-copy rationale.`,
     files: synthesisFiles,
     ...(callerRole !== undefined ? { role: callerRole } : {}),
+    // 09-byterover-cli B3: synthesis turn carries the same parent task
+    // id as the opposing turn — they belong to the same debate operation.
+    ...(req.parentTaskId !== undefined ? { parentTaskId: req.parentTaskId } : {}),
   }
   let synthesisContent = ''
   for await (const ev of invokeAgent(ctx, synthesisReq)) {

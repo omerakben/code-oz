@@ -500,6 +500,10 @@ export function validateEvent(
         file, e.debateTopic, e.debateTurn, 'agent_invoked', line,
       )
       if (debateCorrelationIssue) return debateCorrelationIssue
+      const parentTaskIssue = validateOptionalTaskId(
+        file, e.parentTaskId, 'agent_invoked.parentTaskId', line,
+      )
+      if (parentTaskIssue) return parentTaskIssue
       break
     }
 
@@ -531,6 +535,10 @@ export function validateEvent(
         file, e.debateTopic, e.debateTurn, 'agent_completed', line,
       )
       if (debateCorrelationIssue) return debateCorrelationIssue
+      const parentTaskIssue = validateOptionalTaskId(
+        file, e.parentTaskId, 'agent_completed.parentTaskId', line,
+      )
+      if (parentTaskIssue) return parentTaskIssue
       break
     }
 
@@ -2432,6 +2440,33 @@ function validateDebateCorrelation(
   if (topicIssue) return topicIssue
   if (typeof turn !== 'string' || !(DEBATE_TURN_VALUES as readonly string[]).includes(turn)) {
     return enumInvalid(file, `${eventType}.debateTurn`, DEBATE_TURN_VALUES, turn, line)
+  }
+  return null
+}
+
+/**
+ * 09-byterover-cli B3 — optional `parentTaskId` validator. The field is
+ * absent on most agent_invoked / agent_completed events (project-local
+ * personas, single-call phase invocations, and PLAN-side debates where no
+ * T-NNN task is in scope); when present it must match the canonical
+ * `T-NNN` task-id pattern shared with `src/artifacts/plan.ts`. Codex
+ * thread `019e1318` design memo.
+ */
+function validateOptionalTaskId(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (value === undefined) return null
+  if (typeof value !== 'string' || !TASK_ID_PATTERN.test(value)) {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must match ${TASK_ID_PATTERN.source} when present`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
   }
   return null
 }

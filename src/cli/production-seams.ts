@@ -552,7 +552,7 @@ function parsePanelistResponse(
 export function productionPanelistInvoker(
   opts: ProductionPanelistInvokerOptions,
 ): import('../phases/review-panel.ts').PanelistInvoker {
-  return async (cfg, round) => {
+  return async (cfg, round, invokeCtx) => {
     const agent = opts.agents.get(cfg.id) ?? opts.defaultAgent
     const composedPrompt = await opts.composePrompt(cfg, round)
     const req: ProviderRequest = {
@@ -563,6 +563,13 @@ export function productionPanelistInvoker(
       files: opts.files ?? [],
       ...(cfg.model !== undefined ? { model: cfg.model } : {}),
       ...(opts.maxOutputTokens !== undefined ? { maxOutputTokens: opts.maxOutputTokens } : {}),
+      // 09-byterover-cli B3 (Codex thread `019e1318`): correlate every
+      // panelist provider call back to the panel operation's task id.
+      // `runReviewPanel` always passes the ctx; defensive `?.` keeps
+      // pre-B3 fixtures and test seams that omit it from breaking.
+      ...(invokeCtx?.parentTaskId !== undefined
+        ? { parentTaskId: invokeCtx.parentTaskId }
+        : {}),
     }
     let final: ProviderResponse | null = null
     const stream: AsyncIterable<ProviderEvent> = invokeAgent(opts.invokeCtx, req)

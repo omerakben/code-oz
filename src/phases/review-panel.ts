@@ -106,6 +106,13 @@ export type PanelistInvoker = (
     readonly model?: string
   },
   round: number,
+  /** 09-byterover-cli B3 (Codex thread `019e1318`): orchestrator-operation
+   *  correlation context. The panel runner passes
+   *  `{ parentTaskId: opts.upstreamRefs.taskId }` so the production-seam
+   *  invoker can record `parentTaskId` on each constituent
+   *  `ProviderRequest`. Optional so existing test stubs that ignore the
+   *  third argument keep compiling. */
+  ctx?: { readonly parentTaskId?: string },
 ) => Promise<PanelistInvocationResult>
 
 export interface RunReviewPanelOptions {
@@ -363,6 +370,11 @@ export async function runReviewPanel(
           ...(cfg.model !== undefined ? { model: cfg.model } : {}),
         },
         opts.round,
+        // 09-byterover-cli B3: thread the panel operation's task id so
+        // the production-seam invoker stamps `parentTaskId` onto every
+        // panelist `ProviderRequest`. Per-provider cost rows under one
+        // panel run now correlate back to a single orchestrator step.
+        { parentTaskId: opts.upstreamRefs.taskId },
       )
     } catch (err) {
       return {

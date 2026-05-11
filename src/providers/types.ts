@@ -84,6 +84,20 @@ export interface ProviderRequest {
    * type tightening is a compile-time guard, not a runtime change.
    */
   readonly role?: CompanyRole
+  /**
+   * 09-byterover-cli B3 (Codex thread `019e1318`): orchestrator-operation
+   * correlation id. Set by fan-out call sites (REVIEW panel via the
+   * production-seam invoker; debate runtime via `requestDebate`) so each
+   * `agent_invoked` / `agent_completed` event records the parent
+   * orchestrator step. Project-local personas, single-call phase
+   * invocations, and synthetic debate opponents that do not belong to a
+   * fan-out parent omit it. The wrapper writes the field through verbatim
+   * (`src/providers/invoke.ts`); the validator at `src/state/events.ts`
+   * accepts only the canonical `T-NNN` task-id pattern when present.
+   * Forward-compat: optional, so existing readers parse new events
+   * identically (M10/M12/M13 precedent).
+   */
+  readonly parentTaskId?: string
 }
 
 /**
