@@ -1,0 +1,186 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+            bunTarget: bun-darwin-arm64
+          - os: darwin
+            arch: x64
+            runner: macos-latest
+            bunTarget: bun-darwin-x64
+          - os: linux
+            arch: x64
+            runner: ubuntu-latest
+            bunTarget: bun-linux-x64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+            bunTarget: bun-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.9
+
+      - name: Resolve VERSION
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build per-arch binary
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+          BUN_TARGET: ${{ matrix.bunTarget }}
+        run: |
+          set -eu
+          BIN_DIR="dist/${MATRIX_OS}-${MATRIX_ARCH}"
+          mkdir -p "${BIN_DIR}"
+          bun build --compile --target="${BUN_TARGET}" src/cli.ts \
+            --outfile "${BIN_DIR}/code-oz"
+          chmod +x "${BIN_DIR}/code-oz"
+
+      - name: Stage tarball directory
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+          BUN_TARGET: ${{ matrix.bunTarget }}
+        run: |
+          set -eu
+          STAGE_NAME="code-oz-v${VERSION}-${MATRIX_OS}-${MATRIX_ARCH}"
+          STAGE_DIR="dist/${STAGE_NAME}"
+          BIN_DIR="dist/${MATRIX_OS}-${MATRIX_ARCH}"
+          mkdir -p "${STAGE_DIR}"
+          cp "${BIN_DIR}/code-oz" "${STAGE_DIR}/code-oz"
+          cp scripts/install.sh "${STAGE_DIR}/install.sh"
+          chmod +x "${STAGE_DIR}/install.sh"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SHA256="$(sha256sum "${STAGE_DIR}/code-oz" | awk '{print $1}')"
+          SIZE_BYTES="$(wc -c < "${STAGE_DIR}/code-oz" | awk '{print $1}')"
+          cat > "${STAGE_DIR}/manifest.json" <<JSON
+          {
+            "schemaVersion": 1,
+            "version": "${VERSION}",
+            "builtAt": "${BUILT_AT}",
+            "targets": [
+              {
+                "os": "${MATRIX_OS}",
+                "arch": "${MATRIX_ARCH}",
+                "bunTarget": "${BUN_TARGET}",
+                "binaryRelativePath": "code-oz",
+                "sha256": "${SHA256}",
+                "sizeBytes": ${SIZE_BYTES},
+                "version": "${VERSION}"
+              }
+            ]
+          }
+          JSON
+          cat > "${STAGE_DIR}/README.md" <<MD
+          # code-oz v${VERSION} — ${MATRIX_OS}-${MATRIX_ARCH}
+
+          Single-target distribution. Run \`sh ./install.sh\` to install to
+          \`~/.local/bin/code-oz\`.
+          MD
+
+      - name: Create per-arch tarball
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          STAGE_NAME="code-oz-v${VERSION}-${MATRIX_OS}-${MATRIX_ARCH}"
+          ASSET_NAME="code-oz-v${VERSION}-${MATRIX_OS}-${MATRIX_ARCH}.tar.gz"
+          tar -C dist -czf "dist/${ASSET_NAME}" "${STAGE_NAME}"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-oz-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/code-oz-v*-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve VERSION
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "TAG=${REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all tarball artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Assemble checksums.txt
+        working-directory: dist
+        run: |
+          set -eu
+          : > checksums.txt
+          for asset in code-oz-v*-*-*.tar.gz; do
+            sha256sum "${asset}" >> checksums.txt
+          done
+          echo "::group::checksums.txt"
+          cat checksums.txt
+          echo "::endgroup::"
+
+      - name: Stage install.sh asset
+        run: cp scripts/install.sh dist/install.sh
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.TAG }}
+        working-directory: dist
+        run: |
+          set -eu
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes "code-oz ${TAG} — multi-target binary release. See checksums.txt for SHA256s." \
+            --verify-tag \
+            checksums.txt \
+            install.sh \
+            code-oz-v*-darwin-arm64.tar.gz \
+            code-oz-v*-darwin-x64.tar.gz \
+            code-oz-v*-linux-x64.tar.gz \
+            code-oz-v*-linux-arm64.tar.gz
