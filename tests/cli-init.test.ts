@@ -137,6 +137,37 @@ describe('code-oz init', () => {
     expect(await detectProfile(tempDir!)).toBe('greenfield')
   })
 
+  // Phase 1.6 prerequisite (1000-star plan) — close the brownfield
+  // detection gap Codex R0 flagged. A repo with `.git/` initialized
+  // and at least one untracked source file at root (not matching any
+  // known lockfile/marker/extension/source-dir heuristic) was being
+  // misclassified as greenfield. Fix: an untracked file inside a
+  // git-initialized repo is enough to flag brownfield, since the user
+  // has both opted into version control AND dropped in code that
+  // needs auditing.
+  test('detects brownfield via untracked source file in a git-initialized repo', async () => {
+    const cwd = tempDir!
+    await Bun.spawn(['git', '-C', cwd, 'init', '-q']).exited
+    // Plain `.ts` file — not in BROWNFIELD_LOCKFILES, not a marker
+    // file, no marker extension, not under a source-dir name. Before
+    // the fix this returned 'greenfield'.
+    await writeFile(join(cwd, 'app.ts'), 'export const x = 1\n', 'utf8')
+    expect(await detectProfile(cwd)).toBe('brownfield')
+  })
+
+  test('honors .gitignore when scanning for contentful untracked files', async () => {
+    // If both .gitignore and the source file are git-ignored, the
+    // untracked-files scan returns nothing, so detector falls through
+    // to the remaining heuristics (no lockfile, no markers, no
+    // populated source dir) and stays greenfield. This is the
+    // explicit-opt-out regression guard for the new heuristic.
+    const cwd = tempDir!
+    await Bun.spawn(['git', '-C', cwd, 'init', '-q']).exited
+    await writeFile(join(cwd, '.gitignore'), '.gitignore\napp.ts\n', 'utf8')
+    await writeFile(join(cwd, 'app.ts'), 'export const x = 1\n', 'utf8')
+    expect(await detectProfile(cwd)).toBe('greenfield')
+  })
+
   test('init records the detected profile in config.yaml', async () => {
     await writeFile(join(tempDir!, 'package.json'), '{"name":"x"}', 'utf8')
     const { profile, paths } = await initProject({ cwd: tempDir! })

@@ -91,6 +91,13 @@ export async function setupVerifyFailProject(): Promise<VerifyFailProject> {
   const configPath = join(projectRoot, '.code-oz', 'config.yaml')
   const configRaw = await readFile(configPath, 'utf8')
   const cfg = parseYaml(configRaw) as Record<string, unknown>
+  // Phase 1.6 (1000-star plan) — see comment in multi-task-cli.ts: the
+  // populated `src/` directory makes the detector mark this fixture as
+  // brownfield, but the verify-fail restart cycle is a greenfield
+  // DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP flow. Pin the
+  // profile explicitly so run.ts:initRun respects the workflow under
+  // test rather than the detector's auto-classification.
+  cfg.profile = 'greenfield'
   const budgets = (cfg.budgets ??= {}) as Record<string, unknown>
   budgets.perPhase = {
     define: { maxTurns: 60, maxProviderCalls: 60, maxTokensEstimate: 1_000_000 },

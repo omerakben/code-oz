@@ -306,9 +306,18 @@ export async function runCommand(args: string[]): Promise<void> {
   // § "Event order lock". originalBudgets = the loader output before
   // applyEffort; effectiveBudgets = the post-applyEffort `config` bound
   // above (the same object every consumer below this line reads).
+  // Phase 1.6 prerequisite (1000-star plan, R0-revision-3 closure #3).
+  // Read profile from the resolved config so brownfield repos start at
+  // their declared profile instead of the prior `greenfield` literal.
+  // Pairs with the detector tightening in src/commands/init.ts (untracked
+  // files in a git-initialized repo now flag brownfield). M17's C2 will
+  // add the AUDIT dispatch branch that consumes this profile; until
+  // then the fresh-run path still calls runDefine below, so brownfield
+  // runs reach M17's C1 RED test without profile-selection bugs masking
+  // the real AUDIT dispatch gap.
   await initRun({
     paths: runPaths,
-    profile: 'greenfield',
+    profile: config.profile,
     runId,
     effort: parsed.effort,
     originalBudgets: rawConfig.budgets,

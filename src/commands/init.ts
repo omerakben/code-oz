@@ -91,8 +91,38 @@ async function gitTracksFiles(cwd: string): Promise<boolean> {
   }
 }
 
+// Phase 1.6 prerequisite (1000-star plan, R0-revision-3 closure #3).
+// Why: a git-initialized repo with untracked source files (typical of
+// "I just dropped this code into a fresh git init and ran code-oz")
+// was misclassified as greenfield by the prior heuristic when the
+// file extension fell outside the BROWNFIELD_MARKER_EXTENSIONS set.
+// `git ls-files --others --exclude-standard` lists untracked files
+// while honoring .gitignore, so explicitly ignored files don't
+// trigger brownfield (preserves the empty-git-init greenfield case).
+// .code-oz/ entries are filtered defensively in case detection runs
+// after initialization.
+async function gitHasContentfulUntrackedFiles(cwd: string): Promise<boolean> {
+  if (!(await pathExists(join(cwd, '.git')))) return false
+  try {
+    const proc = Bun.spawn(
+      ['git', '-C', cwd, 'ls-files', '--others', '--exclude-standard'],
+      { stdout: 'pipe', stderr: 'pipe' },
+    )
+    const text = await new Response(proc.stdout).text()
+    await proc.exited
+    const untracked = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('.code-oz/'))
+    return untracked.length > 0
+  } catch {
+    return false
+  }
+}
+
 export async function detectProfile(cwd: string): Promise<Profile> {
   if (await gitTracksFiles(cwd)) return 'brownfield'
+  if (await gitHasContentfulUntrackedFiles(cwd)) return 'brownfield'
 
   for (const f of BROWNFIELD_LOCKFILES) {
     if (await pathExists(join(cwd, f))) return 'brownfield'

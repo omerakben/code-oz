@@ -197,6 +197,15 @@ export function gamma(): string {
   const configPath = join(projectRoot, '.code-oz', 'config.yaml')
   const configRaw = await readFile(configPath, 'utf8')
   const cfg = parseYaml(configRaw) as Record<string, unknown>
+  // Phase 1.6 (1000-star plan) — detector marks this fixture as
+  // brownfield (populated `src/` directory triggers BROWNFIELD_SOURCE_DIRS),
+  // but the multi-task lifecycle this helper drives is a greenfield
+  // DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP flow. Force the
+  // profile back to greenfield so `run_started.profile` matches the
+  // phase sequence the tests assert on. Without this override, the
+  // brownfield profile would route fresh runs to AUDIT (M17 work),
+  // which is not what these greenfield e2es exercise.
+  cfg.profile = 'greenfield'
   const budgets = (cfg.budgets ??= {}) as Record<string, unknown>
   budgets.perPhase = {
     define: { maxTurns: 60, maxProviderCalls: 60, maxTokensEstimate: 1_000_000 },
