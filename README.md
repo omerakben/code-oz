@@ -4,7 +4,7 @@ Repo-native agentic SDLC runtime that makes AI code pass through debate, evidenc
 
 ## Status
 
-`v0.20.0-alpha.0` — first release with official install channels (curl|sh, npm, Homebrew). 3353 tests pass offline; live xAI integration gated behind opt-in env flags. See `docs/design/ROADMAP.md` for the milestone plan and `docs/demo/01-todo-cli/` for a runnable end-to-end demo.
+`v0.20.0-alpha.0` — first release with official install channels (curl|sh, npm, Homebrew). 3362 tests pass offline; live xAI integration gated behind opt-in env flags. See `docs/design/ROADMAP.md` for the milestone plan and `docs/demo/01-todo-cli/` for a runnable end-to-end demo.
 
 Shipped through M16 + PE-1 + B1a + W3a:
 

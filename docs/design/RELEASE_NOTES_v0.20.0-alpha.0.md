@@ -49,10 +49,12 @@ same release.
 
 ## Test surface
 
-`bun test` runs 3353 offline tests (was 3302 at v0.19.0-alpha.0 close).
-Net +51 tests cover: SHA chain (6), Linux detection (4), CLI flags (3),
-network-mode fetch (6), CI workflow structure (13), npm wrapper (7),
-Homebrew formula template (12).
+`bun test` runs 3362 offline tests (was 3302 at v0.19.0-alpha.0 close).
+Net +60 tests cover: SHA chain (6), Linux detection (4), CLI flags (3),
+network-mode fetch (6), CI workflow structure (13) + release ↔ consumer
+layout contract (3) + bun-install ordering guard (1), npm wrapper (7),
+Homebrew formula template (12), and post-R1/R2 closure: install.sh
+temp-dir cleanup (2) + downloader chain seam (3).
 
 Live xAI integration tests stay opt-in
 (`CODE_OZ_LIVE_PROVIDER_TESTS=xai`); the new `test.yml` workflow leaves

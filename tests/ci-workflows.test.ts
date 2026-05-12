@@ -147,6 +147,30 @@ describe('.github/workflows/release.yml', () => {
     expect(runScripts).toContain('--compile')
   })
 
+  test('build job runs bun install before bun build (W3a R2)', () => {
+    // src/config/schema.ts (transitively imported by src/cli.ts) requires
+    // the `yaml` runtime dependency. A clean GitHub checkout has no
+    // node_modules until `bun install` runs. If install is missing from
+    // the build job, `bun build --compile` fails with
+    //   Could not resolve: "yaml". Maybe you need to "bun install"?
+    // and the release workflow never produces assets. This pins the
+    // ordering: setup → install → build.
+    const doc = asObject(loadYaml(releaseYmlPath))
+    const jobs = asObject(doc.jobs)
+    const build = asObject(jobs.build)
+    const steps = asArray(build.steps).map((step) => asObject(step))
+    const installIdx = steps.findIndex((step) => {
+      const run = step.run
+      return typeof run === 'string' && /\bbun install\b/.test(run)
+    })
+    expect(installIdx).toBeGreaterThan(-1)
+    const buildIdx = steps.findIndex((step) => {
+      const run = step.run
+      return typeof run === 'string' && /\bbun build\b.*--compile\b/s.test(run)
+    })
+    expect(buildIdx).toBeGreaterThan(installIdx)
+  })
+
   test('release job assembles checksums and creates a GitHub release', () => {
     const doc = asObject(loadYaml(releaseYmlPath))
     const jobs = asObject(doc.jobs)
