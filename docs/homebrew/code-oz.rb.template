@@ -18,8 +18,11 @@
 class CodeOz < Formula
   desc "Repo-native agentic SDLC runtime — multi-agent software-company simulation CLI"
   homepage "https://github.com/omerakben/code-oz"
-  version "__VERSION__"
   license "MIT"
+  # NOTE: no explicit `version "..."` line — `brew audit --strict --online`
+  # flags it as redundant with the URL version. Homebrew parses the version
+  # from `v__VERSION__/` in the release URL automatically. (Verified
+  # 2026-05-12 with the v0.20.0-alpha.0 render.)
 
   on_macos do
     on_arm do
