@@ -1,5 +1,5 @@
 {
-  "name": "code-oz",
+  "name": "@tuel/code-oz",
   "version": "0.20.0-alpha.0",
   "description": "Multi-agent software-company simulation CLI with hard SDLC gates",
   "type": "module",

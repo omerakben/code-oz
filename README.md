@@ -4,7 +4,7 @@ Repo-native agentic SDLC runtime that makes AI code pass through debate, evidenc
 
 [![Tests](https://github.com/omerakben/code-oz/actions/workflows/test.yml/badge.svg)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
 [![Release](https://github.com/omerakben/code-oz/actions/workflows/release.yml/badge.svg)](https://github.com/omerakben/code-oz/actions/workflows/release.yml)
-[![npm version](https://img.shields.io/npm/v/code-oz.svg)](https://www.npmjs.com/package/code-oz)
+[![npm version](https://img.shields.io/npm/v/@tuel/code-oz.svg)](https://www.npmjs.com/package/@tuel/code-oz)
 [![Homebrew](https://img.shields.io/badge/Homebrew-omerakben%2Fcode--oz-orange)](https://github.com/omerakben/homebrew-code-oz)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/omerakben/code-oz/releases)
@@ -21,8 +21,8 @@ Three channels deliver the same single binary, verified against the same `checks
 curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.20.0-alpha.0/install.sh \
   | sh -s -- --version v0.20.0-alpha.0
 
-# npm
-npm install -g code-oz
+# npm (scoped under the TUEL AI publisher; binary still runs as `code-oz`)
+npm install -g @tuel/code-oz
 
 # Homebrew
 brew tap omerakben/code-oz

@@ -60,7 +60,7 @@ npm publish --access public
 npm view code-oz versions                # confirm 0.20.0-alpha.0 listed
 ```
 
-Exit criteria: `npm install -g code-oz` on a fresh machine resolves; first invocation downloads + SHA-verifies binary; execs successfully.
+Exit criteria: `npm install -g @tuel/code-oz` on a fresh machine resolves; first invocation downloads + SHA-verifies binary; execs successfully. Note: unscoped `code-oz` was rejected by npm's similarity guard against the existing `codecov` package on 2026-05-12; scoping under the TUEL AI publisher (`@tuel/code-oz`) bypasses the similarity check while keeping the binary name `code-oz`.
 
 **1.2 Homebrew tap creation (Claude executes, ~30min)**
 
@@ -85,7 +85,7 @@ Badges added above the fold (between tagline and Status):
 ```markdown
 [![Tests](https://github.com/omerakben/code-oz/actions/workflows/test.yml/badge.svg)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
 [![Release](https://github.com/omerakben/code-oz/actions/workflows/release.yml/badge.svg)](https://github.com/omerakben/code-oz/actions/workflows/release.yml)
-[![npm version](https://img.shields.io/npm/v/code-oz.svg)](https://www.npmjs.com/package/code-oz)
+[![npm version](https://img.shields.io/npm/v/@tuel/code-oz.svg)](https://www.npmjs.com/package/@tuel/code-oz)
 [![Homebrew](https://img.shields.io/badge/Homebrew-omerakben%2Fcode--oz-orange)](https://github.com/omerakben/homebrew-code-oz)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/omerakben/code-oz/releases)
@@ -138,7 +138,7 @@ Exit criteria: brownfield fixture exits Phase 1.6 with `profile: 'brownfield'` p
 
 | Risk | Mitigation |
 |---|---|
-| npm name `code-oz` taken before publish | RUN 1.1 FIRST. Verified 404 as of 2026-05-12 but not stable. |
+| npm name `code-oz` taken before publish | RUN 1.1 FIRST. Verified 404 as of 2026-05-12. **OUTCOME**: unscoped `code-oz` was rejected on first publish attempt — not by squatting but by npm's similarity guard against `codecov`. Mitigation locked: scope under `@tuel/code-oz` (TUEL AI publisher) — bypasses similarity check, keeps binary name `code-oz`. |
 | `brew audit --strict --online` fails on first render | Pre-render locally + fix audit findings before push |
 | macOS Gatekeeper bounces users on first run | Explicit caveat in README + install.sh xattr workaround; signing remains v0.x stable |
 

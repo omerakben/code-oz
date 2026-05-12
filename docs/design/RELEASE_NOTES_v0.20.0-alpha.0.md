@@ -41,7 +41,7 @@ The three install channels deliver the same artifact via the same
 `checksums.txt` source of truth:
 
 - **curl|sh:** `curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.20.0-alpha.0/install.sh | sh -s -- --version v0.20.0-alpha.0` (or run install.sh from an unpacked tarball)
-- **npm:** `npm install -g code-oz` — wrapper downloads + SHA-verifies + caches on first invocation
+- **npm:** `npm install -g @tuel/code-oz` — scoped under the TUEL AI publisher (unscoped `code-oz` was rejected by npm's similarity guard against `codecov`); wrapper downloads + SHA-verifies + caches on first invocation; binary is still invoked as `code-oz`
 - **Homebrew:** `brew tap omerakben/code-oz && brew install omerakben/code-oz/code-oz` — formula verifies SHA via the `sha256` block
 
 Same `code-oz-v0.20.0-alpha.0-${OS}-${ARCH}.tar.gz` artifact, same SHA,
