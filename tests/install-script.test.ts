@@ -454,6 +454,139 @@ describe('scripts/install.sh — network mode (W3a)', () => {
   })
 })
 
+describe('scripts/install.sh — network-mode cleanup (W3a R1)', () => {
+  test('cleans up temp dir on successful network install (no leak via subshell scope)', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho cleanup-test\n',
+    })
+    const mktempLog = join(bundle.root, 'mktemp.log')
+    await writeRecordingMktemp(bundle.toolsDir, mktempLog)
+
+    const result = await runInstall(
+      bundle,
+      { CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}` },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).toBe(0)
+    const allocated = (await readFile(mktempLog, 'utf8')).trim().split('\n').filter(Boolean)
+    expect(allocated.length).toBeGreaterThan(0)
+    // Every mktemp -d call the script makes should be cleaned up by the
+    // parent EXIT trap. If fetch_release_bundle leaks its temp root because
+    // it ran inside a $(...) subshell, this assertion catches it.
+    for (const path of allocated) {
+      expect(existsSync(path)).toBe(false)
+    }
+  })
+
+  test('cleans up temp dir on network install failure (checksum mismatch)', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho original\n',
+    })
+    await writeFile(
+      join(release.dir, release.assetName),
+      Buffer.from('tampered-bytes-not-a-real-tarball'),
+    )
+    const mktempLog = join(bundle.root, 'mktemp.log')
+    await writeRecordingMktemp(bundle.toolsDir, mktempLog)
+
+    const result = await runInstall(
+      bundle,
+      { CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}` },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).not.toBe(0)
+    const allocated = (await readFile(mktempLog, 'utf8')).trim().split('\n').filter(Boolean)
+    expect(allocated.length).toBeGreaterThan(0)
+    for (const path of allocated) {
+      expect(existsSync(path)).toBe(false)
+    }
+  })
+})
+
+describe('scripts/install.sh — downloader chain (W3a R1)', () => {
+  test('routes through wget when CODE_OZ_FORCE_DOWNLOADER=wget', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho via-wget\n',
+    })
+    await writeFakeWget(bundle.toolsDir)
+
+    const result = await runInstall(
+      bundle,
+      {
+        CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}`,
+        CODE_OZ_FORCE_DOWNLOADER: 'wget',
+      },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(`code-oz installed at ${bundle.installDir}/code-oz`)
+    expect(await readFile(join(bundle.installDir, 'code-oz'), 'utf8')).toBe(
+      '#!/bin/sh\necho via-wget\n',
+    )
+  })
+
+  test('fails closed when CODE_OZ_FORCE_DOWNLOADER=none', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho any\n',
+    })
+
+    const result = await runInstall(
+      bundle,
+      {
+        CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}`,
+        CODE_OZ_FORCE_DOWNLOADER: 'none',
+      },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('neither curl nor wget')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+
+  test('rejects invalid CODE_OZ_FORCE_DOWNLOADER override', async () => {
+    const bundle = await createNetworkBundle()
+    const release = await createReleaseStore({
+      version: 'v0.20.0-alpha.0',
+      os: 'darwin',
+      arch: 'arm64',
+      binaryText: '#!/bin/sh\necho any\n',
+    })
+
+    const result = await runInstall(
+      bundle,
+      {
+        CODE_OZ_RELEASE_BASE_URL: `file://${release.dir}`,
+        CODE_OZ_FORCE_DOWNLOADER: 'aria2',
+      },
+      ['--version', 'v0.20.0-alpha.0'],
+    )
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('invalid CODE_OZ_FORCE_DOWNLOADER')
+    expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
+  })
+})
+
 async function createBundle(opts: {
   binaryRelativePath?: string
   binaryText?: string
@@ -621,6 +754,53 @@ async function writeFakeOpenssl(toolsDir: string, sha: string): Promise<void> {
 async function writeFakeXattr(toolsDir: string, logPath: string): Promise<void> {
   const path = join(toolsDir, 'xattr')
   await writeFile(path, `#!/bin/sh\necho "$@" >> "${logPath}"\n`)
+  await chmod(path, 0o755)
+}
+
+async function writeRecordingMktemp(toolsDir: string, logPath: string): Promise<void> {
+  // Forwards to /usr/bin/mktemp (BSD on macOS, GNU on Linux) and appends the
+  // allocated path to logPath. Lets cleanup tests verify which dirs the
+  // script asked for, then assert they no longer exist after the script
+  // exits (i.e., the EXIT trap actually saw INSTALL_TMP_ROOT).
+  const path = join(toolsDir, 'mktemp')
+  await writeFile(
+    path,
+    `#!/bin/sh
+result="$(/usr/bin/mktemp "$@")"
+status=$?
+[ $status -eq 0 ] && [ -n "$result" ] && printf '%s\\n' "$result" >> "${logPath}"
+printf '%s\\n' "$result"
+exit $status
+`,
+  )
+  await chmod(path, 0o755)
+}
+
+async function writeFakeWget(toolsDir: string): Promise<void> {
+  // POSIX shim handling `wget -q -O <target> <url>` for file:// URLs. Real
+  // wget supports file:// natively, but it is not installed by default on
+  // macOS test runners. Tests that exercise the wget branch use this shim;
+  // production paths still call real wget.
+  const path = join(toolsDir, 'wget')
+  await writeFile(
+    path,
+    `#!/bin/sh
+target=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -O) target="$2"; shift 2 ;;
+    -q) shift ;;
+    file://*) url="\${1#file://}"; shift ;;
+    *) shift ;;
+  esac
+done
+[ -n "$target" ] || exit 1
+[ -n "$url" ] || exit 1
+[ -f "$url" ] || exit 1
+cp "$url" "$target"
+`,
+  )
   await chmod(path, 0o755)
 }
 

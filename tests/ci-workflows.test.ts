@@ -186,3 +186,61 @@ describe('.github/workflows/release.yml', () => {
     expect(raw).toMatch(/MATRIX_ARCH:\s+\${{\s*matrix\.arch\s*}}/)
   })
 })
+
+describe('release.yml ↔ consumer layout contract (W3a R1)', () => {
+  // The release workflow stages a per-arch tarball that two consumers
+  // (scripts/install.sh, npm-wrapper/index.cjs) decompress and read. Both
+  // expect:
+  //   - top-level dir: code-oz-v${VERSION}-${OS}-${ARCH}/
+  //   - inside: code-oz, manifest.json (install.sh + npm wrapper read it)
+  //   - inside: install.sh, README.md (install.sh ships in the tarball;
+  //     README documents the per-arch bundle)
+  // If release.yml ever drifts away from this layout, the integration tests
+  // that mock release stores with hand-built fixtures will keep passing
+  // while real CI-built tarballs break the consumers. This contract test
+  // pins the staging step to the layout both consumers rely on.
+  const releaseYml = readFileSync(releaseYmlPath, 'utf8')
+  const installScript = readFileSync(join(repoRoot, 'scripts/install.sh'), 'utf8')
+  const npmWrapper = readFileSync(join(repoRoot, 'npm-wrapper/index.cjs'), 'utf8')
+
+  test('STAGE_NAME shape matches both install.sh and npm wrapper expectations', () => {
+    // release.yml builds: STAGE_NAME="code-oz-v${VERSION}-${MATRIX_OS}-${MATRIX_ARCH}"
+    expect(releaseYml).toMatch(
+      /STAGE_NAME="code-oz-v\$\{VERSION\}-\$\{MATRIX_OS\}-\$\{MATRIX_ARCH\}"/,
+    )
+    // install.sh derives:   stage_name="code-oz-v${version_num}-${os}-${arch}"
+    expect(installScript).toMatch(
+      /stage_name="code-oz-v\$\{version_num\}-\$\{os\}-\$\{arch\}"/,
+    )
+    // npm wrapper derives:  const stageName = `code-oz-v${version}-${host.os}-${host.arch}`
+    expect(npmWrapper).toMatch(
+      /const stageName = `code-oz-v\$\{version\}-\$\{host\.os\}-\$\{host\.arch\}`/,
+    )
+  })
+
+  test('every file the consumers read from the tarball is staged in release.yml', () => {
+    // Both consumers look up these paths inside the extracted top-level
+    // directory. release.yml must stage all of them into STAGE_DIR.
+    expect(installScript).toMatch(/extracted_dir\/manifest\.json/)
+    expect(npmWrapper).toMatch(/cacheDir,\s*stageName,\s*'code-oz'/)
+
+    // STAGE_DIR file layout per release.yml:
+    //   - code-oz       (the binary; cp from BIN_DIR)
+    //   - install.sh    (cp scripts/install.sh)
+    //   - manifest.json (cat > ${STAGE_DIR}/manifest.json)
+    //   - README.md     (cat > ${STAGE_DIR}/README.md)
+    expect(releaseYml).toMatch(/cp "\$\{BIN_DIR\}\/code-oz" "\$\{STAGE_DIR\}\/code-oz"/)
+    expect(releaseYml).toMatch(/cp scripts\/install\.sh "\$\{STAGE_DIR\}\/install\.sh"/)
+    expect(releaseYml).toMatch(/cat > "\$\{STAGE_DIR\}\/manifest\.json"/)
+    expect(releaseYml).toMatch(/cat > "\$\{STAGE_DIR\}\/README\.md"/)
+  })
+
+  test('tarball top-level dir name equals STAGE_NAME (no extra wrapping)', () => {
+    // tar -C dist -czf "dist/${ASSET_NAME}" "${STAGE_NAME}" preserves the
+    // ${STAGE_NAME} top-level dir. Consumers expect this dir as the only
+    // entry inside the tarball.
+    expect(releaseYml).toMatch(
+      /tar -C dist -czf "dist\/\$\{ASSET_NAME\}" "\$\{STAGE_NAME\}"/,
+    )
+  })
+})

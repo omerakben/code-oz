@@ -33,6 +33,8 @@ environment overrides:
   CODE_OZ_INSTALL_DIR        install destination (default: $HOME/.local/bin)
   CODE_OZ_SHA_TOOL           force SHA256 tool: sha256sum | shasum | openssl
                              (test-only; auto-detected when unset)
+  CODE_OZ_FORCE_DOWNLOADER   force network downloader: curl | wget | none
+                             (test-only; auto-detected when unset)
   CODE_OZ_RELEASE_BASE_URL   base URL for tarball + checksums.txt fetches
                              (test-only; defaults to GitHub release URL)
   OS_OVERRIDE                override host OS detection
@@ -159,18 +161,41 @@ case "$raw_arch" in
     ;;
 esac
 
+# fetch_release_bundle sets BUNDLE_ROOT as a parent-scope global side-effect
+# (NOT via stdout capture) so the parent-scope INSTALL_TMP_ROOT it allocates
+# stays visible to the EXIT trap. Calling this via `$(fetch_release_bundle)`
+# would run it in a subshell, lose INSTALL_TMP_ROOT, and leak the temp dir
+# after a successful install.
 fetch_release_bundle() {
   if [ "$RELEASE_VERSION" = "latest" ]; then
     fail "no local bundle found; --version <TAG> is required for network-mode install (e.g. --version v0.20.0-alpha.0)."
   fi
 
-  if command -v curl >/dev/null 2>&1; then
-    DOWNLOADER="curl"
-  elif command -v wget >/dev/null 2>&1; then
-    DOWNLOADER="wget"
+  # Resolve downloader. CODE_OZ_FORCE_DOWNLOADER is a test-only override;
+  # production leaves it unset and we auto-detect curl then wget.
+  forced_downloader="${CODE_OZ_FORCE_DOWNLOADER:-auto}"
+  if [ "$forced_downloader" = "auto" ]; then
+    if command -v curl >/dev/null 2>&1; then
+      DOWNLOADER="curl"
+    elif command -v wget >/dev/null 2>&1; then
+      DOWNLOADER="wget"
+    else
+      DOWNLOADER="none"
+    fi
   else
-    fail "neither curl nor wget is installed; cannot fetch release asset. Install one and retry, or download the tarball manually."
+    DOWNLOADER="$forced_downloader"
   fi
+
+  case "$DOWNLOADER" in
+    curl | wget)
+      ;;
+    none)
+      fail "neither curl nor wget is installed; cannot fetch release asset. Install one and retry, or download the tarball manually."
+      ;;
+    *)
+      fail "invalid CODE_OZ_FORCE_DOWNLOADER override: $DOWNLOADER (allowed: curl, wget, none)"
+      ;;
+  esac
 
   version_num="${RELEASE_VERSION#v}"
   base_url="${CODE_OZ_RELEASE_BASE_URL:-https://github.com/${GH_OWNER}/${GH_REPO}/releases/download/${RELEASE_VERSION}}"
@@ -212,17 +237,18 @@ fetch_release_bundle() {
   extracted_dir="$INSTALL_TMP_ROOT/$stage_name"
   [ -d "$extracted_dir" ] || fail "tarball did not contain expected directory: $stage_name"
   [ -f "$extracted_dir/manifest.json" ] || fail "extracted tarball is missing manifest.json"
-  echo "$extracted_dir"
+  BUNDLE_ROOT="$extracted_dir"
 }
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "$script_dir/manifest.json" ]; then
-  bundle_root="$script_dir"
+  BUNDLE_ROOT="$script_dir"
 elif [ -f "$script_dir/../dist/handoff/manifest.json" ]; then
-  bundle_root="$(cd "$script_dir/../dist/handoff" && pwd)"
+  BUNDLE_ROOT="$(cd "$script_dir/../dist/handoff" && pwd)"
 else
-  bundle_root="$(fetch_release_bundle)"
+  fetch_release_bundle
 fi
+bundle_root="$BUNDLE_ROOT"
 
 manifest_path="$bundle_root/manifest.json"
 binary_relative_path="$(parse_target "$manifest_path" "$os" "$arch" "binaryRelativePath")"

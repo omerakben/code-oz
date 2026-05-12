@@ -3,8 +3,6 @@
   "version": "0.20.0-alpha.0",
   "description": "Multi-agent software-company simulation CLI with hard SDLC gates",
   "type": "module",
-  "main": "src/cli.ts",
-  "module": "src/cli.ts",
   "bin": {
     "code-oz": "./npm-wrapper/index.cjs"
   },
