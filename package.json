@@ -4,7 +4,7 @@
   "description": "Multi-agent software-company simulation CLI with hard SDLC gates",
   "type": "module",
   "bin": {
-    "code-oz": "./npm-wrapper/index.cjs"
+    "code-oz": "npm-wrapper/index.cjs"
   },
   "scripts": {
     "test": "bun test",
@@ -25,7 +25,7 @@
   "author": "Omer Akben (Ozzy)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/omerakben/code-oz.git"
+    "url": "git+https://github.com/omerakben/code-oz.git"
   },
   "homepage": "https://github.com/omerakben/code-oz",
   "bugs": "https://github.com/omerakben/code-oz/issues",
