@@ -6,7 +6,7 @@ test.describe('code-oz-gui happy path', () => {
     await expect(page.getByText('Workspace: ./fixtures/sample-run')).toBeVisible();
 
     for (const phase of ['UNDERSTAND', 'PLAN', 'BUILD', 'VERIFY', 'REVIEW', 'SHIP']) {
-      await expect(page.getByRole('heading', { name: phase })).toBeVisible();
+      await expect(page.getByRole('heading', { name: phase, exact: true })).toBeVisible();
     }
 
     await expect(page.getByText(/demo mode/i)).toBeVisible();

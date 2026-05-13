@@ -1,5 +1,6 @@
 import {
   assertFixtureRunId,
+  artifactPathForRun,
   isArtifactName,
   readArtifact,
   readEvents,
@@ -21,7 +22,15 @@ type RouteBody = {
 };
 
 const SYSTEM_INSTRUCTION =
-  'You are a non-developer-friendly assistant explaining a code-oz run. Be concrete, cite file:line when relevant, never invent file paths, and respond in ≤ 4 sentences unless asked for detail.';
+  [
+    'You explain code-oz runs to non-developers who still need accurate approval decisions.',
+    'Use plain, direct language. Avoid corporate phrasing like "approving signifies", "facilitates", "alignment", or "stakeholders".',
+    'Never invent file paths or line numbers. Cite only paths and line numbers that appear in the provided context.',
+    'For GUI run state, events/current/gates live under .code-oz/state/runs/<runId>/; artifact paths may differ.',
+    'Cite the exact provided Source path, not a guessed .code-oz/artifacts/... path.',
+    'When explaining approval, say what the next code-oz phase will do and what risk remains.',
+    'Answer in 4 short sentences or fewer unless asked for detail.',
+  ].join(' ');
 
 const DECISION_EVENT_TYPES = new Set([
   'gate_required',
@@ -83,6 +92,13 @@ function artifactNameForCard(card: RunCard): string {
   return card.artifactPath.split('#')[0] || card.artifactPath;
 }
 
+function lineNumbered(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line, index) => `${index + 1}: ${line}`)
+    .join('\n');
+}
+
 async function artifactContext(runId: string, card: RunCard): Promise<string> {
   const artifactName = artifactNameForCard(card);
 
@@ -91,7 +107,13 @@ async function artifactContext(runId: string, card: RunCard): Promise<string> {
   }
 
   const artifact = await readArtifact(artifactName, runId);
-  return `Artifact ${artifactName} for card ${card.id}:\n${artifact}`;
+  const sourcePath = await artifactPathForRun(runId, artifactName);
+  return [
+    `Artifact ${artifactName} for card ${card.id}.`,
+    `Source path: ${sourcePath ?? artifactName}`,
+    'Artifact content (line-numbered):',
+    lineNumbered(artifact),
+  ].join('\n');
 }
 
 function eventsContext(events: readonly PhaseEvent[]): string {

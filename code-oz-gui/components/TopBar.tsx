@@ -109,12 +109,12 @@ export default function TopBar({
   };
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-white/10 bg-[#050505]/95 px-8 backdrop-blur">
-      <div className="flex min-w-0 items-center gap-5">
+    <header className="sticky top-0 z-30 flex h-16 flex-nowrap items-center justify-between border-b border-white/10 bg-[#050505]/95 px-8 backdrop-blur">
+      <div className="flex min-w-0 flex-nowrap items-center gap-5">
         <button
           type="button"
           onClick={onOpenRepoClick}
-          className="text-2xl font-black tracking-tighter text-white transition-colors hover:text-emerald-400"
+          className="shrink-0 whitespace-nowrap text-2xl font-black tracking-tighter text-white transition-colors hover:text-emerald-400"
         >
           code OZ
         </button>
@@ -137,18 +137,18 @@ export default function TopBar({
           </span>
         )}
         {lifecyclePill && (
-          <span className={cn('border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em]', lifecyclePill.className)}>
+          <span className={cn('shrink-0 whitespace-nowrap border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em]', lifecyclePill.className)}>
             {lifecyclePill.label}
           </span>
         )}
         {showDemoMode && (
-          <span className="border border-amber-400/40 bg-amber-400/[0.05] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">
+          <span className="shrink-0 whitespace-nowrap border border-amber-400/40 bg-amber-400/[0.05] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">
             Demo mode
           </span>
         )}
       </div>
 
-      <div className="flex items-center gap-6">
+      <div className="flex shrink-0 items-center gap-6">
         {state?.lifecycle === 'running' && (
           <button
             type="button"
