@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "runId": "r-2026-05-12-checkout-safari",
+  "profile": "brownfield",
+  "currentPhase": "build",
+  "currentOutcome": null,
+  "request": "The checkout fails on Safari iOS after the user enters their shipping address. Chrome desktop works.",
+  "repoPath": "/Users/ozzy-mac/Projects/legacy-app",
+  "startedAt": "2026-05-12T14:30:00.001Z",
+  "lastEventAt": "2026-05-12T14:39:52.110Z",
+  "cards": [
+    {
+      "id": "audit",
+      "kind": "audit",
+      "phase": "audit",
+      "title": "Audit the Safari iOS checkout failure",
+      "subtitle": "AUDIT.md",
+      "state": { "kind": "approved" },
+      "artifactPath": "AUDIT.md",
+      "decisionsCount": 1
+    },
+    {
+      "id": "plan",
+      "kind": "plan",
+      "phase": "plan",
+      "title": "Plan: fix Safari iOS checkout touch-coalescing bug",
+      "subtitle": "PLAN.md · 4 tasks",
+      "state": { "kind": "approved" },
+      "artifactPath": "PLAN.md",
+      "decisionsCount": 1
+    },
+    {
+      "id": "T-001",
+      "kind": "task",
+      "phase": "review",
+      "title": "Write failing RED test for the Safari iOS bug",
+      "subtitle": "T-001 · src/payments/__tests__/",
+      "state": { "kind": "awaiting-approval", "gateName": "review round 1 returned fix-first" },
+      "artifactPath": "BUILD_REPORT.md#T-001",
+      "decisionsCount": 2
+    },
+    {
+      "id": "T-002",
+      "kind": "task",
+      "phase": "review",
+      "title": "Patch coalesceTouchTaps for Safari iOS ordering",
+      "subtitle": "T-002 · src/payments/safari.ts",
+      "state": { "kind": "in-progress", "startedAt": "2026-05-12T14:37:01.001Z" },
+      "artifactPath": "BUILD_REPORT.md#T-002",
+      "decisionsCount": 0
+    },
+    {
+      "id": "T-003",
+      "kind": "task",
+      "phase": "build",
+      "title": "Surface failure instead of silently swallowing in finalizeCart",
+      "subtitle": "T-003 · src/payments/checkout.ts",
+      "state": { "kind": "in-progress", "startedAt": "2026-05-12T14:39:11.620Z" },
+      "artifactPath": "BUILD_REPORT.md#T-003",
+      "decisionsCount": 0
+    },
+    {
+      "id": "T-004",
+      "kind": "task",
+      "phase": "build",
+      "title": "Add Safari iOS smoke to the CI matrix",
+      "subtitle": "T-004 · .github/workflows/test.yml",
+      "state": { "kind": "pending" },
+      "artifactPath": "BUILD_REPORT.md#T-004",
+      "decisionsCount": 0
+    }
+  ],
+  "budgets": {
+    "global": {
+      "maxTokensEstimate": 500000,
+      "tokensSpent": 376800,
+      "softWarnAtRatio": 0.75,
+      "currentRatio": 0.7536
+    },
+    "priceTable": {
+      "claude-opus-4-7": { "inputPerMTok": 5, "outputPerMTok": 25 },
+      "gpt-5.5": { "inputPerMTok": 4, "outputPerMTok": 20 }
+    },
+    "spendUSD": 0.41
+  }
+}

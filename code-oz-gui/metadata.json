@@ -1,0 +1,6 @@
+{
+  "name": "code-oz GUI",
+  "description": "A clean, modern GUI for the code-oz CLI, turning terminal actions into a seamless visual experience.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

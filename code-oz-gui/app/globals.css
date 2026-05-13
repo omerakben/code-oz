@@ -1,0 +1,82 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+:root {
+  --brand: #10b981;
+  --brand-foreground: #000000;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-white / 10%);
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+  
+  body {
+    background-color: #050505;
+    color: #ffffff;
+    scrollbar-gutter: stable;
+  }
+}
+
+@layer utilities {
+  .emerald-glow {
+    box-shadow: 0 0 20px -5px rgba(16, 185, 129, 0.4);
+  }
+  
+  .tracking-ultra {
+    letter-spacing: -0.05em;
+  }
+
+  @keyframes pulse-emerald {
+    0%, 100% { box-shadow: 0 0 20px -5px rgba(16, 185, 129, 0.2); }
+    50% { box-shadow: 0 0 40px -5px rgba(16, 185, 129, 0.6); }
+  }
+
+  .animate-pulse-emerald {
+    animation: pulse-emerald 3s ease-in-out infinite;
+  }
+
+  @keyframes card-shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  .animate-card-shimmer {
+    animation: card-shimmer 2s ease-in-out infinite;
+  }
+
+  .composer-gradient {
+    background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.05), transparent);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+}
