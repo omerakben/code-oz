@@ -1,0 +1,53 @@
+Goal: Finalize @tuel/code-oz CLI + code-oz-gui for first-run distribution. North star: a friend runs `npm i -g @tuel/code-oz`, sets one provider key, runs `code-oz init && code-oz run`, and gets a clean success — zero stack traces, zero vague errors, zero broken links. Same bar for `code-oz-gui` from `bun install && bun run dev`. The 1000-star goal depends on this first-run experience.
+
+Branch: finalize/v0.20.1-first-run-polish (off origin/main).
+
+Read first (in order):
+1. docs/handoffs/2026-05-13-codex-finalize-distribution.md  — your detailed playbook
+2. CLAUDE.md  — non-negotiable rules; rules 6, 9, 20, 22 fire here
+3. docs/design/CODEX_SYNTHESIS_W3A.md  — distribution surface contract
+4. code-oz-gui/README.md  — GUI scope
+5. README.md and docs/ABOUT.md
+
+Pattern: fan-out → synthesize → fix → verify → PR.
+
+Phase 1 — Parallel audit. Spawn 10 read-only sub-tasks (≤10 min wall time each). Each writes findings to docs/handoffs/codex-finalize/<id>.md with severity (block-ship | fix-soon | nit), evidence, and a proposed fix. Areas:
+A1 CLI first-run UX (init, doctor, run, every prompt + every error)
+A2 GUI first-run UX (bun install, dev server, every tab + drawer + composer)
+A3 Distribution surfaces (curl|sh, npm-wrapper, Homebrew, SHA chain, fail-closed)
+A4 Cross-platform binaries (darwin x64/arm64, linux x64/arm64)
+A5 Documentation (README, CHANGELOG, ABOUT, every link, every command works)
+A6 Error-path clarity (every NEEDS_INTERVENTION, every fail-closed message)
+A7 Provider onboarding (Claude/Codex/Gemini/xAI key flow; missing-key UX)
+A8 Visual polish + screenshot drift (GUI shots match reality)
+A9 GUI a11y baseline (axe-core WCAG 2.2 AA on Board, Drawer, Composer)
+A10 Code hygiene (dead code, leftover TODOs, type strictness, unused deps)
+
+Phase 2 — Synthesis. Write docs/handoffs/codex-finalize/FIRST_RUN_AUDIT.md ranking every finding. Write FIRST_RUN_FIXES.md mapping each finding to its proposed fix.
+
+Phase 3 — Fix application. Small commits, one logical fix per commit, ≤10-min Codex chunks each. For any behavior change, rule 22 fires: failing test first, run RED, then minimal fix, then GREEN. Never reduce test count. Never relax src/prompts/universal-rules.md. Never edit CLAUDE.md rule blocks — surface conflicts in the audit doc instead.
+
+Phase 4 — Verification gates (all must pass):
+- bun test green; total ≥3366
+- bun run typecheck clean
+- bun run build:binary produces a working dist/code-oz
+- bun run scripts/smoke-test.ts passes
+- code-oz-gui: bun test + Playwright e2e green
+- npm-install smoke: `npm pack` + install in a temp dir under a fresh HOME + run init/doctor/run end-to-end; capture transcript at docs/handoffs/codex-finalize/SMOKE_TRANSCRIPT.md
+- axe-core: zero serious/critical violations on Board, Drawer, Composer
+
+Phase 5 — PR.
+Title: "finalize(v0.20.1): first-run polish + a11y + distribution audit"
+Body: link to FIRST_RUN_AUDIT.md, fix-matrix table, smoke transcript excerpt, before/after metric (findings filed vs fixed vs deferred with reason).
+Command: `gh pr create --base main --head finalize/v0.20.1-first-run-polish`. DO NOT merge.
+
+Hard constraints:
+- Rebase on origin/main before every push; never push to main directly.
+- Never delete tests; only add or refine.
+- Never edit CLAUDE.md rule blocks (1–23). Flag conflicts in the audit doc.
+- src/prompts/universal-rules.md is read-only this session.
+- Each sub-task ≤10 min; chunk anything larger.
+- If a stream is blocked twice in a row, write a NEEDS_DECISION.md note for that area and stop that stream. Keep the other streams running.
+- Out of scope: M17 implementation, new milestones, new authorities, version bump beyond 0.20.1, Apple signing / GPG, Scoop, SWE-bench, Sentry/telemetry.
+
+Exit criteria: PR open + CI green + audit doc + fix doc + smoke transcript committed + test count ≥3366 + GUI a11y baseline clean.
