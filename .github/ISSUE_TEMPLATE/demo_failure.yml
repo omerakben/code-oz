@@ -1,0 +1,74 @@
+name: Demo failure
+description: A bundled demo (`demo:todo-cli` or `demo:failure-gates`) did not produce the expected output.
+title: "demo: "
+labels: ["demo", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Demos are deterministic against `FakeProvider`. If a demo failed, that is a real bug. Please include the demo name, your platform, and the events.jsonl tail so we can reproduce.
+
+  - type: dropdown
+    id: which_demo
+    attributes:
+      label: Which demo
+      options:
+        - "demo:todo-cli (01-todo-cli)"
+        - "demo:failure-gates (02-failure-gates)"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: code-oz version
+      placeholder: "v0.20.1-alpha.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x64
+        - Linux x64
+        - Linux arm64
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command(s) you ran
+      render: shell
+      placeholder: "bun run demo:failure-gates"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected outcome
+      description: What did the demo's README say should happen? (Quote the relevant lines.)
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual outcome
+      description: Paste the relevant terminal output. If `events.jsonl` was produced, include the last 30 lines.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: gate_files
+    attributes:
+      label: Gate files produced
+      description: Paste the contents of any `GATE_*.json`, `NEEDS_INTERVENTION.json`, `STOP.json`, or `PAUSE.json` produced by the failed run.
+      render: json
+    validations:
+      required: false

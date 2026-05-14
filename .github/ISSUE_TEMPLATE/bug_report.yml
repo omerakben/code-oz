@@ -1,0 +1,78 @@
+name: Bug report
+description: Something broke or behaved unexpectedly. Use this when the project did the wrong thing.
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include the platform, version, install channel, and a minimal reproduction so we can confirm the failure quickly.
+
+  - type: input
+    id: version
+    attributes:
+      label: code-oz version
+      description: Output of `code-oz --version`
+      placeholder: "v0.20.1-alpha.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_channel
+    attributes:
+      label: Install channel
+      options:
+        - curl install script
+        - npm (@tuel/code-oz)
+        - Homebrew (omerakben/code-oz)
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x64
+        - Linux x64
+        - Linux arm64
+        - Other (please describe in the additional context section)
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: A minimal sequence of commands that reproduces the bug. If a fixture is needed, link to it or paste it here.
+      placeholder: |
+        1. `code-oz init`
+        2. `code-oz run --effort lite`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the relevant `events.jsonl` lines or `NEEDS_INTERVENTION.json` payload if applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, related issues, anything else helpful.
+    validations:
+      required: false

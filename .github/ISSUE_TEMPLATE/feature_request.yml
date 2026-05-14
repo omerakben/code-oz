@@ -1,0 +1,64 @@
+name: Feature request
+description: Propose a new capability, a new provider adapter, a new CLI flag, or a new gate.
+title: "feat: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the proposal. Before filing, please skim [`docs/design/ROADMAP.md`](https://github.com/omerakben/code-oz/blob/main/docs/design/ROADMAP.md) to see if it is already on the roadmap.
+
+        Substantive features (new gate authority, new providers, new milestones) follow the milestone process described in [`CLAUDE.md`](https://github.com/omerakben/code-oz/blob/main/CLAUDE.md) — open a discussion first before filing the issue if you want feedback on the approach.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is the user-facing problem this would solve? Why does it matter?
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How are you handling this today (if at all)?
+    validations:
+      required: false
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: A sketch of the design — files touched, contract changes, new flags, new docs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other shapes would solve the same problem? Why did you discard them?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Estimated scope
+      options:
+        - Doc-only
+        - Small (one commit, no new authority)
+        - Medium (multi-commit, no new authority)
+        - Large (new gate, new provider, new milestone — needs design doc + Codex review)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Rule check
+      description: The 23 non-negotiable rules in `CLAUDE.md` are the project's authority. Substantive features must respect them.
+      options:
+        - label: I read the relevant rules in `CLAUDE.md` (e.g. rule 1 file-based gates; rule 17 maestro discipline; rule 20 one-authority-per-milestone; rule 22 RED-first TDD).
+          required: true

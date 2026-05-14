@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussion (questions, design, "is this the right approach")
+    url: https://github.com/omerakben/code-oz/discussions
+    about: For open-ended questions, design discussions, and "is this the right approach" conversations. Please use Discussions before filing a feature request issue.
+  - name: Security issue
+    url: https://github.com/omerakben/code-oz/security/advisories/new
+    about: Report security vulnerabilities privately via GitHub Security Advisories. See SECURITY.md for the full policy.

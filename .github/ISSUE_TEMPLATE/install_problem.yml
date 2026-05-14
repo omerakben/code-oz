@@ -1,0 +1,77 @@
+name: Install problem
+description: An install channel (curl, npm, Homebrew, source) failed for you.
+title: "install: "
+labels: ["install", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Install issues are high priority because they block first-run trust. Please include the channel, the platform, and the exact error output.
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Install channel
+      options:
+        - curl install script
+        - npm (@tuel/code-oz)
+        - Homebrew (omerakben/code-oz)
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x64
+        - Linux x64
+        - Linux arm64
+        - Other (please describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Target code-oz version
+      placeholder: "v0.20.1-alpha.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact install command(s) you ran
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Paste the full output, including any checksum or SHA verification lines if present.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: tool_versions
+    attributes:
+      label: Relevant tool versions
+      description: e.g. `node --version`, `bun --version`, `brew --version`, `curl --version`
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: verification
+    attributes:
+      label: Pre-filing checks
+      options:
+        - label: I confirmed the version exists at https://github.com/omerakben/code-oz/releases
+          required: true
+        - label: I read the install caveats in the README and `SECURITY.md`
+          required: true
