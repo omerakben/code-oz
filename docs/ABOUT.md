@@ -22,9 +22,17 @@ Shipped through M16 + PE-1 + B1a + W3a:
 
 Provider and model bias are real. A single LLM is confident even when wrong; cross-family review is the most reliable counter we have today. `code-oz` coordinates role-specialized agents through artifacts, evidence gates, debate, verification, and cross-family review instead of trusting one model's confidence.
 
-Market category: a **repo-native agentic SDLC runtime**. Product metaphor: an **AI software company** with roles (BA, PM, Architect, Builder, Verifier, Reviewer, Scientist) coordinated by file-based contracts.
+Market category: a **repo-native agentic SDLC runtime**. Public positioning as of v0.20.1: **CI-style gates for AI coding agents.**
 
-Full thesis: [`docs/product/AI_SOFTWARE_COMPANY_THESIS.md`](product/AI_SOFTWARE_COMPANY_THESIS.md). Tagline: *Run an AI software company from your terminal.*
+### Architecture (the dense version)
+
+`code-oz` is a standalone terminal CLI that coordinates role-specialized agents over a hybrid phase-graph + agentic sub-orchestration spine. Hard SDLC gates between phases (file-based, schema-validated). Cross-family adversarial review (different model family for BUILD vs REVIEW). Non-technical-user intent elicitation at the front. Multi-provider via `IAgentProvider` (Claude / Codex / xAI / Fake live in v0.1; Gemini stub for transparency; OpenCode/Roo as future adapter candidates). Phase taxonomy: `DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP` for greenfield and `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP` for brownfield; brownfield AUDIT runtime lands in M17/v0.21.
+
+### Historical context: the AI software company metaphor
+
+Through M1–M16 the project framed itself internally as an "AI software company" with role-specialized personas (BA, PM, Architect, Builder, Verifier, Reviewer, Scientist) coordinated by file-based contracts. Early taglines used "Run an AI software company from your terminal." The full historical thesis lives in [`docs/product/AI_SOFTWARE_COMPANY_THESIS.md`](product/AI_SOFTWARE_COMPANY_THESIS.md).
+
+This metaphor is preserved here for historical and internal context. As of v0.20.1, the project's public positioning is "CI-style gates for AI coding agents" — the same architecture, framed against developers' existing mental model of CI rather than the more abstract software-company simulation framing. The metaphor describes how the codebase is organized; it does not appear as an active public tagline.
 
 ## Install channel mechanics
 
