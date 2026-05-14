@@ -37,6 +37,6 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        run: bun test
+        run: bun test ./tests
         env:
           CODE_OZ_LIVE_PROVIDER_TESTS: ""
