@@ -21,7 +21,7 @@
 // re-implementation.
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtemp, mkdir, rm, writeFile, appendFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath } from 'node:path'
 import { realpath } from 'node:fs/promises'
