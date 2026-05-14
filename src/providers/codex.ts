@@ -162,16 +162,21 @@ export class CodexProvider implements IAgentProvider {
 
     // Non-zero exit — typically means CLI is installed but not logged in.
     const stderr = (result.stderr + ' ' + result.stdout).toLowerCase()
+    const looksExpired =
+      stderr.includes('expired') ||
+      stderr.includes('session invalid') ||
+      stderr.includes('reauth')
     const looksLikeAuth =
+      looksExpired ||
       stderr.includes('not logged in') ||
       stderr.includes('please log in') ||
       stderr.includes('login')
     return Object.freeze({
       provider: 'codex' as const,
-      authStatus: looksLikeAuth ? ('missing' as const) : ('unknown' as const),
+      authStatus: looksExpired ? ('expired' as const) : looksLikeAuth ? ('missing' as const) : ('unknown' as const),
       modelDefaultAvailable: false,
       lastError: {
-        code: 'provider_io_error',
+        code: looksExpired ? 'provider_auth_expired' : looksLikeAuth ? 'provider_auth_missing' : 'provider_io_error',
         rule: `codex login status exited with status ${result.exitCode}`,
         detail: result.stderr.trim() || result.stdout.trim(),
       },

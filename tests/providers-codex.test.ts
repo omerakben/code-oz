@@ -122,6 +122,18 @@ describe('CodexProvider — health', () => {
     const h = await c.health()
     expect(h.authStatus).toBe('missing')
   })
+
+  test('login status non-zero with expired stderr → authStatus expired', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: '',
+      stderr: 'Error: session expired; please reauth',
+      exitCode: 1,
+    })
+    const c = new CodexProvider({ runner })
+    const h = await c.health()
+    expect(h.authStatus).toBe('expired')
+    expect(h.lastError?.code).toBe('provider_auth_expired')
+  })
 })
 
 describe('CodexProvider — invoke', () => {
@@ -256,6 +268,23 @@ describe('CodexProvider — invoke', () => {
       if (err instanceof ProviderError) caught = err
     }
     expect(caught?.issues[0]?.code).toBe('provider_auth_missing')
+  })
+
+  test('non-zero exit with expired auth stderr → provider_auth_expired', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: '',
+      stderr: 'Error: auth session expired; please reauth',
+      exitCode: 1,
+    })
+    const c = new CodexProvider({ runner })
+    let caught: ProviderError | null = null
+    try {
+      await collectProviderResponse(c.invoke(preparedRequest()))
+    } catch (err) {
+      if (err instanceof ProviderError) caught = err
+    }
+    expect(caught?.issues[0]?.code).toBe('provider_auth_expired')
+    expect(caught?.issues[0]?.actionableSuggestions[0]).toContain('codex login')
   })
 
   test('non-zero exit otherwise → provider_io_error', async () => {

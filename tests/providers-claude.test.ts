@@ -206,6 +206,23 @@ describe('ClaudeProvider — invoke', () => {
     expect(caught?.issues[0]?.actionableSuggestions[0]).toContain('claude login')
   })
 
+  test('non-zero exit with expired auth stderr → provider_auth_expired', async () => {
+    const { runner } = makeRecordingRunner({
+      stdout: '',
+      stderr: 'Error: authentication session expired; please reauth.',
+      exitCode: 1,
+    })
+    const c = new ClaudeProvider({ runner })
+    let caught: ProviderError | null = null
+    try {
+      await collectProviderResponse(c.invoke(preparedRequest()))
+    } catch (err) {
+      if (err instanceof ProviderError) caught = err
+    }
+    expect(caught?.issues[0]?.code).toBe('provider_auth_expired')
+    expect(caught?.issues[0]?.actionableSuggestions[0]).toContain('claude login')
+  })
+
   test('non-zero exit otherwise → provider_io_error', async () => {
     const { runner } = makeRecordingRunner({
       stdout: '',

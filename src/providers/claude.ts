@@ -287,6 +287,18 @@ function spawnFailure(err: unknown, providerName: string, cliPath: string): Erro
 function nonZeroExit(result: RunnerResult, providerName: string): Error {
   const stderr = result.stderr.toLowerCase()
   if (
+    stderr.includes('expired') ||
+    stderr.includes('session invalid') ||
+    stderr.includes('reauth')
+  ) {
+    return providerError(
+      'provider_auth_expired',
+      `${providerName} CLI reported an expired authentication session`,
+      [`run \`${providerName} login\` again to refresh authentication`],
+      result.stderr.trim(),
+    )
+  }
+  if (
     stderr.includes('not logged in') ||
     stderr.includes('please log in') ||
     stderr.includes('authentication failed') ||
