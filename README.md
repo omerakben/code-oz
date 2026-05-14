@@ -144,7 +144,7 @@ Then inspect:
 
 ```sh
 ls docs/demo/01-todo-cli/output/
-cat docs/demo/01-todo-cli/output/balanced/state/events.jsonl | tail
+cat docs/demo/01-todo-cli/output/balanced/events.jsonl | tail
 ```
 
 The demo uses `FakeProvider`, so it is deterministic and token-free. The value is not that the fake model is smart. The value is that the same gates, approvals, worktree flow, and ledger mechanics are exercised every time.
