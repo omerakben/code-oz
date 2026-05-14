@@ -1,9 +1,35 @@
 # Providers (v0.1)
 
-User-facing summary of the five IAgentProvider adapters that ship in
-v0.1-alpha (Claude, Codex, Gemini stub, Fake, and the PE-1 xAI HTTP
-adapter). The canonical contract — interface shape, error codes, doctor
-exit semantics — lives in [`docs/references/provider-contract.md`](../references/provider-contract.md).
+User-facing summary of the IAgentProvider adapter surface in v0.1-alpha. The canonical contract — interface shape, error codes, doctor exit semantics — lives in [`docs/references/provider-contract.md`](../references/provider-contract.md).
+
+## Provider status (v0.1)
+
+This is the single source of truth for which providers are live, which are stubs, and which are future adapter candidates. **Phantom contract entries (treating future candidates as if they were live) are forbidden** per the CLAUDE.md non-negotiables.
+
+### Live adapters
+
+| Provider | Family    | Auth source                                             | Eligible phases | Notes |
+|----------|-----------|---------------------------------------------------------|------------------|-------|
+| `claude` | anthropic | Claude Max OAuth via Claude Code CLI subprocess         | all phases       | `claude login` |
+| `codex`  | openai    | ChatGPT Plus/Pro OAuth via Codex CLI subprocess         | all phases       | `codex login` |
+| `xai`    | xai       | Direct HTTPS with `XAI_API_KEY` env var (no upstream CLI) | all phases     | API-key transmission, redaction discipline at adapter |
+| `fake`   | fake      | Built-in deterministic adapter                          | all phases       | Test + demo runtime; no network, no spend |
+
+### Stubs (listed for transparency, not for use)
+
+| Provider | Family | Adapter behavior | Status |
+|----------|--------|------------------|--------|
+| `gemini` | google | `invoke()` throws `provider_gemini_not_yet_supported` at runtime; loader-level eligibility rejection (`loader_provider_phase_not_eligible`) added in M11 | Stub for transparency only; not invocable. Real Gemini adapter is on the future-candidates roadmap, not the v0.1 contract surface. |
+
+### Future adapter candidates, not in v0.1
+
+The following providers appear in audit findings or competitor surveys but are **not** v0.1 adapters. They are not implemented in code-oz today. Listing them here prevents phantom contract entries and signals adoption intent.
+
+| Provider | Source | Status |
+|----------|--------|--------|
+| `gemini-live` | Google Gemini CLI / ADK | Future adapter candidate; v0.1 ships only the stub above. |
+| `opencode` | OpenCode CLI | Future adapter candidate; no v0.1 implementation. |
+| `roo`      | Roo Code CLI | Future adapter candidate; no v0.1 implementation. |
 
 ## Auth model (v0.1)
 
@@ -22,8 +48,9 @@ billing a separate API key. The v0.1 subscription-first adapters:
 |---|---|---|
 | Claude | Claude Max OAuth (handled by Claude Code CLI) | `claude login` |
 | Codex | ChatGPT Plus/Pro OAuth (handled by Codex CLI) | `codex login` |
-| Gemini | Stub in v0.1; lands in W3+ | n/a |
 | Fake | Built-in deterministic adapter | n/a |
+
+The Gemini stub uses no auth (it throws on invocation). See § "Provider status (v0.1)" for the explicit three-category split.
 
 code-oz never reads or transmits OAuth tokens directly. Auth lives entirely
 inside the upstream CLIs (`~/.claude/auth.json`, `~/.codex/auth.json`, OS
