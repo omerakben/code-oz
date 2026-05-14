@@ -424,6 +424,7 @@ async function runBuildInner(opts: RunBuildOptions): Promise<BuildResult> {
     agentBody: opts.builderAgent.body,
     readySignal: BUILD_READY_SIGNAL,
     availableTools,
+    task,
   })
 
   // Persist the composed prompt to disk BEFORE persona invocation so VERIFY

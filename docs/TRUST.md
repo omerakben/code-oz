@@ -10,7 +10,7 @@
 
 When a phase invokes an upstream provider (Claude, Codex, xAI), `code-oz` sends:
 
-1. **The persona prompt** — the agent's `.md` file plus any imported universal rules.
+1. **The persona prompt** — the agent's `.md` file plus any imported universal rules. For BUILD invocations, the persona prompt also embeds the approved PLAN task block: the task id, title, file changes (path + change kind), the verbatim `Validation` command, the one-line `Risk` text, and the optional `Bugfix` test path (see `docs/design/V0_20_2_SHOWSTOPPER_0A_CODEX_RESPONSE.md`). PLAN.md authors should therefore use environment variable names in `Validation:` commands, never literal secret values.
 2. **The explicit `ProviderRequest.files` manifest** — only files the agent's frontmatter declared, intersected with the run's per-phase permissions. The orchestrator never silently sends recursive repo context.
 3. **The phase contract** — a small set of structured fields (phase id, run id, prior-artifact pointers).
 4. **The provider auth credential** — handled differently per adapter (see § "Provider auth boundaries" below).
