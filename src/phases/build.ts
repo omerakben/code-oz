@@ -49,6 +49,7 @@ import {
   buildDraftsAttemptPath,
   buildPromptSnapshotPath,
 } from '../worktree/paths.ts'
+import { resetWorktreeToBase } from '../worktree/reset.ts'
 import type { ProviderId } from '../providers/types.ts'
 
 // --- public API ----------------------------------------------------
@@ -435,6 +436,56 @@ async function runBuildInner(opts: RunBuildOptions): Promise<BuildResult> {
     baseCommitSha: opts.worktree.baseCommitSha,
     taskId: task.id,
   })
+
+  // v0.20.3 #1 — worktree reset between BUILD attempts on the verify-fail
+  // restart path. Every verify-fail attempt > 1 starts from the run's
+  // immutable base commit before the builder sees files, derives file
+  // refs, or applies a patch. Without this, attempt N contaminates
+  // attempt N+1: stale tracked changes survive, untracked additions leak
+  // into the provider files manifest, and `git apply` refuses the new
+  // patch with "already exists in working directory." Caught by the
+  // prdiff dogfood 2026-05-14 (run 01KRM4EBQRX0GK1RT85RP1EF6D).
+  //
+  // Scope: verify-fail ONLY. The review-needs-revision restart path
+  // intentionally preserves the worktree so attempt 2's delta patch can
+  // build on attempt 1's post-state (M9 review-remediation contract,
+  // M16 C9 Mod #7 — see docs/contracts/REVIEW.md). Resetting on review
+  // restarts would clobber prior staged content and break delta-shape
+  // builder responses. Codex debate
+  // `019e28d9-bd57-71e0-b1a2-262cae205234` locked the BUILD-entry
+  // insertion point + failure-handling pattern (emit build_failed +
+  // intervention via recordBuildFailure); the verify-fail narrowing
+  // closes the gap Codex's brief didn't see (the existing M9 worktree-
+  // preservation contract).
+  if (attempt > 1 && opts.carryForward?.source === 'verify-fail') {
+    const resetResult = await resetWorktreeToBase({
+      worktreePath: opts.worktree.worktreePath,
+      baseCommitSha: opts.worktree.baseCommitSha,
+    })
+    if (!resetResult.ok) {
+      await recordBuildFailure({
+        paths: opts.runPaths,
+        runId: opts.runId,
+        agent: opts.builderAgent.name,
+        attempt,
+        taskId: task.id,
+        code: resetResult.code,
+        reason: resetResult.reason,
+        now,
+      })
+      return interventionResult(resetResult.code, resetResult.reason)
+    }
+    await appendEvent(eventPaths, {
+      version: 1,
+      type: 'worktree_reset_to_base',
+      ts: now(),
+      runId: opts.runId,
+      phase: 'build',
+      attempt,
+      baseCommitSha: opts.worktree.baseCommitSha,
+      durationMs: resetResult.durationMs,
+    })
+  }
 
   // Compose prompt + invoke persona.
   const availableTools =
@@ -1053,6 +1104,11 @@ export function buildInterventionSuggestions(code: string): readonly string[] {
       return Object.freeze([
         'The builder produced a Notes bullet exceeding the 200-character cap; the rule field of this intervention names the offending bullet index, exact length, and a preview.',
         'rerun code-oz run; BUILD will retry the same task (max 4 attempts per task) with a fresh builder response. The 200-character cap is part of the builder protocol — see docs/contracts/BUILD.md § Notes discipline.',
+      ])
+    case 'worktree_reset_failed':
+      return Object.freeze([
+        'The orchestrator could not reset the per-run worktree to the base commit before BUILD attempt > 1. The rule field names the failing git command and a bounded stderr excerpt.',
+        'Inspect `.code-oz/runs/<runId>/worktree/` for unrecoverable git state (broken HEAD, locked index, packed-refs corruption). Once the underlying git state is healthy, rerun code-oz run.',
       ])
     default:
       return Object.freeze([

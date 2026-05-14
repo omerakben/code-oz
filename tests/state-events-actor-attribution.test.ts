@@ -250,6 +250,17 @@ const ACTOR_FIXTURES = [
   },
   {
     version: 1,
+    type: 'worktree_reset_to_base',
+    ts: TS,
+    runId: RUN,
+    phase: 'build',
+    attempt: 2,
+    baseCommitSha: '0000000000000000000000000000000000000001',
+    durationMs: 42,
+    actor: 'orchestrator',
+  },
+  {
+    version: 1,
     type: 'build_provider_recorded',
     ts: TS,
     runId: RUN,

@@ -135,6 +135,7 @@ export const EVENT_TYPES = [
   'worktree_patch_failed',
   'worktree_forensics_preserved',
   'worktree_destroyed',
+  'worktree_reset_to_base',
   // M7 — BUILD phase (per docs/contracts/BUILD.md). build_failed is distinct
   // from worktree_patch_failed: the worktree event names the apply-side
   // failure; build_failed names the phase-level failure that produces
@@ -764,6 +765,23 @@ export type PhaseEvent =
        */
       readonly attempt: number
       readonly worktreePath: string
+    }>
+  // v0.20.3 #1 — BUILD-entry worktree-normalization event. Emitted on
+  // success of `resetWorktreeToBase` for every BUILD attempt > 1, before
+  // prompt composition / provider file-ref derivation / persona invocation.
+  // Codex debate `019e28d9-bd57-71e0-b1a2-262cae205234` locked this shape.
+  | OptionalActorAttributed<{
+      readonly version: 1
+      readonly type: 'worktree_reset_to_base'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** Attempt number this reset prepares (always > 1). */
+      readonly attempt: number
+      /** 40-char lower-case hex sha the worktree was reset to. */
+      readonly baseCommitSha: string
+      /** Wall time for `git reset --hard` + `git clean -fdx` together. */
+      readonly durationMs: number
     }>
   // M7 BUILD phase events (per docs/contracts/BUILD.md).
   | {

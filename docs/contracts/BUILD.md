@@ -214,12 +214,13 @@ Preflight emits no event on success (the subsequent `worktree_created` and `buil
 
 Names listed here; canonical schemas land in `src/state/schemas.ts` during M7 implementation.
 
-| Event                 | Emitted when                                                                                                                |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `build_started`       | BUILD persona invoked, worktree resolved, base commit recorded                                                              |
-| `build_patch_applied` | Patch successfully applied to worktree; manifest computed                                                                   |
-| `build_completed`     | `BUILD_REPORT.md` atomically written, Scientist sidecars updated, gate-preflight passed                                     |
-| `build_failed`        | BUILD aborted before producing a valid `BUILD_REPORT.md` (patch invalid, manifest mismatch, persona repair exhausted, etc.) |
+| Event                    | Emitted when                                                                                                                                                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `build_started`          | BUILD attempt begun; worktree resolved, base commit recorded. Fires **before** prompt composition and persona invocation. (Doc previously said "persona invoked"; corrected in v0.20.3 #1.)                  |
+| `worktree_reset_to_base` | BUILD attempt > 1 only. Worktree successfully reset to `baseCommitSha` (via `git reset --hard` + `git clean -fdx`) before prompt composition / file-ref derivation / persona invocation. Added in v0.20.3 #1. |
+| `build_patch_applied`    | Patch successfully applied to worktree; manifest computed                                                                                                                                                     |
+| `build_completed`        | `BUILD_REPORT.md` atomically written, Scientist sidecars updated, gate-preflight passed                                                                                                                       |
+| `build_failed`           | BUILD aborted before producing a valid `BUILD_REPORT.md` (patch invalid, manifest mismatch, persona repair exhausted, reset-failure, etc.)                                                                    |
 
 `build_failed` is distinct from `verify_failed`: BUILD failure means no valid BUILD_REPORT.md exists. VERIFY failure means BUILD_REPORT.md is valid but the validation command fell over. Restart-on-fail (see § "Restart-policy interface") covers VERIFY failure only; BUILD failure produces `NEEDS_INTERVENTION.json` directly.
 
@@ -240,6 +241,12 @@ Three-line summary for cross-reference:
 3. Hard cap: 4 clean BUILD attempts. Attempt 5 produces `NEEDS_INTERVENTION.json` (rule 11) instead of a 5th BUILD invocation.
 
 Failure-carry-forward is **not** a soft patch loop (Decision 3 in the M7-M10 shape debate). Each attempt starts from the same approved PLAN; prior worktrees are forensic, not active.
+
+### Worktree-reset invariant (v0.20.3 #1)
+
+Every BUILD attempt > 1 on the **verify-fail** restart path starts from the run's immutable base commit before the builder persona sees files, the orchestrator derives provider file refs, or `git apply` runs. This is implemented as `resetWorktreeToBase` in `src/worktree/reset.ts`: `git reset --hard <baseCommitSha>` followed by `git clean -fdx`. The reset emits `worktree_reset_to_base` on success (after `build_started`, before prompt composition); on failure it emits `build_failed` followed by `intervention` with code `worktree_reset_failed`. Codex debate `019e28d9-bd57-71e0-b1a2-262cae205234` locked this as a single BUILD-entry authority boundary — VERIFY, REVIEW, scheduler, and approve hooks do **not** call the reset primitive.
+
+**Scope: verify-fail only.** The `review-needs-revision` restart path intentionally preserves the worktree across attempts so that attempt 2's delta patch can build on attempt 1's post-state (per the M9 review-remediation contract, M16 C9 Mod #7; see [`REVIEW.md`](./REVIEW.md)). Resetting on review-revision restarts would clobber prior staged content and break delta-shape builder responses. The reset fires only when `carryForward.source === 'verify-fail'` (the Codex debate brief did not surface the M9 worktree-preservation contract; the verify-fail narrowing closes the gap).
 
 ## What VERIFY reads from this
 
