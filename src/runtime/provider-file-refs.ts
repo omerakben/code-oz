@@ -28,7 +28,7 @@
 // explicit-manifest expansion. Rule 18 stays deferred to v0.21+.
 
 import { access, constants } from 'node:fs/promises'
-import { join } from 'node:path'
+import { resolve as resolvePath, sep } from 'node:path'
 
 import type { PlanTask } from '../artifacts/plan.ts'
 import type { ManifestEntry } from '../worktree/manifest.ts'
@@ -41,6 +41,33 @@ async function pathExists(absPath: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Resolve a repo-relative path against the worktree root and verify the
+ * result lives inside the worktree boundary. Returns the resolved
+ * absolute path on success; returns null when the input traverses out
+ * of the worktree (via `../` segments) or resolves to a different root.
+ *
+ * Background: `node:path.join` normalizes `../` segments, so
+ * `join('/run/worktree', '../../etc/passwd')` returns `/etc/passwd`
+ * — escaping the worktree boundary. PLAN.md is user-authored content,
+ * so a malicious or buggy task could include traversal segments. The
+ * helper enforces the boundary explicitly with `path.resolve` plus a
+ * prefix check on the normalized result (Codex thread 019e2837
+ * block-push #5).
+ */
+function safeWorktreeJoin(worktreeRoot: string, repoRelative: string): string | null {
+  const normalizedRoot = resolvePath(worktreeRoot)
+  const resolved = resolvePath(normalizedRoot, repoRelative)
+  if (resolved === normalizedRoot) {
+    // Edge case: empty or '.' path resolves to the root itself; never a file ref.
+    return null
+  }
+  if (!resolved.startsWith(normalizedRoot + sep)) {
+    return null
+  }
+  return resolved
 }
 
 /**
@@ -68,7 +95,8 @@ export async function deriveBuildTaskFiles(
 ): Promise<ProviderFileRef[]> {
   const refs: ProviderFileRef[] = []
   for (const fc of task.fileChanges) {
-    const absPath = join(worktreePath, fc.path)
+    const absPath = safeWorktreeJoin(worktreePath, fc.path)
+    if (absPath === null) continue
     if (await pathExists(absPath)) {
       refs.push({ path: absPath })
     }
@@ -100,7 +128,8 @@ export async function deriveReviewChangedFiles(
   const refs: ProviderFileRef[] = []
   for (const entry of changedFiles) {
     if (entry.change === 'deleted') continue
-    const absPath = join(worktreePath, entry.path)
+    const absPath = safeWorktreeJoin(worktreePath, entry.path)
+    if (absPath === null) continue
     if (await pathExists(absPath)) {
       refs.push({ path: absPath })
     }

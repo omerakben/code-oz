@@ -129,6 +129,48 @@ describe('deriveBuildTaskFiles — worktree-root isolation (Codex test #3)', () 
       await rm(worktree, { recursive: true, force: true })
     }
   })
+
+  test('rejects path-traversal segments that would escape the worktree boundary', async () => {
+    // Codex thread 019e2837 block-push #5: node:path.join normalizes
+    // `../` segments, so a naive `join(worktree, '../../host.ts')`
+    // would resolve outside the worktree boundary. The helper must
+    // detect this and skip the entry.
+    const host = await makeWorktreeWithFiles([
+      { path: 'sensitive-host-file.ts', content: 'host-only secrets' },
+    ])
+    const worktree = await mkdtemp(join(host, 'worktree-'))
+    try {
+      const task = makeTask({
+        files: ['../sensitive-host-file.ts'],
+        fileChanges: [{ path: '../sensitive-host-file.ts', change: 'modified' }],
+      })
+      const refs = await deriveBuildTaskFiles(task, worktree)
+      // The traversal-escaping path must NOT appear in refs.
+      expect(refs).toEqual([])
+    } finally {
+      await rm(host, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects absolute paths that escape the worktree boundary', async () => {
+    // node:path.resolve treats an absolute repoRelative as already-absolute,
+    // discarding the worktree root entirely. The helper must detect this too.
+    const host = await makeWorktreeWithFiles([
+      { path: 'sensitive.ts', content: 'host-only' },
+    ])
+    const worktree = await mkdtemp(join(host, 'worktree-'))
+    try {
+      const absoluteEscape = join(host, 'sensitive.ts')
+      const task = makeTask({
+        files: [absoluteEscape],
+        fileChanges: [{ path: absoluteEscape, change: 'modified' }],
+      })
+      const refs = await deriveBuildTaskFiles(task, worktree)
+      expect(refs).toEqual([])
+    } finally {
+      await rm(host, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('deriveReviewChangedFiles — BUILD_REPORT derivation', () => {
