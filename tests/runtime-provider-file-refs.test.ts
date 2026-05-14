@@ -152,9 +152,16 @@ describe('deriveBuildTaskFiles — worktree-root isolation (Codex test #3)', () 
     }
   })
 
-  test('rejects absolute paths that escape the worktree boundary', async () => {
-    // node:path.resolve treats an absolute repoRelative as already-absolute,
-    // discarding the worktree root entirely. The helper must detect this too.
+  test('rejects absolute paths that escape the worktree boundary (regression guard)', async () => {
+    // Regression guard on the new path.resolve-based implementation, NOT a
+    // catch-old-bug RED test. node:path.join (the old code) accidentally
+    // handled absolute second arguments safely:
+    //   join('/worktree', '/host/sensitive.ts') → '/worktree/host/sensitive.ts'
+    // path.resolve (the new code, needed to catch '../' traversal) treats
+    // absolute second args as absolute:
+    //   resolve('/worktree', '/host/sensitive.ts') → '/host/sensitive.ts'
+    // safeWorktreeJoin must explicitly reject this case, otherwise the fix
+    // for traversal would open a worse hole than it closed.
     const host = await makeWorktreeWithFiles([
       { path: 'sensitive.ts', content: 'host-only' },
     ])
