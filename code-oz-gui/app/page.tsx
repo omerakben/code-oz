@@ -8,6 +8,7 @@ import Footer from '@/components/Footer';
 import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import { useRunStream } from '@/hooks/use-run-stream';
+import type { EffortLevel } from '@/lib/code-oz-spawn';
 import type { RunCard } from '@/lib/types';
 
 const FIXTURE_RUN_ID = 'r-2026-05-12-checkout-safari';
@@ -25,6 +26,7 @@ export default function Home() {
   const [runStartError, setRunStartError] = useState<string | null>(null);
   const [isAborting, setIsAborting] = useState(false);
   const [providerMode, setProviderMode] = useState<ProviderMode>('fake');
+  const [composerEffort, setComposerEffort] = useState<EffortLevel>('lite');
 
   const { state, events, status } = useRunStream(runId);
 
@@ -88,6 +90,7 @@ export default function Home() {
           description: value,
           repoPath,
           providerOverride: providerMode === 'fake' ? 'fake' : null,
+          effortOverride: composerEffort,
         }),
       });
 
@@ -235,7 +238,9 @@ export default function Home() {
           disabled={status === 'connecting' || status === 'reconnecting'}
           isSubmitting={isSubmitting}
           repoPath={repoPath}
+          effort={composerEffort}
           onValueChange={setComposerValue}
+          onEffortChange={setComposerEffort}
           onSubmit={handleComposerSubmit}
           onOpenRepoClick={openRepo}
         />

@@ -131,6 +131,59 @@ async function raceWithBudget<T>(promise: Promise<T>, budgetMs: number): Promise
   ]);
 }
 
+describe('spawnCodeOzRun effort override plumbing (#5)', () => {
+  test('appends --effort <value> to the spawned argv when effortOverride is passed', async () => {
+    const repo = await makeRepoFixture('effort');
+    let capturedCmd: readonly string[] | null = null;
+    const fakeSpawn: SpawnSubprocessFn = (input) => {
+      capturedCmd = input.cmd;
+      // Return a fake subprocess that satisfies the spawn flow enough to
+      // exit cleanly; the test only inspects the captured argv.
+      return makeFakeSubprocess({ exitCode: 0 });
+    };
+
+    const spawnPromise = spawnCodeOzRun(
+      { repoPath: repo, description: 'effort test', effortOverride: 'high' },
+      {
+        spawn: fakeSpawn,
+        resolveBinary: async () => fakeResolution,
+        supportsRunIdFlag: async () => false,
+      },
+    );
+
+    // Either resolution path is fine for this test — we only care about the captured argv.
+    await raceWithBudget(spawnPromise.catch(() => undefined), 2_000);
+    expect(capturedCmd).not.toBeNull();
+    if (capturedCmd === null) return;
+    expect(capturedCmd).toContain('--effort');
+    const effortIdx = (capturedCmd as readonly string[]).indexOf('--effort');
+    expect((capturedCmd as readonly string[])[effortIdx + 1]).toBe('high');
+  });
+
+  test('omits --effort entirely when effortOverride is not provided', async () => {
+    const repo = await makeRepoFixture('no-effort');
+    let capturedCmd: readonly string[] | null = null;
+    const fakeSpawn: SpawnSubprocessFn = (input) => {
+      capturedCmd = input.cmd;
+      return makeFakeSubprocess({ exitCode: 0 });
+    };
+
+    const spawnPromise = spawnCodeOzRun(
+      { repoPath: repo, description: 'no effort' },
+      {
+        spawn: fakeSpawn,
+        resolveBinary: async () => fakeResolution,
+        supportsRunIdFlag: async () => false,
+      },
+    );
+
+    await raceWithBudget(spawnPromise.catch(() => undefined), 2_000);
+    expect(capturedCmd).not.toBeNull();
+    if (capturedCmd === null) return;
+    expect(capturedCmd).not.toContain('--effort');
+  });
+});
+
 describe('spawnCodeOzRun exit-before-runId rejection', () => {
   test('rejects fast when subprocess exits 0 before a runId is detected', async () => {
     const repo = await makeRepoFixture('exit0');

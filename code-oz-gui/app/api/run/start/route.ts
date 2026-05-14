@@ -1,13 +1,20 @@
 import { stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { FIXTURE_RUN_ID } from '@/lib/run-store';
-import { spawnCodeOzRun } from '@/lib/code-oz-spawn';
+import { EFFORT_LEVELS, spawnCodeOzRun, type EffortLevel } from '@/lib/code-oz-spawn';
 import { markRunExited, registerRun } from '@/lib/run-registry';
 
 export const runtime = 'nodejs';
 const FIXTURE_REPO_PATH = './fixtures/sample-run';
 
-function parseBody(value: unknown): { description: string; repoPath: string; providerOverride?: 'fake' | null } | null {
+interface ParsedRunStartBody {
+  readonly description: string;
+  readonly repoPath: string;
+  readonly providerOverride?: 'fake' | null;
+  readonly effortOverride?: EffortLevel;
+}
+
+function parseBody(value: unknown): ParsedRunStartBody | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return null;
   }
@@ -16,6 +23,7 @@ function parseBody(value: unknown): { description: string; repoPath: string; pro
   const description = body.description;
   const repoPath = body.repoPath;
   const providerOverride = body.providerOverride;
+  const effortOverride = body.effortOverride;
 
   if (typeof description !== 'string' || typeof repoPath !== 'string') {
     return null;
@@ -25,11 +33,24 @@ function parseBody(value: unknown): { description: string; repoPath: string; pro
     return null;
   }
 
+  let effortValue: EffortLevel | undefined;
+  if (effortOverride !== undefined && effortOverride !== null) {
+    if (typeof effortOverride !== 'string' || !(EFFORT_LEVELS as readonly string[]).includes(effortOverride)) {
+      return null;
+    }
+    effortValue = effortOverride as EffortLevel;
+  }
+
   if (description.trim().length === 0 || repoPath.trim().length === 0) {
     return null;
   }
 
-  return { description, repoPath, providerOverride };
+  return {
+    description,
+    repoPath,
+    providerOverride,
+    ...(effortValue !== undefined ? { effortOverride: effortValue } : {}),
+  };
 }
 
 function safeErrorDetail(error: unknown): string {
@@ -80,7 +101,12 @@ export async function POST(request: Request) {
 
   try {
     const providerMode = body.providerOverride === 'fake' ? 'fake' : 'real';
-    const handle = await spawnCodeOzRun({ description: body.description, repoPath, providerOverride: body.providerOverride });
+    const handle = await spawnCodeOzRun({
+      description: body.description,
+      repoPath,
+      providerOverride: body.providerOverride,
+      ...(body.effortOverride !== undefined ? { effortOverride: body.effortOverride } : {}),
+    });
     registerRun({
       runId: handle.runId,
       repoPath,
