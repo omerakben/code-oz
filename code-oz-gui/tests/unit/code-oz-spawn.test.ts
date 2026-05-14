@@ -153,11 +153,11 @@ describe('spawnCodeOzRun effort override plumbing (#5)', () => {
 
     // Either resolution path is fine for this test — we only care about the captured argv.
     await raceWithBudget(spawnPromise.catch(() => undefined), 2_000);
-    expect(capturedCmd).not.toBeNull();
-    if (capturedCmd === null) return;
-    expect(capturedCmd).toContain('--effort');
-    const effortIdx = (capturedCmd as readonly string[]).indexOf('--effort');
-    expect((capturedCmd as readonly string[])[effortIdx + 1]).toBe('high');
+    const cmd: readonly string[] = capturedCmd ?? [];
+    expect(cmd.length).toBeGreaterThan(0);
+    expect(cmd).toContain('--effort');
+    const effortIdx = cmd.indexOf('--effort');
+    expect(cmd[effortIdx + 1]).toBe('high');
   });
 
   test('omits --effort entirely when effortOverride is not provided', async () => {
@@ -178,9 +178,9 @@ describe('spawnCodeOzRun effort override plumbing (#5)', () => {
     );
 
     await raceWithBudget(spawnPromise.catch(() => undefined), 2_000);
-    expect(capturedCmd).not.toBeNull();
-    if (capturedCmd === null) return;
-    expect(capturedCmd).not.toContain('--effort');
+    const cmd: readonly string[] = capturedCmd ?? [];
+    expect(cmd.length).toBeGreaterThan(0);
+    expect(cmd).not.toContain('--effort');
   });
 });
 
