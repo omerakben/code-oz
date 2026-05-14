@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { describe, expect, test } from 'bun:test';
-import { resolveCodeOzBinary } from '@/lib/code-oz-spawn';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { resolveCodeOzBinary, resolveRunIdTimeoutMs } from '@/lib/code-oz-spawn';
 import { findCodeOzRepoRoot } from '@/lib/repo-root';
 
 const execFileAsync = promisify(execFile);
@@ -13,6 +13,53 @@ async function rootVersion(): Promise<string> {
   const parsed = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')) as { readonly version: string };
   return parsed.version;
 }
+
+describe('resolveRunIdTimeoutMs', () => {
+  const envKey = 'CODE_OZ_GUI_SPAWN_TIMEOUT_MS';
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    originalEnv = process.env[envKey];
+    delete process.env[envKey];
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env[envKey];
+    } else {
+      process.env[envKey] = originalEnv;
+    }
+  });
+
+  test('returns 60_000 default when no override and no env var', () => {
+    expect(resolveRunIdTimeoutMs()).toBe(60_000);
+  });
+
+  test('per-call override wins over env var', () => {
+    process.env[envKey] = '15000';
+    expect(resolveRunIdTimeoutMs(5000)).toBe(5000);
+  });
+
+  test('env var wins over default when no per-call override', () => {
+    process.env[envKey] = '90000';
+    expect(resolveRunIdTimeoutMs()).toBe(90_000);
+  });
+
+  test('ignores non-numeric env var and falls back to default', () => {
+    process.env[envKey] = 'forever';
+    expect(resolveRunIdTimeoutMs()).toBe(60_000);
+  });
+
+  test('ignores non-positive per-call override and falls back to env or default', () => {
+    expect(resolveRunIdTimeoutMs(0)).toBe(60_000);
+    expect(resolveRunIdTimeoutMs(-1)).toBe(60_000);
+    expect(resolveRunIdTimeoutMs(Number.NaN)).toBe(60_000);
+  });
+
+  test('floors fractional per-call overrides', () => {
+    expect(resolveRunIdTimeoutMs(1234.7)).toBe(1234);
+  });
+});
 
 describe('code-oz CLI resolution', () => {
   test('does not launch a stale checkout dist binary', async () => {
