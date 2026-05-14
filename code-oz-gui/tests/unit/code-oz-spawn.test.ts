@@ -59,6 +59,18 @@ describe('resolveRunIdTimeoutMs', () => {
   test('floors fractional per-call overrides', () => {
     expect(resolveRunIdTimeoutMs(1234.7)).toBe(1234);
   });
+
+  test('clamps sub-1ms positive overrides to 1ms instead of flooring to 0', () => {
+    expect(resolveRunIdTimeoutMs(0.5)).toBe(1);
+    expect(resolveRunIdTimeoutMs(0.999)).toBe(1);
+  });
+
+  test('uses env var when override is invalid (0, NaN, negative)', () => {
+    process.env[envKey] = '12345';
+    expect(resolveRunIdTimeoutMs(0)).toBe(12345);
+    expect(resolveRunIdTimeoutMs(-1)).toBe(12345);
+    expect(resolveRunIdTimeoutMs(Number.NaN)).toBe(12345);
+  });
 });
 
 describe('code-oz CLI resolution', () => {

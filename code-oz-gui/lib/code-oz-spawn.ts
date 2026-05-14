@@ -97,7 +97,7 @@ const activeJsonBaselines = new Map<string, number | null>();
 
 export function resolveRunIdTimeoutMs(override?: number): number {
   if (typeof override === 'number' && Number.isFinite(override) && override > 0) {
-    return Math.floor(override);
+    return Math.max(1, Math.floor(override));
   }
   const envRaw = process.env[ENV_TIMEOUT_OVERRIDE];
   if (envRaw !== undefined && /^\d+$/.test(envRaw.trim())) {
