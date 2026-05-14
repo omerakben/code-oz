@@ -114,14 +114,19 @@ export function productionInvokePersona(
   invokeCtx: InvokeContext,
   agent: AgentDefinition,
   opts: ProductionInvokePersonaOptions,
-): (composedPrompt: string) => Promise<string> {
-  return async (composedPrompt) => {
+): (composedPrompt: string, perCall?: { readonly files?: readonly ProviderFileRef[] }) => Promise<string> {
+  return async (composedPrompt, perCall) => {
+    // v0.20.2 #0b (Codex thread 019e2827): per-call file refs take
+    // precedence over the seam-time baseline. Phase code that knows
+    // the task (BUILD) or BUILD_REPORT (REVIEW) derives the correct
+    // file list at invocation time, replacing the empty default.
+    const files = perCall?.files ?? opts.files ?? []
     const req: ProviderRequest = {
       agent,
       phase: opts.phase,
       runId: opts.runId,
       prompt: composedPrompt,
-      files: opts.files ?? [],
+      files,
       ...(opts.model !== undefined ? { model: opts.model } : {}),
       ...(opts.maxOutputTokens !== undefined ? { maxOutputTokens: opts.maxOutputTokens } : {}),
       ...(opts.role !== undefined ? { role: opts.role } : {}),

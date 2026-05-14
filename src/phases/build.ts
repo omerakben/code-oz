@@ -31,6 +31,8 @@ import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import { parsePlan, type PlanTask } from '../artifacts/plan.ts'
 import { applyAgentPatch } from '../patches/apply-agent-patch.ts'
 import { composeBuildPrompt } from '../prompts/index.ts'
+import type { ProviderFileRef } from '../providers/types.ts'
+import { deriveBuildTaskFiles } from '../runtime/provider-file-refs.ts'
 import { runScientistPhaseTail } from './scientist.ts'
 import { validateScientistSidecars } from './gate-preflight.ts'
 import type { InvokeContext } from '../providers/invoke.ts'
@@ -90,11 +92,18 @@ export interface RunBuildOptions {
   /** Wrapper-layer context for invoking Scientist + (in M8+) builder. */
   readonly invokeCtx: InvokeContext
   /**
-   * Persona-response shim. M7 simplification — hooking BUILD into the
-   * full InvokeContext tool-use dispatch is M8 work. The runner takes the
-   * composed prompt and returns the persona's response text.
+   * Persona-response shim. The runner takes the composed prompt and
+   * returns the persona's response text. v0.20.2 showstopper #0b
+   * (Codex thread 019e2827) widens the signature so phase code can
+   * pass per-call file refs derived from the selected PLAN task. The
+   * `perCall.files` channel takes precedence over the seam-time
+   * `opts.files` baseline in `productionInvokePersona`; test mocks
+   * that ignore the second arg are still type-compatible.
    */
-  readonly invokePersona: (composedPrompt: string) => Promise<string>
+  readonly invokePersona: (
+    composedPrompt: string,
+    perCall?: { readonly files?: readonly ProviderFileRef[] },
+  ) => Promise<string>
   /** Default validation timeout / working directory / exit code when the
    *  PLAN task does not declare them (PLAN.md task grammar today only
    *  carries `Validation:` command text). M8 may extend PLAN.md to
@@ -456,9 +465,18 @@ async function runBuildInner(opts: RunBuildOptions): Promise<BuildResult> {
   }
   const promptSnapshotSha = createHash('sha256').update(composedPrompt, 'utf8').digest('hex')
 
+  // v0.20.2 #0b: derive provider file refs from the PLAN task and pass
+  // them to the persona. Missing paths (typical for `change: 'added'`
+  // first-build) are skipped silently; they remain visible via #0a's
+  // TASK_BLOCK injection. See docs/design/V0_20_2_SHOWSTOPPER_0B_CODEX_RESPONSE.md.
+  const taskFiles: readonly ProviderFileRef[] = await deriveBuildTaskFiles(
+    task,
+    opts.worktree.worktreePath,
+  )
+
   let responseText: string
   try {
-    responseText = await opts.invokePersona(composedPrompt)
+    responseText = await opts.invokePersona(composedPrompt, { files: taskFiles })
   } catch (err) {
     const reason = (err as Error).message.slice(0, 200)
     await recordBuildFailure({
