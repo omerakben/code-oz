@@ -83,6 +83,14 @@ export async function scheduleAttemptNPlus1(
   if (!removed.ok) {
     // Worktree cleanup failed; produce intervention rather than emitting
     // a misleading worktree_destroyed event.
+    const eventLine = await appendEvent(eventPaths, {
+      version: 1,
+      type: 'intervention',
+      ts: now(),
+      runId: opts.runId,
+      phase: 'verify',
+      code: 'verify_worktree_cleanup_failed',
+    })
     await writeNeedsInterventionGate(gatePathsFor(opts.runPaths), {
       version: 1,
       runId: opts.runId,
@@ -95,15 +103,8 @@ export async function scheduleAttemptNPlus1(
         'Run `git worktree list` and `git worktree remove --force <path>` manually.',
         'Re-run scheduling once the worktree is gone.',
       ],
+      eventPointer: `events.jsonl:line=${eventLine}`,
       createdAt: now(),
-    })
-    await appendEvent(eventPaths, {
-      version: 1,
-      type: 'intervention',
-      ts: now(),
-      runId: opts.runId,
-      phase: 'verify',
-      code: 'verify_worktree_cleanup_failed',
     })
     return Object.freeze({
       ok: false as const,

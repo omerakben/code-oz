@@ -1588,6 +1588,7 @@ export interface NeedsInterventionGate {
   readonly rule: string
   readonly detail?: string
   readonly actionableSuggestions: readonly string[]
+  readonly eventPointer: string
   readonly createdAt: string
 }
 

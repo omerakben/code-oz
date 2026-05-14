@@ -35,6 +35,8 @@ import {
 import { GateLoadError, type GateLoadIssue } from './errors.ts'
 import { LockBusyError, withLock } from './lock.ts'
 
+const EVENT_POINTER_REGEX = /^events\.jsonl:line=[1-9]\d*$/
+
 // --- public types --------------------------------------------------
 
 export interface GatePaths {
@@ -481,6 +483,7 @@ function validateNeedsIntervention(raw: unknown, file: string): GateLoadIssue | 
   }
   if (
     !Array.isArray(g.actionableSuggestions) ||
+    g.actionableSuggestions.length === 0 ||
     !g.actionableSuggestions.every((s) => typeof s === 'string' && s.length > 0)
   ) {
     return {
@@ -491,6 +494,13 @@ function validateNeedsIntervention(raw: unknown, file: string): GateLoadIssue | 
   }
   if (g.detail !== undefined && typeof g.detail !== 'string') {
     return { file, code: 'gate_invalid_value', rule: 'detail must be a string when present' }
+  }
+  if (typeof g.eventPointer !== 'string' || !EVENT_POINTER_REGEX.test(g.eventPointer)) {
+    return {
+      file,
+      code: 'gate_invalid_value',
+      rule: 'eventPointer must match events.jsonl:line=<N>',
+    }
   }
   return null
 }

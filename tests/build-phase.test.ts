@@ -463,6 +463,8 @@ hunk mismatch test
     await runBuild({ ...buildOptsBase(wt), invokePersona: async () => 'no marker' })
     const niPath = join(paths.runDir, 'NEEDS_INTERVENTION.json')
     expect(await pathExists(niPath)).toBe(true)
+    const gate = JSON.parse(await readFile(niPath, 'utf8')) as { actionableSuggestions?: string[] }
+    expect(gate.actionableSuggestions?.length ?? 0).toBeGreaterThan(0)
   })
 
   test('unknown taskId fails with build_task_id_unknown', async () => {

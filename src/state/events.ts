@@ -2822,7 +2822,7 @@ export async function appendEvent(
   paths: EventLogPaths,
   event: PhaseEvent,
   options: AppendEventOptions = {},
-): Promise<void> {
+): Promise<number> {
   const issue = validateEvent(event, paths.file)
   if (issue !== null) {
     throw new EventLogError([issue])
@@ -2830,7 +2830,8 @@ export async function appendEvent(
 
   const buf = Buffer.from(JSON.stringify(event) + '\n', 'utf8')
 
-  const writeOnce = async (): Promise<void> => {
+  const writeOnce = async (): Promise<number> => {
+    const line = await nextEventLineNumber(paths.file)
     const fh = await open(paths.file, 'a')
     try {
       await fh.write(buf, 0, buf.length)
@@ -2838,14 +2839,14 @@ export async function appendEvent(
     } finally {
       await fh.close()
     }
+    return line
   }
 
   try {
     if (options.skipLock) {
-      await writeOnce()
-    } else {
-      await withLock(paths.lockDir, writeOnce)
+      return await writeOnce()
     }
+    return await withLock(paths.lockDir, writeOnce)
   } catch (err: unknown) {
     if (err instanceof LockBusyError) {
       throw new EventLogError([
@@ -2867,6 +2868,23 @@ export async function appendEvent(
       },
     ])
   }
+}
+
+async function nextEventLineNumber(file: string): Promise<number> {
+  let content: string
+  try {
+    content = await readFile(file, 'utf8')
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 1
+    }
+    throw err
+  }
+  if (content.length === 0) {
+    return 1
+  }
+  const canonical = content.endsWith('\n') ? content.slice(0, -1) : content
+  return canonical.split('\n').length + 1
 }
 
 /**

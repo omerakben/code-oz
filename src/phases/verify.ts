@@ -177,6 +177,14 @@ async function recordVerifyIntervention(
 ): Promise<VerifyIntervention> {
   const eventPaths = eventPathsFor(ctx.runPaths)
   const gatePaths = gatePathsFor(ctx.runPaths)
+  const eventLine = await appendEvent(eventPaths, {
+    version: 1,
+    type: 'intervention',
+    ts: ctx.now(),
+    runId: ctx.runId,
+    phase: 'verify',
+    code,
+  })
   await writeNeedsInterventionGate(gatePaths, {
     version: 1,
     runId: ctx.runId,
@@ -186,15 +194,8 @@ async function recordVerifyIntervention(
     rule,
     detail,
     actionableSuggestions: actionableSuggestionsFor(code),
+    eventPointer: `events.jsonl:line=${eventLine}`,
     createdAt: ctx.now(),
-  })
-  await appendEvent(eventPaths, {
-    version: 1,
-    type: 'intervention',
-    ts: ctx.now(),
-    runId: ctx.runId,
-    phase: 'verify',
-    code,
   })
   return Object.freeze({ status: 'intervention' as const, code, rule })
 }

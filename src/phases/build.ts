@@ -916,6 +916,8 @@ async function recordIntervention(args: {
   readonly agent: string
   readonly code: string
   readonly rule: string
+  readonly suggestions?: readonly string[]
+  readonly eventPointer?: string
   readonly now: () => string
 }): Promise<void> {
   const gatePaths: GatePaths = {
@@ -928,6 +930,18 @@ async function recordIntervention(args: {
     lockDir: args.paths.lockDir,
   }
   await withLock(args.paths.lockDir, async () => {
+    const interventionLine = await appendEvent(
+      eventPaths,
+      {
+        version: 1,
+        type: 'intervention',
+        ts: args.now(),
+        runId: args.runId,
+        code: args.code,
+        phase: 'build',
+      },
+      { skipLock: true },
+    )
     await writeNeedsInterventionGate(
       gatePaths,
       {
@@ -937,20 +951,9 @@ async function recordIntervention(args: {
         code: args.code,
         rule: args.rule,
         agent: args.agent,
-        actionableSuggestions: [],
+        actionableSuggestions: args.suggestions ?? buildInterventionSuggestions(args.code),
+        eventPointer: args.eventPointer ?? `events.jsonl:line=${interventionLine}`,
         createdAt: args.now(),
-      },
-      { skipLock: true },
-    )
-    await appendEvent(
-      eventPaths,
-      {
-        version: 1,
-        type: 'intervention',
-        ts: args.now(),
-        runId: args.runId,
-        code: args.code,
-        phase: 'build',
       },
       { skipLock: true },
     )
@@ -973,7 +976,7 @@ async function recordBuildFailure(args: {
   }
   // Emit build_failed BEFORE intervention, so audit reads see the
   // structured failure cause first.
-  await appendEvent(eventPaths, {
+  const failureLine = await appendEvent(eventPaths, {
     version: 1,
     type: 'build_failed',
     ts: args.now(),
@@ -991,8 +994,36 @@ async function recordBuildFailure(args: {
     agent: args.agent,
     code: args.code,
     rule: args.reason,
+    suggestions: buildInterventionSuggestions(args.code),
+    eventPointer: `events.jsonl:line=${failureLine}`,
     now: args.now,
   })
+}
+
+function buildInterventionSuggestions(code: string): readonly string[] {
+  switch (code) {
+    case 'build_plan_missing':
+    case 'build_task_id_unknown':
+      return Object.freeze([
+        'open .code-oz/artifacts/PLAN.md and confirm the task exists',
+        'rerun code-oz approve plan after correcting PLAN.md',
+      ])
+    case 'restart_state_drift':
+      return Object.freeze([
+        'run code-oz doctor run to inspect the active task cursor',
+        'rerun code-oz run without editing .code-oz state files by hand',
+      ])
+    case 'build_patch_apply_failed':
+      return Object.freeze([
+        'open .code-oz/artifacts/BUILD_REPORT.md and inspect the failed patch',
+        'rerun code-oz run so BUILD can produce a corrected patch',
+      ])
+    default:
+      return Object.freeze([
+        'run code-oz doctor run to inspect the active run state',
+        'rerun code-oz run after fixing the cause shown in NEEDS_INTERVENTION.json',
+      ])
+  }
 }
 
 function interventionResult(code: string, rule: string): BuildIntervention {

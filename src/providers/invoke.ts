@@ -311,6 +311,18 @@ async function recordIntervention(
 ): Promise<void> {
   const issue = err.issues[0]!
   await withLock(gatePaths.lockDir, async () => {
+    const eventLine = await appendEvent(
+      eventPaths,
+      {
+        version: 1,
+        type: 'intervention',
+        ts: now(),
+        runId: req.runId,
+        code: issue.code,
+        phase: req.phase,
+      },
+      { skipLock: true },
+    )
     await writeNeedsInterventionGate(
       gatePaths,
       {
@@ -322,19 +334,8 @@ async function recordIntervention(
         rule: issue.rule,
         ...(issue.detail !== undefined ? { detail: issue.detail } : {}),
         actionableSuggestions: issue.actionableSuggestions,
+        eventPointer: `events.jsonl:line=${eventLine}`,
         createdAt: now(),
-      },
-      { skipLock: true },
-    )
-    await appendEvent(
-      eventPaths,
-      {
-        version: 1,
-        type: 'intervention',
-        ts: now(),
-        runId: req.runId,
-        code: issue.code,
-        phase: req.phase,
       },
       { skipLock: true },
     )

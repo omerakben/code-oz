@@ -326,6 +326,14 @@ async function recordReviewIntervention(
 ): Promise<ReviewIntervention> {
   const eventPaths = eventPathsFor(ctx.runPaths)
   const gatePaths = gatePathsFor(ctx.runPaths)
+  const eventLine = await appendEvent(eventPaths, {
+    version: 1,
+    type: 'intervention',
+    ts: ctx.now(),
+    runId: ctx.runId,
+    phase: 'review',
+    code,
+  })
   await writeNeedsInterventionGate(gatePaths, {
     version: 1,
     runId: ctx.runId,
@@ -335,15 +343,8 @@ async function recordReviewIntervention(
     rule,
     detail,
     actionableSuggestions: actionableSuggestionsFor(code),
+    eventPointer: `events.jsonl:line=${eventLine}`,
     createdAt: ctx.now(),
-  })
-  await appendEvent(eventPaths, {
-    version: 1,
-    type: 'intervention',
-    ts: ctx.now(),
-    runId: ctx.runId,
-    phase: 'review',
-    code,
   })
   return Object.freeze({
     status: 'intervention' as const,

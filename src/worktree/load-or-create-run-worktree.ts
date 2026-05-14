@@ -393,6 +393,14 @@ async function refuseWithIntervention(
   now: () => string,
   payload: InterventionPayload,
 ): Promise<LoadOrCreateRunWorktreeIntervention> {
+  const eventLine = await appendEvent(eventPathsFor(opts.runPaths), {
+    version: 1,
+    type: 'intervention',
+    ts: now(),
+    runId: opts.runId,
+    phase: opts.phase,
+    code: payload.code,
+  })
   const gate: NeedsInterventionGate = {
     version: 1,
     runId: opts.runId,
@@ -402,17 +410,10 @@ async function refuseWithIntervention(
     rule: payload.rule,
     ...(payload.detail !== undefined ? { detail: payload.detail } : {}),
     actionableSuggestions: actionableSuggestionsFor(payload.code),
+    eventPointer: `events.jsonl:line=${eventLine}`,
     createdAt: now(),
   }
   await writeNeedsInterventionGate(gatePathsFor(opts.runPaths), gate)
-  await appendEvent(eventPathsFor(opts.runPaths), {
-    version: 1,
-    type: 'intervention',
-    ts: now(),
-    runId: opts.runId,
-    phase: opts.phase,
-    code: payload.code,
-  })
   return Object.freeze({
     status: 'intervention' as const,
     code: payload.code,

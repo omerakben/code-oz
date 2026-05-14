@@ -359,12 +359,46 @@ describe('intervention/control gates', () => {
       code: 'provider_auth_missing',
       rule: 'CodexProvider could not read OAuth token',
       actionableSuggestions: ['run codex login', 'rerun code-oz approve'],
+      eventPointer: 'events.jsonl:line=12',
       createdAt: '2026-04-29T17:00:00Z',
     }
     await writeNeedsInterventionGate(paths, gate)
     const parsed = JSON.parse(await readFile(join(runDir, 'NEEDS_INTERVENTION.json'), 'utf8'))
     expect(parsed.code).toBe('provider_auth_missing')
     expect(parsed.actionableSuggestions.length).toBe(2)
+    expect(parsed.eventPointer).toBe('events.jsonl:line=12')
+  })
+
+  test('rejects NEEDS_INTERVENTION without a line-specific event pointer', async () => {
+    const gate: NeedsInterventionGate = {
+      version: 1,
+      runId: RUN,
+      phase: 'build',
+      agent: 'builder',
+      code: 'provider_auth_missing',
+      rule: 'CodexProvider could not read OAuth token',
+      actionableSuggestions: ['run codex login'],
+      eventPointer: 'events.jsonl:latest',
+      createdAt: '2026-04-29T17:00:00Z',
+    }
+
+    await expect(writeNeedsInterventionGate(paths, gate)).rejects.toBeInstanceOf(GateLoadError)
+  })
+
+  test('rejects NEEDS_INTERVENTION with no actionable suggestions', async () => {
+    const gate: NeedsInterventionGate = {
+      version: 1,
+      runId: RUN,
+      phase: 'build',
+      agent: 'builder',
+      code: 'build_failed',
+      rule: 'BUILD failed without a recovery step',
+      actionableSuggestions: [],
+      eventPointer: 'events.jsonl:line=1',
+      createdAt: '2026-04-29T17:00:00Z',
+    }
+
+    await expect(writeNeedsInterventionGate(paths, gate)).rejects.toBeInstanceOf(GateLoadError)
   })
 
   test('writePauseGate / writeStopGate write valid files', async () => {
