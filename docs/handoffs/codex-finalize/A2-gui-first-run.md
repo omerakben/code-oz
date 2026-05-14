@@ -1,8 +1,8 @@
 # A2-gui-first-run findings
 
-Sub-task: A2  
-Operator: codex-subtask-A2  
-Started: 2026-05-13T22:13:00Z  
+Sub-task: A2
+Operator: codex-subtask-A2
+Started: 2026-05-13T22:13:00Z
 Finished: 2026-05-13T22:35:04Z
 
 ## Summary
