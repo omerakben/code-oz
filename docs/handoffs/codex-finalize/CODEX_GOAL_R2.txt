@@ -1,0 +1,54 @@
+Goal: Close the cross-family fix-first verdict on branch finalize/v0.20.1-first-run-polish. Both Claude/Opus + Codex MCP agreed. 5 tests red, 8 block-push items, then open the PR.
+
+Branch is checked out. Do not rebase off main without Ozzy approval.
+
+Read first, do not redo the audit:
+- docs/handoffs/2026-05-13-codex-finalize-distribution.md
+- docs/handoffs/codex-finalize/FIRST_RUN_AUDIT.md + FIRST_RUN_FIXES.md
+- CLAUDE.md rules 1, 6, 9, 20, 22
+
+Pattern: one commit per fix, RED-first for behavior changes, `bun test` after each, append SHA to FIRST_RUN_FIXES.md row as each lands.
+
+BLOCK-PUSH (close all 8, in order):
+
+BP-1 src/commands/run.ts applyRuntimeFakeResponses: applyFirstRunFakeFixture fires too broadly. Gate on fakeScriptEntries === undefined AND no --request-file (pass parsed.requestFile in). Fixes tests/define-fixture.test.ts:88,134,241. RED first.
+
+BP-2 .github/workflows/release.yml Smoke step uses `sha256sum -c -` (broken on macOS). Replace with chain: sha256sum -> shasum -a 256 -> openssl dgst -sha256. Update tests/ci-workflows.test.ts:213 to assert all three fallbacks.
+
+BP-3+BP-4 Shared root cause: process.cwd() captured at module init in code-oz-gui/lib/code-oz-spawn.ts:81 and code-oz-gui/lib/run-registry.ts:5. Add a helper walking up from import.meta.url until package.json name === "@tuel/code-oz"; cache. Replace both call sites and code-oz-gui/tests/unit/code-oz-spawn.test.ts:9. RED from repo root.
+
+BP-5 scripts/smoke-test.ts:347 and :413 still validate `-darwin.tar.gz`; build-binaries.ts now emits `-handoff.tar.gz`. Update validator. RED: `bun run smoke` fails before, passes after.
+
+BP-6 Re-stage as logical commits — one fix per commit, conventional-commit subjects. Append SHA per row in FIRST_RUN_FIXES.md.
+
+B3 code-oz-gui/app/api/run/[runId]/approve/route.ts and lib/run-store.ts: fixture-mode approve/revise still writes to fixtures/sample-run/requests/. Refuse with HTTP 409 when getRunRecord(runId)?.kind === 'fixture'; include a one-line recovery hint. RED first.
+
+B4 code-oz-gui/components/Drawer.tsx:65-82 focus-trap misses textareas. Use selector `button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])`. Record document.activeElement as openerRef on open; restore on close. Playwright in tests/e2e/a11y.e2e.ts: Tab cycles through textareas, Escape restores opener.
+
+FIX-SOON (same session if commits stay small):
+- eventPointer: replace `events.jsonl:latest` with `events.jsonl:line=<N>`; apply to ALL writeNeedsInterventionGate writers (define, plan, verify, review, providers/invoke, worktree, schedule-attempt, build). Validator requires it on new writes. One commit.
+- SIGINT: also handle SIGTERM; scoped disposer; subprocess test asserting STOP.json on mid-run kill.
+- code-oz-gui/package.json: add axe-core as explicit devDependency.
+- approve/route.ts:113: drop leftover console.log.
+- code-oz-gui/next.config.ts:31: replace mojibake `â` with `—`.
+- code-oz-gui/README.md:152: rewrite "not just X, but Y" parallelism per writing rules.
+
+EXIT GATES (all required):
+- bun test: 0 fail, total ≥3366
+- bun run typecheck: clean
+- bun run smoke: passes
+- code-oz-gui: bun test + Playwright e2e + a11y green
+- FIRST_RUN_FIXES.md: every active row has a SHA
+
+PR:
+gh pr create --base main --head finalize/v0.20.1-first-run-polish --title "finalize(v0.20.1): first-run polish + a11y + distribution audit" --body-file docs/handoffs/codex-finalize/PR_BODY.md
+Body must include "DO NOT MERGE". Do not merge, do not force-push.
+
+CONSTRAINTS:
+- Never edit CLAUDE.md or src/prompts/universal-rules.md.
+- Never delete or skip a test. RED → GREEN only.
+- No new authority surface; eventPointer is contract polish, not a new gate.
+- Sub-tasks ≤10 min; split larger work.
+- Blocked twice on one item: write NEEDS_DECISION.md and continue the rest.
+
+Out of scope: new milestones, M17 impl, version bump past 0.20.1, release publish.
