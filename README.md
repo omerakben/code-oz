@@ -16,7 +16,7 @@ AI agents are fast. `code-oz` makes their work auditable. It is for risky repos,
 [![Homebrew](https://img.shields.io/badge/Homebrew-omerakben%2Fcode--oz-orange)](https://github.com/omerakben/homebrew-code-oz)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/omerakben/code-oz/releases)
-[![Tests passing](https://img.shields.io/badge/tests-3395%20passing-brightgreen)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
+[![Tests passing](https://img.shields.io/badge/tests-3390%20passing-brightgreen)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
 
 > **macOS note:** code-oz binaries are not yet Apple-Developer-signed (signing + notarization deferred to v0.x stable). Gatekeeper may prompt on first launch; the install script applies `xattr -d com.apple.quarantine` as a workaround, and `brew install` handles this automatically.
 

@@ -7,8 +7,8 @@
     "code-oz": "npm-wrapper/index.cjs"
   },
   "scripts": {
-    "test": "bun test",
-    "test:watch": "bun test --watch",
+    "test": "bun test ./tests",
+    "test:watch": "bun test ./tests --watch",
     "dev": "bun run src/cli.ts",
     "build:binary": "bun build --compile --target=bun src/cli.ts --outfile dist/code-oz",
     "build:binaries": "bun run scripts/build-binaries.ts",
