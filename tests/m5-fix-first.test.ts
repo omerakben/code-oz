@@ -44,7 +44,7 @@ describe('finding #1: versions report consistently across all surfaces', () => {
   // with the C13 closure + R1 fix-first commits, in the same chore.
   // v0.20.1-alpha.0 first-run-polish C19.1 fix-first (Codex R2 B1 closure)
   // bumps the trio together. The 'bump these three together' lesson holds.
-  const CURRENT = '0.20.1-alpha.0'
+  const CURRENT = '0.20.2-alpha.0'
 
   test('PKG_VERSION', () => {
     expect(PKG_VERSION).toBe(CURRENT)
