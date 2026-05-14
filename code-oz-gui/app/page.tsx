@@ -233,6 +233,25 @@ export default function Home() {
           onSettingsClick={() => undefined}
         />
 
+        {providerMode === 'fake' && (
+          <aside
+            data-a11y="fake-provider-banner"
+            role="note"
+            aria-label="FakeProvider demo mode notice"
+            className="border-b border-amber-400/30 bg-amber-400/[0.04] px-8 py-3 text-[11px] text-amber-300"
+          >
+            <div className="flex flex-wrap items-baseline gap-3">
+              <span className="font-bold uppercase tracking-[0.18em]">Demo mode</span>
+              <span className="text-amber-200/85">
+                FakeProvider emits scripted, deterministic responses. It is NOT real model output.
+              </span>
+            </div>
+            <p className="mt-1 text-[10px] leading-snug text-amber-200/65">
+              Demo mode only produces real-looking artifacts when a matching <span className="font-mono">fake-script.jsonl</span> exists for the intent (e.g., the bundled todo-cli demo). Submitting a never-seen intent in demo mode will fail at DEFINE with "reached the conversation cap without converging on a SPEC." Switch to <span className="font-mono">Real providers</span> in the sidebar to invoke Claude or Codex against your live CLI auth.
+            </p>
+          </aside>
+        )}
+
         <Composer
           value={composerValue}
           disabled={status === 'connecting' || status === 'reconnecting'}
