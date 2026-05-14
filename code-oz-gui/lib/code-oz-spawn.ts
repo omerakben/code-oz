@@ -71,6 +71,14 @@ export type SpawnInput = {
   readonly repoPath: string;
   readonly description: string;
   readonly providerOverride?: 'fake' | null;
+  /**
+   * Maximum wait, in milliseconds, for the spawned `code-oz run` to publish a
+   * runId via stdout, `active.json`, or the runs directory. Default 60_000.
+   * Overridable per-call here, or globally via the `CODE_OZ_GUI_SPAWN_TIMEOUT_MS`
+   * environment variable. Raised above the legacy 30s because `bun --cwd ...
+   * run src/cli.ts` cold-start can exceed 30s on first invocation.
+   */
+  readonly runIdTimeoutMs?: number;
 };
 
 export type ApprovalInput = {
@@ -94,7 +102,24 @@ const HOME_CODE_OZ_SOURCE_DIR = join(homedir(), 'Projects', 'code-oz');
 const CODE_OZ_REPO_ROOT = findCodeOzRepoRoot(import.meta.url);
 const RUN_ID_STDOUT_REGEX = /\b(run started: )?((?:r-\d{4}-\d{2}-\d{2}-[a-z0-9-]+)|(?:[0-9A-HJKMNP-TV-Z]{26}))\b/i;
 const STDOUT_RUN_ID_CAPTURE_LIMIT = 16 * 1024;
+const POLL_INTERVAL_MS = 100;
+const FALLBACK_RUN_ID_TIMEOUT_MS = 60_000;
+const ENV_TIMEOUT_OVERRIDE = 'CODE_OZ_GUI_SPAWN_TIMEOUT_MS';
 const activeJsonBaselines = new Map<string, number | null>();
+
+export function resolveRunIdTimeoutMs(override?: number): number {
+  if (typeof override === 'number' && Number.isFinite(override) && override > 0) {
+    return Math.max(1, Math.floor(override));
+  }
+  const envRaw = process.env[ENV_TIMEOUT_OVERRIDE];
+  if (envRaw !== undefined && /^\d+$/.test(envRaw.trim())) {
+    const parsed = Number.parseInt(envRaw.trim(), 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return FALLBACK_RUN_ID_TIMEOUT_MS;
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -300,10 +325,16 @@ function parseRunIdFromStdout(stdout: string): string | null {
   return RUN_ID_STDOUT_REGEX.exec(stdout)?.[2] ?? null;
 }
 
-async function pollActiveRunId(repoPath: string, previousRunId: string | null, resolveRunId: (runId: string) => void): Promise<void> {
+async function pollActiveRunId(
+  repoPath: string,
+  previousRunId: string | null,
+  resolveRunId: (runId: string) => void,
+  timeoutMs: number,
+): Promise<void> {
   const baselineMtime = activeJsonBaselines.get(repoPath) ?? null;
+  const maxAttempts = Math.max(1, Math.ceil(timeoutMs / POLL_INTERVAL_MS));
 
-  for (let attempt = 0; attempt < 300; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const currentMtime = await activeJsonMtime(repoPath);
     const activeJsonUpdated = currentMtime !== null && (baselineMtime === null || currentMtime > baselineMtime);
 
@@ -327,11 +358,11 @@ async function pollActiveRunId(repoPath: string, previousRunId: string | null, r
       return;
     }
 
-    await new Promise((resolveAttempt) => setTimeout(resolveAttempt, 100));
+    await new Promise((resolveAttempt) => setTimeout(resolveAttempt, POLL_INTERVAL_MS));
   }
 
   activeJsonBaselines.delete(repoPath);
-  throw new Error('code-oz spawn timeout: active.json never updated after 30s');
+  throw new Error(`code-oz spawn timeout: active.json never updated after ${Math.round(timeoutMs / 1000)}s`);
 }
 
 async function newestRunIdWithEvents(repoPath: string): Promise<string | null> {
@@ -509,7 +540,8 @@ export async function spawnCodeOzRun(input: SpawnInput, deps?: SpawnDependencies
   const stderrPump = pumpStream(subprocess.stderr, () => stderrSink, (chunk) => stderrBuffer.push(chunk));
 
   if (!runIdForSpawn) {
-    void pollActiveRunId(repoPath, previousActiveRunId, runIdDeferred.resolve).catch(runIdDeferred.reject);
+    const timeoutMs = resolveRunIdTimeoutMs(input.runIdTimeoutMs);
+    void pollActiveRunId(repoPath, previousActiveRunId, runIdDeferred.resolve, timeoutMs).catch(runIdDeferred.reject);
   }
 
   void subprocess.exited.then(async (exitCode) => {
