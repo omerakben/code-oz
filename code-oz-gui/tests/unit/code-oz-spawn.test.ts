@@ -143,7 +143,7 @@ describe('spawnCodeOzRun effort override plumbing (#5)', () => {
     };
 
     const spawnPromise = spawnCodeOzRun(
-      { repoPath: repo, description: 'effort test', effortOverride: 'high' },
+      { repoPath: repo, description: 'effort test', effortOverride: 'max' },
       {
         spawn: fakeSpawn,
         resolveBinary: async () => fakeResolution,
@@ -157,7 +157,7 @@ describe('spawnCodeOzRun effort override plumbing (#5)', () => {
     expect(cmd.length).toBeGreaterThan(0);
     expect(cmd).toContain('--effort');
     const effortIdx = cmd.indexOf('--effort');
-    expect(cmd[effortIdx + 1]).toBe('high');
+    expect(cmd[effortIdx + 1]).toBe('max');
   });
 
   test('omits --effort entirely when effortOverride is not provided', async () => {

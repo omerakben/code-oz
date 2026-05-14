@@ -247,7 +247,7 @@ export default function Home() {
               </span>
             </div>
             <p className="mt-1 text-[10px] leading-snug text-amber-200/65">
-              Demo mode only produces real-looking artifacts when a matching <span className="font-mono">fake-script.jsonl</span> exists for the intent (e.g., the bundled todo-cli demo). Submitting a never-seen intent in demo mode will fail at DEFINE with the message &ldquo;reached the conversation cap without converging on a SPEC.&rdquo; Switch to <span className="font-mono">Real providers</span> in the sidebar to invoke Claude or Codex against your live CLI auth.
+              Demo mode only produces real-looking artifacts when a matching <span className="font-mono">fake-script.jsonl</span> exists for the intent (e.g., the bundled todo-cli demo). For any unscripted intent FakeProvider returns the literal string <span className="font-mono">&ldquo;fake response&rdquo;</span> on every turn, and DEFINE fails after 2 rounds with &ldquo;reached the conversation cap without converging on a SPEC.&rdquo; Switch to <span className="font-mono">Real providers</span> in the sidebar to invoke Claude or Codex against your live CLI auth.
             </p>
           </aside>
         )}

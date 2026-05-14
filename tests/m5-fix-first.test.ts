@@ -42,8 +42,9 @@ describe('finding #1: versions report consistently across all surfaces', () => {
   // in a separate post-tag chore. M16 (production CLI completion)
   // follows that lesson: this commit bumps to `0.17.0-alpha.0` together
   // with the C13 closure + R1 fix-first commits, in the same chore.
-  // v0.20.1-alpha.0 first-run-polish C19.1 fix-first (Codex R2 B1 closure)
-  // bumps the trio together. The 'bump these three together' lesson holds.
+  // v0.20.1-alpha.0 first-run-polish C19.1 (Codex R2 B1 closure) and
+  // v0.20.2-alpha.0 release prep (chore commit fb73128) both bumped the
+  // trio together. The 'bump these three together' lesson holds.
   const CURRENT = '0.20.2-alpha.0'
 
   test('PKG_VERSION', () => {
