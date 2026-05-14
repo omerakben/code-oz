@@ -42,7 +42,7 @@ C18 scripts/release/fresh-clone-smoke.sh (M3)       ──┤── pre-tag drif
 C19 Codex public-claims bundle review               ──┤
 C20 Drift pass + Codex pre-tag review               ──┘
 
-Tag v0.20.1-alpha.0 (Ozzy posts; gh release create with notes-file)
+Tag v0.20.1-alpha.0 (Ozzy pushes tag; release.yml auto-creates with thin notes; Ozzy then `gh release edit --notes-file` to replace with rich notes)
 ```
 
 ---
@@ -608,11 +608,16 @@ Tag v0.20.1-alpha.0 (Ozzy posts; gh release create with notes-file)
   git add docs/handoffs/
   git commit -m "docs(release-notes): draft v0.20.1 + v0.20.0 backfill notes
 
-  Maestro drafts; Ozzy posts via:
-    gh release create v0.20.1-alpha.0 --notes-file docs/handoffs/2026-05-14-v0.20.1-release-notes.md
+  Maestro drafts; Ozzy posts via the corrected flow (release.yml
+  auto-creates the GitHub release on tag push with thin notes; Ozzy
+  edits to replace with the rich notes):
+    git push origin v0.20.1-alpha.0
+    gh run watch  # release.yml builds + creates release with thin notes
+    gh release edit v0.20.1-alpha.0 --notes-file docs/handoffs/2026-05-14-v0.20.1-release-notes.md
     gh release edit v0.20.0-alpha.0 --notes-file docs/handoffs/2026-05-14-v0.20.0-release-notes-backfill.md
 
-  Codex R0 M4: tag/publish is Ozzy-approved external action."
+  Codex R0 M4 + R2 B4: tag/publish is Ozzy-approved external action;
+  release.yml does the create, Ozzy does the edit."
   ```
 
 ### C18: fresh-clone smoke script (Codex R0 M3)
@@ -676,7 +681,7 @@ Tag v0.20.1-alpha.0 (Ozzy posts; gh release create with notes-file)
 
   Every Gemini mention must be consistent: "stub" / "throws" / "not live".
 
-- [ ] **Step 2: Run `bun test`** (1 min) — expect 3390+ pass, 0 fail.
+- [ ] **Step 2: Run `bun test`** (1 min) — expect 3395+ pass, 0 fail.
 
 - [ ] **Step 3: Dispatch Codex final pre-tag review** (~10 min wall time)
 
@@ -705,12 +710,19 @@ Tag v0.20.1-alpha.0 (Ozzy posts; gh release create with notes-file)
   git push origin v0.20.1-alpha.0
   ```
 
-- [ ] **Step 6: Ozzy posts releases**
+- [ ] **Step 6: Ozzy edits the auto-created release notes**
+
+  After tag push, `.github/workflows/release.yml` builds the four
+  per-arch binaries + checksums + auto-creates a GitHub release with
+  thin notes. Ozzy replaces those thin notes with the rich drafts:
 
   ```bash
-  gh release create v0.20.1-alpha.0 --notes-file docs/handoffs/2026-05-14-v0.20.1-release-notes.md
+  gh run watch  # wait for release.yml to finish
+  gh release edit v0.20.1-alpha.0 --notes-file docs/handoffs/2026-05-14-v0.20.1-release-notes.md
   gh release edit v0.20.0-alpha.0 --notes-file docs/handoffs/2026-05-14-v0.20.0-release-notes-backfill.md
   ```
+
+  Codex R2 B4 closure: `gh release edit` not `gh release create`.
 
 - [ ] **Step 7: Ozzy sets GitHub repo description + topics**
 
