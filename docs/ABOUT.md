@@ -14,6 +14,7 @@ Shipped through M16 + PE-1 + B1a + W3a:
 - Provider capability contract (M11) + company roster mapping persona roles to providers (M12) + role-cost policy under `budgets.global.byRole` (M13).
 - Reviewer panel v1 with cross-family quorum (M14); first simultaneous-provider surface, with `RULE21_BENCHMARK.md` as the canonical risk-reduction measurement methodology.
 - PE-1: `XaiProvider` direct HTTP adapter reading `XAI_API_KEY`, posting to `api.x.ai/v1/chat/completions` with strict request-body allowlist, full secret redaction, typed error class.
+- v0.20.1 provider setup contract: no-key CLI first-run defaults to `FakeProvider`; Claude and Codex stay CLI-login based; xAI uses `XAI_API_KEY`; the GUI helper uses `GEMINI_API_KEY`. See [`docs/PROVIDER_SETUP.md`](PROVIDER_SETUP.md).
 - `code-oz run --effort lite|balanced|max|beast` (B1a) scales `budgets.global` and `budgets.perPhase` uniformly; never changes assurance invariants (review rounds, panel slot count, mutation gate threshold). Run-shape envelope locked at run start; active-run replay reads the recorded snapshot, not the live config.
 - W3a multi-channel distribution: native binaries for darwin-{arm64,x64} + linux-{x64,arm64} built in CI via `bun build --compile`, fail-closed install script with SHA chain + tagged-release fetch, npm Node-launcher wrapper that downloads + SHA-verifies + caches at `~/.cache/code-oz/<version>/`, Homebrew formula template rendered into the `omerakben/homebrew-code-oz` tap at release time. Same `checksums.txt` source of truth across all three channels.
 
@@ -35,7 +36,7 @@ The same SHA-pinned binary lands through all three channels:
 
 **Homebrew.** Per-arch URLs for `on_macos { on_arm | on_intel }` and `on_linux`. SHAs baked at formula render time from the release's `checksums.txt`.
 
-**Platform support today.** macOS arm64, macOS x64, Linux x64, Linux arm64. Windows + Scoop are deferred to v0.20.1. Apple Developer signing and GPG-signed checksums are deferred to a v0.x stable release; install.sh applies `xattr -d com.apple.quarantine` on macOS as the v0.20 alpha workaround.
+**Platform support today.** macOS arm64, macOS x64, Linux x64, Linux arm64. Windows and Scoop are deferred to a future distribution milestone. Apple Developer signing and GPG-signed checksums are deferred to a v0.x stable release; install.sh applies `xattr -d com.apple.quarantine` on macOS as the v0.20 alpha workaround.
 
 ## Influence library
 
@@ -63,4 +64,4 @@ See `docs/comparison/` for per-template head-to-head audits and the synthesis ro
 
 ## Roadmap context
 
-`docs/design/ROADMAP.md` carries the milestone plan, decision matrix, and per-PR sequencing. The next milestone is M17 (AUDIT runtime), shipping to v0.21 per the 1000-star plan locked in `docs/planning/1000_STAR_PLAN.md`. M17 closes the brownfield workflow gap so `code-oz` can audit existing codebases before proposing fixes.
+`docs/design/ROADMAP.md` carries the milestone plan, decision matrix, and per-PR sequencing. Brownfield repositories are detected and represented today, including the `audit` phase in state and GUI surfaces. The next milestone is M17 (AUDIT runtime), shipping to v0.21 per the 1000-star plan locked in `docs/planning/1000_STAR_PLAN.md`; M17 closes the brownfield workflow gap so `code-oz` can audit existing codebases before proposing fixes.

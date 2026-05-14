@@ -16,7 +16,9 @@
 
 `code-oz-gui` is a Next.js 15 App Router GUI for the [`code-oz`](https://github.com/omerakben/code-oz) CLI. It exists because the CLI is dense and operator-focused — events streaming across a terminal works for engineers but excludes the non-developer audience that benefits most from agentic software runs: BAs, PMs, QA, security reviewers, the founder-mode generalist.
 
-The GUI surfaces a Kanban board of the SDLC phases the CLI orchestrates. Each phase is a column; each card carries its current state, artifact path, and decision count. Clicking a card opens a 520px right-side drawer with three tabs — **Artifact** (the rendered Markdown of `AUDIT.md` / `PLAN.md` / `BUILD_REPORT.md` etc., with section nav, SHA-bound provenance chip, and file:line citation linkification), **Events** (the SSE-fed monospace event log with filter chips and amber accents on failed events), and **Decisions** (gate approvals, AI verdicts, open questions, budget warnings — five row shapes sharing one container).
+In v0.1, the GUI can render brownfield `AUDIT` state and fixture runs. The production CLI AUDIT runtime lands in M17/v0.21; until then, first-run live smoke should use the cost-free fake path or greenfield flow.
+
+The GUI surfaces a Kanban board of the SDLC phases the CLI orchestrates. Each phase is a column; each card carries its current state, artifact path, and decision count. Clicking a card opens a 520px right-side drawer with three tabs — **Artifact** (the rendered Markdown of `AUDIT.md` / `PLAN.md` / `BUILD_REPORT.md` etc., with section nav, SHA-bound provenance chip, and file:line citation linkification), **Events** (the SSE-fed monospace event log with filter chips and amber accents on failed events), and **Decisions** (gate approvals, AI verdicts, debate outcomes, open questions, budget warnings — five row shapes sharing one container).
 
 The drawer always carries a collapsible **Ask** pill backed by Google Gemini Flash. It reads the current artifact and events on the server side and answers BA-friendly questions ≤4 sentences with file:line citations. The model never auto-generates content into the artifact — it explains what's there.
 
@@ -76,15 +78,14 @@ This distribution is deliberate. When a Claude-authored audit needs to be explai
 
 ```bash
 # 1. Clone and install (Bun 1.1+ required; Node 22+ for the spawned subprocess)
-git clone https://github.com/omerakben/code-oz-gui.git
-cd code-oz-gui
+git clone https://github.com/omerakben/code-oz.git
+cd code-oz/code-oz-gui
 bun install
 
-# 2. Optional but recommended: set provider keys for the live modes
+# 2. Optional: enable the in-GUI helper
 cp .env.example .env
-# Edit .env and add at least GEMINI_API_KEY for the in-GUI AI helper.
-# ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY are only required when
-# you switch from COST-FREE DEMO to REAL PROVIDERS.
+# Edit .env and add GEMINI_API_KEY for the drawer Ask helper.
+# CLI provider setup lives in ../docs/PROVIDER_SETUP.md.
 
 # 3. Run the GUI
 bun dev
@@ -109,7 +110,9 @@ This is the right mode for a first try, for screenshotting, for CI, for any iter
 
 ### Real providers
 
-Toggle the segmented control from `COST-FREE DEMO` to `REAL PROVIDERS (USES API KEYS)` in the workspace form. Now `COMPOSE →` spawns `code-oz run --request "..."` with the configured providers from your `.env`. This is the actual product mode — your repo gets a real audit, plan, build, verify, and review cycle from the configured Claude / OpenAI / xAI mix.
+Toggle the segmented control from `COST-FREE DEMO` to `REAL PROVIDERS (CLI AUTH)` in the workspace form. Now `COMPOSE →` spawns `code-oz run --request "..."` with the providers configured by the CLI. This is the actual product mode — Claude and Codex use their CLI login sessions, xAI uses `XAI_API_KEY`, and the drawer helper uses `GEMINI_API_KEY`.
+
+The single provider setup table lives at [`../docs/PROVIDER_SETUP.md`](../docs/PROVIDER_SETUP.md).
 
 The TopBar shows a `DEMO MODE` amber pill when the active run was spawned in fake mode, so you always know which kind of run you're looking at.
 
@@ -128,6 +131,7 @@ Known v0.1-alpha gaps (planned for v0.2):
 - Single concurrent live run per session (multi-run dashboard deferred)
 - The drawer's `Ask another` reset on the AI helper response is functional but the answer doesn't render Markdown (plain text only)
 - A11y baseline only — full WCAG 2.2 AA audit not yet complete
+- Live brownfield AUDIT runtime waits for CLI M17/v0.21; v0.1 renders the state and sample fixture honestly
 - Mobile breakpoint not designed; desktop-only for v0
 
 ## Stack
@@ -145,7 +149,7 @@ Known v0.1-alpha gaps (planned for v0.2):
 
 `code-oz-gui` is one part of a larger thesis on cross-family agentic SDLC. The CLI it drives is at [omerakben/code-oz](https://github.com/omerakben/code-oz). The full design brief (`docs/CLAUDE_DESIGN_BRIEF.md`) explains every component, vocabulary swap, and CSS override.
 
-Built with Claude Opus 4.7 (architecture + review) and OpenAI gpt-5.5-codex via [Codex CLI](https://github.com/openai/codex) (implementation). The cross-family discipline is not just the product — it's how the product was built.
+Built with Claude Opus 4.7 (architecture + review) and OpenAI gpt-5.5-codex via [Codex CLI](https://github.com/openai/codex) (implementation). The cross-family discipline is both the product and the way the product was built.
 
 ## License
 

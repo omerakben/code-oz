@@ -29,13 +29,19 @@ brew tap omerakben/code-oz
 brew install omerakben/code-oz/code-oz
 ```
 
-Platform support: macOS arm64, macOS x64, Linux x64, Linux arm64. Windows + Scoop are deferred to v0.20.1.
+Platform support: macOS arm64, macOS x64, Linux x64, Linux arm64. Windows and Scoop are deferred to a future distribution milestone.
+
+## Provider setup
+
+First-run CLI defaults to `FakeProvider` when no live provider is configured, so `code-oz init && code-oz run` can complete without spending provider tokens. Live Claude and Codex use their upstream CLI login sessions; xAI uses `XAI_API_KEY`; the GUI helper uses `GEMINI_API_KEY`.
+
+See [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md) for the single provider setup table.
 
 ## What it is
 
-`code-oz` is a standalone terminal CLI that runs your favorite coding agents (Claude, Codex, Gemini, OpenCode, Roo Code) through a real software delivery lifecycle. It coordinates role-specialized agents over a hybrid phase-graph + agentic sub-orchestration spine with hard gates between phases, file-based state, and cross-family adversarial review. The tool runs on the user's own Claude / Codex / Gemini CLI subscriptions (via SDKs that read CLI OAuth tokens from disk). No API keys required for the supported families.
+`code-oz` is a standalone terminal CLI that runs coding agents through a real software delivery lifecycle. It coordinates role-specialized agents over a hybrid phase-graph + agentic sub-orchestration spine with hard gates between phases, file-based state, and cross-family adversarial review. The live v0.20.1 CLI surface uses Claude/Codex CLI auth, optional `XAI_API_KEY`, and the cost-free `FakeProvider`; direct Anthropic/OpenAI API-key adapters are not shipped in v0.20.1.
 
-Phases (greenfield): `DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP`. Phases (brownfield): `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP`. Auto-detected on boot.
+Phases (greenfield): `DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP`. Brownfield repos are detected and represented as `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP` in state and the GUI; the production AUDIT runtime lands in M17/v0.21.
 
 ## Demo
 
@@ -61,7 +67,7 @@ mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
 
 ## Status
 
-`v0.20.0-alpha.0` — first release with official install channels (curl|sh, npm, Homebrew). 3366 tests pass offline; live xAI integration gated behind opt-in env flags.
+`v0.20.0-alpha.0` is published with official install channels (curl|sh, npm, Homebrew). `v0.20.1` is the first-run polish track covering fake no-key fallback, clearer doctor/run UX, GUI dev startup, a11y baseline, and distribution hardening.
 
 See [`docs/ABOUT.md`](docs/ABOUT.md) for the milestone inventory, product thesis, influence library, and architecture deep-dive. The milestone plan beyond v0.20 lives in [`docs/design/ROADMAP.md`](docs/design/ROADMAP.md).
 
