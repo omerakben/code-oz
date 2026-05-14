@@ -3,7 +3,7 @@
 import { useState, type KeyboardEvent } from 'react';
 import { ArrowRight, FolderOpen, PencilLine } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { EFFORT_LEVELS, type EffortLevel } from '@/lib/code-oz-spawn';
+import { EFFORT_LEVELS, type EffortLevel } from '@/lib/code-oz-effort';
 
 interface ComposerProps {
   value: string;

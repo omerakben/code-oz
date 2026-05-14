@@ -67,8 +67,8 @@ export type CodeOzBinaryResolution = {
   readonly args: string[];
 };
 
-export const EFFORT_LEVELS = ['lite', 'normal', 'high'] as const;
-export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export { EFFORT_LEVELS, type EffortLevel } from './code-oz-effort';
+import type { EffortLevel } from './code-oz-effort';
 
 export type SpawnInput = {
   readonly repoPath: string;
