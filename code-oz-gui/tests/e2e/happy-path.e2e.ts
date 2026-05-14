@@ -10,6 +10,8 @@ test.describe('code-oz-gui happy path', () => {
     }
 
     await expect(page.getByText(/demo mode/i)).toBeVisible();
+    await expect(page.getByText(/Provider family/i)).toBeVisible();
+    await expect(page.getByText(/claude: claude-opus-4-7/i)).toBeVisible();
 
     await page.getByRole('button', { name: /Audit the Safari iOS checkout failure/ }).click();
 
@@ -26,6 +28,21 @@ test.describe('code-oz-gui happy path', () => {
     await expect(dialog.getByText(/DECISION · OPEN QUESTION · AWAITING ANSWER/i)).toBeVisible();
     await page.waitForTimeout(5_000);
     await expect(dialog.getByText(/DECISION · OPEN QUESTION · AWAITING ANSWER/i)).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    const reviewCard = page.getByRole('button', { name: /Write failing RED test for the Safari iOS bug/ });
+    await reviewCard.scrollIntoViewIfNeeded();
+    await reviewCard.click();
+    await dialog.getByRole('tab', { name: 'Decisions' }).click();
+    await expect(dialog.getByText(/DECISION · CROSS-FAMILY REVIEW · fix-first/i)).toBeVisible();
+    await expect(dialog.getByText(/DECISION · AI DEBATE · WINNER/i)).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    const buildCard = page.getByRole('button', { name: /Surface failure instead of silently swallowing in finalizeCart/ });
+    await buildCard.scrollIntoViewIfNeeded();
+    await buildCard.click();
+    await dialog.getByRole('tab', { name: 'Decisions' }).click();
+    await expect(dialog.getByText(/DECISION · BUDGET ALERT · 75%/i)).toBeVisible();
 
     await dialog.getByRole('tab', { name: 'Events' }).click();
     await expect(dialog.getByRole('button', { name: 'All events' })).toBeVisible();

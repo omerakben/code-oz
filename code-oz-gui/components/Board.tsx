@@ -22,7 +22,7 @@ export const PHASE_COLUMNS: readonly PhaseColumnConfig[] = [
 
 export default function Board({ cards, currentPhase, activeCardId, onCardClick }: BoardProps) {
   return (
-    <div className="overflow-x-auto">
+    <div data-a11y="board" className="overflow-x-auto">
       <div className="grid min-h-[500px] min-w-[1640px] grid-cols-6 gap-4">
         {PHASE_COLUMNS.map((column) => (
           <PhaseColumn

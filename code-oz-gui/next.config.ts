@@ -1,9 +1,14 @@
-import type {NextConfig} from 'next';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { NextConfig } from 'next';
+
+const guiRoot = dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  eslint: {
-    ignoreDuringBuilds: true,
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
+  turbopack: {
+    root: guiRoot,
   },
   typescript: {
     ignoreBuildErrors: false,
@@ -23,7 +28,7 @@ const nextConfig: NextConfig = {
   transpilePackages: ['motion'],
   webpack: (config, {dev}) => {
     // HMR is disabled in AI Studio via DISABLE_HMR env var.
-    // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+    // Do not modify—file watching is disabled to prevent flickering during agent edits.
     if (dev && process.env.DISABLE_HMR === 'true') {
       config.watchOptions = {
         ignored: /.*/,

@@ -23,6 +23,14 @@ const TABS: readonly { id: DrawerTab; label: string; placeholder: string }[] = [
   { id: 'events', label: 'Events', placeholder: 'Events stream view lands in step 6.' },
   { id: 'decisions', label: 'Decisions', placeholder: 'Decision rows land in step 7.' },
 ] as const;
+const FOCUSABLE_SELECTOR = [
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'textarea:not([disabled])',
+  'select:not([disabled])',
+  'a[href]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
 
 function kindLabel(kind: RunCard['kind']): string {
   return kind === 'task' ? 'Task' : kind.toUpperCase();
@@ -30,8 +38,10 @@ function kindLabel(kind: RunCard['kind']): string {
 
 export default function Drawer({ runId, card, onClose }: DrawerProps) {
   const [activeTab, setActiveTab] = useState<DrawerTab>('artifact');
+  const cardId = card?.id ?? null;
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   const tabRefs = useRef<Record<DrawerTab, HTMLButtonElement | null>>({
     artifact: null,
@@ -44,11 +54,12 @@ export default function Drawer({ runId, card, onClose }: DrawerProps) {
   }, [onClose]);
 
   useEffect(() => {
-    if (!card) {
+    if (!cardId) {
       return;
     }
 
     setActiveTab('artifact');
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButtonRef.current?.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -62,7 +73,7 @@ export default function Drawer({ runId, card, onClose }: DrawerProps) {
       }
 
       const focusable = Array.from(
-        drawerRef.current.querySelectorAll<HTMLButtonElement>('button:not([disabled])'),
+        drawerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
       );
 
       if (focusable.length === 0) {
@@ -83,8 +94,15 @@ export default function Drawer({ runId, card, onClose }: DrawerProps) {
 
     document.addEventListener('keydown', handleKeyDown);
 
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [card?.id]);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      const opener = openerRef.current;
+      openerRef.current = null;
+      if (opener && document.contains(opener)) {
+        opener.focus();
+      }
+    };
+  }, [cardId]);
 
   const activeTabConfig = TABS.find((tab) => tab.id === activeTab) ?? TABS[0];
 
@@ -141,13 +159,13 @@ export default function Drawer({ runId, card, onClose }: DrawerProps) {
             <header className="sticky top-0 border-b border-white/10 bg-[#101010] p-8">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <span className="mb-3 inline-flex border border-white/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/35">
+                  <span className="mb-3 inline-flex border border-white/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/65">
                     {kindLabel(card.kind)}
                   </span>
-                  <h2 id="drawer-title" className="text-2xl font-bold tracking-tight text-white">
+                  <h2 id="drawer-title" className="text-wrap-safe text-2xl font-bold tracking-tight text-white">
                     {card.title}
                   </h2>
-                  <p className="mt-2 truncate font-mono text-xs text-white/40">{card.subtitle}</p>
+                  <p className="mt-2 break-all font-mono text-xs text-white/65">{card.subtitle}</p>
                 </div>
                 <button
                   type="button"
@@ -182,7 +200,7 @@ export default function Drawer({ runId, card, onClose }: DrawerProps) {
                       '-mb-px border-b px-0 pb-3 text-sm font-bold tracking-tight transition-colors',
                       activeTab === tab.id
                         ? 'border-white text-white'
-                        : 'border-transparent text-white/35 hover:text-white/70',
+                        : 'border-transparent text-white/65 hover:text-white/80',
                     )}
                   >
                     {tab.label}

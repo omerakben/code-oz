@@ -79,6 +79,10 @@ function summarizeEvent(event: PhaseEvent): string {
     return joinSummaryParts([stringField(event, 'agent'), stringField(event, 'provider')], ' · ');
   }
 
+  if (event.type === 'build_provider_recorded') {
+    return joinSummaryParts([stringField(event, 'providerFamily'), stringField(event, 'provider'), stringField(event, 'model')], ' · ');
+  }
+
   if (event.type === 'gate_required' || event.type === 'gate_written') {
     return stringField(event, 'phase') ?? '';
   }

@@ -37,7 +37,7 @@
       "subtitle": "T-001 · src/payments/__tests__/",
       "state": { "kind": "awaiting-approval", "gateName": "review round 1 returned fix-first" },
       "artifactPath": "BUILD_REPORT.md#T-001",
-      "decisionsCount": 2
+      "decisionsCount": 3
     },
     {
       "id": "T-002",
@@ -57,7 +57,7 @@
       "subtitle": "T-003 · src/payments/checkout.ts",
       "state": { "kind": "in-progress", "startedAt": "2026-05-12T14:39:11.620Z" },
       "artifactPath": "BUILD_REPORT.md#T-003",
-      "decisionsCount": 0
+      "decisionsCount": 1
     },
     {
       "id": "T-004",
@@ -82,5 +82,19 @@
       "gpt-5.5": { "inputPerMTok": 4, "outputPerMTok": 20 }
     },
     "spendUSD": 0.41
-  }
+  },
+  "providerProvenance": [
+    {
+      "family": "claude",
+      "provider": "claude-opus-4-7",
+      "model": "claude-opus-4-7",
+      "role": "auditor"
+    },
+    {
+      "family": "codex",
+      "provider": "gpt-5.5",
+      "model": "gpt-5.5",
+      "role": "reviewer"
+    }
+  ]
 }

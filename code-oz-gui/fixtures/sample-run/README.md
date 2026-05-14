@@ -11,7 +11,7 @@ This is the canonical fixture the GUI renders against in v0. It represents a bro
 
 ## Files
 
-- `events.jsonl` — 53-line append-only event log. Realistic shapes per `~/Projects/code-oz/src/state/schemas.ts`; below the step-2 ≥60 target because this fixture avoids filler events for v0.
+- `events.jsonl` — 54-line append-only event log. Realistic shapes per `~/Projects/code-oz/src/state/schemas.ts`; below the step-2 ≥60 target because this fixture avoids filler events for v0.
 - `current.json` — derived run-state projection (cards, currentPhase, budgets). The GUI server replays events.jsonl to build this, but a static projection is checked in to bootstrap tests.
 - `AUDIT.md` — the audit artifact (approved).
 - `PLAN.md` — the plan artifact (approved). Lists 4 tasks.
@@ -29,7 +29,7 @@ This is the canonical fixture the GUI renders against in v0. It represents a bro
 - REVIEW column: T-001 (awaiting-approval, emerald loud) + T-002 (in-progress, calm).
 - SHIP column: empty dashed.
 - Budget gauge at 75.4% (amber).
-- T-001 drawer Decisions tab: gate-approval row + AI verdict `fix-first` row.
+- Decisions fixture coverage: gate approval, open question, AI verdict, debate outcome, and budget warning rows.
 
 ## Updating the fixture
 

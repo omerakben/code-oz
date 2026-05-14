@@ -98,7 +98,7 @@ async function captureHero(page: Page): Promise<'answer' | 'error'> {
 
   const result = await waitForAny(
     page.getByText(/Approving|checkout/i),
-    page.getByText(/Gemini helper is not configured|helper is unavailable|Helper unavailable/i),
+    page.getByText(/Set GEMINI_API_KEY|Gemini helper is not configured|helper is unavailable|Helper unavailable/i),
     30000,
   ).catch(() => 'error' as const);
 
@@ -111,13 +111,14 @@ async function captureHero(page: Page): Promise<'answer' | 'error'> {
 async function captureDecisionsAndEvents(page: Page): Promise<void> {
   await closeDrawer(page);
   await page.getByRole('button', { name: /Write failing RED test for the Safari iOS bug/i }).click();
-  await page.getByRole('dialog').waitFor({ state: 'visible', timeout: 10000 });
-  await page.getByRole('button', { name: 'Decisions' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.waitFor({ state: 'visible', timeout: 10000 });
+  await dialog.getByRole('tab', { name: 'Decisions' }).click();
   await page.getByText(/CROSS-FAMILY REVIEW · fix-first/i).waitFor({ state: 'visible', timeout: 10000 });
   await saveScreenshot(page, 'decisions-task');
 
-  await page.getByRole('button', { name: 'Events' }).click();
-  await page.getByRole('button', { name: 'Errors only' }).click();
+  await dialog.getByRole('tab', { name: 'Events' }).click();
+  await dialog.getByRole('button', { name: 'Errors only' }).click();
   await page.getByText('budget_warning').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByText('intervention').first().waitFor({ state: 'visible', timeout: 10000 });
   await saveScreenshot(page, 'events-errors');
@@ -139,7 +140,8 @@ async function main(): Promise<void> {
   let heroResult: 'answer' | 'error' = 'error';
 
   try {
-    await page.goto(BASE_URL, { waitUntil: 'networkidle' });
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: 'UNDERSTAND' }).waitFor({ state: 'visible', timeout: 15000 });
     heroResult = await captureHero(page);
     await captureDecisionsAndEvents(page);
     await captureWorkspaceForm(page);

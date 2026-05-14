@@ -402,7 +402,7 @@ function debateEventMatchesCard(event: PhaseEvent, card: RunCard): boolean {
   }
 
   const phase = phaseForEvent(event);
-  return phase === null || phase === card.phase;
+  return (phase === null || phase === card.phase) && isTaskCardEventMatch(event, card);
 }
 
 function debateWinner(event: PhaseEvent): string {
@@ -988,7 +988,6 @@ function DecisionRow({ runId, card, decision }: { readonly runId: string; readon
 
 export default function DecisionsView({ runId, card }: DecisionsViewProps) {
   const [events, setEvents] = useState<PhaseEvent[]>([]);
-  const cardId = card.id;
 
   useEffect(() => {
     let closed = false;
@@ -1019,7 +1018,7 @@ export default function DecisionsView({ runId, card }: DecisionsViewProps) {
     };
   }, [runId]);
 
-  const decisions = useMemo(() => projectDecisions(events, card), [events, cardId]);
+  const decisions = useMemo(() => projectDecisions(events, card), [events, card]);
 
   if (decisions.length === 0) {
     return <p className="text-sm italic text-white/30">No decisions for this card yet.</p>;

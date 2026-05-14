@@ -7,8 +7,14 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: false,
   reporter: [['list']],
+  webServer: {
+    command: 'bun run dev',
+    url: 'http://127.0.0.1:3000',
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000,
+  },
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: 'http://127.0.0.1:3000',
     headless: true,
     viewport: { width: 1440, height: 900 },
     screenshot: 'only-on-failure',

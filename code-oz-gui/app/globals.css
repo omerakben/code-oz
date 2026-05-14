@@ -23,12 +23,24 @@
   *:focus-visible {
     outline: 2px solid var(--brand);
     outline-offset: 2px;
+    scroll-margin: 96px;
   }
   
   body {
     background-color: #050505;
     color: #ffffff;
     scrollbar-gutter: stable;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.001ms !important;
+    }
   }
 }
 
@@ -78,5 +90,10 @@
 
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.2);
+  }
+
+  .text-wrap-safe {
+    overflow-wrap: anywhere;
+    word-break: normal;
   }
 }

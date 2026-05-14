@@ -69,22 +69,23 @@ export default function PhaseColumn({
     <section className="flex min-h-[500px] min-w-[260px] flex-col border border-white/5 bg-[#0a0a0a]/80">
       <header className="border-b border-white/5 p-4">
         <div className="flex items-start gap-2">
-          <Icon className={cn('mt-0.5 h-3.5 w-3.5', isActivePhase ? 'text-emerald-500/70' : 'text-white/30')} />
+          <Icon className={cn('mt-0.5 h-3.5 w-3.5', isActivePhase ? 'text-emerald-400' : 'text-white/60')} />
           <div>
             <h2 className="text-xs font-bold uppercase tracking-[0.2em] text-white/50">{plainTitle}</h2>
-            <p className="mt-1 text-xs italic text-white/40">{subtitle}</p>
+            <p className="mt-1 text-xs italic text-white/60">{subtitle}</p>
           </div>
         </div>
-        <div className="mt-4 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.2em] text-white/25">
+        <div className="mt-4 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.2em] text-white/60">
           <span>{techName}</span>
           <span>·</span>
           <span className="normal-case tracking-normal">{status.label}</span>
           <span
+            aria-hidden="true"
             className={cn(
               'ml-auto text-[10px]',
               status.needsApproval
                 ? 'animate-pulse text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.6)]'
-                : 'text-white/15',
+                : 'text-white/45',
             )}
           >
             ●
@@ -98,7 +99,7 @@ export default function PhaseColumn({
             <Card key={card.id} card={card} active={activeCardId === card.id} onClick={() => onCardClick(card.id)} />
           ))
         ) : (
-          <p className="text-xs italic text-white/15">nothing here yet</p>
+          <p className="text-xs italic text-white/60">nothing here yet</p>
         )}
       </div>
     </section>

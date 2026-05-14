@@ -34,10 +34,13 @@ export default function Footer({ state }: FooterProps) {
   const percent = Math.round(ratio * 100);
   const tokenLimit = state?.budgets.global.maxTokensEstimate ?? 500000;
   const spend = state?.budgets.spendUSD ?? 0;
-  const provider = Object.keys(state?.budgets.priceTable ?? {})[0] ?? 'claude-opus-4-7';
+  const providerProvenance = state?.providerProvenance ?? [];
+  const provider = providerProvenance.length > 0
+    ? providerProvenance.map((record) => `${record.family}: ${record.provider}`).join(' · ')
+    : Object.keys(state?.budgets.priceTable ?? {})[0] ?? 'claude-opus-4-7';
 
   return (
-    <footer className="flex flex-wrap items-center gap-x-10 gap-y-4 border-t border-white/5 px-12 pb-8 pt-8 text-[10px] font-bold uppercase tracking-[0.2em] text-white/30">
+    <footer className="flex flex-wrap items-center gap-x-10 gap-y-4 border-t border-white/5 px-12 pb-8 pt-8 text-[10px] font-bold uppercase tracking-[0.2em] text-white/60">
       <div className="flex items-center gap-3">
         <span>Tokens</span>
         <span className="h-1 w-20 overflow-hidden rounded-full bg-white/10">
@@ -51,9 +54,9 @@ export default function Footer({ state }: FooterProps) {
         Spend <span className="ml-2 text-white/60">${spend.toFixed(2)} advisory</span>
       </div>
       <div>
-        Provider <span className="ml-2 text-white/60">{provider}</span>
+        Provider family <span className="ml-2 normal-case tracking-normal text-white/70">{provider}</span>
       </div>
-      <div className="ml-auto text-white/35">Local only · single user</div>
+      <div className="ml-auto text-white/60">Local only · single user</div>
     </footer>
   );
 }

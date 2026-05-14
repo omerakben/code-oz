@@ -40,12 +40,12 @@ export default function Composer({
   };
 
   return (
-    <section className="border-b border-white/5 bg-[#050505] px-8 py-4">
+    <section data-a11y="composer" className="border-b border-white/5 bg-[#050505] px-8 py-4">
       <div className="mx-auto flex max-w-[1800px] items-start gap-4">
-        <div className="mt-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">
-          <PencilLine className="h-4 w-4 text-emerald-500/70" />
+        <div className="mt-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-white/70">
+          <PencilLine className="h-4 w-4 text-emerald-400" />
           <span>Composer</span>
-          <span className="hidden text-white/20 xl:inline">Natural-language to action</span>
+          <span className="hidden text-white/60 xl:inline">Natural-language to action</span>
         </div>
 
         <div
