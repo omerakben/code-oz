@@ -55,7 +55,7 @@ Track the signing milestone at [`docs/design/ROADMAP.md`](docs/design/ROADMAP.md
 |----------|-------------|-------------------|
 | Claude   | Claude Max OAuth via the Claude Code CLI subprocess | code-oz never reads or transmits the OAuth token. Auth lives in `~/.claude/auth.json` (or the OS credential store) and is handled by the `claude` CLI subprocess. |
 | Codex    | ChatGPT Plus/Pro OAuth via the Codex CLI subprocess | Same pattern. Auth lives in `~/.codex/auth.json` and is handled by the `codex` CLI subprocess. |
-| xAI      | Direct HTTPS with `XAI_API_KEY` environment variable | code-oz reads the env var, attaches it to the outgoing `Authorization` header, and redacts it from every artifact-producing path (`events.jsonl`, gate files, doctor output, error messages, request and response logs). The redaction discipline is implemented at `src/providers/xai.ts:redact` and is required by every adapter that touches an HTTP path. |
+| xAI      | Direct HTTPS with `XAI_API_KEY` environment variable | code-oz reads the env var, attaches it to the outgoing `Authorization` header, and redacts it from every artifact-producing path (`events.jsonl`, gate files, doctor output, error messages, request and response logs). The redaction discipline is implemented at `src/providers/xai.ts` (`redactSecrets`) and is required by every adapter that touches an HTTP path. |
 | Fake     | None (built-in deterministic adapter)               | No network, no spend, no auth state. |
 
 The Gemini stub takes no auth (it throws on invocation). OpenCode and Roo Code are future adapter candidates and do not exist in v0.1.
@@ -97,6 +97,6 @@ The boundary is reinforced at [`docs/TRUST.md`](docs/TRUST.md), which describes 
 
 ## Public alpha disclaimer
 
-This is an alpha release line. The mechanisms described above work as documented and are tested (3390 offline tests, opt-in live-provider tests via `CODE_OZ_LIVE_PROVIDER_TESTS=xai`). The release itself is not yet hardened to production signing or provenance standards. Do not use `v0.x-alpha` as the sole control for code that goes to production without an additional review layer.
+This is an alpha release line. The mechanisms described above work as documented and are tested (3395 offline tests, opt-in live-provider tests via `CODE_OZ_LIVE_PROVIDER_TESTS=xai`). The release itself is not yet hardened to production signing or provenance standards. Do not use `v0.x-alpha` as the sole control for code that goes to production without an additional review layer.
 
 Track the signing and provenance milestones at [`docs/design/ROADMAP.md`](docs/design/ROADMAP.md).

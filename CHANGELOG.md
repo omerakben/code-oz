@@ -4,11 +4,20 @@ All notable changes to `code-oz` are recorded here. The format follows [Keep a C
 
 ## [v0.20.1-alpha.0] — 2026-05-14
 
-### First-run polish release
+### First-run polish + public truth sync
 
-Pulls forward the locked Option D Phase 3 trust + community + proof tasks from behind M17 (`docs/planning/1000_STAR_PLAN.md`) so the public surface tells an honest story. **No new gate authority** introduced (rule 20 holds). M17 AUDIT runtime stays in v0.21.
+Pulls forward the locked Option D Phase 3 trust + community + proof tasks from behind M17 (`docs/planning/1000_STAR_PLAN.md`) so the public surface tells an honest story. **No new gate authority** introduced (rule 20 holds). Provider contract unchanged. M17 AUDIT runtime stays in v0.21.
 
-Triggered by a third-party-eye audit (`docs/code-oz-gpt-pro-research-prompt.md`) that scored engineering 8.0/10 real but 1000-star readiness 3.5/10. The release fixes the readiness gap without touching the engineering surface.
+Triggered by a third-party-eye audit (`docs/code-oz-gpt-pro-research-prompt.md`) that scored engineering 8.0/10 real but 1000-star readiness 3.5/10. The release closes the readiness gap with two parts: small first-run `src/` polish fixes (inherited from earlier branch work), plus a public truth sync (this session's work).
+
+#### First-run polish (src/ fixes)
+
+- `fix(providers): classify expired subprocess auth` — auth-expired errors surface with actionable "re-run `claude login` / `codex login`" suggestion.
+- `fix(errors): make intervention pointers line-specific` — `events.jsonl:line=N` pointers in `NEEDS_INTERVENTION.json` are precise, not file-only.
+- `fix(cli): close first-run fake and resume paths` — first-run `code-oz init && code-oz run` against `FakeProvider` no longer has resume-path gaps.
+- Version bump: `package.json`, `src/cli.ts`, `src/config/schema.ts` (`DEFAULT_CONFIG.version`) → `0.20.1-alpha.0`.
+
+#### Public truth sync
 
 #### Truth correction
 
@@ -51,8 +60,8 @@ Triggered by a third-party-eye audit (`docs/code-oz-gpt-pro-research-prompt.md`)
 
 #### What did NOT change
 
-- No production source changes. `git diff --stat src/` between this release and `v0.20.0-alpha.0` is empty for the failure-demo work. The only `src/`-adjacent change was `package.json` adding the `demo:failure-gates` script.
-- Provider contract unchanged. Same four live adapters (Claude, Codex, xAI, Fake). Gemini still a stub. OpenCode and Roo Code still future candidates.
+- **No new gate authority** introduced. The failure-demo work added zero `src/` changes (`git diff --stat src/ c5fd9ab^..1f35104` is empty). The first-run polish `src/` fixes above are scoped to error-classification, intervention-pointer precision, and first-run UX — they do not introduce new gate primitives or new authority boundaries (rule 20 holds).
+- **Provider contract unchanged.** Same four live adapters (Claude, Codex, xAI, Fake). Gemini still a stub. OpenCode and Roo Code still future candidates.
 - M17 AUDIT runtime stays scheduled for v0.21.
 
 ---

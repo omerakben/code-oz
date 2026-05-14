@@ -55,7 +55,7 @@ function detectPlatform() {
   if (process.platform !== 'darwin' && process.platform !== 'linux') {
     die(
       `unsupported platform: ${process.platform}. Supported: darwin, linux. ` +
-        'Windows is deferred to v0.20.1.',
+        'Windows is deferred to a future distribution milestone (v0.21+).',
     )
   }
   if (process.arch !== 'arm64' && process.arch !== 'x64') {

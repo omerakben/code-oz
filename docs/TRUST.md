@@ -21,7 +21,9 @@ Nothing else. `code-oz` does not:
 - Send `git log`, `git diff`, branch state, or working-tree state outside the manifest.
 - Send environment variables (other than the explicit per-provider key).
 - Send `.code-oz/state/` artifacts to the upstream provider (those stay local).
-- Send the contents of files matched by `.gitignore` or the manifest's permission list.
+- Send files outside the agent's `permissions.read` allowlist (the loader rejects an agent that declares files outside its declared permissions).
+
+The provider-send path enforced at `src/providers/manifest.ts` is: explicit `ProviderRequest.files`, path safety (no `..`, no symlink escapes), and the agent's `permissions.read`. There is NOT a universal `.gitignore` filter on the provider-send path today; the `.gitignore` discipline applies to the repo-context tools (`tool_use.repo_context`) where it is wired, not to every send. If you need a file specifically excluded from agent invocations, list it in the agent's `permissions.read` denylist or move it outside the agent's allowed roots. A universal `.code-ozignore` is on the roadmap; until it ships, `permissions.read` is the contract.
 
 ### What stays on disk
 
@@ -107,7 +109,7 @@ API keys must NEVER appear in:
 - `ProviderError` messages or stack traces
 - `ProviderRequest` or `ProviderResponse` logs
 
-The redaction is implemented at the adapter (`src/providers/xai.ts:redact` for xAI). The discipline is a property of every artifact-producing path that touches an HTTP adapter, not of the adapter alone. The redaction test (`tests/providers-xai-redaction.test.ts`) is the regression guard.
+The redaction is implemented at the adapter (`src/providers/xai.ts` (`redactSecrets`) for xAI). The discipline is a property of every artifact-producing path that touches an HTTP adapter, not of the adapter alone. The redaction test (`tests/providers-xai-redaction.test.ts`) is the regression guard.
 
 ## What is logged
 
