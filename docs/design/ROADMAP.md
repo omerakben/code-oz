@@ -12,10 +12,11 @@ First-run polish release. Pulls forward Phase 3 of the locked Option D plan (`do
 - Provider claims corrected (Claude / Codex / xAI / Fake live; Gemini stub for transparency; OpenCode and Roo Code as future adapter candidates) — see [`docs/contracts/PROVIDERS.md`](../contracts/PROVIDERS.md)
 - `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `docs/TRUST.md` added
 - `.github/` issue templates and PR template
-- Failure-mode demo `docs/demo/02-failure-gates/` with five fixtures + ledger-replay assertions
+- Failure-mode demo `docs/demo/02-failure-gates/` with five fixtures + characterization tests asserting each production gate API refuses the wrong input (per-fixture `events-sketch.jsonl` files are author-constructed summaries, not real production events written via `appendEvent`)
 - Comparison page at [`docs/comparisons/ai-coding-agents.md`](../comparisons/ai-coding-agents.md) (Codex-verified, footnote-sourced)
 - Agent Gate Bench protocol at [`docs/benchmarks/agent-gate-bench.md`](../benchmarks/agent-gate-bench.md) (runner ships in v0.21)
-- No new gate authority, no new milestone work — repackaging only
+- Three small `src/` first-run polish fixes (provider auth-expired classification, intervention-pointer specificity, CLI first-run-fake + resume-paths) inherited from earlier branch work
+- No new gate authority introduced (rule 20); provider contract unchanged
 
 ### Next (v0.21.0-alpha.0)
 
