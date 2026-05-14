@@ -109,6 +109,7 @@ export type LoadOrCreateInterventionCode =
   | 'worktree_create_not_a_repo'
   | 'worktree_base_sha_invalid'
   | 'worktree_base_head_unknown'
+  | 'worktree_empty_repo'
   | 'worktree_stash_create_failed'
   | 'worktree_add_failed'
   | 'worktree_already_in_flight'
@@ -470,6 +471,11 @@ function actionableSuggestionsFor(
       return Object.freeze([
         'git could not resolve the base commit for the worktree.',
         'Confirm the project is a git repo with at least one commit and HEAD is valid; re-run after the underlying git state is healthy.',
+      ])
+    case 'worktree_empty_repo':
+      return Object.freeze([
+        'The project is a git repository but has no commits yet — code-oz needs a base commit to anchor the per-run worktree.',
+        'Remedy: run `git commit --allow-empty -m "init"` in the project root, then re-run code-oz.',
       ])
     case 'worktree_stash_create_failed':
       return Object.freeze([

@@ -579,3 +579,46 @@ describe('loadOrCreateRunWorktree — non-git cwd', () => {
     }
   })
 })
+
+// ---- Case 10: empty git repo (no commits yet) --------------------
+
+describe('loadOrCreateRunWorktree — empty git repo (no commits yet)', () => {
+  test('returns worktree_empty_repo with the git commit --allow-empty remedy', async () => {
+    // Reproduce the dogfood case from 2026-05-14 (greenfield-friend quizr
+    // run): a friend runs `git init` in a fresh directory, writes INTENT.md,
+    // but does NOT run `git commit`. The orchestrator should NOT leak the
+    // raw `fatal: ambiguous argument 'HEAD'` git stderr to the operator;
+    // it should emit a friendly intervention with the exact remedy command.
+    const emptyProjectRoot = join(tmp, 'empty-project')
+    await mkdir(emptyProjectRoot, { recursive: true })
+    await runGit(emptyProjectRoot, ['init', '-q', '-b', 'main'])
+    await runGit(emptyProjectRoot, ['config', 'user.email', 'test@example.com'])
+    await runGit(emptyProjectRoot, ['config', 'user.name', 'Test'])
+    // No commits added — this is the empty-repo case.
+
+    const result = await loadOrCreateRunWorktree({
+      cwd: emptyProjectRoot,
+      runId: RUN,
+      runPaths: stateRunPaths,
+      phase: 'build',
+      agent: 'builder',
+      now: () => FIXED_NOW,
+    })
+
+    expect(result.status).toBe('intervention')
+    if (result.status !== 'intervention') return
+    expect(result.code).toBe('worktree_empty_repo')
+
+    // The NEEDS_INTERVENTION.json must carry the actionable remedy command.
+    expect(existsSync(NEEDS_INTERVENTION_FILE(stateRunPaths))).toBe(true)
+    const gate = JSON.parse(
+      await readFile(NEEDS_INTERVENTION_FILE(stateRunPaths), 'utf8'),
+    )
+    expect(gate.code).toBe('worktree_empty_repo')
+    expect(
+      gate.actionableSuggestions.some((s: string) =>
+        s.includes('git commit --allow-empty'),
+      ),
+    ).toBe(true)
+  })
+})
