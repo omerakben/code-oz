@@ -158,6 +158,19 @@ async function captureBaseCommit(
 
   const headResult = await runGit(cwd, ['rev-parse', 'HEAD'])
   if (!headResult.ok) {
+    // Distinguish "git repo with zero commits yet" from "broken HEAD on a
+    // non-empty repo". The empty-repo case has an actionable remedy
+    // (`git commit --allow-empty`); the broken-HEAD case requires manual
+    // investigation. Discriminator: `git rev-list --all --count` returns
+    // `0` only when the repo has zero commits anywhere.
+    const commitCount = await runGit(cwd, ['rev-list', '--all', '--count'])
+    if (commitCount.ok && commitCount.stdout.trim() === '0') {
+      return {
+        ok: false,
+        code: 'worktree_empty_repo',
+        reason: 'git repository has no commits yet',
+      }
+    }
     return { ok: false, code: 'worktree_base_head_unknown', reason: trimReason(headResult.stderr) }
   }
   const sha = headResult.stdout.trim()
