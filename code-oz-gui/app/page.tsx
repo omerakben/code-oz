@@ -51,7 +51,7 @@ export default function Home() {
     setRunStartError(null);
   };
 
-  const useWorkspacePath = () => {
+  const applyWorkspacePath = () => {
     const nextRepoPath = workspaceInput.trim();
 
     if (!nextRepoPath) {
@@ -149,7 +149,7 @@ export default function Home() {
             : 'border-white/10 text-white/40 hover:text-white/70'
         }`}
       >
-        Real providers (uses API keys)
+        Real providers (CLI auth)
       </button>
     </div>
   );
@@ -177,7 +177,7 @@ export default function Home() {
                 className="mx-auto mt-5 max-w-xl text-left"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  useWorkspacePath();
+                  applyWorkspacePath();
                 }}
               >
                 <div className="border border-white/10 bg-white/[0.02]">
@@ -252,7 +252,7 @@ export default function Home() {
               className="mx-auto max-w-[1800px]"
               onSubmit={(event) => {
                 event.preventDefault();
-                useWorkspacePath();
+                applyWorkspacePath();
               }}
             >
               <div className="border border-white/10 bg-white/[0.02]">

@@ -1,10 +1,11 @@
 import { join } from 'node:path';
 import type { SpawnHandle } from './code-oz-spawn';
+import { findCodeOzRepoRoot } from './repo-root';
 import type { ProviderMode, RunLifecycle } from './types';
 
-export const PROJECT_ROOT = process.cwd();
+export const PROJECT_ROOT = findCodeOzRepoRoot(import.meta.url);
 export const FIXTURE_RUN_ID = 'r-2026-05-12-checkout-safari';
-export const FIXTURE_RUN_DIR = join(PROJECT_ROOT, 'fixtures', 'sample-run');
+export const FIXTURE_RUN_DIR = join(PROJECT_ROOT, 'code-oz-gui', 'fixtures', 'sample-run');
 
 export type RunRecord = {
   readonly runId: string;

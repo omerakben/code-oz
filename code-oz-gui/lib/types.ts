@@ -60,6 +60,13 @@ export interface RunBudgets {
   readonly spendUSD: number;
 }
 
+export interface ProviderProvenance {
+  readonly family: string;
+  readonly provider: string;
+  readonly model?: string;
+  readonly role?: string;
+}
+
 export type RunLifecycle = 'running' | 'exited-ok' | 'exited-fail' | 'aborted' | 'fixture';
 export type ProviderMode = 'fake' | 'real' | null;
 
@@ -79,4 +86,5 @@ export interface RunState {
   readonly lastEventAt: string;
   readonly cards: readonly RunCard[];
   readonly budgets: RunBudgets;
+  readonly providerProvenance: readonly ProviderProvenance[];
 }

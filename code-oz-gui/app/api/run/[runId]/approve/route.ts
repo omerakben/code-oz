@@ -1,4 +1,6 @@
-import { assertFixtureRunId, writeApprovalRequest } from '@/lib/run-store';
+import { runCodeOzApprove } from '@/lib/code-oz-spawn';
+import { getRunRecord } from '@/lib/run-registry';
+import { writeApprovalRequest } from '@/lib/run-store';
 
 export const runtime = 'nodejs';
 
@@ -92,10 +94,10 @@ function parseBody(
 
 export async function POST(request: Request, context: RouteContext) {
   const { runId } = await context.params;
-  const runIdError = assertFixtureRunId(runId);
+  const record = getRunRecord(runId);
 
-  if (runIdError) {
-    return runIdError;
+  if (!record) {
+    return Response.json({ ok: false, error: `Unknown runId: ${runId}` }, { status: 404 });
   }
 
   const body = parseBody(runId, await request.json().catch(() => null));
@@ -108,11 +110,38 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   if (body.action === 'answer-question' || body.action === 'skip-question') {
-    console.log('Question action received', body);
     return Response.json({ ok: true });
   }
 
+  if (record.kind === 'fixture') {
+    return Response.json(
+      {
+        ok: false,
+        error: 'fixture-run-read-only',
+        detail: 'Fixture runs are read-only. Start or resume a live run, then approve or revise that run.',
+      },
+      { status: 409 },
+    );
+  }
+
+  if (record.kind === 'live' && body.action === 'approve') {
+    try {
+      const result = await runCodeOzApprove({
+        repoPath: record.repoPath,
+        phase: body.phase,
+        notes: body.feedback,
+      });
+      return Response.json({ ok: true, stdout: result.stdout, stderr: result.stderr });
+    } catch (error) {
+      return Response.json(
+        { ok: false, error: 'approve-failed', detail: error instanceof Error ? error.message : String(error) },
+        { status: 503 },
+      );
+    }
+  }
+
   const requestId = await writeApprovalRequest({
+    runId: body.runId,
     phase: body.phase,
     decision: body.action,
     revisionNotes: body.feedback,

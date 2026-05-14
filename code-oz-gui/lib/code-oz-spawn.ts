@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
+import { findCodeOzRepoRoot } from './repo-root';
 
 type ReadableChunk = Uint8Array | string;
 type Subprocess = {
@@ -60,6 +61,12 @@ export type SpawnInput = {
   readonly providerOverride?: 'fake' | null;
 };
 
+export type ApprovalInput = {
+  readonly repoPath: string;
+  readonly phase: string;
+  readonly notes?: string;
+};
+
 export type SpawnHandle = {
   readonly runId: string;
   readonly runDir: string;
@@ -71,8 +78,8 @@ export type SpawnHandle = {
 };
 
 const execFileAsync = promisify(execFile);
-const CODE_OZ_SOURCE_DIR = join(homedir(), 'Projects', 'code-oz');
-const CODE_OZ_DIST_BINARY = join(CODE_OZ_SOURCE_DIR, 'dist', 'code-oz');
+const HOME_CODE_OZ_SOURCE_DIR = join(homedir(), 'Projects', 'code-oz');
+const CODE_OZ_REPO_ROOT = findCodeOzRepoRoot(import.meta.url);
 const RUN_ID_STDOUT_REGEX = /\b(run started: )?((?:r-\d{4}-\d{2}-\d{2}-[a-z0-9-]+)|(?:[0-9A-HJKMNP-TV-Z]{26}))\b/i;
 const STDOUT_RUN_ID_CAPTURE_LIMIT = 16 * 1024;
 const activeJsonBaselines = new Map<string, number | null>();
@@ -96,22 +103,72 @@ async function bunWhich(command: string): Promise<string | null> {
   }
 }
 
+async function readSourceVersion(sourceDir: string): Promise<string | null> {
+  try {
+    const parsed = JSON.parse(await readFile(join(sourceDir, 'package.json'), 'utf8')) as {
+      readonly name?: unknown;
+      readonly version?: unknown;
+    };
+
+    if (parsed.name !== '@tuel/code-oz' || typeof parsed.version !== 'string' || parsed.version.length === 0) {
+      return null;
+    }
+
+    return parsed.version;
+  } catch {
+    return null;
+  }
+}
+
+async function sourceCliExists(sourceDir: string): Promise<boolean> {
+  return pathExists(join(sourceDir, 'src', 'cli.ts'));
+}
+
+async function binaryMatchesSourceVersion(binaryPath: string, expectedVersion: string | null): Promise<boolean> {
+  if (!expectedVersion) {
+    return true;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(binaryPath, ['--version'], { timeout: 5_000 });
+    return stdout.toString().trim() === expectedVersion;
+  } catch {
+    return false;
+  }
+}
+
 export async function resolveCodeOzBinary(): Promise<CodeOzBinaryResolution> {
-  if (await pathExists(CODE_OZ_DIST_BINARY)) {
-    return { kind: 'binary', command: CODE_OZ_DIST_BINARY, args: [] };
+  const sourceDirs = [
+    CODE_OZ_REPO_ROOT,
+    HOME_CODE_OZ_SOURCE_DIR,
+  ].filter((dir, index, dirs) => dirs.indexOf(dir) === index);
+  const sourceDir = (await Promise.all(sourceDirs.map(async (dir) => (
+    await sourceCliExists(dir) ? dir : null
+  )))).find((dir): dir is string => dir !== null) ?? null;
+  const expectedVersion = sourceDir ? await readSourceVersion(sourceDir) : null;
+
+  if (sourceDir) {
+    const sourceDistBinary = join(sourceDir, 'dist', 'code-oz');
+
+    if (
+      await pathExists(sourceDistBinary)
+      && await binaryMatchesSourceVersion(sourceDistBinary, expectedVersion)
+    ) {
+      return { kind: 'binary', command: sourceDistBinary, args: [] };
+    }
   }
 
   const pathBinary = await bunWhich('code-oz');
 
-  if (pathBinary) {
+  if (pathBinary && await binaryMatchesSourceVersion(pathBinary, expectedVersion)) {
     return { kind: 'binary', command: pathBinary, args: [] };
   }
 
-  if (await pathExists(join(CODE_OZ_SOURCE_DIR, 'src', 'cli.ts'))) {
+  if (sourceDir) {
     return {
       kind: 'bun-dev',
       command: 'bun',
-      args: ['--cwd', CODE_OZ_SOURCE_DIR, 'run', 'src/cli.ts'],
+      args: ['--cwd', sourceDir, 'run', 'src/cli.ts'],
     };
   }
 
@@ -134,7 +191,7 @@ function preGenerateGuiRunId(description: string): string {
 }
 
 async function cliSupportsRunIdFlag(resolution: CodeOzBinaryResolution): Promise<boolean> {
-  const sourceRunCommand = join(CODE_OZ_SOURCE_DIR, 'src', 'commands', 'run.ts');
+  const sourceRunCommand = join(CODE_OZ_REPO_ROOT, 'src', 'commands', 'run.ts');
 
   if (await pathExists(sourceRunCommand)) {
     const source = await readFile(sourceRunCommand, 'utf8');
@@ -466,4 +523,29 @@ export async function spawnCodeOzRun(input: SpawnInput): Promise<SpawnHandle> {
       return { exitCode, signal: abortedSignal };
     },
   };
+}
+
+export async function runCodeOzApprove(input: ApprovalInput): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  const resolution = await resolveCodeOzBinary();
+  const args = [
+    ...resolution.args,
+    'approve',
+    input.phase,
+    ...(input.notes && input.notes.trim().length > 0 ? ['--notes', input.notes.trim()] : []),
+  ];
+
+  try {
+    const { stdout, stderr } = await execFileAsync(resolution.command, args, {
+      cwd: resolve(input.repoPath),
+      env: { ...process.env },
+      timeout: 30_000,
+    });
+    return { stdout: stdout.toString(), stderr: stderr.toString() };
+  } catch (error) {
+    const output = error as { readonly stdout?: unknown; readonly stderr?: unknown; readonly message?: unknown };
+    const stderr = typeof output.stderr === 'string' ? output.stderr.trim() : '';
+    const stdout = typeof output.stdout === 'string' ? output.stdout.trim() : '';
+    const message = typeof output.message === 'string' ? output.message : 'code-oz approve failed';
+    throw new Error([stderr, stdout, message].filter((part) => part.length > 0).join('\n'));
+  }
 }

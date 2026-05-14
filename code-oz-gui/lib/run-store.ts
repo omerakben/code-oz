@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { FIXTURE_RUN_DIR, FIXTURE_RUN_ID, PROJECT_ROOT, getRunRecord } from './run-registry';
 import type { Phase, PhaseEvent, Profile } from './event-types';
-import type { CardState, RunBudgets, RunCard, RunState } from './types';
+import type { CardState, ProviderProvenance, RunBudgets, RunCard, RunState } from './types';
 
 export const FIXTURE_EVENTS_PATH = join(FIXTURE_RUN_DIR, 'events.jsonl');
 export const FIXTURE_STATE_PATH = join(FIXTURE_RUN_DIR, 'current.json');
@@ -344,6 +344,60 @@ function budgetsFromEvents(events: readonly PhaseEvent[]): RunBudgets {
   };
 }
 
+function inferProviderFamily(provider: string): string {
+  const normalized = provider.toLowerCase();
+
+  if (normalized.includes('claude') || normalized.includes('anthropic')) {
+    return 'claude';
+  }
+
+  if (normalized.includes('gpt') || normalized.includes('openai') || normalized.includes('codex')) {
+    return 'codex';
+  }
+
+  if (normalized.includes('gemini') || normalized.includes('google')) {
+    return 'gemini';
+  }
+
+  if (normalized.includes('grok') || normalized.includes('xai')) {
+    return 'xai';
+  }
+
+  if (normalized.includes('fake')) {
+    return 'fake';
+  }
+
+  return 'unknown';
+}
+
+function providerProvenanceFromEvents(events: readonly PhaseEvent[]): readonly ProviderProvenance[] {
+  const records = new Map<string, ProviderProvenance>();
+
+  for (const event of events) {
+    const provider = stringEventField(event, 'provider') ?? stringEventField(event, 'reviewer');
+    const family = stringEventField(event, 'providerFamily') ?? stringEventField(event, 'reviewerFamily');
+
+    if (!provider && !family) {
+      continue;
+    }
+
+    const normalizedProvider = provider ?? family ?? 'unknown';
+    const normalizedFamily = family ?? inferProviderFamily(normalizedProvider);
+    const model = stringEventField(event, 'model') ?? stringEventField(event, 'reviewer');
+    const role = stringEventField(event, 'role') ?? stringEventField(event, 'agent');
+    const key = `${normalizedFamily}:${normalizedProvider}:${model ?? ''}:${role ?? ''}`;
+
+    records.set(key, {
+      family: normalizedFamily,
+      provider: normalizedProvider,
+      ...(model ? { model } : {}),
+      ...(role ? { role } : {}),
+    });
+  }
+
+  return Array.from(records.values());
+}
+
 function stateFromEvents(runId: string, events: readonly PhaseEvent[]): RunState {
   const record = getRunRecord(runId);
   const runStarted = events.find((event) => event.type === 'run_started');
@@ -370,14 +424,22 @@ function stateFromEvents(runId: string, events: readonly PhaseEvent[]): RunState
     lastEventAt: lastEvent?.ts ?? startedAt,
     cards: buildCards(events, profile),
     budgets: budgetsFromEvents(events),
+    providerProvenance: providerProvenanceFromEvents(events),
   };
 }
 
 export async function readRunState(runId = FIXTURE_RUN_ID): Promise<RunState> {
   if (runId === FIXTURE_RUN_ID) {
     const json = await readFile(FIXTURE_STATE_PATH, 'utf8');
-    const state = JSON.parse(json) as Omit<RunState, 'lifecycle' | 'providerMode'>;
-    return { ...state, lifecycle: 'fixture', providerMode: 'fake' };
+    const state = JSON.parse(json) as Omit<RunState, 'lifecycle' | 'providerMode'> & {
+      readonly providerProvenance?: readonly ProviderProvenance[];
+    };
+    return {
+      ...state,
+      lifecycle: 'fixture',
+      providerMode: 'fake',
+      providerProvenance: state.providerProvenance ?? providerProvenanceFromEvents(await readEvents(runId)),
+    };
   }
 
   try {
@@ -421,21 +483,29 @@ export async function readArtifact(name: ArtifactName, runId = FIXTURE_RUN_ID): 
 }
 
 export async function writeApprovalRequest(input: {
+  readonly runId: string;
   readonly phase: string;
   readonly decision: 'approve' | 'revise';
   readonly revisionNotes?: string;
 }): Promise<string> {
-  await mkdir(FIXTURE_REQUESTS_DIR, { recursive: true });
+  const runDir = resolveRunDir(input.runId);
+
+  if (!runDir) {
+    throw new Error(`Unknown runId: ${input.runId}`);
+  }
 
   const requestId = `req-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const requestPath = join(FIXTURE_REQUESTS_DIR, `${requestId}.json`);
+  const requestsDir = join(runDir, 'requests');
+  const requestPath = join(requestsDir, `${requestId}.json`);
   const body = {
     ts: new Date().toISOString(),
+    runId: input.runId,
     phase: input.phase,
     decision: input.decision,
     revisionNotes: input.revisionNotes,
   };
 
+  await mkdir(requestsDir, { recursive: true });
   await writeFile(requestPath, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
   return requestId;
 }

@@ -148,10 +148,14 @@ async function contextFor(input: {
 
 function safeErrorDetail(error: unknown): string {
   if (error instanceof Error && error.message === 'GEMINI_API_KEY is not set.') {
-    return 'Gemini helper is not configured.';
+    return 'Set GEMINI_API_KEY to enable the Gemini helper.';
   }
 
   return 'The helper is unavailable right now.';
+}
+
+function isExpectedConfigAbsence(error: unknown): boolean {
+  return error instanceof Error && error.message === 'GEMINI_API_KEY is not set.';
 }
 
 export async function POST(request: Request) {
@@ -168,6 +172,13 @@ export async function POST(request: Request) {
 
   if (runIdError) {
     return runIdError;
+  }
+
+  if (!process.env.GEMINI_API_KEY) {
+    return Response.json(
+      { error: 'helper-unavailable', detail: 'Set GEMINI_API_KEY to enable the Gemini helper.' },
+      { status: 503 },
+    );
   }
 
   try {
@@ -194,7 +205,9 @@ User question (from the GUI): ${body.prompt}`;
 
     return Response.json({ answer });
   } catch (error) {
-    console.error('AI helper request failed', error);
+    if (!isExpectedConfigAbsence(error)) {
+      console.error('AI helper request failed', error);
+    }
     return Response.json(
       { error: 'helper-unavailable', detail: safeErrorDetail(error) },
       { status: 503 },
