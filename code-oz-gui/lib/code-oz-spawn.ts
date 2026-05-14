@@ -9,12 +9,24 @@ import type { Readable } from 'node:stream';
 import { findCodeOzRepoRoot } from './repo-root';
 
 type ReadableChunk = Uint8Array | string;
-type Subprocess = {
+export type Subprocess = {
   readonly pid: number;
   readonly stdout: AsyncIterable<ReadableChunk>;
   readonly stderr: AsyncIterable<ReadableChunk>;
   readonly exited: Promise<number>;
   kill(signal?: NodeJS.Signals): void;
+};
+
+export type SpawnSubprocessFn = (input: {
+  readonly cmd: readonly string[];
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}) => Subprocess;
+
+export type SpawnDependencies = {
+  readonly spawn?: SpawnSubprocessFn;
+  readonly resolveBinary?: () => Promise<CodeOzBinaryResolution>;
+  readonly supportsRunIdFlag?: (resolution: CodeOzBinaryResolution) => Promise<boolean>;
 };
 
 function wrapChild(child: ChildProcessByStdio<null, Readable, Readable>): Subprocess {
@@ -258,6 +270,7 @@ function createRunIdDeferred(): {
   readonly promise: Promise<string>;
   readonly resolve: (runId: string) => void;
   readonly reject: (error: Error) => void;
+  readonly settled: () => boolean;
 } {
   let resolveRunId!: (runId: string) => void;
   let rejectRunId!: (error: Error) => void;
@@ -265,8 +278,22 @@ function createRunIdDeferred(): {
     resolveRunId = resolvePromise;
     rejectRunId = rejectPromise;
   });
+  let isSettled = false;
 
-  return { promise, resolve: resolveRunId, reject: rejectRunId };
+  return {
+    promise,
+    resolve: (runId) => {
+      if (isSettled) return;
+      isSettled = true;
+      resolveRunId(runId);
+    },
+    reject: (error) => {
+      if (isSettled) return;
+      isSettled = true;
+      rejectRunId(error);
+    },
+    settled: () => isSettled,
+  };
 }
 
 function parseRunIdFromStdout(stdout: string): string | null {
@@ -413,7 +440,7 @@ function commandForRun(
  * The active-file fallback keeps the primitive usable until the CLI grows an
  * explicit `--run-id` flag.
  */
-export async function spawnCodeOzRun(input: SpawnInput): Promise<SpawnHandle> {
+export async function spawnCodeOzRun(input: SpawnInput, deps?: SpawnDependencies): Promise<SpawnHandle> {
   const repoPath = resolve(input.repoPath);
   const description = input.description.trim();
 
@@ -425,9 +452,13 @@ export async function spawnCodeOzRun(input: SpawnInput): Promise<SpawnHandle> {
     throw new Error('description must be non-empty.');
   }
 
-  const resolution = await resolveCodeOzBinary();
+  const spawn = deps?.spawn ?? spawnSubprocess;
+  const resolveBinary = deps?.resolveBinary ?? resolveCodeOzBinary;
+  const supportsRunIdFlag = deps?.supportsRunIdFlag ?? cliSupportsRunIdFlag;
+
+  const resolution = await resolveBinary();
   await ensureCodeOzInitialized(repoPath, resolution);
-  const supportsRunId = await cliSupportsRunIdFlag(resolution);
+  const supportsRunId = await supportsRunIdFlag(resolution);
   const previousActiveRunId = await readActiveRunId(repoPath);
   await recordActiveJsonBaseline(repoPath);
   const generatedRunId = preGenerateGuiRunId(description);
@@ -450,7 +481,7 @@ export async function spawnCodeOzRun(input: SpawnInput): Promise<SpawnHandle> {
     runIdDeferred.resolve(runIdForSpawn);
   }
 
-  const subprocess = spawnSubprocess({
+  const subprocess = spawn({
     cmd,
     cwd: repoPath,
     env: { ...process.env },
@@ -481,10 +512,17 @@ export async function spawnCodeOzRun(input: SpawnInput): Promise<SpawnHandle> {
     void pollActiveRunId(repoPath, previousActiveRunId, runIdDeferred.resolve).catch(runIdDeferred.reject);
   }
 
-  void subprocess.exited.then((exitCode) => {
-    if (exitCode !== 0 && stdoutSink === null) {
-      runIdDeferred.reject(new Error(`code-oz exited before a runId was detected (exit ${exitCode}).`));
+  void subprocess.exited.then(async (exitCode) => {
+    if (runIdDeferred.settled()) {
+      return;
     }
+    await Promise.allSettled([stdoutPump, stderrPump]);
+    const stderrText = Buffer.concat(stderrBuffer).toString('utf8').trim();
+    const stdoutText = Buffer.concat(stdoutBuffer).toString('utf8').trim();
+    const detail = stderrText || stdoutText || 'no output captured';
+    runIdDeferred.reject(new Error(
+      `code-oz exited before a runId was detected (exit ${exitCode}): ${detail}`,
+    ));
   });
 
   const runId = await runIdDeferred.promise;
