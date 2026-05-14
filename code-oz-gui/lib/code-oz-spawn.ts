@@ -67,6 +67,9 @@ export type CodeOzBinaryResolution = {
   readonly args: string[];
 };
 
+export const EFFORT_LEVELS = ['lite', 'normal', 'high'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
 export type SpawnInput = {
   readonly repoPath: string;
   readonly description: string;
@@ -79,6 +82,14 @@ export type SpawnInput = {
    * run src/cli.ts` cold-start can exceed 30s on first invocation.
    */
   readonly runIdTimeoutMs?: number;
+  /**
+   * Effort envelope passed through as `--effort <value>` to the CLI. Maps to
+   * code-oz's rule 23 effort flag which scales `budgets.global` caps but
+   * never assurance. Omit (or pass `undefined`) to inherit the CLI's
+   * default. The CLI rejects unknown values; the GUI restricts the type
+   * at compile time. v0.20.2 finding #5.
+   */
+  readonly effortOverride?: EffortLevel;
 };
 
 export type ApprovalInput = {
@@ -452,6 +463,7 @@ function commandForRun(
   description: string,
   runId: string | null,
   providerOverride: 'fake' | null | undefined,
+  effortOverride: EffortLevel | undefined,
 ): readonly string[] {
   return [
     resolution.command,
@@ -460,6 +472,7 @@ function commandForRun(
     '--request',
     description,
     ...(providerOverride === 'fake' ? ['--provider', 'fake'] : []),
+    ...(effortOverride !== undefined ? ['--effort', effortOverride] : []),
     ...(runId ? ['--run-id', runId] : []),
   ];
 }
@@ -494,7 +507,7 @@ export async function spawnCodeOzRun(input: SpawnInput, deps?: SpawnDependencies
   await recordActiveJsonBaseline(repoPath);
   const generatedRunId = preGenerateGuiRunId(description);
   const runIdForSpawn = supportsRunId ? generatedRunId : null;
-  const cmd = commandForRun(resolution, description, runIdForSpawn, input.providerOverride);
+  const cmd = commandForRun(resolution, description, runIdForSpawn, input.providerOverride, input.effortOverride);
   const runIdDeferred = createRunIdDeferred();
   const stdoutBuffer: Uint8Array[] = [];
   const stderrBuffer: Uint8Array[] = [];
