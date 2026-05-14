@@ -148,7 +148,7 @@ case "$os" in
   darwin | linux)
     ;;
   *)
-    fail "unsupported OS: $os. Supported: darwin, linux. Windows is deferred to v0.20.1."
+    fail "unsupported OS: $os. Supported: darwin, linux. Windows is deferred to a future distribution milestone (v0.21+)."
     ;;
 esac
 

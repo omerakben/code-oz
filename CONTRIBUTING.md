@@ -19,7 +19,7 @@ Requirements:
 - **Node 18 or newer** for the npm wrapper smoke (`node --version`).
 - macOS arm64, macOS x64, Linux x64, or Linux arm64. Windows local development is not currently supported (the npm wrapper and binaries are Unix-only).
 
-The full offline test suite runs in under 30 seconds on a recent machine and should report `3390 pass / 0 fail / 2 skip` against `main`. The two skipped tests are the opt-in live-provider tests described below.
+The full offline test suite runs in under 30 seconds on a recent machine and should report `3395 pass / 0 fail / 2 skip` against `main`. The two skipped tests are the opt-in live-provider tests described below.
 
 ## Test discipline
 

@@ -17,7 +17,7 @@ This is the load-bearing fixture for the project's central thesis: a builder mod
 
 The tool throws `ProviderError("provider_permissions_violation", ...)`. Production code at `src/tools/review-request.ts:62-73` computes both families via `ctx.registry.familyOf()` and refuses when they match.
 
-## Expected `events.jsonl` event sequence
+## Expected `events-sketch.jsonl` event sequence
 
 ```jsonl
 {"type":"review_requested","buildProvider":"claude","reviewerId":"claude","ts":"..."}

@@ -14,7 +14,7 @@ REVIEW findings are bound to the run's worktree. A reviewer cannot record a find
 
 The validator refuses to record the finding. Production code at `src/phases/review.ts:2189-2204` (and adjacent) computes the real (canonical) path of the finding's file and rejects paths that do not resolve under the worktree root.
 
-## Expected `events.jsonl` event sequence
+## Expected `events-sketch.jsonl` event sequence
 
 ```jsonl
 {"type":"phase_entered","phase":"review","ts":"..."}

@@ -46,7 +46,7 @@ Exit code is 0 if every fixture's gate behavior matched its expected snapshot, n
 
 ## What this does NOT prove
 
-- **It does not prove FakeProvider writes good code.** FakeProvider is deterministic and tiny. The point of using FakeProvider here is reproducibility, not model quality. The captured outputs in this directory are committed; running the demo should match them.
+- **It does not prove any model writes good code.** No live model runs in this demo. `run-demo.ts` constructs a small `TestProvider` (an `IAgentProvider` implementation that returns a canned response) where it needs an adapter at all (fixture 04 only). The captured outputs are committed; running the demo locally produces the same structured artifacts modulo the temp-directory paths recorded in `actual.txt` and fixture 02's events-sketch.
 - **It does not prove `code-oz` catches every governance failure.** Five fixtures cover five enforcement paths. There are more enforcement paths in the spine (cost budgets, debate scheduler, mutation gating at BUILD time, etc.) that are not exercised here. The fixtures grow with future releases.
 - **It does not benchmark `code-oz` against direct-agent workflows.** That is the [`Agent Gate Bench`](../../benchmarks/agent-gate-bench.md) protocol; the runner ships in v0.21.
 

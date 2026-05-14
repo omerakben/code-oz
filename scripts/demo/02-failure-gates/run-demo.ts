@@ -8,7 +8,7 @@
 //
 // Designed for asciinema recording — each fixture prints a clear progress
 // header before invoking the relevant production code path, prints the
-// expected-vs-actual delta, and writes a small `events.jsonl` plus a
+// expected-vs-actual delta, and writes a small `events-sketch.jsonl` (an
 // gate-shaped artifact (NEEDS_INTERVENTION.json or equivalent) so users
 // can inspect exactly what the production gate produced.
 //
