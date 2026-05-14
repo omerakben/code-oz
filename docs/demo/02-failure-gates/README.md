@@ -31,7 +31,7 @@ Exit code is 0 if every fixture's gate behavior matched its expected snapshot, n
 | 1 | [`01-tampered-artifact`](fixtures/01-tampered-artifact/SPEC.md) | An approved artifact (`PLAN.md`) is edited after approval; next phase preflight refuses. | `src/state/gates.ts:104-118` — `gate_artifact_sha256_mismatch` |
 | 2 | [`02-scope-escape`](fixtures/02-scope-escape/SPEC.md) | A REVIEW finding cites a path outside the run worktree; review refuses to record the finding. | `src/phases/review.ts:2189-2204` — out-of-worktree finding rejection |
 | 3 | [`03-verify-fail`](fixtures/03-verify-fail/SPEC.md) | VERIFY's evidence command fails; phase writes `NEEDS_INTERVENTION.json` and pauses. | `src/phases/verify.ts:180-205` — `writeNeedsInterventionGate` |
-| 4 | [`04-same-family-review`](fixtures/04-same-family-review/SPEC.md) | Cross-family REVIEW invoked with reviewer family equal to builder family; the tool throws. | `src/tools/review-request.ts:60-78` — `review_provider_same_family` |
+| 4 | [`04-same-family-review`](fixtures/04-same-family-review/SPEC.md) | Cross-family REVIEW invoked with reviewer family equal to builder family; the tool throws. | `src/tools/review-request.ts:60-78` — `provider_permissions_violation` |
 | 5 | [`05-reviewer-blocks-risk`](fixtures/05-reviewer-blocks-risk/SPEC.md) | Reviewer verdict is `needs-revision`; lifecycle routes back to revision instead of SHIP. | `src/phases/review.ts:237-244` — `needs_revision` routing |
 
 ## What this proves

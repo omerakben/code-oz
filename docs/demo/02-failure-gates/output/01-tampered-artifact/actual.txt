@@ -1,0 +1,11 @@
+Fixture 01 — tampered artifact
+
+Production API: writeGate({computeSha256: false, gate.artifactSha256: <mismatched>})
+Production code path: src/state/gates.ts:104-118
+
+Result:
+  - error class: GateLoadError
+  - error code:  gate_artifact_sha256_mismatch
+  - error rule:  supplied artifactSha256 does not match the artifact contents
+
+Pass criterion: code === 'gate_artifact_sha256_mismatch' → PASS

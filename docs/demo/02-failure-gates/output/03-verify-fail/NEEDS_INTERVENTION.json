@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "runId": "00X3AAA4000000000000000000",
+  "phase": "verify",
+  "agent": "demo-fixture-03-verifier",
+  "code": "verify_failed_evidence_command_exit_nonzero",
+  "rule": "the configured evidence command must exit zero before VERIFY advances",
+  "detail": "evidence command exit code: 1",
+  "actionableSuggestions": [
+    "inspect <worktree>/VERIFY_EVIDENCE for the test output",
+    "re-run the failing test locally",
+    "if the test is flaky, mark it skipped and document in BUILD_REPORT"
+  ],
+  "eventPointer": "events.jsonl:line=1",
+  "createdAt": "2026-05-14T00:00:00Z"
+}

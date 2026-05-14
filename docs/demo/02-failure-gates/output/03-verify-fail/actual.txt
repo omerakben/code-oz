@@ -1,0 +1,12 @@
+Fixture 03 — verify fail
+
+Production API: writeNeedsInterventionGate(paths, gate)
+Production code path: src/phases/verify.ts:180-205 (caller); src/state/gates.ts:290 (writer)
+
+Result:
+  - NEEDS_INTERVENTION.json exists: true
+  - parsed.code:  verify_failed_evidence_command_exit_nonzero
+  - parsed.phase: verify
+  - parsed.actionableSuggestions count: 3
+
+Pass criterion: exists && code matches && phase=='verify' → PASS

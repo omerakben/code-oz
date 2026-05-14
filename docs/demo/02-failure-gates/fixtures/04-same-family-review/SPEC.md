@@ -15,13 +15,13 @@ This is the load-bearing fixture for the project's central thesis: a builder mod
 
 ## Expected gate behavior
 
-The tool throws `ProviderError("review_provider_same_family", ...)`. Production code at `src/tools/review-request.ts:62-73` computes both families via `ctx.registry.familyOf()` and refuses when they match.
+The tool throws `ProviderError("provider_permissions_violation", ...)`. Production code at `src/tools/review-request.ts:62-73` computes both families via `ctx.registry.familyOf()` and refuses when they match.
 
 ## Expected `events.jsonl` event sequence
 
 ```jsonl
 {"type":"review_requested","buildProvider":"claude","reviewerId":"claude","ts":"..."}
-{"type":"review_provider_same_family","buildProvider":"claude","buildFamily":"claude","reviewerId":"claude","reviewerFamily":"claude","ts":"..."}
+{"type":"provider_permissions_violation","buildProvider":"claude","buildFamily":"claude","reviewerId":"claude","reviewerFamily":"claude","ts":"..."}
 ```
 
 The reviewer is NEVER invoked. There is no `provider_invocation_started` event for the reviewer because the cross-family check fires before invocation.
@@ -30,7 +30,7 @@ The reviewer is NEVER invoked. There is no `provider_invocation_started` event f
 
 A typed `ProviderError` with:
 
-- `code: "review_provider_same_family"`
+- `code: "provider_permissions_violation"`
 - `message: "REVIEW provider must differ from BUILD provider family"`
 - `suggestions: [ "pick a reviewer agent whose provider is in a different family than <buildFamily>", "loaded reviewer agent <reviewer.name> declares provider=<reviewerId> (family=<reviewerFamily>)" ]`
 - `detail: "buildProvider=<buildProvider> (family=<buildFamily>), reviewer.provider=<reviewerId> (family=<reviewerFamily>)"`
@@ -46,7 +46,7 @@ const buildFamily = ctx.registry.familyOf(req.buildProvider)
 const reviewerFamily = ctx.registry.familyOf(reviewerId)
 if (buildFamily === reviewerFamily) {
   throw providerError(
-    'review_provider_same_family',
+    'provider_permissions_violation',
     'REVIEW provider must differ from BUILD provider family',
     [ ... ],
     ...

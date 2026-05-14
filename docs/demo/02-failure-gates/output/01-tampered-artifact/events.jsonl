@@ -1,0 +1,2 @@
+{"type":"phase_entered","phase":"plan","ts":"2026-05-14T00:00:00Z"}
+{"type":"gate_artifact_sha256_mismatch","gate":"plan","expectedSha256":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef","actualSha256Present":true,"ts":"2026-05-14T00:00:00Z"}

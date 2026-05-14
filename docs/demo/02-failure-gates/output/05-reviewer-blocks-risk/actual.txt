@@ -1,0 +1,14 @@
+Fixture 05 — reviewer blocks risk
+
+Production code path: src/phases/review.ts:224 (ReviewStatus enum) + :237-244 (routing)
+
+Result:
+  - reviewResult.status: needs_revision
+  - status is in ReviewStatus enum: true
+  - would write GATE_REVIEW_PASSED.json: false
+  - would route to revision instead: true
+
+GATE_REVIEW_PASSED.json: NOT written (would block SHIP).
+REVIEW.md: written with the findings + summary.
+
+Pass criterion: knownStatus && !wouldShip && wouldRouteToRevision → PASS

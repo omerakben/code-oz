@@ -1,0 +1,3 @@
+{"type":"phase_entered","phase":"verify","ts":"2026-05-14T00:00:00Z"}
+{"type":"verify_failed","reason":"evidence_command_exit_nonzero","exitCode":1,"ts":"2026-05-14T00:00:00Z"}
+{"type":"intervention_written","reason":"verify_failed","ts":"2026-05-14T00:00:00Z"}

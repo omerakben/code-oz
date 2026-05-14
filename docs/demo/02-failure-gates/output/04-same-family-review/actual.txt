@@ -1,0 +1,12 @@
+Fixture 04 — same-family REVIEW
+
+Production API: requestReview(ctx, {buildProvider: 'claude', reviewer: claude-agent})
+Production code path: src/tools/review-request.ts:60-78
+
+Result:
+  - error class: ProviderError
+  - error code:  provider_permissions_violation
+  - error rule:  REVIEW provider must differ from BUILD provider family
+  - reviewer invoked: NO (the cross-family check fires before invocation)
+
+Pass criterion: code === 'provider_permissions_violation' → PASS
