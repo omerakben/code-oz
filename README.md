@@ -49,6 +49,8 @@ brew install omerakben/code-oz/code-oz
 
 Platform support: macOS arm64, macOS x64, Linux x64, Linux arm64. Windows and Scoop are deferred to a future distribution milestone.
 
+If `npm install -g @tuel/code-oz` fails with a 404 or authentication error, your `~/.npmrc` is likely overriding the `@tuel` scope — see [`docs/TRUST.md` § Install gotchas](docs/TRUST.md#install-gotchas-npm-scope-routing-for-tuelcode-oz) for the fix.
+
 ## Why not just Claude Code or Codex?
 
 Use Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Roo Code, or Aider directly when you want the fastest possible agent loop.

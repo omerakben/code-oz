@@ -88,6 +88,34 @@ The alpha does not yet ship:
 
 All three land at the `v0.x stable` milestone. Until then, treat the alpha install channels as honest-but-not-cryptographically-attested.
 
+### Install gotchas: npm scope routing for `@tuel/code-oz`
+
+`@tuel/code-oz` is published on public npm under the `@tuel` scope. If your `~/.npmrc` (or a project-local `.npmrc`) registers a custom registry for the `@tuel` scope (for example, a private registry from a different `@tuel`-scoped package at a previous employer), `npm install -g @tuel/code-oz` routes to that registry instead of public npm. The install fails with a 404 or an authentication error, not with a useful "scope is overridden" message.
+
+Check your scope routing before installing. Because `npm install -g` is a global install, pass `-g` so user-level `.npmrc` masking is caught:
+
+```sh
+npm config get @tuel:registry -g
+```
+
+If the output is `undefined` (the npm CLI's literal string for an unconfigured key) the scope is not overridden. If the output is anything else and is not `https://registry.npmjs.org/`, the scope is overridden. Two options:
+
+1. Per-command override (preferred, leaves your config untouched):
+
+   ```sh
+   npm install -g @tuel/code-oz --registry=https://registry.npmjs.org/
+   ```
+
+2. Remove the override if you no longer need it:
+
+   ```sh
+   npm config delete @tuel:registry
+   ```
+
+The Homebrew tap (`omerakben/code-oz`) and the curl install script do not touch npm scope routing and are unaffected.
+
+This trap is operational, not cryptographic — the eventual binary still SHA-verifies normally on first run via the npm wrapper. The trap only blocks the install from completing.
+
 ## Provider auth boundaries
 
 | Provider | Auth source | Where the credential lives | What `code-oz` reads or transmits |
