@@ -2,6 +2,9 @@
 
 fail() {
   echo "install.sh: $1" >&2
+  if [ -n "${2:-}" ]; then
+    echo "hint: $2" >&2
+  fi
   cleanup_tmp
   exit 1
 }
@@ -216,9 +219,9 @@ fetch_release_bundle() {
   }
 
   download_to "$INSTALL_TMP_ROOT/$asset_name" "$base_url/$asset_name" \
-    || fail "failed to download release asset from $base_url/$asset_name"
+    || fail "failed to download release asset from $base_url/$asset_name" "retry the command, verify --version, or manually download $asset_name and checksums.txt from $base_url."
   download_to "$INSTALL_TMP_ROOT/checksums.txt" "$base_url/checksums.txt" \
-    || fail "failed to download checksums.txt from $base_url/checksums.txt"
+    || fail "failed to download checksums.txt from $base_url/checksums.txt" "retry the command, verify --version, or manually download checksums.txt and $asset_name from $base_url."
 
   expected_sha="$(awk -v file="$asset_name" '
     $2 == file || $2 == "*"file { print $1; exit }

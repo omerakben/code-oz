@@ -344,7 +344,7 @@ async function runCli(): Promise<number> {
       return 1
     }
 
-    const tarball = await validateDarwinTarball({
+    const tarball = await validateHandoffTarball({
       cwd,
       version,
       extractDir,
@@ -404,13 +404,13 @@ export async function createSmokeTempDirs(deps: SmokeTempDirDeps = {}): Promise<
   }
 }
 
-async function validateDarwinTarball(opts: {
+async function validateHandoffTarball(opts: {
   cwd: string
   version: string
   extractDir: string
   spawn: typeof Bun.spawn
 }): Promise<{ ok: true; tarballPath: string } | { ok: false; errors: string[] }> {
-  const rootName = `code-oz-v${opts.version}-darwin`
+  const rootName = `code-oz-v${opts.version}-handoff`
   const tarballPath = join(opts.cwd, 'dist', `${rootName}.tar.gz`)
   try {
     await access(tarballPath)

@@ -209,6 +209,17 @@ describe('.github/workflows/release.yml', () => {
     expect(raw).toMatch(/MATRIX_OS:\s+\${{\s*matrix\.os\s*}}/)
     expect(raw).toMatch(/MATRIX_ARCH:\s+\${{\s*matrix\.arch\s*}}/)
   })
+
+  test('build job smokes each tarball before upload', () => {
+    const raw = readFileSync(releaseYmlPath, 'utf8')
+    expect(raw).toContain('Smoke staged tarball')
+    expect(raw).toContain('--version')
+    expect(raw).toContain('init)')
+    expect(raw).toContain('sha256sum -c')
+    expect(raw).toContain('shasum -a 256')
+    expect(raw).toContain('openssl dgst -sha256')
+    expect(raw).toContain('manifest.json')
+  })
 })
 
 describe('release.yml ↔ consumer layout contract (W3a R1)', () => {

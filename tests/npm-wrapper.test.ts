@@ -34,8 +34,11 @@ describe('npm-wrapper/index.js', () => {
   test('cache hit: reuses cached binary without downloading', async () => {
     const fx = await createWrapperFixture()
     const cachedBinary = join(fx.cacheDir, PACKAGE_VERSION, 'code-oz')
+    const cachedSha = join(fx.cacheDir, PACKAGE_VERSION, 'code-oz.sha256')
+    const cachedText = '#!/bin/sh\necho cache-hit-binary "$@"\n'
     await mkdir(join(fx.cacheDir, PACKAGE_VERSION), { recursive: true })
-    await writeFile(cachedBinary, '#!/bin/sh\necho cache-hit-binary "$@"\n')
+    await writeFile(cachedBinary, cachedText)
+    await writeFile(cachedSha, `${sha256Text(cachedText)}\n`)
     await chmod(cachedBinary, 0o755)
 
     const result = await runWrapper(fx, {
@@ -86,6 +89,48 @@ describe('npm-wrapper/index.js', () => {
     }, ['second'])
     expect(second.exitCode).toBe(0)
     expect(second.stdout).toContain('cached second')
+  })
+
+  test('cache hit: rejects a tampered cached binary instead of executing it', async () => {
+    const fx = await createWrapperFixture()
+    const release = await createReleaseStore({
+      version: `v${PACKAGE_VERSION}`,
+      os: detectHostOs(),
+      arch: detectHostArch(),
+      binaryText: '#!/bin/sh\necho original-cache "$@"\n',
+    })
+
+    const first = await runWrapper(fx, {
+      CODE_OZ_NPM_BASE_URL: `file://${release.dir}`,
+    }, ['first'])
+    expect(first.exitCode).toBe(0)
+    expect(first.stdout).toContain('original-cache first')
+
+    const cachedBinary = join(fx.cacheDir, PACKAGE_VERSION, 'code-oz')
+    await writeFile(cachedBinary, '#!/bin/sh\necho tampered-cache-ran "$@"\n')
+    await chmod(cachedBinary, 0o755)
+    await rm(release.dir, { recursive: true, force: true })
+
+    const second = await runWrapper(fx, {
+      CODE_OZ_NPM_BASE_URL: 'file:///gone-after-tamper',
+    }, ['second'])
+
+    expect(second.exitCode).not.toBe(0)
+    expect(second.stdout).not.toContain('tampered-cache-ran')
+    expect(second.stderr.toLowerCase()).toContain('cache')
+    expect(second.stderr.toLowerCase()).toContain('checksum')
+  })
+
+  test('fails closed on non-HTTPS production download URLs', async () => {
+    const fx = await createWrapperFixture()
+
+    const result = await runWrapper(fx, {
+      CODE_OZ_NPM_BASE_URL: 'http://127.0.0.1:9/code-oz-release',
+    }, ['--version'])
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toLowerCase()).toContain('https')
+    expect(result.stderr).not.toContain('ECONNREFUSED')
   })
 
   test('fails closed on SHA mismatch', async () => {
@@ -233,6 +278,10 @@ function detectHostArch(): string {
   if (process.arch === 'arm64') return 'arm64'
   if (process.arch === 'x64') return 'x64'
   throw new Error(`unsupported test arch: ${process.arch}`)
+}
+
+function sha256Text(text: string): string {
+  return createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex')
 }
 
 interface CommandResult {

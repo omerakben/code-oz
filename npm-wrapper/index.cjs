@@ -20,12 +20,14 @@ const { createHash } = require('node:crypto')
 const { spawn, spawnSync } = require('node:child_process')
 const { Readable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
+const { fileURLToPath } = require('node:url')
 
 const GH_OWNER = 'omerakben'
 const GH_REPO = 'code-oz'
 
-function die(message) {
+function die(message, hint) {
   process.stderr.write(`code-oz launcher: ${message}\n`)
+  if (hint) process.stderr.write(`hint: ${hint}\n`)
   process.exit(1)
 }
 
@@ -62,27 +64,46 @@ function detectPlatform() {
   return { os: process.platform, arch: process.arch }
 }
 
+function parseDownloadUrl(raw) {
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch (err) {
+    throw new Error(`invalid download URL ${JSON.stringify(raw)}: ${err.message}`)
+  }
+  if (parsed.protocol === 'file:') return parsed
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`download URL must use https: ${raw}`)
+  }
+  return parsed
+}
+
 async function download(url, destination) {
-  if (url.startsWith('file://')) {
-    const sourcePath = url.slice('file://'.length)
+  const parsed = parseDownloadUrl(url)
+  if (parsed.protocol === 'file:') {
+    const sourcePath = fileURLToPath(parsed)
     if (!fs.existsSync(sourcePath)) {
       throw new Error(`source file does not exist: ${sourcePath}`)
     }
     await fs.promises.copyFile(sourcePath, destination)
     return
   }
-  const protocol = url.startsWith('https://') ? require('node:https') : require('node:http')
   await new Promise((resolve, reject) => {
-    const request = protocol.get(url, (response) => {
+    const request = require('node:https').get(parsed, (response) => {
       const status = response.statusCode ?? 0
       if (status >= 300 && status < 400 && response.headers.location) {
         response.resume()
-        download(response.headers.location, destination).then(resolve, reject)
+        const redirected = new URL(response.headers.location, parsed)
+        if (redirected.protocol !== 'https:') {
+          reject(new Error(`redirect must stay on https: ${redirected.href}`))
+          return
+        }
+        download(redirected.href, destination).then(resolve, reject)
         return
       }
       if (status < 200 || status >= 300) {
         response.resume()
-        reject(new Error(`HTTP ${status} for ${url}`))
+        reject(new Error(`HTTP ${status} for ${parsed.href}`))
         return
       }
       const fileStream = fs.createWriteStream(destination)
@@ -99,6 +120,31 @@ function sha256File(filePath) {
   const hash = createHash('sha256')
   hash.update(fs.readFileSync(filePath))
   return hash.digest('hex')
+}
+
+function readCachedSha(sidecarPath) {
+  try {
+    const raw = fs.readFileSync(sidecarPath, 'utf8').trim()
+    return /^[0-9a-f]{64}$/i.test(raw) ? raw.toLowerCase() : null
+  } catch {
+    return null
+  }
+}
+
+function verifyCachedBinary(binaryPath, sidecarPath) {
+  if (!fs.existsSync(binaryPath)) return { ok: false, reason: 'cached binary missing' }
+  const expectedSha = readCachedSha(sidecarPath)
+  if (expectedSha === null) {
+    return { ok: false, reason: 'cache checksum metadata missing' }
+  }
+  const actualSha = sha256File(binaryPath)
+  if (actualSha !== expectedSha) {
+    return {
+      ok: false,
+      reason: `cache checksum mismatch: expected ${expectedSha}, got ${actualSha}`,
+    }
+  }
+  return { ok: true }
 }
 
 function findChecksumEntry(text, assetName) {
@@ -125,7 +171,18 @@ function extractTarball(tarballPath, destinationDir) {
 async function ensureBinary({ version, host, cacheRoot, baseUrl }) {
   const cacheDir = path.join(cacheRoot, version)
   const cachedBinary = path.join(cacheDir, 'code-oz')
-  if (fs.existsSync(cachedBinary)) return cachedBinary
+  const cachedShaPath = path.join(cacheDir, 'code-oz.sha256')
+  if (fs.existsSync(cachedBinary)) {
+    const cached = verifyCachedBinary(cachedBinary, cachedShaPath)
+    if (cached.ok) return cachedBinary
+    await fs.promises.rm(cachedBinary, { force: true })
+    await fs.promises.rm(cachedShaPath, { force: true })
+    if (baseUrl.startsWith('file://')) {
+      throw new Error(
+        `${cached.reason}; removed corrupted cache entry but cannot redownload from ${baseUrl}`,
+      )
+    }
+  }
 
   await fs.promises.mkdir(cacheDir, { recursive: true })
   const stageName = `code-oz-v${version}-${host.os}-${host.arch}`
@@ -162,6 +219,7 @@ async function ensureBinary({ version, host, cacheRoot, baseUrl }) {
 
   await fs.promises.copyFile(stagedBinary, cachedBinary)
   await fs.promises.chmod(cachedBinary, 0o755)
+  await fs.promises.writeFile(cachedShaPath, `${sha256File(cachedBinary)}\n`, 'utf8')
   await fs.promises.rm(path.join(cacheDir, stageName), { recursive: true, force: true })
   await fs.promises.rm(tarballPath, { force: true })
   await fs.promises.rm(checksumsPath, { force: true })
@@ -180,7 +238,10 @@ async function main() {
   try {
     binary = await ensureBinary({ version, host, cacheRoot, baseUrl })
   } catch (err) {
-    die(err.message)
+    die(
+      err.message,
+      `retry, or remove ${path.join(cacheRoot, version)} and run code-oz again. Use only HTTPS release URLs outside local tests.`,
+    )
   }
 
   const child = spawn(binary, process.argv.slice(2), { stdio: 'inherit' })

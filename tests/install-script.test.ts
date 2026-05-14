@@ -425,6 +425,8 @@ describe('scripts/install.sh — network mode (W3a)', () => {
 
     expect(result.exitCode).not.toBe(0)
     expect(result.stderr.toLowerCase()).toContain('download')
+    expect(result.stderr.toLowerCase()).toContain('retry')
+    expect(result.stderr.toLowerCase()).toContain('manual')
     expect(existsSync(join(bundle.installDir, 'code-oz'))).toBe(false)
   })
 

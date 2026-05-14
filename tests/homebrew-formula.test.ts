@@ -87,4 +87,10 @@ describe('docs/homebrew/README.md', () => {
     expect(text.toLowerCase()).toMatch(/sed|bump|substitut/)
     expect(text).toMatch(/v0\.\d+\.\d+/)
   })
+
+  test('uses tap/name audit syntax instead of direct formula-path audit', () => {
+    const text = readFileSync(tapReadmePath, 'utf8')
+    expect(text).toContain('brew audit --formula --strict --online omerakben/code-oz/code-oz')
+    expect(text).not.toContain('brew audit --strict --online Formula/code-oz.rb')
+  })
 })

@@ -121,6 +121,69 @@ jobs:
           ASSET_NAME="code-oz-v${VERSION}-${MATRIX_OS}-${MATRIX_ARCH}.tar.gz"
           tar -C dist -czf "dist/${ASSET_NAME}" "${STAGE_NAME}"
 
+      - name: Smoke staged tarball
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          STAGE_NAME="code-oz-v${VERSION}-${MATRIX_OS}-${MATRIX_ARCH}"
+          ASSET_NAME="code-oz-v${VERSION}-${MATRIX_OS}-${MATRIX_ARCH}.tar.gz"
+          cd dist
+
+          test -s "${ASSET_NAME}"
+          tar -tzf "${ASSET_NAME}" | grep -F "${STAGE_NAME}/code-oz"
+          tar -tzf "${ASSET_NAME}" | grep -F "${STAGE_NAME}/manifest.json"
+          test -x "${STAGE_NAME}/code-oz"
+          test -f "${STAGE_NAME}/manifest.json"
+          test -s "${STAGE_NAME}/README.md"
+          test -x "${STAGE_NAME}/install.sh"
+
+          EXPECTED_SHA="$(awk -F'"' '/"sha256"/ { print $4; exit }' "${STAGE_NAME}/manifest.json")"
+          EXPECTED_SIZE="$(awk '/"sizeBytes"/ { gsub(/[^0-9]/, "", $0); print $0; exit }' "${STAGE_NAME}/manifest.json")"
+          ACTUAL_SIZE="$(wc -c < "${STAGE_NAME}/code-oz" | awk '{print $1}')"
+          test -n "${EXPECTED_SHA}"
+          test "${EXPECTED_SIZE}" = "${ACTUAL_SIZE}"
+          verify_sha256() {
+            expected="$1"
+            file="$2"
+            if command -v sha256sum >/dev/null 2>&1; then
+              printf '%s  %s\n' "${expected}" "${file}" | sha256sum -c -
+              return
+            fi
+            if command -v shasum >/dev/null 2>&1; then
+              actual="$(shasum -a 256 "${file}" | awk '{print $1}')"
+              test "${expected}" = "${actual}"
+              return
+            fi
+            if command -v openssl >/dev/null 2>&1; then
+              actual="$(openssl dgst -sha256 "${file}" | awk '{print $NF}')"
+              test "${expected}" = "${actual}"
+              return
+            fi
+            echo "No SHA-256 tool found: install coreutils, use macOS shasum, or install openssl." >&2
+            exit 1
+          }
+          verify_sha256 "${EXPECTED_SHA}" "${STAGE_NAME}/code-oz"
+
+          HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          HOST_ARCH="$(uname -m)"
+          case "${HOST_ARCH}" in
+            arm64 | aarch64) HOST_ARCH="arm64" ;;
+            x86_64 | x64) HOST_ARCH="x64" ;;
+          esac
+
+          if [ "${HOST_OS}" = "${MATRIX_OS}" ] && [ "${HOST_ARCH}" = "${MATRIX_ARCH}" ]; then
+            BIN_ABS="${PWD}/${STAGE_NAME}/code-oz"
+            SMOKE_HOME="$(mktemp -d)"
+            SMOKE_PROJECT="$(mktemp -d)"
+            HOME="${SMOKE_HOME}" "${BIN_ABS}" --version
+            (cd "${SMOKE_PROJECT}" && HOME="${SMOKE_HOME}" "${BIN_ABS}" init)
+          else
+            file "${STAGE_NAME}/code-oz"
+          fi
+
       - name: Upload tarball artifact
         uses: actions/upload-artifact@v4
         with:

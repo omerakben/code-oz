@@ -292,7 +292,7 @@ export async function buildAll(opts: {
     await opts.fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
   }
 
-  const tarball = await createDarwinTarball({
+  const tarball = await createHandoffTarball({
     fs: opts.fs,
     runner: opts.runner,
     distRoot,
@@ -432,7 +432,7 @@ async function writeHandoffReadme(
   }
 }
 
-async function createDarwinTarball(opts: {
+async function createHandoffTarball(opts: {
   fs: BuildFs
   runner: CommandRunner
   distRoot: string
@@ -440,7 +440,7 @@ async function createDarwinTarball(opts: {
   version: string
   manifest: Manifest
 }): Promise<{ ok: true; tarballPath: string } | { ok: false; errors: string[] }> {
-  const rootName = `code-oz-v${opts.version}-darwin`
+  const rootName = `code-oz-v${opts.version}-handoff`
   const stagingRoot = join(opts.distRoot, rootName)
   const tarballPath = join(opts.distRoot, `${rootName}.tar.gz`)
 
@@ -623,7 +623,7 @@ function printManifest(manifest: Manifest): void {
 }
 
 function manifestTarballPath(version: string): string {
-  return `dist/code-oz-v${version}-darwin.tar.gz`
+  return `dist/code-oz-v${version}-handoff.tar.gz`
 }
 
 function isNodeErrorCode(err: unknown, code: string): boolean {

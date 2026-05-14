@@ -53,9 +53,12 @@ sed -e "s/__VERSION__/${VERSION}/g" \
     -e "s/__SHA256_LINUX_X64__/${SHA_LX}/" \
     docs/homebrew/code-oz.rb.template > "${TAP}/Formula/code-oz.rb"
 
-# 3. Audit locally before pushing.
+# 3. Audit locally before pushing. Use Homebrew's tap/name form so the
+# formula is evaluated the same way users install it.
 cd "${TAP}"
-brew audit --strict --online Formula/code-oz.rb
+brew tap omerakben/code-oz "${TAP}" 2>/dev/null || true
+brew audit --formula --strict --online omerakben/code-oz/code-oz
+brew test omerakben/code-oz/code-oz
 
 # 4. Commit + push.
 git add Formula/code-oz.rb
