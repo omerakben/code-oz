@@ -14,7 +14,7 @@ See `docs/handoffs/codex-finalize/FIRST_RUN_FIXES.md`.
 
 ## Verification
 
-- `bun test`: 3387 pass / 2 skip / 0 fail.
+- `bun test`: 3390 pass / 2 skip / 0 fail.
 - `bun run typecheck`: clean.
 - `bun run build:binaries`: produced `dist/code-oz-v0.20.0-alpha.0-handoff.tar.gz`.
 - `bun run smoke`: passed against the handoff tarball.
