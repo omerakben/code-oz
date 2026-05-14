@@ -137,8 +137,8 @@ export async function doctorCommand(args: string[]): Promise<void> {
   const subcommand = args[0]
 
   if (subcommand === undefined) {
-    process.stderr.write(doctorHelp())
-    process.exit(1)
+    await runDoctorAggregate()
+    return
   }
 
   if (subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
@@ -152,6 +152,10 @@ export async function doctorCommand(args: string[]): Promise<void> {
   // REVIEW round. No state mutation, no file writes, no network. Always
   // exits 0.
   if (subcommand === 'run') {
+    if (args.slice(1).some(isHelpArg)) {
+      process.stdout.write(`Usage: code-oz doctor run\n\nRead-only active-run inspector. Never mutates state.\n`)
+      return
+    }
     const { runDoctorRunCommand } = await import('./doctor-run.ts')
     await runDoctorRunCommand(args.slice(1))
     return
@@ -159,6 +163,10 @@ export async function doctorCommand(args: string[]): Promise<void> {
 
   if (subcommand === 'tools') {
     const subArgs = args.slice(1)
+    if (subArgs.some(isHelpArg)) {
+      process.stdout.write(`Usage: code-oz doctor tools [--json]\n\nProbe required external tools.\n`)
+      return
+    }
     const json = subArgs.includes('--json')
     const report = await runDoctorTools()
     if (json) {
@@ -171,6 +179,10 @@ export async function doctorCommand(args: string[]): Promise<void> {
 
   if (subcommand === 'git') {
     const subArgs = args.slice(1)
+    if (subArgs.some(isHelpArg)) {
+      process.stdout.write(`Usage: code-oz doctor git [--json]\n\nProbe git version support.\n`)
+      return
+    }
     const json = subArgs.includes('--json')
     const report = await runDoctorGit()
     if (json) {
@@ -360,6 +372,10 @@ export async function doctorCommand(args: string[]): Promise<void> {
   }
 
   const subArgs = args.slice(1)
+  if (subArgs.some(isHelpArg)) {
+    process.stdout.write(`Usage: code-oz doctor providers [--json]\n\nProbe provider auth and CLI presence.\n`)
+    return
+  }
   const json = subArgs.includes('--json')
 
   const report = await runDoctorProviders()
@@ -371,6 +387,33 @@ export async function doctorCommand(args: string[]): Promise<void> {
   }
 
   process.exit(report.exitCode)
+}
+
+function isHelpArg(value: string): boolean {
+  return value === '--help' || value === '-h' || value === 'help'
+}
+
+async function runDoctorAggregate(): Promise<void> {
+  const [providers, tools, git] = await Promise.all([
+    runDoctorProviders(),
+    runDoctorTools(),
+    runDoctorGit(),
+  ])
+  process.stdout.write('code-oz doctor\n\n')
+  process.stdout.write(`providers: ${providers.exitCode === 0 ? 'ok' : 'needs attention'}\n`)
+  if (providers.exitCode !== 0) {
+    const missing = providers.providers
+      .filter((p) => providers.required.includes(p.provider) && p.authStatus !== 'ok')
+      .map((p) => p.provider)
+    process.stdout.write(`  fix: run code-oz doctor providers for setup hints${missing.length > 0 ? ` (${missing.join(', ')})` : ''}\n`)
+  }
+  process.stdout.write(`tools: ${tools.exitCode === 0 ? 'ok' : 'needs attention'}\n`)
+  if (tools.exitCode !== 0) process.stdout.write('  fix: run code-oz doctor tools for install commands\n')
+  process.stdout.write(`git: ${git.exitCode === 0 ? 'ok' : 'needs attention'}\n`)
+  if (git.exitCode !== 0) process.stdout.write('  fix: install git 2.40 or newer\n')
+  process.stdout.write('\n')
+  process.stdout.write('Subcommands: providers, tools, git, run\n')
+  process.exit(providers.exitCode === 0 && tools.exitCode === 0 && git.exitCode === 0 ? 0 : 1)
 }
 
 // --- doctor tools (M6) ----------------------------------------------

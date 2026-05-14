@@ -22,6 +22,7 @@ Commands:
                      to ship after the final review approval. SHIP runtime
                      (artifact production beyond gate writer) lands in M17.
   approve          Approve the current phase of the active run
+  resume           Resume the active run (alias for 'run --resume')
   doctor           Probe environment health
                      'doctor providers' - provider auth + CLI presence
                      'doctor tools'     - required external tools (rg)
@@ -61,6 +62,9 @@ async function main(): Promise<void> {
       return
     case 'run':
       await runCommand(subArgs)
+      return
+    case 'resume':
+      await runCommand(['--resume', ...subArgs])
       return
     case 'approve':
       await approveCommand(subArgs)

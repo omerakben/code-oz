@@ -11,6 +11,32 @@ import {
 } from '../src/commands/doctor.ts'
 import { initProject } from '../src/commands/init.ts'
 
+const REPO_ROOT = process.cwd()
+const CLI_ENTRY = join(REPO_ROOT, 'src/cli.ts')
+
+interface SubprocResult {
+  readonly exitCode: number
+  readonly stdout: string
+  readonly stderr: string
+}
+
+async function runDoctorSubprocess(args: readonly string[], cwd: string): Promise<SubprocResult> {
+  const proc = Bun.spawn({
+    cmd: ['bun', 'run', CLI_ENTRY, 'doctor', ...args],
+    cwd,
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env, FORCE_COLOR: '0' },
+  })
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  const exitCode = await proc.exited
+  return { exitCode, stdout, stderr }
+}
+
 let tmp: string
 // PE-1 commit 4 + Codex Risk: XaiProvider.health() makes a real HTTPS GET
 // to /v1/models when XAI_API_KEY is set. Tests in this file go through
@@ -144,6 +170,27 @@ describe('doctorHelp', () => {
     expect(help).toContain('providers')
     expect(help).toContain('--json')
     expect(help).toContain('Exit codes:')
+  })
+})
+
+describe('code-oz doctor CLI first-run UX', () => {
+  test('bare doctor runs an aggregate report instead of usage failure', async () => {
+    await initProject({ cwd: tmp })
+    const result = await runDoctorSubprocess([], tmp)
+    expect([0, 1]).toContain(result.exitCode)
+    expect(result.stderr).not.toContain('Usage: code-oz doctor')
+    expect(result.stdout).toContain('code-oz doctor')
+    expect(result.stdout).toContain('providers')
+    expect(result.stdout).toContain('tools')
+    expect(result.stdout).toContain('git')
+  })
+
+  test('doctor providers --help prints help instead of running probes', async () => {
+    const result = await runDoctorSubprocess(['providers', '--help'], tmp)
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('Usage: code-oz doctor providers')
+    expect(result.stdout).toContain('--json')
+    expect(result.stdout).not.toContain('PROVIDER')
   })
 })
 

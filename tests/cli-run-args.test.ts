@@ -34,6 +34,35 @@ describe('parseRunArgs — baseline (no --fake-script)', () => {
     const r = parseRunArgs(['--provider', 'claude'], {})
     expect(r.kind).toBe('error')
   })
+
+  test('accepts --resume as an explicit active-run continuation flag', () => {
+    const r = parseRunArgs(['--resume'], {})
+    expect(r.kind).toBe('ok')
+    if (r.kind !== 'ok') return
+    expect(r.resumeRequested).toBe(true)
+    expect(r.input.kind).toBe('tty')
+  })
+
+  test('rejects --resume with new run input', () => {
+    const r = parseRunArgs(['--resume', '--request', 'new work'], {})
+    expect(r.kind).toBe('error')
+    if (r.kind !== 'error') return
+    expect(r.message).toContain('--resume')
+  })
+
+  test('maps old effort aliases to canonical effort names', () => {
+    const low = parseRunArgs(['--effort', 'low'], {})
+    expect(low.kind).toBe('ok')
+    if (low.kind === 'ok') expect(low.effort).toBe('lite')
+
+    const medium = parseRunArgs(['--effort=medium'], {})
+    expect(medium.kind).toBe('ok')
+    if (medium.kind === 'ok') expect(medium.effort).toBe('balanced')
+
+    const high = parseRunArgs(['--effort', 'high'], {})
+    expect(high.kind).toBe('ok')
+    if (high.kind === 'ok') expect(high.effort).toBe('max')
+  })
 })
 
 describe('parseRunArgs — --fake-script gate (Codex R0 Risk #3 + #9)', () => {

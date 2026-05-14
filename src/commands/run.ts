@@ -47,6 +47,7 @@ import {
   runPathsFor,
   type RunPaths,
 } from '../state/run.ts'
+import { writeStopGate } from '../state/gates.ts'
 import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
 import { runPlan, type PlanResult } from '../phases/plan.ts'
@@ -78,10 +79,12 @@ import {
   loadFakeScript,
   type FakeScriptEntry,
 } from '../providers/fake-script.ts'
+import type { FakeProvider } from '../providers/fake.ts'
 import {
   printFakeProviderBanner,
   recordFakeProviderWarning,
 } from '../cli/fake-provider-warning.ts'
+import { applyFirstRunFakeFixture } from '../providers/first-run-fake-fixture.ts'
 import {
   clearStaleGateFile,
   detectOpenBuildStarted,
@@ -116,7 +119,7 @@ export async function runCommand(args: string[]): Promise<void> {
     process.exit(2)
   }
 
-  // M16 C11 — `--provider fake` warning banner. LOUD stderr banner fires
+  // M16 C11 — explicit `--provider fake` warning banner. LOUD stderr banner fires
   // before anything else: failed preflight or `.code-oz/` missing must
   // still surface the warning so CI logs reflect the override regardless
   // of where the run aborts. The companion `fake_provider_warning_emitted`
@@ -141,6 +144,16 @@ export async function runCommand(args: string[]): Promise<void> {
   const rawConfig = await loadConfig({ cwd })
   const config = applyEffort(rawConfig, parsed.effort)
   const ctx = await bootstrap({ cwd, config })
+  if (parsed.effortAlias !== undefined) {
+    process.stderr.write(
+      `code-oz run: --effort ${parsed.effortAlias} is deprecated; use --effort ${parsed.effort}.\n`,
+    )
+  }
+  const runtimeProviderOverride =
+    parsed.providerOverride ?? (await defaultToFakeIfRequiredProvidersUnavailable(ctx))
+  if (runtimeProviderOverride === 'fake' && parsed.providerOverride !== 'fake') {
+    printFakeProviderBanner()
+  }
 
   if (!existsSync(ctx.paths.root)) {
     process.stderr.write(
@@ -177,13 +190,13 @@ export async function runCommand(args: string[]): Promise<void> {
 
   const active = await readActiveRun(ctx.paths.activeRun)
   if (active !== null) {
+    const activeRunPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, active)
     // B1a Commit 2 (rule 23) — mismatch detection. When `--effort` was
     // supplied AND the recorded envelope's effort differs, exit code 2
     // (CLI usage error) BEFORE any other side effects. Mirror-style:
     // pre-checked here so the dispatcher tree below never has to know
     // about the flag.
     if (parsed.effortFlagPresent) {
-      const activeRunPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, active)
       const recorded = await readRecordedEffort(activeRunPaths)
       if (recorded === null) {
         // Codex R0 F5 — legacy active run with no recorded envelope.
@@ -199,40 +212,48 @@ export async function runCommand(args: string[]): Promise<void> {
         process.exit(EXIT_USAGE)
       }
     }
-    // M16 C11 — emit the `fake_provider_warning_emitted` event for the
-    // active-run branch: appendEvent acquires the per-run lock, so the
-    // event lands in the correct events.jsonl. Best-effort: if the
-    // append fails (corrupt run dir, lock busy), the banner has already
-    // surfaced the warning to stderr — we surface the append error and
-    // continue, never blocking a run on the warning event.
-    if (parsed.providerOverride === 'fake') {
-      try {
-        const activeRunPaths = runPathsFor(ctx.paths.state, ctx.paths.artifacts, active)
-        await recordFakeProviderWarning({
-          eventPaths: {
-            file: activeRunPaths.eventsFile,
-            lockDir: activeRunPaths.lockDir,
-          },
-          runId: active,
-          ...(parsed.fakeScriptPath !== undefined
-            ? { fakeScriptPath: parsed.fakeScriptPath }
-            : {}),
-        })
-      } catch (err) {
-        process.stderr.write(
-          `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
-        )
+    const disposeInterruptStopGate = installInterruptStopGate(activeRunPaths, active)
+    try {
+      // M16 C11 — emit the `fake_provider_warning_emitted` event for the
+      // active-run branch: appendEvent acquires the per-run lock, so the
+      // event lands in the correct events.jsonl. Best-effort: if the
+      // append fails (corrupt run dir, lock busy), the banner has already
+      // surfaced the warning to stderr — we surface the append error and
+      // continue, never blocking a run on the warning event.
+      if (runtimeProviderOverride === 'fake') {
+        try {
+          await recordFakeProviderWarning({
+            eventPaths: {
+              file: activeRunPaths.eventsFile,
+              lockDir: activeRunPaths.lockDir,
+            },
+            runId: active,
+            ...(parsed.fakeScriptPath !== undefined
+              ? { fakeScriptPath: parsed.fakeScriptPath }
+              : {}),
+          })
+        } catch (err) {
+          process.stderr.write(
+            `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
+          )
+        }
       }
+      await handleActiveRun(
+        ctx.paths.state,
+        ctx.paths.artifacts,
+        active,
+        runtimeProviderOverride,
+        fakeScriptEntries,
+        parsed.taskOverride,
+      )
+    } finally {
+      disposeInterruptStopGate()
     }
-    await handleActiveRun(
-      ctx.paths.state,
-      ctx.paths.artifacts,
-      active,
-      parsed.providerOverride,
-      fakeScriptEntries,
-      parsed.taskOverride,
-    )
     return
+  }
+  if (parsed.resumeRequested) {
+    process.stderr.write('code-oz run: no active run to resume. Start one with `code-oz run --request "..."`.\n')
+    process.exit(EXIT_USAGE)
   }
 
   // --task only makes sense once a run is active and BUILD is the next
@@ -272,16 +293,14 @@ export async function runCommand(args: string[]): Promise<void> {
   }
 
   const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
-    providerOverride: parsed.providerOverride,
+    providerOverride: runtimeProviderOverride,
   })
   // M16 C2 — apply the fake-replay script (gated in parseRunArgs +
   // pre-loaded above). Applied BEFORE the --request-file BA scripting
   // so authored scripts can override transcript-derived expectations
   // (most-specific match wins; later registrations on the same matcher
   // queue FIFO behind earlier ones).
-  if (fakeScriptEntries !== undefined && fakeProvider !== undefined) {
-    applyFakeScript(fakeProvider, fakeScriptEntries)
-  }
+  applyRuntimeFakeResponses(fakeProvider, fakeScriptEntries, parsed.requestFile)
   // When both --provider fake and --request-file are set, pre-script BA
   // replies from the same fixture file so the runner replays deterministically.
   if (
@@ -323,25 +342,7 @@ export async function runCommand(args: string[]): Promise<void> {
     originalBudgets: rawConfig.budgets,
     effectiveBudgets: config.budgets,
   })
-  // M16 C11 — companion event for the fresh-run branch. Emitted after
-  // initRun so the per-run events.jsonl exists. Mirrors the active-run
-  // branch above; both surfaces guarantee the banner + event fire once
-  // per `code-oz run` invocation.
-  if (parsed.providerOverride === 'fake') {
-    try {
-      await recordFakeProviderWarning({
-        eventPaths: { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
-        runId,
-        ...(parsed.fakeScriptPath !== undefined
-          ? { fakeScriptPath: parsed.fakeScriptPath }
-          : {}),
-      })
-    } catch (err) {
-      process.stderr.write(
-        `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
-      )
-    }
-  }
+  const disposeInterruptStopGate = installInterruptStopGate(runPaths, runId)
 
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
@@ -351,21 +352,46 @@ export async function runCommand(args: string[]): Promise<void> {
   }
   const askMeConfig = config.phases.define.askMe
 
-  const result: DefineResult = await runDefine({
-    invokeCtx,
-    runPaths,
-    runId,
-    agent: ba,
-    config: askMeConfig,
-    initialUserInput: initial,
-    readNextUserInput: inputSource.readNext,
-    onPersonaReply: (turn, text) => {
-      process.stdout.write(`\n--- ${ba.name} reply (turn ${turn}) ---\n${text}\n\n`)
-    },
-    fsyncDir: true,
-  })
+  const result: DefineResult = await (async () => {
+    try {
+      // M16 C11 — companion event for the fresh-run branch. Emitted after
+      // initRun so the per-run events.jsonl exists. Mirrors the active-run
+      // branch above; both surfaces guarantee the banner + event fire once
+      // per `code-oz run` invocation.
+      if (runtimeProviderOverride === 'fake') {
+        try {
+          await recordFakeProviderWarning({
+            eventPaths: { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+            runId,
+            ...(parsed.fakeScriptPath !== undefined
+              ? { fakeScriptPath: parsed.fakeScriptPath }
+              : {}),
+          })
+        } catch (err) {
+          process.stderr.write(
+            `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
+          )
+        }
+      }
 
-  await inputSource.close()
+      return await runDefine({
+        invokeCtx,
+        runPaths,
+        runId,
+        agent: ba,
+        config: askMeConfig,
+        initialUserInput: initial,
+        readNextUserInput: inputSource.readNext,
+        onPersonaReply: (turn, text) => {
+          process.stdout.write(`\n--- ${ba.name} reply (turn ${turn}) ---\n${text}\n\n`)
+        },
+        fsyncDir: true,
+      })
+    } finally {
+      disposeInterruptStopGate()
+      await inputSource.close()
+    }
+  })()
 
   if (result.status === 'complete') {
     process.stdout.write(result.userMessage + '\n')
@@ -373,6 +399,77 @@ export async function runCommand(args: string[]): Promise<void> {
   } else {
     process.stderr.write(result.userMessage + '\n')
     process.exit(1)
+  }
+}
+
+async function defaultToFakeIfRequiredProvidersUnavailable(
+  ctx: Awaited<ReturnType<typeof bootstrap>>,
+): Promise<ProviderOverride | undefined> {
+  const required = new Set(ctx.registry.listAll().map((agent) => agent.provider))
+  const { registry } = buildProviderRegistry()
+  for (const provider of required) {
+    const health = await registry.get(provider).health()
+    if (health.authStatus !== 'ok') return 'fake'
+  }
+  return undefined
+}
+
+function applyRuntimeFakeResponses(
+  fakeProvider: FakeProvider | undefined,
+  fakeScriptEntries: readonly FakeScriptEntry[] | undefined,
+  requestFile: string | undefined,
+): void {
+  if (fakeProvider === undefined) return
+  if (fakeScriptEntries !== undefined) {
+    applyFakeScript(fakeProvider, fakeScriptEntries)
+    return
+  }
+  if (requestFile !== undefined) return
+  applyFirstRunFakeFixture(fakeProvider)
+}
+
+export async function writeInterruptStopGate(
+  runPaths: RunPaths,
+  runId: string,
+  signal: 'SIGINT' | 'SIGTERM' = 'SIGINT',
+  now: () => string = () => new Date().toISOString(),
+): Promise<void> {
+  await writeStopGate(
+    {
+      runDir: runPaths.runDir,
+      lockDir: runPaths.lockDir,
+      artifactRoot: runPaths.artifactRoot,
+    },
+    {
+      version: 1,
+      runId,
+      reason: `${signal} received; operator requested a clean stop`,
+      createdAt: now(),
+    },
+  )
+}
+
+export function installInterruptStopGate(runPaths: RunPaths, runId: string): () => void {
+  let handled = false
+  const handleSignal = (signal: 'SIGINT' | 'SIGTERM') => {
+    const exitCode = signal === 'SIGTERM' ? 143 : 130
+    if (handled) process.exit(exitCode)
+    handled = true
+    writeInterruptStopGate(runPaths, runId, signal)
+      .catch((err) => {
+        process.stderr.write(
+          `code-oz run: failed to write STOP.json after ${signal}: ${(err as Error).message}\n`,
+        )
+      })
+      .finally(() => process.exit(exitCode))
+  }
+  const onSigint = () => handleSignal('SIGINT')
+  const onSigterm = () => handleSignal('SIGTERM')
+  process.once('SIGINT', onSigint)
+  process.once('SIGTERM', onSigterm)
+  return () => {
+    process.off('SIGINT', onSigint)
+    process.off('SIGTERM', onSigterm)
   }
 }
 
@@ -398,6 +495,7 @@ interface ParsedOk {
   /** M16 C2 — path to a JSONL fake-replay fixture. Gated by both
    *  `providerOverride === 'fake'` and the FAKE_SCRIPT_ENV_VAR env var. */
   readonly fakeScriptPath?: string
+  readonly requestFile?: string
   /** M16 C6 — explicit task override for `dispatchBuild`. Validated
    *  against PLAN.md's TASK_ID_PATTERN at parse time; the dispatcher
    *  rejects with EXIT_USAGE if the id is not present in PLAN.md. */
@@ -406,11 +504,13 @@ interface ParsedOk {
    *  when the flag is absent. Active-run reload sites assert the
    *  recorded effort matches; mismatched flag values exit code 2. */
   readonly effort: EffortLevel
+  readonly effortAlias?: string
   /** B1a Commit 2 — true when `--effort` was supplied on this CLI
    *  invocation; false when the default applied. Active-run mismatch
    *  detection only fires when the flag was explicit (a `--effort`-less
    *  resume is always permitted). */
   readonly effortFlagPresent: boolean
+  readonly resumeRequested: boolean
 }
 interface ParsedError {
   readonly kind: 'error'
@@ -434,12 +534,18 @@ export function parseRunArgs(
   let fakeScriptPath: string | null = null
   let taskOverride: string | null = null
   let effort: EffortLevel | null = null
+  let effortAlias: string | undefined
+  let resumeRequested = false
   let help = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
     if (a === '--help' || a === '-h') {
       help = true
+      continue
+    }
+    if (a === '--resume') {
+      resumeRequested = true
       continue
     }
     if (a === '--request') {
@@ -524,6 +630,7 @@ export function parseRunArgs(
       const parsedEffort = parseEffortLevel(value)
       if (parsedEffort.kind === 'error') return parsedEffort
       effort = parsedEffort.value
+      effortAlias = parsedEffort.alias
       i++
       continue
     }
@@ -532,6 +639,7 @@ export function parseRunArgs(
       const parsedEffort = parseEffortLevel(value)
       if (parsedEffort.kind === 'error') return parsedEffort
       effort = parsedEffort.value
+      effortAlias = parsedEffort.alias
       continue
     }
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
@@ -546,6 +654,13 @@ export function parseRunArgs(
     return {
       kind: 'error',
       message: '--request and --request-file are mutually exclusive',
+      help: false,
+    }
+  }
+  if (resumeRequested && (request !== null || requestFile !== null)) {
+    return {
+      kind: 'error',
+      message: '--resume cannot be combined with --request or --request-file',
       help: false,
     }
   }
@@ -596,12 +711,15 @@ export function parseRunArgs(
       kind: 'ok',
       input,
       effort: resolvedEffort,
+      ...(effortAlias !== undefined ? { effortAlias } : {}),
       effortFlagPresent,
+      resumeRequested,
     }
     return Object.freeze({
       ...out,
       ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(fakeScriptPath !== null ? { fakeScriptPath } : {}),
+      ...(input.kind === 'file' ? { requestFile: input.path } : {}),
       ...(taskOverride !== null ? { taskOverride } : {}),
     })
   }
@@ -629,7 +747,15 @@ function parseProviderOverride(value: string): { kind: 'ok'; value: ProviderOver
 
 function parseEffortLevel(
   value: string,
-): { kind: 'ok'; value: EffortLevel } | ParsedError {
+): { kind: 'ok'; value: EffortLevel; alias?: string } | ParsedError {
+  const aliases: Readonly<Record<string, EffortLevel>> = {
+    low: 'lite',
+    medium: 'balanced',
+    high: 'max',
+  }
+  if (value in aliases) {
+    return { kind: 'ok', value: aliases[value]!, alias: value }
+  }
   if ((EFFORT_LEVELS as readonly string[]).includes(value)) {
     return { kind: 'ok', value: value as EffortLevel }
   }
@@ -1186,9 +1312,7 @@ async function dispatchPlan(
   // too, so the same scripted responses cover DEFINE → PLAN → BUILD → ...
   // across spawned-process boundaries (each `code-oz run` invocation
   // re-loads the script from disk and registers its expectations).
-  if (fakeScriptEntries !== undefined && fakeProvider !== undefined) {
-    applyFakeScript(fakeProvider, fakeScriptEntries)
-  }
+  applyRuntimeFakeResponses(fakeProvider, fakeScriptEntries, undefined)
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
     runPaths,
@@ -1460,9 +1584,7 @@ export async function dispatchBuild(
   const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
     providerOverride: opts.providerOverride,
   })
-  if (opts.fakeScriptEntries !== undefined && fakeProvider !== undefined) {
-    applyFakeScript(fakeProvider, opts.fakeScriptEntries)
-  }
+  applyRuntimeFakeResponses(fakeProvider, opts.fakeScriptEntries, undefined)
 
   // Emit task_started exactly once per task. The prior shape gated on
   // `attempt === 1`, but a crash AFTER `task_started` and BEFORE
@@ -1732,9 +1854,7 @@ export async function dispatchVerify(
   const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
     providerOverride: opts.providerOverride,
   })
-  if (opts.fakeScriptEntries !== undefined && fakeProvider !== undefined) {
-    applyFakeScript(fakeProvider, opts.fakeScriptEntries)
-  }
+  applyRuntimeFakeResponses(fakeProvider, opts.fakeScriptEntries, undefined)
 
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
@@ -2034,9 +2154,7 @@ export async function dispatchReview(
   const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({
     providerOverride: opts.providerOverride,
   })
-  if (opts.fakeScriptEntries !== undefined && fakeProvider !== undefined) {
-    applyFakeScript(fakeProvider, opts.fakeScriptEntries)
-  }
+  applyRuntimeFakeResponses(fakeProvider, opts.fakeScriptEntries, undefined)
 
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,

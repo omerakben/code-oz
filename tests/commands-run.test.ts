@@ -1,9 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtemp, rm, mkdir } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { parseUserTurnsFromTranscript } from '../src/commands/run.ts'
+import { parseUserTurnsFromTranscript, writeInterruptStopGate } from '../src/commands/run.ts'
+import { initProject } from '../src/commands/init.ts'
+import { generateUlid } from '../src/state/schemas.ts'
+import { runPathsFor } from '../src/state/run.ts'
 
 const REPO_ROOT = process.cwd()
 const CLI_ENTRY = join(REPO_ROOT, 'src/cli.ts')
@@ -76,14 +79,23 @@ interface SubprocResult {
 async function runSubprocess(
   args: readonly string[],
   cwd: string,
+  extraEnv: Readonly<Record<string, string | undefined>> = {},
+): Promise<SubprocResult> {
+  return runCliSubprocess(['run', ...args], cwd, extraEnv)
+}
+
+async function runCliSubprocess(
+  args: readonly string[],
+  cwd: string,
+  extraEnv: Readonly<Record<string, string | undefined>> = {},
 ): Promise<SubprocResult> {
   const proc = Bun.spawn({
-    cmd: ['bun', 'run', CLI_ENTRY, 'run', ...args],
+    cmd: [process.execPath, 'run', CLI_ENTRY, ...args],
     cwd,
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
-    env: { ...process.env, FORCE_COLOR: '0' },
+    env: { ...process.env, FORCE_COLOR: '0', ...extraEnv },
   })
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -147,5 +159,109 @@ describe('code-oz run — argument validation', () => {
     expect(r.stdout).toContain('Usage: code-oz run')
     expect(r.stdout).toContain('--request')
     expect(r.stdout).toContain('--request-file')
+  })
+
+  test('prints a deprecation hint for old effort aliases', async () => {
+    const r = await runSubprocess(['--request', 'hi', '--effort', 'low'], tmp)
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain('--effort low is deprecated')
+    expect(r.stderr).toContain('--effort lite')
+  })
+
+  test('defaults to the first-run fake fixture when required provider CLIs are unavailable', async () => {
+    await initProject({ cwd: tmp })
+    const emptyPath = await mkdtemp(join(tmpdir(), 'code-oz-empty-path-'))
+
+    const r = await runSubprocess(
+      ['--request', 'run the first-run smoke'],
+      tmp,
+      {
+        PATH: emptyPath,
+        HOME: join(tmp, 'fresh-home'),
+        XAI_API_KEY: undefined,
+        GEMINI_API_KEY: undefined,
+      },
+    )
+
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toContain('DEFINE phase complete')
+    expect(r.stderr).toContain('--provider fake is active')
+  })
+
+  test('code-oz resume is an explicit alias for run --resume', async () => {
+    await initProject({ cwd: tmp })
+    const r = await runCliSubprocess(['resume'], tmp)
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain('no active run to resume')
+  })
+})
+
+describe('code-oz run — interrupt gate', () => {
+  let tmp: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'code-oz-run-interrupt-'))
+  })
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  test('writes STOP.json for Ctrl-C interrupts', async () => {
+    const runId = generateUlid()
+    const paths = runPathsFor(join(tmp, 'state'), join(tmp, 'artifacts'), runId)
+    await mkdir(paths.runDir, { recursive: true })
+
+    await writeInterruptStopGate(paths, runId, 'SIGINT', () => '2026-05-13T10:00:00.000Z')
+
+    const stop = JSON.parse(await readFile(join(paths.runDir, 'STOP.json'), 'utf8')) as {
+      runId?: string
+      reason?: string
+      createdAt?: string
+    }
+    expect(stop.runId).toBe(runId)
+    expect(stop.reason).toContain('SIGINT')
+    expect(stop.createdAt).toBe('2026-05-13T10:00:00.000Z')
+  })
+
+  test('writes STOP.json for SIGTERM interrupts in a subprocess', async () => {
+    const runId = generateUlid()
+    const paths = runPathsFor(join(tmp, 'state'), join(tmp, 'artifacts'), runId)
+    await mkdir(paths.runDir, { recursive: true })
+
+    const script = `
+      import { installInterruptStopGate } from ${JSON.stringify(join(REPO_ROOT, 'src/commands/run.ts'))};
+      const runPaths = ${JSON.stringify(paths)};
+      installInterruptStopGate(runPaths, ${JSON.stringify(runId)});
+      console.log('ready');
+      setInterval(() => {}, 1000);
+    `
+    const proc = Bun.spawn({
+      cmd: ['bun', '--eval', script],
+      cwd: REPO_ROOT,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+    })
+    const stdoutReader = proc.stdout.getReader()
+    let ready = ''
+    while (!ready.includes('ready')) {
+      const chunk = await stdoutReader.read()
+      if (chunk.done) break
+      ready += new TextDecoder().decode(chunk.value)
+    }
+
+    proc.kill('SIGTERM')
+    const exitCode = await proc.exited
+    const stderr = await new Response(proc.stderr).text()
+    expect(stderr).toBe('')
+    expect(exitCode).toBe(143)
+
+    const stop = JSON.parse(await readFile(join(paths.runDir, 'STOP.json'), 'utf8')) as {
+      runId?: string
+      reason?: string
+    }
+    expect(stop.runId).toBe(runId)
+    expect(stop.reason).toContain('SIGTERM')
   })
 })
