@@ -1,4 +1,54 @@
-# code-oz — Final roadmap (Opus 4.7 max-effort × GPT-5.5 xhigh debate, 2026-04-29)
+# code-oz — Roadmap
+
+## Now, next, later
+
+This is the public summary. The detailed milestone plan, decision matrix, and per-PR sequencing follow below for project-internal use.
+
+### Now (v0.20.1-alpha.0, in preparation)
+
+First-run polish release. Pulls forward Phase 3 of the locked Option D plan (`docs/planning/1000_STAR_PLAN.md`) ahead of M17 so the public surface tells an honest story.
+
+- README hero rewrite to "CI-style gates for AI coding agents"
+- Provider claims corrected (Claude / Codex / xAI / Fake live; Gemini stub for transparency; OpenCode and Roo Code as future adapter candidates) — see [`docs/contracts/PROVIDERS.md`](../contracts/PROVIDERS.md)
+- `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `docs/TRUST.md` added
+- `.github/` issue templates and PR template
+- Failure-mode demo `docs/demo/02-failure-gates/` with five fixtures + ledger-replay assertions
+- Comparison page at [`docs/comparisons/ai-coding-agents.md`](../comparisons/ai-coding-agents.md) (Codex-verified, footnote-sourced)
+- Agent Gate Bench protocol at [`docs/benchmarks/agent-gate-bench.md`](../benchmarks/agent-gate-bench.md) (runner ships in v0.21)
+- No new gate authority, no new milestone work — repackaging only
+
+### Next (v0.21.0-alpha.0)
+
+M17: AUDIT runtime for brownfield repositories. Closes the workflow gap so `code-oz` can audit existing codebases before proposing fixes. Ships as a real milestone with Codex pre-design debate + R1 + R2 review rounds, matching the M14 / M15 / M16 cadence.
+
+- `code-oz run` gains an `audit` dispatch branch
+- New `AUDIT` phase contract: localization + reproduction + constraints
+- `auditor` persona
+- Brownfield CLI end-to-end test (consumer-first per rule 22)
+- Agent Gate Bench runner published with the first measured baseline rows
+
+### Later (post-v0.21, no committed dates)
+
+- W3a R2 self-hosted launch story — essay + Show HN + Twitter thread + community submissions per Option D Phase 5
+- Cryptographic signing of `checksums.txt` (GPG or Sigstore)
+- Apple Developer signing and notarization for macOS binaries
+- SLSA build provenance attestation
+- Windows / Scoop release channel
+- Live Gemini adapter (replaces the stub)
+- OpenCode and Roo Code adapters
+- SWE-bench Verified adapter (separate harder benchmark on real GitHub issues, deferred to v0.22 per Option D)
+- Cloud-IAM provider adapters (Azure / Bedrock / Vertex)
+- Broader multi-agent consultation primitives (`consult()`)
+
+The Later list is intentionally unscheduled. Items move to "Next" only when there is measurable demand or a closed design loop. Discussion proposals at [github.com/omerakben/code-oz/discussions](https://github.com/omerakben/code-oz/discussions).
+
+---
+
+# Detailed roadmap (project-internal)
+
+> The remainder of this file is the locked decision history, debate transcripts, milestone inventory, and per-PR sequencing. It is the authority for project-internal planning. Public-facing readers should rely on the "Now, next, later" section above and on [`docs/planning/1000_STAR_PLAN.md`](../planning/1000_STAR_PLAN.md) for launch-track scheduling.
+
+## Original roadmap context (Opus 4.7 max-effort × GPT-5.5 xhigh debate, 2026-04-29)
 
 **Verdict:** Opus's Option C (DEFINE+PLAN vertical slice) is rejected. Codex's **Option E (spine-first end-to-end MVP)** is adopted. All other Q1–Q5 architectural locks stand, with refinements from the debate baked in.
 
