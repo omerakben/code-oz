@@ -168,6 +168,43 @@ describe('code-oz init', () => {
     expect(await detectProfile(cwd)).toBe('greenfield')
   })
 
+  // v0.20.3 #2 — INTENT.md is the explicit greenfield-seed marker. A directory
+  // whose only contentful files are INTENT.md (plus neutral git metadata like
+  // .gitignore) is greenfield by design, regardless of whether INTENT.md is
+  // tracked or untracked. Caught from the v0.20.2 quizr greenfield-friend
+  // dogfood (2026-05-14): `git init && write INTENT.md && code-oz init` was
+  // misclassifying as brownfield because the untracked-files scan picked up
+  // INTENT.md and treated it like ordinary source content.
+
+  test('treats a git-initialized directory containing only INTENT.md as greenfield', async () => {
+    const cwd = tempDir!
+    await Bun.spawn(['git', '-C', cwd, 'init', '-q']).exited
+    await writeFile(join(cwd, 'INTENT.md'), '# Build me\n\nA tiny quiz game.\n', 'utf8')
+    expect(await detectProfile(cwd)).toBe('greenfield')
+  })
+
+  test('treats a directory with committed INTENT.md as greenfield', async () => {
+    const cwd = tempDir!
+    await Bun.spawn(['git', '-C', cwd, 'init', '-q']).exited
+    await Bun.spawn(['git', '-C', cwd, 'config', 'user.email', 'test@example.com']).exited
+    await Bun.spawn(['git', '-C', cwd, 'config', 'user.name', 'Test']).exited
+    await writeFile(join(cwd, 'INTENT.md'), '# Build me\n', 'utf8')
+    await Bun.spawn(['git', '-C', cwd, 'add', 'INTENT.md']).exited
+    await Bun.spawn(['git', '-C', cwd, 'commit', '-q', '-m', 'init']).exited
+    expect(await detectProfile(cwd)).toBe('greenfield')
+  })
+
+  test('still detects brownfield when INTENT.md sits alongside other source files', async () => {
+    // Negative-direction guard: an INTENT.md inside a real brownfield project
+    // (e.g., user wrote intent for a refactor) must NOT force greenfield.
+    // The seed-only exit fires ONLY when INTENT.md is the entire contentful
+    // surface area.
+    const cwd = tempDir!
+    await writeFile(join(cwd, 'INTENT.md'), '# Add a new feature\n', 'utf8')
+    await writeFile(join(cwd, 'package.json'), '{"name":"existing"}', 'utf8')
+    expect(await detectProfile(cwd)).toBe('brownfield')
+  })
+
   test('init records the detected profile in config.yaml', async () => {
     await writeFile(join(tempDir!, 'package.json'), '{"name":"x"}', 'utf8')
     const { profile, paths } = await initProject({ cwd: tempDir! })

@@ -77,6 +77,63 @@ const BROWNFIELD_MARKER_EXTENSIONS = ['.sln', '.csproj', '.fsproj', '.vbproj', '
 
 const BROWNFIELD_SOURCE_DIRS = ['src', 'app', 'lib', 'pkg', 'cmd', 'tests', 'test', 'spec']
 
+// v0.20.3 #2 — INTENT.md is the explicit greenfield-seed marker. A directory
+// whose only contentful files are INTENT.md (plus neutral git metadata) is
+// greenfield by design, regardless of tracked vs untracked status. Caught
+// from the v0.20.2 quizr greenfield-friend dogfood (2026-05-14): a fresh
+// `git init` + write INTENT.md was misclassifying as brownfield because
+// the untracked-files scan picked up INTENT.md and treated it like
+// ordinary source content.
+const GREENFIELD_SEED_FILES = ['INTENT.md']
+const NEUTRAL_METADATA_ENTRIES = new Set([
+  '.git',
+  '.code-oz',
+  '.gitignore',
+  '.gitattributes',
+])
+
+async function listGitTrackedPaths(cwd: string): Promise<string[]> {
+  try {
+    const proc = Bun.spawn(['git', '-C', cwd, 'ls-files'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const text = await new Response(proc.stdout).text()
+    await proc.exited
+    return text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('.code-oz/'))
+  } catch {
+    return []
+  }
+}
+
+async function isOnlyGreenfieldSeed(cwd: string): Promise<boolean> {
+  // 1. Walk top-level entries. Anything outside {seed, neutral metadata}
+  //    disqualifies — a real brownfield project has source files or
+  //    lockfiles at root that would show up here.
+  const entries = await readdir(cwd).catch(() => [] as string[])
+  for (const e of entries) {
+    if (GREENFIELD_SEED_FILES.includes(e)) continue
+    if (NEUTRAL_METADATA_ENTRIES.has(e)) continue
+    return false
+  }
+  // 2. If the directory is a git repo, also confirm git tracks nothing
+  //    outside the seed list. A user could have committed INTENT.md
+  //    (`git add INTENT.md && git commit`) and the dirent walk still
+  //    looks seed-only — but tracked content elsewhere in the tree
+  //    would disqualify. Filtering on the basename matches the
+  //    top-level seed pattern (nested INTENT.md is not a seed).
+  if (!(await pathExists(join(cwd, '.git')))) return true
+  const tracked = await listGitTrackedPaths(cwd)
+  for (const f of tracked) {
+    if (GREENFIELD_SEED_FILES.includes(f)) continue
+    return false
+  }
+  return true
+}
+
 async function gitTracksFiles(cwd: string): Promise<boolean> {
   try {
     const proc = Bun.spawn(['git', '-C', cwd, 'ls-files'], {
@@ -121,6 +178,12 @@ async function gitHasContentfulUntrackedFiles(cwd: string): Promise<boolean> {
 }
 
 export async function detectProfile(cwd: string): Promise<Profile> {
+  // Greenfield-seed early exit (v0.20.3 #2): INTENT.md is the explicit
+  // seed marker. A directory whose only contentful files are INTENT.md
+  // (plus neutral git metadata like .gitignore) is greenfield by design,
+  // regardless of whether INTENT.md is tracked or untracked.
+  if (await isOnlyGreenfieldSeed(cwd)) return 'greenfield'
+
   if (await gitTracksFiles(cwd)) return 'brownfield'
   if (await gitHasContentfulUntrackedFiles(cwd)) return 'brownfield'
 
