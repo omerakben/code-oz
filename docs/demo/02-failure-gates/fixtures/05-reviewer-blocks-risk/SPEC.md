@@ -1,64 +1,54 @@
-# Fixture 05 — Reviewer blocks risk
+# Fixture 05 — Reviewer status illustration
 
-## What this proves
+## What this proves (status-shape illustration)
 
-A reviewer verdict of `needs-revision` is a phase-level state transition, not a soft signal. The lifecycle routes back to a revision sub-phase instead of advancing to SHIP.
+The `ReviewStatus` union at `src/phases/review.ts:224` distinguishes four outcomes — `'resolved'`, `'needs_revision'`, `'blocked'`, `'intervention'` — and only `'resolved'` produces `GATE_REVIEW_PASSED.json` in production. The fixture demonstrates the enum distinction and the structural decision (would this status produce SHIP gate? would it route back to revision?).
+
+## Important framing (corrected per Codex R1)
+
+This fixture is a **status-shape illustration**, not a routing-execution proof. The actual production routing through `runReview` → `finalizeReviewRound` (`src/phases/review.ts:631`) → `decideReviewRemediation` (`src/phases/review.ts:107`, with full implementation at line ~1572+) requires a fully-constructed REVIEW phase context with active orchestration state. The full routing is exercised in `tests/review-phase.test.ts:620+` and is not duplicated here.
+
+The fixture's value is making the distinction visible to readers: when a reviewer returns `needs_revision`, that status is a distinct value in the `ReviewStatus` enum, and production code branches on it differently from `resolved`.
 
 ## Setup
 
-1. Construct a minimal `ReviewResult` payload representing a reviewer flagging a risky change:
-   - `verdict: "needs-revision"`
-   - `findings: [ { id: "F1", severity: "high", file: "src/example.ts", line: 10, summary: "shell-injection risk: command built via string concatenation" } ]`
-   - `summary: "Reviewer identified a shell-injection risk; revision required before SHIP."`
-2. Invoke the REVIEW phase result writer with that payload.
+1. Construct a `ReviewResult`-shaped object with `status: 'needs_revision'`, one finding, and a summary.
+2. Verify the status is in the documented `ReviewStatus` enum.
+3. Verify `wouldShip = (status === 'resolved')` is `false`.
+4. Verify `wouldRouteToRevision = (status === 'needs_revision')` is `true`.
 
 ## Expected gate behavior
 
-The phase records the `needs-revision` outcome and does NOT advance to SHIP. The REVIEW status enum at `src/phases/review.ts:224` distinguishes `resolved`, `needs_revision`, `blocked`, and `intervention`. Production code at `src/phases/review.ts:237-244` routes the `needs_revision` case into the revision coordinator instead of writing `GATE_REVIEW_PASSED.json`.
-
-## Expected `events.jsonl` event sequence
-
-```jsonl
-{"type":"phase_entered","phase":"review","ts":"..."}
-{"type":"review_round_completed","verdict":"needs-revision","findingCount":1,"ts":"..."}
-{"type":"review_routed_to_revision","reason":"reviewer_needs_revision","ts":"..."}
-```
-
-The fixture exits BEFORE `GATE_REVIEW_PASSED.json` is written — that gate file is what `SHIP` would consume to advance, and it is not produced when the verdict is `needs-revision`.
+The fixture writes a demo-authored `REVIEW.md` with the findings + summary, illustrating what the production review writes when a reviewer returns `needs_revision`. The fixture also confirms (by assertion) that no `GATE_REVIEW_PASSED.json` would be written for this status.
 
 ## Expected exit state
 
-- `REVIEW.md` is written with the full reviewer payload (verdict + findings + summary).
-- A `revision_request.json` (or equivalent) records the routing decision and the next revision-round target.
-- `GATE_REVIEW_PASSED.json` is NOT written.
+- `REVIEW.md` exists in the fixture's output directory (illustrative, not produced by `runReview`).
+- The fixture's `actual.txt` records:
+  - `status: needs_revision`
+  - `status is in ReviewStatus enum: true`
+  - `would write GATE_REVIEW_PASSED.json: false`
+  - `would route to revision instead: true`
 
-The fixture's `actual.txt` confirms:
+## Production code referenced
 
-- Verdict was `needs-revision`.
-- No SHIP gate file was created.
-- The expected number of findings was carried through.
-
-## Production code that enforces this
-
-`src/phases/review.ts:224` defines the `ReviewStatus` enum that distinguishes outcomes. `src/phases/review.ts:237-244` routes the `needs_revision` case. The full status set:
-
-```ts
-export type ReviewStatus = 'resolved' | 'needs_revision' | 'blocked' | 'intervention'
-```
-
-- `resolved` → writes `GATE_REVIEW_PASSED.json`; SHIP proceeds.
-- `needs_revision` → routes to revision coordinator; SHIP gate NOT written.
-- `blocked` → run halts pending intervention.
-- `intervention` → `NEEDS_INTERVENTION.json` written.
+- `src/phases/review.ts:224` — `ReviewStatus` union definition.
+- `src/phases/review.ts:631` — `runReview` → `finalizeReviewRound` (the production entry to the routing logic).
+- `src/phases/review.ts:107` — `decideReviewRemediation` (the routing decision; full implementation around line 1572+).
+- `tests/review-phase.test.ts:620+` — the production-routing tests (where the actual branching is exercised end-to-end).
 
 ## Why this matters
 
-In a direct-agent flow, a reviewer comment is text. A human (or a downstream agent) reads it and decides whether to act. There is no mechanical link between "the reviewer flagged a security risk" and "the change does not ship."
+In a direct-agent workflow, "the reviewer flagged a security risk" is text — usually in chat, sometimes in a comment, sometimes ignored. There is no mechanical state transition that prevents the change from advancing.
 
-`code-oz` makes that link mechanical. The `needs-revision` verdict drives a state transition; SHIP cannot fire because the gate file SHIP needs is never written. The reviewer's findings live in `REVIEW.md` and are inspectable; the lifecycle position is on-disk and unambiguous.
-
-The complementary fixture is `04-same-family-review` (which proves the REVIEW invocation has to come from a different family to begin with). Together they cover both the "who reviews" and "what review decides" sides of the policy.
+`code-oz` makes the link mechanical via the `ReviewStatus` enum. The status is a distinct value in the type system; production code branches on it; only `'resolved'` writes the SHIP gate file. The fixture shows the distinction; production tests prove the routing.
 
 ## Captured output location
 
 `docs/demo/02-failure-gates/output/05-reviewer-blocks-risk/`
+
+- `REVIEW.md` — demo-authored illustrative review (NOT produced by `runReview`)
+- `events-sketch.jsonl` — author-constructed event sketch (NOT a production events.jsonl)
+- `actual.txt` — orchestrator summary
+
+For a production-shaped REVIEW.md produced by `runReview`, see the M14/M15 review-panel test fixtures and the planned brownfield-smoke artifacts shipping in v0.21.

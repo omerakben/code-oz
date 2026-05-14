@@ -1,48 +1,55 @@
-# Fixture 03 — Verify fail
+# Fixture 03 — Verify intervention
 
 ## What this proves
 
-The VERIFY phase enforces evidence. If the configured evidence command fails, the phase writes a structured `NEEDS_INTERVENTION.json` containing actionable suggestions rather than silently advancing.
+`writeNeedsInterventionGate` writes a schema-validated `NEEDS_INTERVENTION.json` carrying actionable suggestions. This is the production primitive the orchestrator invokes when VERIFY exhausts its restart attempts or hits a non-restart-eligible failure mode.
+
+## Important framing (corrected per Codex R1)
+
+A normal VERIFY evidence-command failure does **not** immediately produce `NEEDS_INTERVENTION.json`. Production behavior at `src/phases/verify.ts:599+` is:
+
+1. Run the evidence command.
+2. On non-zero exit: emit `worktree_forensics_preserved` + `verify_failed` events.
+3. For attempts 1–3: return restart (the run retries with the next BUILD attempt).
+4. For attempt 4 OR a non-restart-eligible failure (e.g., contract violation, missing artifact): escalate to durable intervention via `writeNeedsInterventionGate`.
+
+This fixture exercises step 4 — the durable-intervention path that production reaches on cap exhaustion or non-restart-eligible failures. The fixture does NOT exercise the verify_failed + restart loop (that requires the full BUILD-VERIFY orchestrator harness, which lives in `tests/verify-phase.test.ts:392+` and ships with the M17 brownfield runtime).
 
 ## Setup
 
-1. Construct a minimal `VERIFY` phase context: a worktree path, a `BUILD_REPORT.md` pointer, and a fake evidence command that exits non-zero.
-2. Invoke the VERIFY intervention path directly with that context — `src/phases/verify.ts` exports `writeVerifyIntervention()` for exactly this case.
+1. Construct a minimal `GatePaths` (run dir + artifact root + lock dir).
+2. Construct a `NeedsInterventionGate` payload representing the cap-exhausted state (or a non-restart-eligible failure):
+   - `code: "verify_failed_evidence_command_exit_nonzero"`
+   - `rule: "the configured evidence command must exit zero before VERIFY advances"`
+   - `actionableSuggestions: [...]`
+3. Invoke `writeNeedsInterventionGate(gatePaths, gate)`.
 
 ## Expected gate behavior
 
-The phase writes `NEEDS_INTERVENTION.json` at the run state directory. Production code at `src/phases/verify.ts:180-205` constructs the intervention payload and calls `writeNeedsInterventionGate()` from `src/state/gates.ts`.
+Production code at `src/state/gates.ts:290+` (`writeNeedsInterventionGate`) writes the gate file atomically (temp file → rename) under the per-run lock. The schema validator at `validateNeedsIntervention` checks all required fields (version, runId, phase, agent, code, rule, actionableSuggestions, eventPointer, createdAt) before the write proceeds.
 
-## Expected `events.jsonl` event sequence
+## Expected exit state
 
-```jsonl
-{"type":"phase_entered","phase":"verify","ts":"..."}
-{"type":"verify_failed","reason":"evidence_command_exit_nonzero","exitCode":1,"ts":"..."}
-{"type":"intervention_written","reason":"verify_failed","ts":"..."}
-```
-
-## Expected exit gate file
-
-`NEEDS_INTERVENTION.json` with:
-
-- `code: "verify_failed"`
-- `phase: "verify"`
-- `evidenceCommand: "<the command that was run>"`
-- `exitCode: <the actual exit code>`
-- `stdoutTail: "<last N bytes of stdout>"`
-- `stderrTail: "<last N bytes of stderr>"`
-- `suggestions: [ "inspect <worktree>/VERIFY_EVIDENCE for the test output", "re-run the failing test locally", "if the test is flaky, mark it skipped and document in BUILD_REPORT", ... ]`
+- `NEEDS_INTERVENTION.json` exists at `<runDir>/NEEDS_INTERVENTION.json`.
+- The file content is valid JSON matching `NeedsInterventionGate` schema (`src/state/schemas.ts:1582`).
+- Required fields present: `version: 1`, `runId`, `phase: "verify"`, `agent`, `code`, `rule`, `actionableSuggestions: [...]`, `eventPointer`, `createdAt`.
 
 ## Production code that enforces this
 
-`src/phases/verify.ts:180-205` builds the intervention payload; `src/state/gates.ts:290` (`writeNeedsInterventionGate`) is the orchestrator-owned writer.
+- `src/state/gates.ts:290` — `writeNeedsInterventionGate` (the writer the orchestrator invokes).
+- `src/state/gates.ts:314+` — `writeControlGate` (atomic write + lock + schema validation).
+- `src/phases/verify.ts:599+` — the caller-side logic that decides WHEN to invoke `writeNeedsInterventionGate` (cap-exhaustion, non-restart-eligible failures).
 
 ## Why this matters
 
-In a direct-agent workflow, a failing test is a soft signal. The agent may notice, the human may notice, neither may notice. By the time something ships and breaks in production, there is no audit trail of "the test was failing here, we chose to advance anyway."
+In a direct-agent workflow, a failing test eventually surfaces somewhere: the agent might mention it in chat, the human might notice the test output, both might miss it. There is no structured artifact carrying the failure signal that a third party can inspect after the fact.
 
-`code-oz` makes the failure explicit and inspectable. The `NEEDS_INTERVENTION.json` artifact carries enough context for a human to triage without re-running the failure: which command failed, what its exit code was, what its stdout / stderr tail looked like. The run does not advance; it pauses for an explicit human decision.
+`code-oz` makes the failure structured. The `NEEDS_INTERVENTION.json` artifact carries enough context for a human to triage without re-running the failure: which command failed, what its exit context was, what suggestions the orchestrator emits. The run does not advance; it pauses for an explicit human decision.
 
 ## Captured output location
 
 `docs/demo/02-failure-gates/output/03-verify-fail/`
+
+- `NEEDS_INTERVENTION.json` — **a real production gate file** (this fixture is the only one in this demo whose committed output is a production-API-written artifact)
+- `events-sketch.jsonl` — author-constructed event sketch (NOT a production events.jsonl)
+- `actual.txt` — orchestrator summary

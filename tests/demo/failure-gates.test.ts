@@ -1,11 +1,17 @@
 // tests/demo/failure-gates.test.ts
 //
-// RED-first test (rule 22) for the failure-gates demo. Each test exercises
-// one production gate API and asserts the resulting events log matches the
-// expected gate-block sequence. The same APIs the demo script invokes are
-// exercised here; the demo wraps them with output-capture so users can
-// inspect docs/demo/02-failure-gates/output/<fixture>/ after running
-// `bun run demo:failure-gates`.
+// **Characterization tests** for the failure-gates demo. Each test
+// exercises one production gate API the demo wraps and asserts the
+// existing refusal behavior. These tests are NOT RED-first behavior
+// changes (rule 22 applies to behavior changes; these tests document
+// existing behavior via the same primitives the demo invokes). They
+// went GREEN immediately because the production gate APIs already
+// enforce; the demo's job is to surface that enforcement to humans.
+//
+// Codex R1 reframe: the C15 commit message and earlier in-file comment
+// called these RED-first; that framing was incorrect because no failing
+// demo-output test existed before the implementation landed. The tests
+// remain valid as characterization tests of the production primitives.
 //
 // B5 compliance (Codex R0 closure): every assertion below targets an
 // EXISTING production code path. No new gate authority is introduced for

@@ -3,8 +3,8 @@ Fixture 02 — scope escape
 Production check: realpath(finding.file) startsWith realpath(worktreeRoot)
 Production code path: src/phases/review.ts:2189-2204
 
-Worktree root (realpath):  /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-fg-02-gzsZg6/worktree
-Attempted path (realpath): /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-fg-02-gzsZg6/outside-worktree.txt
+Worktree root (realpath):  /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-fg-02-eKFZzS/worktree
+Attempted path (realpath): /private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-fg-02-eKFZzS/outside-worktree.txt
 Lies outside worktree:     true
 
 Pass criterion: liesOutside === true → PASS

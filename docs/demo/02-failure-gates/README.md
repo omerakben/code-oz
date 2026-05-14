@@ -2,9 +2,11 @@
 
 > Governance only matters if bad runs get blocked.
 
-The `01-todo-cli` demo shows the happy path. This demo proves the gates do what they claim to do: refuse the wrong thing and produce inspectable evidence of the refusal. Five fixtures. Each exercises one specific governance failure mode. Each fixture is deterministic via FakeProvider — no live LLM, no spend, no flake.
+The `01-todo-cli` demo shows the happy path. This demo proves the gates do what they claim to do: refuse the wrong thing. Five fixtures. Each exercises one specific governance failure mode by invoking the underlying production gate API directly with bad input and asserting the refusal happens.
 
-The point of this demo is NOT that FakeProvider writes better code. The point is that the same gates, the same `events.jsonl` ledger, and the same `NEEDS_INTERVENTION.json` / `STOP.json` mechanics work every time, and each one carries the exact evidence a third party needs to reconstruct what happened.
+**This demo is NOT a full lifecycle simulation.** It does not spawn `code-oz init && code-oz run`. It does not produce a real production `events.jsonl` ledger. It calls the same production primitives the orchestrator uses — `writeGate`, `writeNeedsInterventionGate`, `requestReview`, the `ReviewStatus` distinction — and captures evidence of their refusal behavior into per-fixture output directories. The captured `NEEDS_INTERVENTION.json` (fixture 03) is a real production gate file, written via the production `writeNeedsInterventionGate` API. The captured `events-sketch.jsonl` files are fixture-author summaries of what production code did, NOT real production events written via `appendEvent`.
+
+For the complete production lifecycle (DEFINE → SHIP including real `events.jsonl`), run the [`01-todo-cli`](../01-todo-cli/README.md) happy-path demo — its committed outputs at `docs/demo/01-todo-cli/output/balanced/state/events.jsonl` are real production events. The full per-phase failure-mode lifecycle simulation (ie `code-oz run` driving each fixture all the way through the gates) ships in v0.21 alongside the M17 brownfield runtime. v0.20.1 demonstrates the gate primitives in isolation; v0.21 wires them into a full lifecycle harness.
 
 ## Run it
 
@@ -16,11 +18,11 @@ Then inspect the produced output:
 
 ```sh
 ls docs/demo/02-failure-gates/output/
-cat docs/demo/02-failure-gates/output/01-tampered-artifact/events.jsonl
-cat docs/demo/02-failure-gates/output/01-tampered-artifact/NEEDS_INTERVENTION.json
+cat docs/demo/02-failure-gates/output/01-tampered-artifact/events-sketch.jsonl
+cat docs/demo/02-failure-gates/output/03-verify-fail/NEEDS_INTERVENTION.json
 ```
 
-Every fixture writes its captured outputs under `docs/demo/02-failure-gates/output/<fixture>/`. The committed outputs in this repo are the expected outputs — running the demo locally should match them byte-for-byte (modulo timestamps, which are recorded but not asserted).
+Every fixture writes its captured outputs under `docs/demo/02-failure-gates/output/<fixture>/`. The committed outputs in this repo were captured on the maintainer's machine; local runs will match the structure and the `actual.txt` pass-criterion text but the temporary directory paths recorded in `actual.txt` (and in fixture 02's events-sketch) will differ by run. We do NOT assert byte-for-byte snapshot equality.
 
 Exit code is 0 if every fixture's gate behavior matched its expected snapshot, non-zero otherwise. The orchestrator prints a per-fixture pass/fail summary at the end.
 
@@ -36,11 +38,11 @@ Exit code is 0 if every fixture's gate behavior matched its expected snapshot, n
 
 ## What this proves
 
-- **Tampered approvals do not propagate.** An artifact's SHA-256 binds the approval to the exact bytes. If anything changes after approval — by an agent, by a human, by an attacker — the next phase notices.
-- **Scope discipline holds at REVIEW too, not just at BUILD.** Even if a reviewer wants to comment on something outside the run's worktree, the gate refuses.
-- **Verification evidence is enforced, not advisory.** A run with a failing test command writes a structured `NEEDS_INTERVENTION.json` for a human to inspect. It does not silently advance.
-- **Builder and reviewer must differ in model family.** The cross-family REVIEW policy is mechanical, not a recommendation. Same-family review is refused before the reviewer is called.
-- **Risky reviewer findings route back to revision.** A `needs-revision` verdict is not a soft signal. The lifecycle treats it as a phase-level state transition.
+- **Tampered approvals do not propagate.** `writeGate` with a mismatched `artifactSha256` raises `gate_artifact_sha256_mismatch` and refuses to record the approval. The same primitive is invoked at every phase preflight in the production lifecycle.
+- **Scope discipline at REVIEW.** The realpath + worktree-prefix check that production review-finding validation uses (one of several validation steps inside `src/phases/review.ts`) refuses paths that resolve outside the run worktree.
+- **Intervention writing produces structured artifacts.** `writeNeedsInterventionGate` writes a schema-validated `NEEDS_INTERVENTION.json` carrying actionable suggestions. Production calls this API on cap-exhausted retries and on durable intervention paths; a normal verify failure first goes through `verify_failed` + restart for the first three attempts, then escalates to intervention only if attempts are exhausted.
+- **Builder and reviewer must differ in model family.** `requestReview` throws `provider_permissions_violation` BEFORE invoking the reviewer when builder and reviewer share a family. The check is in `src/tools/review-request.ts`.
+- **Status enum distinguishes needs-revision from resolved.** The `ReviewStatus` union at `src/phases/review.ts:224` carries four values; only `resolved` advances toward SHIP. The full routing through `finalizeReviewRound` and `decideReviewRemediation` is exercised in `tests/review-phase.test.ts`.
 
 ## What this does NOT prove
 
@@ -52,13 +54,14 @@ Exit code is 0 if every fixture's gate behavior matched its expected snapshot, n
 
 Each fixture's output directory contains:
 
-| File | Content |
-|------|---------|
-| `events.jsonl` | The append-only ledger of every event the gate produced. Each line is a structured JSON event. |
-| `NEEDS_INTERVENTION.json` or `STOP.json` | The structured gate-refusal artifact, when the fixture's gate produces one. Names the exact rule that refused, the actionable suggestions, and the offending input. |
-| `actual.txt` | The fixture orchestrator's summary of what happened (what was attempted, what blocked, where the block was enforced). |
+| File | Content | Production-equivalent? |
+|------|---------|------------------------|
+| `events-sketch.jsonl` | A per-fixture sketch of the events the production code path emitted, in approximate JSON-line shape. **Author-constructed** — not produced by the production `appendEvent` API. Event names in the sketch are illustrative; some have direct production analogs (`verify_failed`, `phase_entered`), others are summary-only (`review_finding_rejected`). | NO — see warning below |
+| `NEEDS_INTERVENTION.json` (fixture 03 only) | The schema-validated production gate file written by `writeNeedsInterventionGate`. This file IS a real production gate artifact and matches the schema at `src/state/schemas.ts:1582`. | YES |
+| `REVIEW.md` (fixture 05 only) | A demo-authored REVIEW.md illustrating a `needs-revision` verdict with findings. Production review writes a richer REVIEW.md via `runReview`. | NO — illustrative |
+| `actual.txt` | The fixture orchestrator's summary of what was attempted, what production API was called, and what blocked. | n/a (orchestrator output) |
 
-The ledger format is documented at [`docs/references/file-based-gates.md`](../../references/file-based-gates.md).
+> **Why "events-sketch" instead of "events.jsonl"?** The production `events.jsonl` is the append-only run ledger written by `appendEvent` (`src/state/events.ts`). It carries strict event schemas (e.g., `verify_failed` requires fields like `runId`, `agent`, `attempt`, `taskId`, `reportSha`, `terminationReason`, `failureSummary`). The demo orchestrator does NOT spin up a full run and does NOT call `appendEvent`. Calling the per-fixture file `events.jsonl` would mislead anyone inspecting it after running the demo. Keeping the suffix `-sketch.jsonl` and the framing here makes it explicit: these are author-constructed evidence summaries of what the production code path did. The full production ledger format is documented at [`docs/references/file-based-gates.md`](../../references/file-based-gates.md), and a real production `events.jsonl` is committed under [`docs/demo/01-todo-cli/output/balanced/state/events.jsonl`](../01-todo-cli/output/balanced/state/) for comparison.
 
 ## Why this demo exists
 

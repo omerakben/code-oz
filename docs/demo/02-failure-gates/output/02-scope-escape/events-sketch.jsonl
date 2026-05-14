@@ -1,0 +1,3 @@
+{"type":"phase_entered","phase":"review","ts":"2026-05-14T00:00:00Z"}
+{"type":"review_finding_out_of_worktree","attemptedPath":"/private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-fg-02-eKFZzS/outside-worktree.txt","worktreeRoot":"/private/var/folders/wz/1yjtgvvj3l1dr77sl4d5nfyh0000gn/T/code-oz-fg-02-eKFZzS/worktree","ts":"2026-05-14T00:00:00Z"}
+{"type":"review_finding_rejected","reason":"out_of_worktree","ts":"2026-05-14T00:00:00Z"}

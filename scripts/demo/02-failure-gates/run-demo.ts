@@ -83,7 +83,7 @@ interface DemoEvent {
 
 async function writeEvents(outputDir: string, events: readonly DemoEvent[]): Promise<void> {
   const lines = events.map((e) => JSON.stringify(e)).join('\n') + '\n'
-  await writeFile(join(outputDir, 'events.jsonl'), lines, 'utf8')
+  await writeFile(join(outputDir, 'events-sketch.jsonl'), lines, 'utf8')
 }
 
 async function writeActual(outputDir: string, body: string): Promise<void> {
@@ -628,8 +628,14 @@ async function main(): Promise<void> {
   console.log('')
   console.log('Inspect the captured outputs:')
   console.log(`  ls ${OUTPUT_BASE}/`)
-  console.log(`  cat ${OUTPUT_BASE}/01-tampered-artifact/events.jsonl`)
+  console.log(`  cat ${OUTPUT_BASE}/01-tampered-artifact/events-sketch.jsonl`)
   console.log(`  cat ${OUTPUT_BASE}/03-verify-fail/NEEDS_INTERVENTION.json`)
+  console.log('')
+  console.log('Note: events-sketch.jsonl files are fixture-author summaries of what')
+  console.log('production code did. They are NOT real production events.jsonl files')
+  console.log('(which are written via appendEvent in a full code-oz run). The captured')
+  console.log('NEEDS_INTERVENTION.json (fixture 03) IS a real production gate file.')
+  console.log('See docs/demo/02-failure-gates/README.md for the full framing.')
 
   if (passCount !== total) {
     process.exit(1)
