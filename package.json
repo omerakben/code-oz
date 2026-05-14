@@ -1,7 +1,7 @@
 {
   "name": "@tuel/code-oz",
   "version": "0.20.0-alpha.0",
-  "description": "Multi-agent software-company simulation CLI with hard SDLC gates",
+  "description": "CI-style gates for AI coding agents — local-first governed delivery loop",
   "type": "module",
   "bin": {
     "code-oz": "npm-wrapper/index.cjs"
@@ -15,7 +15,8 @@
     "smoke": "bun run scripts/smoke-test.ts",
     "typecheck": "tsc --noEmit",
     "eval:repo_context": "bun run scripts/eval-repo-context.ts",
-    "demo:todo-cli": "bun run scripts/demo/01-todo-cli/run-demo.ts"
+    "demo:todo-cli": "bun run scripts/demo/01-todo-cli/run-demo.ts",
+    "demo:failure-gates": "bun run scripts/demo/02-failure-gates/run-demo.ts"
   },
   "engines": {
     "node": ">=18",
@@ -31,14 +32,15 @@
   "bugs": "https://github.com/omerakben/code-oz/issues",
   "keywords": [
     "ai",
-    "agents",
-    "claude",
-    "codex",
-    "gemini",
+    "coding-agent",
+    "cli",
     "sdlc",
-    "orchestrator",
-    "multi-agent",
-    "cli"
+    "devtools",
+    "agentic-ai",
+    "claude-code",
+    "codex",
+    "typescript",
+    "open-source"
   ],
   "files": [
     "npm-wrapper/",
