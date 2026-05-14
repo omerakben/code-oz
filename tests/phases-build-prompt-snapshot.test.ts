@@ -125,7 +125,10 @@ Apply last-syllable stress to two-syllable surnames
 - Risk: edge case for 3+ syllable names not addressed.
 `
 
-// Attempt-2 patch starts from the post-attempt-1 state ("last" → "second-to-last").
+// Attempt-2 patch is independent of attempt 1 (relative to baseSha state
+// `'first'`, not post-attempt-1 `'last'`). v0.20.3 #1 worktree-reset on
+// verify-fail restart returns the worktree to baseSha before attempt 2's
+// patch applies, so attempt 2's pre-image must match baseSha state.
 const VALID_PERSONA_RESPONSE_2 = `<build-ready/>
 
 \`\`\`diff
@@ -133,7 +136,7 @@ diff --git a/src/scoring/syllable.ts b/src/scoring/syllable.ts
 --- a/src/scoring/syllable.ts
 +++ b/src/scoring/syllable.ts
 @@ -1,1 +1,1 @@
--export const stress = 'last'
+-export const stress = 'first'
 +export const stress = 'second-to-last'
 \`\`\`
 

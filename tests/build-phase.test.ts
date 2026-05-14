@@ -685,3 +685,188 @@ describe('runBuild — restart-state drift (M8 commit 7)', () => {
     expect(reportText).toContain('- Attempt: 2')
   })
 })
+
+// v0.20.3 #1 — BUILD-entry worktree-reset between attempts. Codex debate
+// `019e28d9-bd57-71e0-b1a2-262cae205234` locked this as a one-boundary
+// authority: every attempt > 1 starts from the immutable base commit
+// before persona compose / file-ref derivation / patch apply. The prdiff
+// dogfood (2026-05-14, run 01KRM4EBQRX0GK1RT85RP1EF6D) caught the bug:
+// attempt 2's patch was rejected by `git apply --check` because attempt
+// 1's files still lived in the worktree.
+
+describe('runBuild — worktree reset between attempts (v0.20.3 #1)', () => {
+  test('attempt > 1 emits worktree_reset_to_base BEFORE compose / patch-apply', async () => {
+    const wt = await setupWorktree()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => VALID_PERSONA_RESPONSE,
+      attempt: 2,
+      carryForward: {
+        source: 'verify-fail',
+        priorAttempt: 1,
+        priorForensicsPath: '.code-oz/runs/01HX/forensics/1/',
+        priorValidationCommand: 'bun test tests/scoring-syllable.test.ts',
+        priorVerdict: 'fail (exit code 1, duration 100 ms)',
+        priorFailureSummary: 'mock failure for attempt 2 carry-forward.',
+        constraint: 'prefer last-syllable stress for two-syllable surnames.',
+      },
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('complete')
+    if (result.status !== 'complete') return
+
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const types = events.map((e) => e.type)
+    const buildStartedIdx = types.indexOf('build_started')
+    const resetIdx = types.indexOf('worktree_reset_to_base')
+    const patchAppliedIdx = types.indexOf('worktree_patch_applied')
+
+    // Reset event exists with attempt=2 and the base sha; ordering matters.
+    expect(resetIdx).toBeGreaterThan(-1)
+    expect(buildStartedIdx).toBeGreaterThan(-1)
+    expect(patchAppliedIdx).toBeGreaterThan(-1)
+    // Reset fires AFTER build_started, BEFORE patch-apply. This is the
+    // event-order lock Codex debate established.
+    expect(resetIdx).toBeGreaterThan(buildStartedIdx)
+    expect(resetIdx).toBeLessThan(patchAppliedIdx)
+
+    const resetEvent = events[resetIdx]!
+    expect(resetEvent.type).toBe('worktree_reset_to_base')
+    if (resetEvent.type !== 'worktree_reset_to_base') return
+    expect(resetEvent.attempt).toBe(2)
+    expect(resetEvent.baseCommitSha).toBe(wt.baseCommitSha)
+    expect(typeof resetEvent.durationMs).toBe('number')
+    expect(resetEvent.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  test('attempt 1 does NOT emit worktree_reset_to_base (reset only fires for attempt > 1)', async () => {
+    const wt = await setupWorktree()
+    await runBuild({ ...buildOptsBase(wt), invokePersona: async () => VALID_PERSONA_RESPONSE })
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const types = events.map((e) => e.type)
+    expect(types).not.toContain('worktree_reset_to_base')
+  })
+
+  test('review-needs-revision restart does NOT trigger reset (worktree preservation contract)', async () => {
+    // The M9 review-remediation contract preserves the worktree between
+    // attempts (M16 C9 Mod #7) so attempt 2's delta patch can build on
+    // attempt 1's post-state. The v0.20.3 #1 reset narrowing targets
+    // verify-fail only; this test is the regression guard.
+    const wt = await setupWorktree()
+    // Pre-stage attempt 1's modifications in the worktree to simulate the
+    // post-attempt-1 state the review-needs-revision restart preserves.
+    await writeFile(
+      join(wt.worktreePath, 'src/scoring/syllable.ts'),
+      `export const stress = 'last'\n`,
+      { encoding: 'utf8' },
+    )
+    await runGit(wt.worktreePath, ['add', 'src/scoring/syllable.ts'])
+
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    // Attempt 2 via review-needs-revision route. Persona produces a delta
+    // patch relative to the post-attempt-1 state (the worktree-preservation
+    // contract). The orchestrator must NOT reset the worktree here; if it
+    // did, the delta patch would fail context match.
+    const reviewRevisionPersona = `<build-ready/>
+
+\`\`\`diff
+diff --git a/src/scoring/syllable.ts b/src/scoring/syllable.ts
+--- a/src/scoring/syllable.ts
++++ b/src/scoring/syllable.ts
+@@ -1,1 +1,1 @@
+-export const stress = 'last'
++export const stress = 'second-to-last'
+\`\`\`
+
+## Title
+Refine stress per reviewer feedback
+
+## Notes
+- Carry-forward: round 1 reviewer flagged the wrong stress; this attempt rewrites the constant.
+`
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: wt.baseCommitSha, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => reviewRevisionPersona,
+      attempt: 2,
+      carryForward: {
+        source: 'review-needs-revision',
+        priorAttempt: 1,
+        priorForensicsPath: '.code-oz/runs/01HX/forensics/1/',
+        priorValidationCommand: 'bun test tests/scoring-syllable.test.ts',
+        priorVerdict: 'needs-revision (1 fix-first finding)',
+        priorFailureSummary: 'reviewer flagged the wrong stress position.',
+        constraint: 'pick the second-to-last syllable per reviewer feedback.',
+      },
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('complete')
+
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const types = events.map((e) => e.type)
+    expect(types).not.toContain('worktree_reset_to_base')
+    expect(types).toContain('worktree_patch_applied')
+  })
+
+  test('reset failure (invalid baseSha) produces build_failed + intervention with worktree_reset_failed', async () => {
+    const wt = await setupWorktree()
+    fake.expect({ phase: 'build', agent: 'scientist' }).respondWith({ content: SCIENTIST_RESPONSE })
+    // Override baseCommitSha with a non-existent SHA so `git reset --hard`
+    // refuses; the rest of the BUILD pipeline must abort to NEEDS_INTERVENTION
+    // without invoking the builder.
+    const INVALID_SHA = '0000000000000000000000000000000000000001'
+    const result = await runBuild({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      builderAgent: BUILDER_AGENT,
+      scientistAgent: SCIENTIST_AGENT,
+      taskId: 'T-001',
+      worktree: { worktreePath: wt.worktreePath, baseCommitSha: INVALID_SHA, dirtyAtBase: false },
+      invokeCtx: invokeCtx(),
+      invokePersona: async () => {
+        throw new Error('builder must not be invoked when reset fails')
+      },
+      attempt: 2,
+      carryForward: {
+        source: 'verify-fail',
+        priorAttempt: 1,
+        priorForensicsPath: '.code-oz/runs/01HX/forensics/1/',
+        priorValidationCommand: 'bun test tests/scoring-syllable.test.ts',
+        priorVerdict: 'fail (exit code 1, duration 100 ms)',
+        priorFailureSummary: 'mock failure for invalid-sha reset test.',
+        constraint: 'reset-failure regression guard.',
+      },
+      now: () => '2026-04-30T11:01:00.000Z',
+    })
+    expect(result.status).toBe('intervention')
+    if (result.status !== 'intervention') return
+    expect(result.code).toBe('worktree_reset_failed')
+
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const types = events.map((e) => e.type)
+    // build_failed fires BEFORE intervention (matching the recordBuildFailure
+    // helper's pattern at src/phases/build.ts:982). worktree_reset_to_base
+    // does NOT fire because the primitive returned !ok.
+    expect(types).toContain('build_failed')
+    expect(types).toContain('intervention')
+    expect(types).not.toContain('worktree_reset_to_base')
+    const buildFailedIdx = types.indexOf('build_failed')
+    const interventionIdx = types.indexOf('intervention')
+    expect(buildFailedIdx).toBeLessThan(interventionIdx)
+  })
+})
