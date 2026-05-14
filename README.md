@@ -1,6 +1,14 @@
 # code-oz
 
-Repo-native agentic SDLC runtime that makes AI code pass through debate, evidence, and cross-family review before it can ship.
+**CI-style gates for AI coding agents.**
+
+`code-oz` runs coding agents through a repo-local delivery loop:
+
+**DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP**
+
+Use it when direct AI coding is too unconstrained and you want every change to pass through inspectable artifacts, approval gates, verification evidence, and independent review before it ships.
+
+AI agents are fast. `code-oz` makes their work auditable. It is for risky repos, not fastest-loop coding.
 
 [![Tests](https://github.com/omerakben/code-oz/actions/workflows/test.yml/badge.svg)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
 [![Release](https://github.com/omerakben/code-oz/actions/workflows/release.yml/badge.svg)](https://github.com/omerakben/code-oz/actions/workflows/release.yml)
@@ -8,9 +16,19 @@ Repo-native agentic SDLC runtime that makes AI code pass through debate, evidenc
 [![Homebrew](https://img.shields.io/badge/Homebrew-omerakben%2Fcode--oz-orange)](https://github.com/omerakben/homebrew-code-oz)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/omerakben/code-oz/releases)
-[![Tests passing](https://img.shields.io/badge/tests-3366%20passing-brightgreen)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
+[![Tests passing](https://img.shields.io/badge/tests-3390%20passing-brightgreen)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
 
 > **macOS note:** code-oz binaries are not yet Apple-Developer-signed (signing + notarization deferred to v0.x stable). Gatekeeper may prompt on first launch; the install script applies `xattr -d com.apple.quarantine` as a workaround, and `brew install` handles this automatically.
+
+## What you get
+
+- file-based phase gates you can inspect in the repo
+- approvals bound to exact artifact SHA-256s
+- isolated worktrees for agent changes
+- an `events.jsonl` ledger for reconstructing what happened
+- cross-family review so the builder and reviewer are not the same model family
+
+Status: public alpha. The deterministic demo uses `FakeProvider` so you can inspect the lifecycle without spending tokens. FakeProvider proves lifecycle gates and ledger determinism, not model quality.
 
 ## Install
 
@@ -18,8 +36,8 @@ Three channels deliver the same single binary, verified against the same `checks
 
 ```sh
 # curl | sh
-curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.20.0-alpha.0/install.sh \
-  | sh -s -- --version v0.20.0-alpha.0
+curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.20.1-alpha.0/install.sh \
+  | sh -s -- --version v0.20.1-alpha.0
 
 # npm (scoped under the TUEL AI publisher; binary still runs as `code-oz`)
 npm install -g @tuel/code-oz
@@ -31,27 +49,149 @@ brew install omerakben/code-oz/code-oz
 
 Platform support: macOS arm64, macOS x64, Linux x64, Linux arm64. Windows and Scoop are deferred to a future distribution milestone.
 
-## Provider setup
+## Why not just Claude Code or Codex?
 
-First-run CLI defaults to `FakeProvider` when no live provider is configured, so `code-oz init && code-oz run` can complete without spending provider tokens. Live Claude and Codex use their upstream CLI login sessions; xAI uses `XAI_API_KEY`; the GUI helper uses `GEMINI_API_KEY`.
+Use Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Roo Code, or Aider directly when you want the fastest possible agent loop.
 
-See [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md) for the single provider setup table.
+Use `code-oz` when you want a governed loop.
 
-## What it is
+Direct-agent workflow:
 
-`code-oz` is a standalone terminal CLI that runs coding agents through a real software delivery lifecycle. It coordinates role-specialized agents over a hybrid phase-graph + agentic sub-orchestration spine with hard gates between phases, file-based state, and cross-family adversarial review. The live v0.20.1 CLI surface uses Claude/Codex CLI auth, optional `XAI_API_KEY`, and the cost-free `FakeProvider`; direct Anthropic/OpenAI API-key adapters are not shipped in v0.20.1.
+1. Ask an agent to make a change.
+2. Inspect the result.
+3. Hope the prompt, tests, and review were enough.
 
-Phases (greenfield): `DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP`. Brownfield repos are detected and represented as `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP` in state and the GUI; the production AUDIT runtime lands in M17/v0.21.
+`code-oz` workflow:
 
-## Demo
+1. Define the task as an artifact.
+2. Approve the artifact by SHA-256.
+3. Build in an isolated worktree.
+4. Verify evidence before review.
+5. Require independent review.
+6. Write a ledger of what happened.
 
-A 5-minute runnable end-to-end walkthrough lives in [`docs/demo/01-todo-cli/`](docs/demo/01-todo-cli/README.md). One full DEFINE → SHIP cycle on a greenfield todo CLI via `FakeProvider`, all 5 gate files, cross-family REVIEW (BUILD on Claude family, REVIEW on Codex family), `--effort` envelope captures at three levels, and the full `events.jsonl` ledger. Captured outputs at all three effort levels are committed under `docs/demo/01-todo-cli/output/` so you can read the produced artifacts without running anything.
+`code-oz` is not trying to be a smarter coding model. It is the control layer around coding models.
+
+## What is real today?
+
+| Area             | Status                                                               |
+| ---------------- | -------------------------------------------------------------------- |
+| CLI commands     | `init`, `run`, `approve`, `doctor`                                   |
+| Lifecycle        | `DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP` for greenfield runs |
+| Gates            | File-based gates with schema validation                              |
+| Approvals        | SHA-256-bound approval artifacts                                     |
+| Isolation        | Worktree-per-run isolation                                           |
+| Ledger           | `events.jsonl` audit trail                                           |
+| Demo provider    | Deterministic `FakeProvider`                                         |
+| Live providers   | Claude CLI, Codex CLI, and xAI HTTP adapter                          |
+| xAI auth         | `XAI_API_KEY` env var                                                |
+| Install channels | curl script, npm package, Homebrew tap                               |
+| Platforms        | macOS arm64, macOS x64, Linux arm64, Linux x64                       |
+| Tests            | 3390 offline tests in CI                                             |
+
+The provider contract is intentionally narrow. The alpha is about proving governed delivery, not supporting every agent on day one.
+
+## What is simulated or not ready yet?
+
+| Area                           | Current state                                               |
+| ------------------------------ | ----------------------------------------------------------- |
+| FakeProvider demo              | Simulated model responses, real gates/artifacts/ledger      |
+| Gemini                         | Stub provider in v0.1; not a working invocation adapter     |
+| OpenCode / Roo Code            | Future adapter candidates, not v0.1 providers               |
+| Brownfield AUDIT runtime       | Detection works; AUDIT phase runtime lands in M17/v0.21     |
+| Windows / Scoop                | Deferred                                                    |
+| Apple signing / notarization   | Deferred to v0.x stable; macOS may show Gatekeeper prompts  |
+| GPG/Sigstore-signed checksums  | Deferred to v0.x stable                                     |
+| Full benchmark proof           | Protocol shipped; measured rows land in v0.21 with runner   |
+| Broad multi-agent consultation | Deferred                                                    |
+| Cloud IAM adapters             | Deferred                                                    |
+
+Do not use the alpha as proof that one model writes better code than another. Use it to inspect whether the governed lifecycle works.
+
+## How is this different?
+
+| Tool                       | Best for                                   | What `code-oz` adds                                                         |
+| -------------------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
+| Claude Code                | Fast terminal coding with Claude           | Repo-local gates, approvals, worktree isolation, ledger, independent review |
+| Codex CLI                  | Fast terminal coding with OpenAI models    | Same governed lifecycle around Codex output                                 |
+| Cursor                     | AI-native IDE workflow                     | External lifecycle governance outside the editor                            |
+| Aider                      | Terminal-native git-integrated pair coding | Multi-phase artifacts and cross-family review                               |
+| Gemini CLI / OpenCode / Roo Code | Direct AI coding loop                | Future adapter candidates; not supported in v0.1                            |
+| Qodo / Sonar               | PR/code quality review                     | Earlier lifecycle gates before the PR review stage                          |
+| HivePipe / Devin / Factory | Managed agentic SDLC or agent workforce    | Local-first, source-visible CLI runtime for owned repos                     |
+
+Full footnote-sourced comparison: [`docs/comparisons/ai-coding-agents.md`](docs/comparisons/ai-coding-agents.md). Benchmark protocol: [`docs/benchmarks/agent-gate-bench.md`](docs/benchmarks/agent-gate-bench.md) (measured rows land in v0.21 with the runner).
+
+`code-oz` is not a replacement for coding agents. It is a governed delivery loop around them.
+
+## Quick demo
 
 ```sh
+git clone https://github.com/omerakben/code-oz.git
+cd code-oz
+bun install
 bun run demo:todo-cli                # default (balanced)
 bun run demo:todo-cli --effort lite  # multiplier 0.4
-bun run demo:todo-cli --effort beast # multiplier 6.0
 ```
+
+The demo runs one full lifecycle:
+
+```txt
+DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP
+```
+
+Then inspect:
+
+```sh
+ls docs/demo/01-todo-cli/output/
+cat docs/demo/01-todo-cli/output/balanced/state/events.jsonl | tail
+```
+
+The demo uses `FakeProvider`, so it is deterministic and token-free. The value is not that the fake model is smart. The value is that the same gates, approvals, worktree flow, and ledger mechanics are exercised every time.
+
+## Failure demo
+
+Governance only matters if bad runs get blocked. The failure-gates demo runs five deterministic scenarios:
+
+```sh
+bun run demo:failure-gates
+```
+
+| Failure                                          | Expected result                                  |
+| ------------------------------------------------ | ------------------------------------------------ |
+| Tampered approved artifact                       | Gate refuses because SHA-256 no longer matches   |
+| BUILD output changes files outside allowed scope | Mutation gate blocks the run                     |
+| VERIFY evidence fails                            | Run restarts or writes `NEEDS_INTERVENTION.json` |
+| REVIEW uses same provider family as BUILD        | Cross-family review check refuses it             |
+| Reviewer finds risky change                      | Run routes back to revision instead of SHIP      |
+
+Walkthrough: [`docs/demo/02-failure-gates/`](docs/demo/02-failure-gates/README.md).
+
+This is the demo to watch before trusting the tool.
+
+## Who is this for?
+
+Use `code-oz` if:
+
+- you already use AI coding agents
+- you work in repos where mistakes matter
+- you want approval artifacts instead of chat transcripts
+- you want to compare builder and reviewer model families
+- you want a reproducible audit trail for AI-generated changes
+
+Do not use `code-oz` yet if:
+
+- you want the fastest possible one-shot code generation
+- you need Windows support today
+- you need a polished enterprise SaaS dashboard
+- you need every provider family supported today
+- you are not willing to run an alpha
+
+## Provider setup
+
+First-run CLI defaults to `FakeProvider` when no live provider is configured, so `code-oz init && code-oz run` can complete without spending provider tokens. Live Claude and Codex use their upstream CLI login sessions; xAI uses `XAI_API_KEY`. The separate `code-oz-gui` helper uses `GEMINI_API_KEY` for an in-app AI assistant; that key is not used by the CLI.
+
+See [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md) for the single provider setup table and [`docs/contracts/PROVIDERS.md`](docs/contracts/PROVIDERS.md) for the live / stub / future-candidate matrix.
 
 ## Try it from source
 
@@ -65,11 +205,39 @@ mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
 ~/Projects/code-oz/dist/code-oz doctor tools
 ```
 
-## Status
+## Trust and security
 
-`v0.20.0-alpha.0` is published with official install channels (curl|sh, npm, Homebrew). `v0.20.1` is the first-run polish track covering fake no-key fallback, clearer doctor/run UX, GUI dev startup, a11y baseline, and distribution hardening.
+- Vulnerability reporting and artifact trust posture: [`SECURITY.md`](SECURITY.md)
+- Data boundaries, install trust, and what is and is not logged: [`docs/TRUST.md`](docs/TRUST.md)
 
-See [`docs/ABOUT.md`](docs/ABOUT.md) for the milestone inventory, product thesis, influence library, and architecture deep-dive. The milestone plan beyond v0.20 lives in [`docs/design/ROADMAP.md`](docs/design/ROADMAP.md).
+## Contributing
+
+- Setup, tests, commit conventions, PR expectations: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Community standards: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+
+## Roadmap
+
+Public summary at [`docs/design/ROADMAP.md#now-next-later`](docs/design/ROADMAP.md#now-next-later). The detailed milestone inventory follows in the same file.
+
+- **Now (v0.20.1-alpha.0)**: first-run polish, truth-corrected provider claims, failure demo, security and community files, agent-gate benchmark protocol.
+- **Next (v0.21.0-alpha.0)**: M17 AUDIT runtime for brownfield repos.
+- **Later**: signed checksums, broader provider adapters, Windows/Scoop, hosted launch artifacts.
+
+## Architecture and historical context
+
+For the dense architecture (hybrid phase-graph, agentic sub-orchestration spine, 23 non-negotiable rules), product thesis, influence library, and the project's historical "AI software company" framing: [`docs/ABOUT.md`](docs/ABOUT.md).
+
+## Star this repo if...
+
+Star `code-oz` if you think AI coding agents need more than clever prompts:
+
+- inspectable specs and plans
+- test evidence before review
+- independent model-family review
+- tamper-evident approvals
+- a ledger of what the agent did
+
+Direct agents are fast. Governed agents are auditable.
 
 ## License
 
