@@ -17,6 +17,8 @@ import reviewSystemPath from './review-system.md' with { type: 'file' }
 import debateOpponentSystemPath from './debate-opponent-system.md' with { type: 'file' }
 import debateSynthesisSystemPath from './debate-synthesis-system.md' with { type: 'file' }
 
+import type { PlanTask } from '../artifacts/plan.ts'
+
 const ASSET_CACHE = new Map<string, string>()
 
 async function loadAsset(path: string): Promise<string> {
@@ -294,6 +296,15 @@ export async function composePlanPrompt(input: ComposePlanPromptInput): Promise<
 // Single-shot per task — BUILD does not carry a conversation across
 // turns; one initial draft + at most one repair round (per Codex M7
 // implementation review reject of decision 7, thread 019ddeea).
+//
+// v0.20.2 showstopper #0a (Codex thread 019e281e):
+// TASK_BLOCK injection. The builder must receive the approved PLAN
+// task's id, title, fileChanges, validation, risk, and optional
+// bugfix.existingTest. hypotheses/sources/startLine are intentionally
+// excluded — they are PLAN/Scientist/REVIEW evidence, not builder
+// consumer needs. See docs/design/V0_20_2_SHOWSTOPPER_0A_CODEX_RESPONSE.md.
+
+const TOKEN_TASK_BLOCK = '{{TASK_BLOCK}}'
 
 const BUILD_REQUIRED_TOKENS = [
   TOKEN_AGENT_BODY,
@@ -301,7 +312,34 @@ const BUILD_REQUIRED_TOKENS = [
   TOKEN_UNIVERSAL_RULES,
   TOKEN_AVAILABLE_TOOLS,
   TOKEN_READY_SIGNAL,
+  TOKEN_TASK_BLOCK,
 ] as const
+
+/**
+ * Render a PlanTask as a canonical Markdown block for injection into the
+ * BUILD system prompt. Matches PLAN.md's H3-plus-bullets grammar so test
+ * assertions can use stable substring matches.
+ *
+ * Excludes hypotheses, sources, and startLine by design (Codex thread
+ * 019e281e, Prompt 1): those are audit-trail surfaces for PLAN/Scientist/
+ * REVIEW, not consumer needs of the builder. Includes optional bugfix
+ * because the builder must reuse the reproduction test, not modify it.
+ */
+export function renderTaskBlock(task: PlanTask): string {
+  const lines: string[] = []
+  lines.push(`### ${task.id}: ${task.title}`)
+  lines.push('')
+  lines.push('- Files:')
+  for (const fc of task.fileChanges) {
+    lines.push(`  - \`${fc.path}\` (${fc.change})`)
+  }
+  lines.push(`- Validation: \`${task.validation}\``)
+  lines.push(`- Risk: ${task.risk}`)
+  if (task.bugfix !== undefined) {
+    lines.push(`- Bugfix: \`${task.bugfix.existingTest}\``)
+  }
+  return lines.join('\n')
+}
 
 export interface ComposeBuildPromptPureInput {
   readonly templateBody: string
@@ -311,6 +349,12 @@ export interface ComposeBuildPromptPureInput {
   readonly readySignal: string
   /** Names of tools the BUILD persona has access to. */
   readonly availableTools: readonly string[]
+  /**
+   * The selected PLAN task. Required (Codex thread 019e281e, Prompt 5)
+   * because BUILD without a task is invalid by construction; a future
+   * caller forgetting it would silently recreate the v0.20.2 showstopper.
+   */
+  readonly task: PlanTask
 }
 
 export function composeBuildPromptPure(args: ComposeBuildPromptPureInput): string {
@@ -320,18 +364,21 @@ export function composeBuildPromptPure(args: ComposeBuildPromptPureInput): strin
     }
   }
   const availableTools = renderAvailableTools(args.availableTools)
+  const taskBlock = renderTaskBlock(args.task)
   return args.templateBody
     .replaceAll(TOKEN_AGENT_BODY, args.agentBody.trim())
     .replaceAll(TOKEN_RATIONALIZATIONS, args.commonRationalizations.trim())
     .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
     .replaceAll(TOKEN_AVAILABLE_TOOLS, availableTools)
     .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+    .replaceAll(TOKEN_TASK_BLOCK, taskBlock)
 }
 
 export interface ComposeBuildPromptInput {
   readonly agentBody: string
   readonly readySignal: string
   readonly availableTools: readonly string[]
+  readonly task: PlanTask
 }
 
 export async function composeBuildPrompt(input: ComposeBuildPromptInput): Promise<string> {
@@ -347,6 +394,7 @@ export async function composeBuildPrompt(input: ComposeBuildPromptInput): Promis
     agentBody: input.agentBody,
     readySignal: input.readySignal,
     availableTools: input.availableTools,
+    task: input.task,
   })
 }
 

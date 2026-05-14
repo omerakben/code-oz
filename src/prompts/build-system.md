@@ -14,6 +14,12 @@ The persona below describes who you are and how you think.
 
 {{AGENT_BODY}}
 
+## Task
+
+These are input constraints from the approved PLAN task. They are given to you, not authored by you. The orchestrator copies `Validation` verbatim into `BUILD_REPORT.md` regardless of what you echo back.
+
+{{TASK_BLOCK}}
+
 ## Common rationalizations
 
 Read this before every reply.

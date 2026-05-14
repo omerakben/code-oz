@@ -60,6 +60,8 @@ import { join } from 'node:path'
 
 import type { AgentDefinition } from '../agents/schema.ts'
 import type { InvokeContext } from '../providers/invoke.ts'
+import type { ProviderFileRef } from '../providers/types.ts'
+import { deriveReviewChangedFiles } from '../runtime/provider-file-refs.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import { runPaths as worktreePathsFor } from '../worktree/paths.ts'
 import {
@@ -172,8 +174,19 @@ export interface RunReviewOptions {
    * to twice: initial draft + at most one repair (Codex M9 decision 9).
    * The composed prompt embeds the full {{REVIEW_CONTEXT}} block so the
    * persona's Findings + Score can be evidence-grounded.
+   *
+   * v0.20.2 showstopper #0b follow-up: the optional `perCall.files`
+   * channel lets runReview pass derived `BUILD_REPORT.changedFiles` refs
+   * for every invocation, matching the BUILD path's manifest-expansion
+   * pattern. Without it, cross-family reviewers refuse to approve
+   * because their cwd is empty (real prdiff dogfood block, captured in
+   * docs/handoffs/2026-05-14-v0.20.2-bug-free-handoff.md). Test mocks
+   * that ignore the second arg remain type-compatible.
    */
-  readonly invokePersona: (composedPrompt: string) => Promise<string>
+  readonly invokePersona: (
+    composedPrompt: string,
+    perCall?: { readonly files?: readonly ProviderFileRef[] },
+  ) => Promise<string>
   /**
    * Panel-mode invocation seam (Codex M14 R1 finding #1). When
    * `invokeCtx.config.company.reviewer.panel` declares two or more
@@ -978,9 +991,25 @@ async function runReviewRoundLocked(
   })
 
   // 8. Invoke persona (initial draft + at most one bounded repair).
+  // v0.20.2 #0b follow-up: derive ProviderFileRef[] from BUILD_REPORT's
+  // changedFiles and bind them into a wrapper shim so every internal
+  // helper (invokeWithRepair, runRepair) calls the upstream persona
+  // with the file manifest populated. Without this, cross-family
+  // reviewers receive an empty cwd and refuse to approve. The wrapper
+  // keeps the inner helper signatures narrow (1-param) so this is a
+  // single-point change at the runReview entry, not a thread-through
+  // refactor.
+  const reviewWorktreeRoot = worktreePathsFor(opts.cwd, opts.runId).worktree
+  const reviewFiles = await deriveReviewChangedFiles(
+    buildReport.changedFiles,
+    reviewWorktreeRoot,
+  )
+  const invokePersonaWithFiles = (composedPrompt: string): Promise<string> =>
+    opts.invokePersona(composedPrompt, { files: reviewFiles })
+
   const priorFindings: readonly ReviewFinding[] = priorReport?.findings ?? Object.freeze([])
   const repairResult = await invokeWithRepair({
-    invokePersona: opts.invokePersona,
+    invokePersona: invokePersonaWithFiles,
     composedPrompt: composed,
     round: opts.round,
     changedFilePaths,
