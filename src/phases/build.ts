@@ -254,7 +254,19 @@ export function parseBuildResponse(text: string): BuildResponseParseResult {
     if (/^- /.test(line)) {
       const content = line.slice(2).trim()
       if (content.length > 200) {
-        return errResult('build_report_notes_too_long', 'Notes bullet exceeds 200 characters')
+        // v0.20.3 #4 — enrich the reason with bullet index (1-indexed),
+        // actual char count, and a short preview so the operator can
+        // find the offending bullet quickly. The friend's dogfood read
+        // "Notes bullet exceeds 200 characters" and could not tell
+        // WHICH bullet (the agent wrote several) or by how much.
+        const previewLen = 80
+        const preview = content.length > previewLen
+          ? content.slice(0, previewLen) + '…'
+          : content
+        return errResult(
+          'build_report_notes_too_long',
+          `Notes bullet #${notes.length + 1} exceeds 200 characters (got ${content.length}): "${preview}"`,
+        )
       }
       notes.push(content)
     }
@@ -1019,7 +1031,7 @@ async function recordBuildFailure(args: {
   })
 }
 
-function buildInterventionSuggestions(code: string): readonly string[] {
+export function buildInterventionSuggestions(code: string): readonly string[] {
   switch (code) {
     case 'build_plan_missing':
     case 'build_task_id_unknown':
@@ -1036,6 +1048,11 @@ function buildInterventionSuggestions(code: string): readonly string[] {
       return Object.freeze([
         'open .code-oz/artifacts/BUILD_REPORT.md and inspect the failed patch',
         'rerun code-oz run so BUILD can produce a corrected patch',
+      ])
+    case 'build_report_notes_too_long':
+      return Object.freeze([
+        'The builder produced a Notes bullet exceeding the 200-character cap; the rule field of this intervention names the offending bullet index, exact length, and a preview.',
+        'rerun code-oz run; BUILD will retry the same task (max 4 attempts per task) with a fresh builder response. The 200-character cap is part of the builder protocol — see docs/contracts/BUILD.md § Notes discipline.',
       ])
     default:
       return Object.freeze([

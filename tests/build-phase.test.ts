@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   runBuild,
   parseBuildResponse,
+  buildInterventionSuggestions,
   type RunBuildOptions,
 } from '../src/phases/build.ts'
 import { initRun, runPathsFor, type RunPaths } from '../src/state/run.ts'
@@ -342,6 +343,60 @@ hello
 ## Notes
 `)
     expect(parsed.ok).toBe(false)
+  })
+
+  // v0.20.3 #4 — `build_report_notes_too_long` intervention needs
+  // an actionable payload (which bullet, exact char count, preview)
+  // so the operator can fix the builder's behavior on retry. The
+  // greenfield-friend quizr dogfood (2026-05-14) surfaced this as
+  // "code-oz says my Notes are too long but I didn't write them"
+  // because the prior message was just "Notes bullet exceeds 200
+  // characters" with no diagnostic detail.
+  test('rejects Notes bullet > 200 chars with bullet index, char count, and preview', () => {
+    // 243-char bullet with a recognizable prefix so the preview is verifiable.
+    const prefix = 'attempt-3 carry-forward analysis: '
+    const longBullet = prefix + 'X'.repeat(243 - prefix.length)
+    expect(longBullet.length).toBe(243)
+    const parsed = parseBuildResponse(`<build-ready/>
+
+\`\`\`diff
+x
+\`\`\`
+
+## Title
+hello
+
+## Notes
+- short ok bullet
+- ${longBullet}
+- another short bullet
+`)
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) return
+    expect(parsed.code).toBe('build_report_notes_too_long')
+    // Reason must include the bullet index (1-indexed, so #2), the
+    // actual char count, AND a preview prefix so the friend can find
+    // which bullet to fix.
+    expect(parsed.reason).toContain('#2')
+    expect(parsed.reason).toContain('243')
+    expect(parsed.reason).toContain('attempt-3')
+  })
+})
+
+describe('buildInterventionSuggestions', () => {
+  // v0.20.3 #4 — the actionable-suggestions arm of the fix. The default
+  // fallback ("run code-oz doctor run...") does not name the 200-char
+  // cap or explain that the builder must change its response. Replace
+  // with a specific, code-aware suggestion.
+  test('build_report_notes_too_long returns a specific actionable suggestion, not the default fallback', () => {
+    const suggestions = buildInterventionSuggestions('build_report_notes_too_long')
+    expect(suggestions.length).toBeGreaterThan(0)
+    const joined = suggestions.join(' ')
+    // Specific suggestion must name the 200-char cap.
+    expect(joined).toContain('200')
+    // Must NOT be the generic fallback (which mentions doctor run +
+    // inspect the active run state).
+    expect(joined).not.toContain('inspect the active run state')
   })
 })
 
