@@ -305,7 +305,7 @@ export interface CodeOzConfig {
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {
-  version: '0.20.2-alpha.0',
+  version: '0.20.3-alpha.0',
   profile: 'greenfield',
   defaultProvider: 'claude',
   models: {
