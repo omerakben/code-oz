@@ -1,9 +1,12 @@
-// v0.20.3 finding #1 — BUILD worktree reset between attempts.
+// v0.20.3 finding #1 — BUILD worktree reset between verify-fail attempts.
 //
 // Codex debate `019e28d9-bd57-71e0-b1a2-262cae205234` locked the contract:
-// every BUILD attempt > 1 starts from the run's immutable base commit
-// before the builder sees files, derives file refs, or applies a patch.
-// This primitive is the BUILD-entry worktree-normalization authority.
+// every verify-fail BUILD attempt > 1 starts from the run's immutable base
+// commit before the builder sees files, derives file refs, or applies a
+// patch. This primitive is the BUILD-entry worktree-normalization
+// authority for the verify-fail path only — the M9 review-needs-revision
+// restart path intentionally preserves the worktree across attempts (see
+// `src/phases/build.ts` worktree-reset call site for the source gate).
 //
 // One callable: `resetWorktreeToBase({ worktreePath, baseCommitSha })`.
 // Two git invocations:

@@ -767,9 +767,11 @@ export type PhaseEvent =
       readonly worktreePath: string
     }>
   // v0.20.3 #1 — BUILD-entry worktree-normalization event. Emitted on
-  // success of `resetWorktreeToBase` for every BUILD attempt > 1, before
-  // prompt composition / provider file-ref derivation / persona invocation.
-  // Codex debate `019e28d9-bd57-71e0-b1a2-262cae205234` locked this shape.
+  // success of `resetWorktreeToBase` for verify-fail BUILD attempts > 1,
+  // before prompt composition / provider file-ref derivation / persona
+  // invocation. Review-needs-revision restarts preserve the worktree per
+  // the M9 contract and do NOT emit this event. Codex debate
+  // `019e28d9-bd57-71e0-b1a2-262cae205234` locked this shape.
   | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'worktree_reset_to_base'
