@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Board, { PHASE_COLUMNS } from '@/components/Board';
 import Composer from '@/components/Composer';
 import Drawer from '@/components/Drawer';
@@ -13,6 +13,38 @@ import type { RunCard } from '@/lib/types';
 
 const FIXTURE_RUN_ID = 'r-2026-05-12-checkout-safari';
 type ProviderMode = 'fake' | 'real';
+
+// v0.20.3 #5 — persist workspace path / provider mode / effort selector
+// across page reloads. localStorage keys are namespaced so the GUI can
+// evolve without colliding with other apps on the same origin. Reads
+// happen in a mount-only useEffect (avoids SSR hydration mismatch).
+const STORAGE_KEY_REPO_PATH = 'code-oz-gui:repoPath';
+const STORAGE_KEY_PROVIDER_MODE = 'code-oz-gui:providerMode';
+const STORAGE_KEY_COMPOSER_EFFORT = 'code-oz-gui:composerEffort';
+
+const VALID_EFFORTS: readonly EffortLevel[] = ['lite', 'balanced', 'max', 'beast'];
+
+function safeReadStorage(key: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeWriteStorage(key: string, value: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value === null) {
+      window.localStorage.removeItem(key);
+    } else {
+      window.localStorage.setItem(key, value);
+    }
+  } catch {
+    // localStorage may throw in private-mode contexts; silently skip.
+  }
+}
 
 export default function Home() {
   const [repoPath, setRepoPath] = useState<string | null>('./fixtures/sample-run');
@@ -27,6 +59,48 @@ export default function Home() {
   const [isAborting, setIsAborting] = useState(false);
   const [providerMode, setProviderMode] = useState<ProviderMode>('fake');
   const [composerEffort, setComposerEffort] = useState<EffortLevel>('lite');
+  const [hydrated, setHydrated] = useState(false);
+
+  // v0.20.3 #5 — one-time hydration on mount. We accept a one-frame flash
+  // from defaults → stored values to avoid the SSR/CSR mismatch a useState
+  // initializer reading localStorage would create.
+  useEffect(() => {
+    const storedRepoPath = safeReadStorage(STORAGE_KEY_REPO_PATH);
+    if (storedRepoPath !== null && storedRepoPath.length > 0) {
+      setRepoPath(storedRepoPath);
+      // If the user previously had a real repo path, do NOT auto-load the
+      // fixture run; clear the runId so they re-enter or start fresh.
+      if (storedRepoPath !== './fixtures/sample-run') {
+        setRunId(null);
+      }
+    }
+    const storedProvider = safeReadStorage(STORAGE_KEY_PROVIDER_MODE);
+    if (storedProvider === 'fake' || storedProvider === 'real') {
+      setProviderMode(storedProvider);
+    }
+    const storedEffort = safeReadStorage(STORAGE_KEY_COMPOSER_EFFORT);
+    if (storedEffort !== null && (VALID_EFFORTS as readonly string[]).includes(storedEffort)) {
+      setComposerEffort(storedEffort as EffortLevel);
+    }
+    setHydrated(true);
+  }, []);
+
+  // Persist on change (but only after initial hydration, so the mount-time
+  // default doesn't immediately clobber stored values).
+  useEffect(() => {
+    if (!hydrated) return;
+    safeWriteStorage(STORAGE_KEY_REPO_PATH, repoPath);
+  }, [repoPath, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    safeWriteStorage(STORAGE_KEY_PROVIDER_MODE, providerMode);
+  }, [providerMode, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    safeWriteStorage(STORAGE_KEY_COMPOSER_EFFORT, composerEffort);
+  }, [composerEffort, hydrated]);
 
   const { state, events, status } = useRunStream(runId);
 

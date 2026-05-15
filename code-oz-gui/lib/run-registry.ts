@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpawnHandle } from './code-oz-spawn';
 import { findCodeOzRepoRoot } from './repo-root';
@@ -28,7 +29,23 @@ export function registerRun(record: RunRecord): void {
 }
 
 export function getRunRecord(runId: string): RunRecord | null {
-  return runRecords.get(runId) ?? null;
+  const record = runRecords.get(runId);
+  if (!record) return null;
+  // v0.20.3 #6 — disk validation. A live run whose runDir was deleted
+  // (e.g., `rm -rf .code-oz/state/`) should not surface as `running` in
+  // the GUI sidebar. Transition the in-memory record to `stale` on read
+  // so the server-side view matches disk and the run history stops
+  // showing a ghost "IN PROGRESS" entry.
+  if (record.lifecycle === 'running' && record.kind !== 'fixture' && !existsSync(record.runDir)) {
+    const stale: RunRecord = {
+      ...record,
+      lifecycle: 'stale',
+      endedAt: new Date().toISOString(),
+    };
+    runRecords.set(runId, stale);
+    return stale;
+  }
+  return record;
 }
 
 export function markRunExited(runId: string, result: { readonly exitCode: number | null; readonly signal: string | null }): void {

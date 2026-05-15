@@ -81,6 +81,14 @@ function lifecycleLabel(state: RunState | null): { readonly label: string; reado
     return { label: `Exited ${exitDetail}`, className: 'border-red-500/25 bg-red-500/10 text-red-300' };
   }
 
+  if (state.lifecycle === 'stale') {
+    // v0.20.3 #6 — run-registry detected the runDir was removed on disk
+    // (e.g., `rm -rf .code-oz/state/`). Surface as "Stale" so the user
+    // knows the run is no longer tracked rather than showing "Aborted"
+    // (which implies an explicit abort action).
+    return { label: 'Stale (runDir removed)', className: 'border-zinc-500/25 bg-zinc-500/10 text-zinc-300' };
+  }
+
   return { label: 'Aborted', className: 'border-amber-500/25 bg-amber-500/10 text-amber-300' };
 }
 

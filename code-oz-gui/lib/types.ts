@@ -67,7 +67,7 @@ export interface ProviderProvenance {
   readonly role?: string;
 }
 
-export type RunLifecycle = 'running' | 'exited-ok' | 'exited-fail' | 'aborted' | 'fixture';
+export type RunLifecycle = 'running' | 'exited-ok' | 'exited-fail' | 'aborted' | 'fixture' | 'stale';
 export type ProviderMode = 'fake' | 'real' | null;
 
 export interface RunState {

@@ -11,7 +11,7 @@ import {
 } from '../src/phases/build.ts'
 import { initRun, runPathsFor, type RunPaths } from '../src/state/run.ts'
 import { readEvents } from '../src/state/events.ts'
-import { generateUlid } from '../src/state/schemas.ts'
+import { generateUlid, isKnownPhaseEvent } from '../src/state/schemas.ts'
 import { parseBuildReport } from '../src/artifacts/build-report.ts'
 import { createRunWorktree, runGit } from '../src/worktree/create-run-worktree.ts'
 import { runDoctorGit } from '../src/commands/doctor.ts'
@@ -740,7 +740,7 @@ describe('runBuild — worktree reset between attempts (v0.20.3 #1)', () => {
 
     const resetEvent = events[resetIdx]!
     expect(resetEvent.type).toBe('worktree_reset_to_base')
-    if (resetEvent.type !== 'worktree_reset_to_base') return
+    if (!isKnownPhaseEvent(resetEvent) || resetEvent.type !== 'worktree_reset_to_base') return
     expect(resetEvent.attempt).toBe(2)
     expect(resetEvent.baseCommitSha).toBe(wt.baseCommitSha)
     expect(typeof resetEvent.durationMs).toBe('number')
