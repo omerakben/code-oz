@@ -2,7 +2,7 @@
 
 This page exists because every developer who finds `code-oz` immediately asks: *"why not just use Claude Code, Codex, Cursor, or Aider directly?"* The answer is that those tools are coding agents; `code-oz` is a governed delivery loop **around** them. The two are complementary, not competitive.
 
-The table below compares mechanics, not marketing. Every row corresponds to a feature you can verify in the linked competitor's own documentation. Every footnote sources its claim. The table was authored by `code-oz` maintainers and independently reviewed by an external `gpt-5.5` reviewer to catch overclaim drift; partial-credit ratings (`partial`) are used wherever the competitor delivers a related capability with different mechanics, so we never claim a competitor lacks a feature they actually ship.
+The table below compares mechanics, not marketing. Every row corresponds to a feature you can verify in the linked competitor's own documentation. Every footnote cites its source. The table was authored by `code-oz` maintainers and independently reviewed by an external `gpt-5.5` reviewer to catch overclaiming; partial-credit ratings (`partial`) are used wherever a competitor delivers a related capability with different mechanics, so we never claim a competitor lacks a feature they actually ship.
 
 This is the canonical public comparison. The README's short table is a summary that links here.
 
@@ -23,7 +23,7 @@ This is the canonical public comparison. The README's short table is a summary t
 
 ### Footnotes
 
-¹ Cursor's CLI (`cursor-agent`) installs via a shell installer per the current Cursor docs (`cursor.com/docs/cli/installation`), but ships separately from the Cursor IDE; the row stays partial because Cursor's official install surface is a single channel today, not the same SHA-pinned native release across npm/Homebrew/curl.
+¹ Cursor's CLI (`cursor-agent`) installs via a shell installer per the current Cursor docs (`cursor.com/docs/cli/installation`), but ships separately from the Cursor IDE; the row stays partial because Cursor's official install surface is a single channel today, not a single SHA-pinned native release across npm/Homebrew/curl.
 
 ² Claude Code ships Native Install, Homebrew, WinGet, and Linux package-manager installers per `code.claude.com/docs/en/quickstart`; each channel is its own installer, not a single SHA-pinned release asset shared across npm/Homebrew/curl.
 
@@ -31,15 +31,15 @@ This is the canonical public comparison. The README's short table is a summary t
 
 ⁴ Devin exposes sessions, PR links, Session Insights/timeline, and audit logs per `docs.devin.ai/get-started/first-run` + `docs.devin.ai/enterprise/api-reference/audit-logs`, but does not document file-based gate machinery or worktree-per-run isolation; "partial" reflects an opaque audit trail, not equivalent mechanics.
 
-⁵ Aider captures commit messages + diff history per `aider.chat/docs/git.html`; not the full gated artifact set.
+⁵ Aider captures commit messages + diff history per `aider.chat/docs/git.html`; not the full gated artifact set that `code-oz` records.
 
-⁶ Cursor has token budgets at the chat level; not per-orchestration phase.
+⁶ Cursor has token budgets at the chat level; not per orchestration phase.
 
 ⁷ `code-oz` runs xAI on API key today; Claude/Codex CLI-auth via SDKs is the v0.x roadmap.
 
 ⁸ Aider distributes via shell installer + `uv` + `pipx` + `pip` per `aider.chat/docs/install.html` — Python packaging channels, not native binaries pinned across npm/Homebrew/curl by SHA.
 
-⁹ Continue CLI installs via shell installer and npm per `docs.continue.dev/cli/quickstart`; the install row is partial because the same binary isn't released as a SHA-pinned asset across Homebrew + curl + npm together.
+⁹ Continue CLI installs via shell installer and npm per `docs.continue.dev/cli/quickstart`; the install row is partial because the same binary is not released as a SHA-pinned asset across Homebrew, curl, and npm together.
 
 ## Best used with
 
@@ -62,6 +62,6 @@ This is the canonical public comparison. The README's short table is a summary t
 
 ## Methodology note
 
-Footnote URLs were verified by an external `gpt-5.5` review against the competitor's own published docs as of 2026-05-12. If a competitor ships a feature that this table marks as `❌` or `partial`, that is a documentation gap on our side — please open an issue with a link to the competitor's published doc.
+Footnote sources were verified by an external `gpt-5.5` review against the competitor's own published docs as of 2026-05-12. If a competitor ships a feature that this table marks as `❌` or `partial`, that is a documentation gap on our side — please open an issue with a link to the competitor's published doc.
 
 For the underlying provider matrix code-oz ships today (Claude / Codex / xAI / Fake live; Gemini stub; OpenCode and Roo Code as future candidates), see [`docs/contracts/PROVIDERS.md`](../contracts/PROVIDERS.md) § "Provider status (v0.1)".
