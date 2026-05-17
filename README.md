@@ -217,6 +217,10 @@ mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
 - Setup, tests, commit conventions, PR expectations: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - Community standards: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 
+## Changelog
+
+Release notes and version history are tracked in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Roadmap
 
 Public summary at [`docs/design/ROADMAP.md#now-next-later`](docs/design/ROADMAP.md#now-next-later). The detailed milestone inventory follows in the same file.
