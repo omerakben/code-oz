@@ -1,0 +1,17 @@
+{
+  "name": "code-oz",
+  "description": "Enforced SDLC gates + cross-family review for AI coding agents. Discovers and invokes the code-oz engine; the binary is the only writer of gates, events, and reviews.",
+  "version": "0.20.3-alpha.0",
+  "author": { "name": "Ozzy (Omer Akben)", "url": "https://github.com/omerakben/code-oz" },
+  "homepage": "https://github.com/omerakben/code-oz",
+  "repository": "https://github.com/omerakben/code-oz",
+  "license": "MIT",
+  "keywords": ["code-oz", "agentic-sdlc", "gates", "cross-family-review", "orchestrator"],
+  "commands": [
+    "./commands/code-oz-run.md",
+    "./commands/code-oz-init.md",
+    "./commands/code-oz-doctor.md",
+    "./commands/code-oz-resume.md"
+  ],
+  "hooks": "./hooks/hooks.json"
+}
