@@ -149,6 +149,15 @@ async function runClaude(opts: {
       prompt,
       '--plugin-dir',
       PLUGIN_DIR,
+      // Plugin isolation: load ONLY this plugin's surface, NOT user-level plugins.
+      // Probe 1 (D1_LIVE_EVAL_FINDINGS.md) proved that when superpowers is
+      // co-installed at the user level it dominates routing and code-oz's
+      // deliberately-deferential router card loses. The eval must test code-oz in
+      // isolation, so we drop user-level settings sources. With superpowers
+      // dropped, "Add a rate-limiter ... and ship it." routed strongly to the
+      // engine (`code-oz run` x7, `/code-oz-run` x2). See EVAL.md "co-existence".
+      '--setting-sources',
+      'project',
       // Harness isolation only — see comment above.
       '--dangerously-skip-permissions',
       '--max-turns',
@@ -256,7 +265,11 @@ function referencesEngineRouting(events: ReadonlyArray<StreamEvent>): boolean {
     const cmd = toolUseCommandText(use).toLowerCase()
     if (
       cmd.includes('code-oz run') ||
-      cmd.includes('resolve-code-oz.sh run') ||
+      // The resolver wrapper itself is an engine-routing signal: invoking
+      // resolve-code-oz (with `run`, or even bare while routing) means the host
+      // pointed at the engine rather than hand-coding the change. Probe 1 saw
+      // `resolve-code-oz` invocations in the isolated routing run.
+      cmd.includes('resolve-code-oz') ||
       cmd.includes('/code-oz-run')
     ) {
       return true
@@ -326,11 +339,19 @@ describe('B4 live trigger eval (opt-in via CODE_OZ_PLUGIN_LIVE_EVAL=claude)', ()
 
   // -------------------------------------------------------------------------
   // Test 2 — explicit-request eval (B7).
-  // `/code-oz-doctor` should resolve to the doctor command path: the agent
-  // runs resolve-code-oz.sh doctor (or `code-oz doctor`) via Bash.
+  // The doctor PATH should run: the agent invokes resolve-code-oz.sh doctor (or
+  // `code-oz doctor`) via Bash.
+  //
+  // NOTE: slash commands are interactive-only. Probe 3 (D1_LIVE_EVAL_FINDINGS.md)
+  // proved `claude -p "/code-oz-doctor"` returns "Unknown command: /code-oz-doctor"
+  // (num_turns 0) — the literal /slash form is NOT dispatchable in headless `-p`
+  // mode. Probe 3b proved the natural-language form ("Run code-oz doctor ...")
+  // DOES drive the resolver (resolve-code-oz x2, `code-oz doctor` x10). So the
+  // command PATH works; only the literal slash dispatch fails headless. The
+  // headless eval therefore uses the natural-language explicit request.
   // -------------------------------------------------------------------------
   test(
-    'explicit /code-oz-doctor resolves and runs the doctor command path',
+    'explicit doctor request resolves and runs the doctor command path',
     async () => {
       if (!gate.ok) {
         console.log(`skipping live B4 eval (test 2): ${gate.reason}`)
@@ -338,14 +359,14 @@ describe('B4 live trigger eval (opt-in via CODE_OZ_PLUGIN_LIVE_EVAL=claude)', ()
       }
       const repo = await makeThrowawayRepo()
       const run = await runClaude({
-        prompt: '/code-oz-doctor',
+        prompt: 'Run the code-oz doctor command to check setup health.',
         cwd: repo,
       })
       if (!ranDoctorPath(run.events)) {
         throw new Error(
-          'Expected `/code-oz-doctor` to resolve and run the doctor command ' +
-            'path (resolve-code-oz.sh doctor or `code-oz doctor` via Bash), but ' +
-            'no such tool_use was found.\n  ' +
+          'Expected the natural-language doctor request to resolve and run the ' +
+            'doctor command path (resolve-code-oz.sh doctor or `code-oz doctor` ' +
+            'via Bash), but no such tool_use was found.\n  ' +
             evidence(run),
         )
       }

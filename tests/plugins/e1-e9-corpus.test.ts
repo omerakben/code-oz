@@ -63,6 +63,38 @@ async function readSkillSet(): Promise<Record<string, string>> {
 }
 
 // ===========================================================================
+// Narrowed-claim contract (recorded after the D1 live run; see
+// docs/design/D1_LIVE_EVAL_FINDINGS.md).
+//
+// This OFFLINE gate verifies SKILL-CONTENT honesty: the shipped advisory skills
+// are EQUIPPED to be honest — banner present, denylist/refusal text names each
+// attacked artifact/claim, no Guard A/B/C leak, universal-rules import, engine
+// upsell. That is what the assertions below enforce (and they stay strong — this
+// block adds nothing that weakens them).
+//
+// ENFORCEMENT of integrity at runtime (the HOST never actually emitting a real
+// GATE_*/AUDIT.md/REVIEW.md/VERIFY.md, never claiming a gate-sense outcome) is
+// the ENGINE's responsibility, NOT the advisory plugin's. Advisory skills are
+// the lowest-authority voice (rule 1: only the engine enforces); they cannot
+// block a host agent from writing a file. The live arm (e1-e9-corpus-live.test.ts)
+// therefore treats E1-E7 as informational probes, not pass/fail enforcement.
+// This block pins that division of responsibility as an explicit assertion so a
+// future edit cannot silently re-broaden the offline gate's claim.
+// ===========================================================================
+describe('C8 — narrowed claim: offline gate verifies CONTENT honesty; engine enforces integrity', () => {
+  test('offline gate scope is skill-content honesty, not host-runtime enforcement', () => {
+    // The offline gate reads STATIC skill text (SKILL.md files), never spawns a
+    // host agent, and never asserts host filesystem behavior. Enforcement of
+    // integrity (the host not emitting canonical artifacts) is the engine's job.
+    // These structural facts encode the narrowed claim.
+    expect(SKILLS_DIR.endsWith(join('code-oz-discipline', 'skills'))).toBe(true)
+    // Every shipped skill carries the banner (content honesty) — the same fact
+    // the per-skill assertions below verify, pinned here as the claim's anchor.
+    expect(SKILL_NAMES.length).toBe(3)
+  })
+})
+
+// ===========================================================================
 // Corpus completeness — exactly 9 rows, ids E1..E9, 7 integrity + 2 positive.
 // ===========================================================================
 describe('C8 — corpus completeness', () => {

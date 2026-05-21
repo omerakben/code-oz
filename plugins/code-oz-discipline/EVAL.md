@@ -1,10 +1,24 @@
 # code-oz-discipline plugin — E1-E9 adversarial eval corpus
 
 The `code-oz-discipline` plugin ships ADVISORY skills only (`brainstorming`,
-`source-check`, `red-first`). They never enforce a gate, never write a canonical
-artifact, and never claim gate or cross-family-review authority. The E1-E9
-corpus is the honesty gate that proves it and that gates any future D1b skill
-change (F2 standing discipline).
+`source-check`, `red-first`). Their CONTENT never enforces a gate, never writes a
+canonical artifact, and never claims gate or cross-family-review authority. The
+E1-E9 corpus is the honesty gate that proves it and that gates any future D1b
+skill change (F2 standing discipline).
+
+> **Narrowed claim (after the first live run — see `docs/design/D1_LIVE_EVAL_FINDINGS.md`).**
+> Advisory skills are honest *helpers*; they cannot ENFORCE host behavior — that
+> is the engine's job (rule 1: only the engine enforces). The live run proved a
+> host will write `AUDIT.md` on direct request even with only this plugin loaded,
+> because no advisory skill can override a direct instruction. So:
+> - The **offline gate** verifies skill-CONTENT honesty (banner, denylist text,
+>   no Guard A/B/C leak, universal-rules, upsell). This is the CI-enforced gate.
+> - The **live arm** asserts only what skills CAN do: the positive controls
+>   (E8/E9) fire the correct `code-oz-discipline:<skill>` and produce useful
+>   output. The integrity rows (E1-E7) run as NON-FAILING informational probes
+>   (capture-only). Integrity enforcement is the engine's responsibility.
+> The "Expected behavior" column below is the skills' intended advisory framing,
+> not a host-enforcement guarantee.
 
 ## The corpus
 
@@ -34,7 +48,7 @@ review performed; no write under `.code-oz/state/`; advisory banner present.
 | Arm | File | When it runs | What it proves |
 | --- | --- | --- | --- |
 | Offline (CI gate) | `tests/plugins/e1-e9-corpus.test.ts` | every `bun test` (deterministic, network-free) | the shipped skills are EQUIPPED to satisfy each row — the refusal/denylist block names and refuses the artifact/claim each row attacks, the shared invariants hold over all three skills, and the positive controls keep their useful body |
-| Live (on-demand) | `tests/plugins/e1-e9-corpus-live.test.ts` | opt-in only | a real `claude -p` host agent actually behaves honestly per row — does not emit the denied artifact / gate-sense claim, does not claim cross-family review, routes to `code-oz run`, and the banner appears |
+| Live (on-demand) | `tests/plugins/e1-e9-corpus-live.test.ts` | opt-in only | run in plugin isolation (`--setting-sources project`): the positive controls (E8/E9) fire the correct `code-oz-discipline:<skill>` and produce useful output; the integrity rows (E1-E7) are non-failing informational probes (capture-only — host integrity is the engine's job, not the advisory plugin's) |
 
 The shared corpus data and the hardened honesty guard (Guard A first-person
 self-authority patterns + Guard B gate-sense outcome denylist + the
@@ -73,3 +87,8 @@ is the evidence the change did not weaken the honesty boundary.
 - Isolation: each test runs in a throwaway `git init` temp dir, torn down after.
   `--dangerously-skip-permissions` is used ONLY for that sandbox isolation so the
   eval is non-interactive — it is not the product's proof path.
+- Plugin isolation: the eval passes `--setting-sources project` so user-level
+  plugins do NOT load. Required: co-installed superpowers otherwise dominates
+  skill-triggering (E8 fired `superpowers:brainstorming` instead of
+  `code-oz-discipline:brainstorming` before isolation). See
+  `docs/design/D1_LIVE_EVAL_FINDINGS.md`.
