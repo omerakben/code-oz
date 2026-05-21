@@ -57,26 +57,27 @@ describe('plugins/code-oz manifest shape', () => {
     expect(() => JSON.parse(raw)).not.toThrow()
   })
 
-  test('marketplace.json has a plugins array with exactly one entry for code-oz', async () => {
+  test('marketplace.json has a plugins array with exactly two entries (code-oz + code-oz-discipline)', async () => {
     const raw = await readFile(MARKETPLACE_JSON_PATH, 'utf8')
     const market = JSON.parse(raw) as { plugins: Array<Record<string, unknown>> }
 
     expect(Array.isArray(market.plugins)).toBe(true)
-    expect(market.plugins).toHaveLength(1)
+    expect(market.plugins).toHaveLength(2)
 
-    const entry = market.plugins[0]!
-    expect(entry.name).toBe('code-oz')
-    expect(entry.source).toBe('./code-oz')
+    const entry = market.plugins.find((p) => p.name === 'code-oz')
+    expect(entry).toBeDefined()
+    expect(entry!.source).toBe('./code-oz')
   })
 
-  test('marketplace.json plugin entry version matches plugin.json version', async () => {
+  test('marketplace.json code-oz entry version matches plugin.json version', async () => {
     const [marketRaw, pluginRaw] = await Promise.all([
       readFile(MARKETPLACE_JSON_PATH, 'utf8'),
       readFile(PLUGIN_JSON_PATH, 'utf8'),
     ])
-    const market = JSON.parse(marketRaw) as { plugins: Array<{ version: string }> }
+    const market = JSON.parse(marketRaw) as { plugins: Array<{ name: string; version: string }> }
     const plugin = JSON.parse(pluginRaw) as { version: string }
 
-    expect(market.plugins[0]!.version).toBe(plugin.version)
+    const entry = market.plugins.find((p) => p.name === 'code-oz')
+    expect(entry!.version).toBe(plugin.version)
   })
 })
