@@ -1399,21 +1399,18 @@ async function handleActiveRun(
  * recorded effort envelope (rule 23), bootstrap the agent registry, build the
  * provider registry, then call `runAudit({...})`.
  *
- * AUDIT is the brownfield analog of DEFINE: a single-shot analysis of the
- * existing repo + the operator's problem statement that produces AUDIT.md.
- * `runAudit` emits `repo_context_searched` (honest `selectedPaths: []` per
- * rule 18) and then resolves the `auditor` persona from the agent registry.
- * At C3 the auditor persona does not exist yet (src/agents/defaults/auditor.md
- * is C4's human-co-authored work), so `runAudit` returns an actionable
- * `auditor_persona_not_registered` intervention (rule 11) WITHOUT emitting
- * `agent_invoked(auditor)`. The M17 C1 RED anchors therefore advance from the
- * C2 placeholder failure to the correct missing-auditor failure mode, and
- * never false-pass on a stub.
+ * AUDIT is the brownfield analog of DEFINE: an analysis of the existing repo +
+ * the operator's problem statement that produces AUDIT.md. `runAudit` resolves
+ * the `auditor` persona from the agent registry, then runs the bounded
+ * repo_context dispatch loop (rule 18) so the auditor reads the repo via
+ * glob/grep/read — each tool call appends a REAL `repo_context_searched` event
+ * with actual results. Selected-path promotion into a later phase's manifest is
+ * deferred to M18. When the auditor persona is unresolved, `runAudit` returns
+ * an actionable `auditor_persona_not_registered` intervention (rule 11) WITHOUT
+ * emitting `agent_invoked(auditor)` or any `repo_context_searched` event.
  *
- * C3 passes an empty problem statement: the `run_started` event does not yet
- * carry the operator's request, and the auditor (which would consume it) does
- * not run at C3. How AUDIT receives the brownfield request is C4's design
- * choice when it wires the single-shot auditor invocation.
+ * The operator's brownfield problem statement is recovered from the
+ * `run_started` event (event-derived, rule 1) and handed to `runAudit`.
  */
 async function dispatchAudit(
   stateDir: string,

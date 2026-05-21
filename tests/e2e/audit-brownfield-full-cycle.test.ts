@@ -370,10 +370,18 @@ describe('M17 C8 — brownfield AUDIT full-cycle e2e', () => {
   // GREEN (C8 bugs fixed): the AUDIT runtime now (1) strips the ready signal
   // before validate/write (splitAuditResponse) and (2) runs the Scientist
   // phase-tail. This drives the whole brownfield chain end-to-end:
-  //   phase_entered(audit) → repo_context_searched → agent_invoked(auditor) →
+  //   phase_entered(audit) → agent_invoked(auditor) →
   //   agent_completed(auditor) → audit_completed(sha) → gate_required(audit),
   // with AUDIT.md + HYPOTHESES.md + OPEN_QUESTIONS.md on disk, then
   // approve audit writes GATE_AUDIT_PASSED.json, then PLAN reads AUDIT.md.
+  //
+  // A11 R1: this e2e's fake auditor returns the AUDIT.md DIRECTLY (no
+  // tool_calls), so the bounded repo_context dispatch loop breaks on turn 1 —
+  // the no-tool-call path. No `repo_context_searched` event is emitted because
+  // no search ran (honest under rule 18; the synthetic empty marker that used
+  // to fire here is removed). The WITH-tool-call path (loop runs grep, emits a
+  // REAL repo_context_searched event, then produces AUDIT.md on the next turn)
+  // is covered at the unit level in tests/audit-phase.test.ts.
   test('AUDIT → approve → PLAN reads AUDIT.md (full brownfield chain)', async () => {
     fixture = await setupBrownfieldProject()
     const fx = fixture
@@ -409,7 +417,10 @@ describe('M17 C8 — brownfield AUDIT full-cycle e2e', () => {
     const has = (pred: (e: ParsedEvent) => boolean): boolean => afterAudit.some(pred)
 
     expect(has((e) => e.type === 'phase_entered' && e.phase === 'audit')).toBe(true)
-    expect(has((e) => e.type === 'repo_context_searched' && e.phase === 'audit')).toBe(true)
+    // A11 R1: no-tool-call path — the fake auditor returns AUDIT.md directly, so
+    // the repo_context dispatch loop breaks on turn 1 and emits NO
+    // repo_context_searched event (the synthetic empty marker is removed).
+    expect(has((e) => e.type === 'repo_context_searched' && e.phase === 'audit')).toBe(false)
     expect(has((e) => e.type === 'agent_invoked' && e.agent === 'auditor')).toBe(true)
     expect(has((e) => e.type === 'agent_completed' && e.agent === 'auditor')).toBe(true)
     // NOTE: the engine has no `artifact_recorded` event (the M17 kickoff doc

@@ -1,27 +1,28 @@
 // AUDIT phase orchestrator (brownfield entry phase).
 //
-// AUDIT is the brownfield analog of DEFINE, but SINGLE-SHOT: it analyzes an
-// existing repository plus the operator's problem statement and produces a
-// canonical AUDIT.md, rather than running DEFINE's conversational ask-me loop.
+// AUDIT is the brownfield analog of DEFINE: it analyzes an existing repository
+// plus the operator's problem statement and produces a canonical AUDIT.md,
+// rather than running DEFINE's conversational ask-me loop. The auditor reaches
+// the repo through the bounded repo_context dispatch loop (rule 18), mirroring
+// runPlan — glob/grep/read at the persona's locked caps; each tool call appends
+// a REAL `repo_context_searched` event with actual results.
 //
-// Commit map (M17):
-//   - C3 (this commit) — phase skeleton + locked event sequence:
-//       phase_entered(audit)  [emitted by initRun, not here]
-//       → repo_context_searched (honest selectedPaths: [] per rule 18;
-//         selected-path promotion is deferred to M18)
-//       → resolve the `auditor` persona via the agent registry.
-//     C3's failure point: the auditor persona does not exist yet
-//     (src/agents/defaults/auditor.md lands in C4), so getByName('auditor')
-//     returns undefined. When undefined, record an actionable intervention
-//     (rule 11: never an opaque stack trace) and return. No
-//     `agent_invoked(auditor)` event is emitted on this path.
-//   - C5b — AUDIT.md artifact production + structural validation.
-//   - C6 — `audit_completed` event (with sha) + the approve hook + gate.
+// Locked event sequence:
+//   phase_entered(audit)  [emitted by initRun, not here]
+//   → resolve the `auditor` persona via the agent registry
+//   → agent_invoked(auditor) [emitted by invokeAgent, the rule-13 chokepoint]
+//   → repo_context_searched (0+, one per dispatched tool call; the runner
+//     emits these with the real query + results; selected-path PROMOTION into
+//     a later phase's manifest is deferred to M18 — the results inform the
+//     AUDIT.md the auditor writes, they do NOT enter PLAN's manifest)
+//   → agent_completed(auditor)
+//   → audit_completed (with sha) → gate_required(audit).
 //
-// The (currently-unreached) happy path is structured below so C4 can wire the
-// auditor invocation and C5b/C6 can add artifact production + the gate without
-// churning the surrounding code. AUDIT.md production, the Scientist phase tail,
-// and the `audit_completed` event are deliberately NOT added in C3.
+// When the auditor persona is unresolved (e.g. the bundled
+// src/agents/defaults/auditor.md was removed), runAudit records an actionable
+// intervention (rule 11: never an opaque stack trace) and returns. No
+// `agent_invoked(auditor)` and no `repo_context_searched` event is emitted on
+// that path — no search ran, so logging one would be dishonest (rule 18).
 
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -41,7 +42,11 @@ import { appendEvent, type EventLogPaths } from '../state/events.ts'
 import { withLock } from '../state/lock.ts'
 import type { AgentRegistry } from '../agents/loader.ts'
 import type { AgentDefinition } from '../agents/schema.ts'
+import { REPO_CONTEXT_TOOL_NAMES } from '../agents/schema.ts'
 import type { ProviderError } from '../providers/errors.ts'
+import type { ProviderToolCall } from '../providers/types.ts'
+import { runRepoContextTool } from '../tools/repo-context/runner.ts'
+import type { RepoContextRequest } from '../tools/repo-context/types.ts'
 import { runScientistPhaseTail } from './scientist.ts'
 import { validateScientistSidecars } from './gate-preflight.ts'
 
@@ -188,36 +193,59 @@ async function recordIntervention(args: {
   })
 }
 
-/**
- * Emit the AUDIT phase's repo-context marker. Per rule 18, selected-path
- * promotion into the next invocation is deferred to M18, so this is an honest
- * "no paths selected" record (`selectedPaths: []`). C3 emits a single marker
- * event rather than running the repo_context tool runner; agentic search +
- * promotion land in M18.
- */
-async function emitRepoContextMarker(args: {
-  paths: RunPaths
-  runId: string
-  agent: string
-  now: () => string
-}): Promise<void> {
-  await appendEvent(eventPathsFor(args.paths), {
-    version: 1,
-    type: 'repo_context_searched',
-    ts: args.now(),
-    runId: args.runId,
-    phase: 'audit',
-    agent: args.agent,
-    tool: 'glob',
-    query: '**/*',
-    roots: Object.freeze(['.']),
-    resultPaths: Object.freeze<string[]>([]),
-    // Rule 18: promotion deferred to M18 — no path enters the next
-    // invocation's context, so selectedPaths is empty.
-    selectedPaths: Object.freeze<string[]>([]),
-    resultBytes: 0,
-    resultTokensEstimate: 0,
-  })
+// --- tool-call → repo-context request mapper ----------------------
+//
+// Mirrors `parseRepoContextToolCall` in src/phases/plan.ts. The auditor reaches
+// the repo through the SAME bounded glob/grep/read sub-scope PLAN uses; the
+// orchestrator maps each `tool_call` event into a typed RepoContextRequest the
+// runner can execute. Malformed inputs return null and the loop skips them.
+function parseRepoContextToolCall(call: ProviderToolCall): RepoContextRequest | null {
+  if (call.input === null || typeof call.input !== 'object') return null
+  const input = call.input as Record<string, unknown>
+  switch (call.name) {
+    case 'glob': {
+      if (typeof input.pattern !== 'string') return null
+      const roots =
+        Array.isArray(input.roots) && input.roots.every((r) => typeof r === 'string')
+          ? (input.roots as string[])
+          : undefined
+      return { tool: 'glob', args: { pattern: input.pattern, roots } }
+    }
+    case 'grep': {
+      if (typeof input.pattern !== 'string') return null
+      const roots =
+        Array.isArray(input.roots) && input.roots.every((r) => typeof r === 'string')
+          ? (input.roots as string[])
+          : undefined
+      return {
+        tool: 'grep',
+        args: {
+          pattern: input.pattern,
+          roots,
+          ...(typeof input.regex === 'boolean' ? { regex: input.regex } : {}),
+          ...(typeof input.ignoreCase === 'boolean' ? { ignoreCase: input.ignoreCase } : {}),
+        },
+      }
+    }
+    case 'read': {
+      if (typeof input.path !== 'string') return null
+      let lineRange: [number, number] | undefined
+      if (
+        Array.isArray(input.lineRange) &&
+        input.lineRange.length === 2 &&
+        Number.isInteger(input.lineRange[0]) &&
+        Number.isInteger(input.lineRange[1])
+      ) {
+        lineRange = [input.lineRange[0] as number, input.lineRange[1] as number]
+      }
+      return {
+        tool: 'read',
+        args: { path: input.path, ...(lineRange !== undefined ? { lineRange } : {}) },
+      }
+    }
+    default:
+      return null
+  }
 }
 
 // --- runAudit ------------------------------------------------------
@@ -226,14 +254,12 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
   const now = opts.now ?? (() => new Date().toISOString())
 
   // phase_entered(audit) is emitted by initRun (initialPhase('brownfield')
-  // === 'audit') before the dispatcher reaches here. AUDIT records its
-  // repo-context intent next; selected-path promotion is M18 (rule 18).
-  await emitRepoContextMarker({
-    paths: opts.runPaths,
-    runId: opts.runId,
-    agent: 'auditor',
-    now,
-  })
+  // === 'audit') before the dispatcher reaches here. The auditor reaches the
+  // repo through the bounded repo_context dispatch loop below (rule 18); the
+  // runner emits a REAL `repo_context_searched` event per tool call with
+  // actual results. Selected-path PROMOTION into a later phase's manifest
+  // stays deferred to M18 — the searched results inform the AUDIT.md the
+  // auditor writes, they do NOT enter PLAN's manifest.
 
   // Resolve the AUDIT persona. The auditor lands in C4
   // (src/agents/defaults/auditor.md is human-co-authored); until then this
@@ -270,24 +296,33 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
     })
   }
 
-  // --- happy path (C4 wires invocation; C5b validates; C6 gate) ----
+  // --- happy path: bounded repo_context dispatch loop --------------
   //
-  // C4 wires the single-shot auditor invocation through invokeAgent (the
-  // existing rule-13 chokepoint), draining its ProviderEvents the same way
-  // runPlan does — invokeAgent appends agent_invoked / agent_completed itself.
-  // C5b's parser (parseAuditMarkdown) validates the draft; C6 (this commit)
-  // writes the canonical AUDIT.md, emits `audit_completed` (with sha) BEFORE
+  // A11 R1 block-push fix: the auditor reaches the repo through the SAME
+  // bounded glob/grep/read dispatch/continuation loop runPlan uses
+  // (src/phases/plan.ts § "Tool-use dispatch loop"). The prior single-shot
+  // drain advertised repo_context tools but never ran them and emitted a
+  // synthetic empty `repo_context_searched` marker — a live auditor (isolated
+  // cwd, only the prompt) audited blind. Now: invoke → collect content +
+  // tool_calls → if no tool_calls, that turn's text is the final AUDIT draft,
+  // break → else dispatch each repo_context tool_call via runRepoContextTool
+  // (which appends the REAL `repo_context_searched` event with actual
+  // results), append the tool history, recompose the AUDIT prompt with the
+  // continuation, and loop again. Bounded by MAX_TOOL_DISPATCH_TURNS — the
+  // same cap value runPlan uses — so a tool-looping auditor cannot run
+  // unbounded. invokeAgent appends agent_invoked / agent_completed itself
+  // (rule 13 chokepoint).
+  //
+  // The auditor's roots bind to the run's project root (opts.invokeCtx
+  // .projectRoot), exactly as PLAN binds repo_context — the project under
+  // audit / the run worktree. Selected-path PROMOTION stays deferred to M18:
+  // the results inform the AUDIT.md the auditor writes, they do NOT enter a
+  // later phase's manifest.
+  //
+  // C5b's parser (parseAuditMarkdown) validates the final draft; C6 writes the
+  // canonical AUDIT.md, emits `audit_completed` (with sha) BEFORE
   // `gate_required(audit)` — mirroring build.ts:800-812 — and the approve-time
   // preApproveAuditHook re-binds the on-disk sha to this event.
-  //
-  // This path is only reached once a project registers an `auditor` persona;
-  // the bundled persona is human-co-authored (rule 16) and lands later, so
-  // the e2e (tests/e2e/audit-brownfield-cli.test.ts) stays RED on the
-  // agent_invoked(auditor) anchor until then. With no real auditor, the
-  // drained draft never satisfies parseAuditMarkdown, so this path routes the
-  // invalid draft through recordIntervention (rule 11) rather than writing a
-  // malformed gate artifact — the emission below is structurally correct and
-  // only fires once a persona produces a schema-valid AUDIT.md.
 
   // Tools the auditor may call (repo_context sub-scope, rule 18). Empty when
   // the persona declares none — matches runPlan's derivation.
@@ -296,41 +331,150 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
       ? [...auditor.permissions.tool_use.repo_context.tools]
       : []
 
-  // Compose the AUDIT prompt: universal-rules-first (rule 16, guaranteed by
-  // composeAuditPromptPure) + the auditor body + the operator's brownfield
-  // problem statement carried in the user turn. The problem statement is
-  // plumbed in via run_started (C4-prep) and surfaced to the persona here.
-  const auditPrompt = await composeAuditPrompt({
-    agentBody: auditor.body,
-    readySignal: AUDIT_READY_SIGNAL,
-    availableTools,
-  })
-  const userTurn =
+  const baseUserTurn =
     `Operator problem statement:\n\n${opts.problemStatement}\n\n` +
     'Analyze the existing repository and produce AUDIT.md per the locked schema.'
 
-  // Drain the single-shot invocation. invokeAgent appends agent_invoked /
-  // agent_completed automatically (rule 13 chokepoint); we collect the
-  // streamed text for C5b's parser without acting on it yet.
+  // Bounded tool-dispatch loop. Mirrors runPlan's MAX_TOOL_DISPATCH_TURNS = 5.
+  const MAX_TOOL_DISPATCH_TURNS = 5
   let auditText = ''
-  for await (const event of invokeAgent(opts.invokeCtx, {
-    runId: opts.runId,
-    phase: 'audit',
-    agent: auditor,
-    files: [],
-    prompt: `${auditPrompt}\n\n## Operator request\n\n${userTurn}`,
-    // No `role`: `auditor` is outside M12_COMPANY_ROLES, so per-role budget
-    // gating does not apply (canonicalRoleFromAgent would return undefined).
-    // Adding the auditor to the role roster is a separate authority change
-    // (rule 20); the invocation still counts against global + per-phase
-    // budgets (rule 19).
-  })) {
-    if (event.type === 'content_chunk') auditText += event.text
-    else if (event.type === 'turn_completed' && auditText.length === 0) {
-      auditText = event.response.content
-    }
-  }
+  let toolHistoryBlock = ''
+  let toolDispatchTurn = 0
+  let providerErr: Error | null = null
   const target = auditPath(opts.runPaths)
+
+  try {
+    while (toolDispatchTurn < MAX_TOOL_DISPATCH_TURNS) {
+      // Recompose the AUDIT prompt each turn (like PLAN recomposes via
+      // composePlanPrompt) so the accumulated tool history reaches the
+      // persona. The system prompt is universal-rules-first (rule 16,
+      // guaranteed by composeAuditPromptPure); the operator request + tool
+      // history ride in the user turn.
+      const auditPrompt = await composeAuditPrompt({
+        agentBody: auditor.body,
+        readySignal: AUDIT_READY_SIGNAL,
+        availableTools,
+      })
+      const userTurn =
+        baseUserTurn +
+        (toolHistoryBlock.length > 0 ? `\n\n## Tool history\n${toolHistoryBlock}` : '')
+
+      let turnText = ''
+      const toolCalls: ProviderToolCall[] = []
+      for await (const event of invokeAgent(opts.invokeCtx, {
+        runId: opts.runId,
+        phase: 'audit',
+        agent: auditor,
+        files: [],
+        prompt: `${auditPrompt}\n\n## Operator request\n\n${userTurn}`,
+        // No `role`: `auditor` is outside M12_COMPANY_ROLES, so per-role
+        // budget gating does not apply (canonicalRoleFromAgent would return
+        // undefined). Adding the auditor to the role roster is a separate
+        // authority change (rule 20); the invocation still counts against
+        // global + per-phase budgets (rule 19).
+      })) {
+        if (event.type === 'content_chunk') turnText += event.text
+        else if (event.type === 'tool_call') toolCalls.push(event.call)
+        else if (event.type === 'turn_completed' && turnText.length === 0) {
+          turnText = event.response.content
+        }
+      }
+
+      if (toolCalls.length === 0) {
+        // Persona produced final output (or an empty response); break the
+        // dispatch loop. This is the no-tool-call path the full-cycle e2e
+        // exercises — the fake auditor returns the AUDIT.md directly on turn 1.
+        auditText = turnText
+        break
+      }
+
+      // Dispatch each repo-context tool call. Tools outside the registered set
+      // are skipped (mirrors runPlan). runRepoContextTool appends the REAL
+      // `repo_context_searched` event with the actual query + results.
+      for (const call of toolCalls) {
+        if (!(REPO_CONTEXT_TOOL_NAMES as readonly string[]).includes(call.name)) {
+          toolHistoryBlock += `\n- ${call.name}: tool not in repo_context scope; skipped.`
+          continue
+        }
+        const request = parseRepoContextToolCall(call)
+        if (request === null) {
+          toolHistoryBlock += `\n- ${call.name}: malformed input; skipped.`
+          continue
+        }
+        const outcome = await runRepoContextTool(
+          {
+            agentName: auditor.name,
+            agentPermissions: auditor.permissions,
+            phase: 'audit',
+            runId: opts.runId,
+            projectRoot: opts.invokeCtx.projectRoot,
+            eventPaths: eventPathsFor(opts.runPaths),
+            now,
+          },
+          request,
+        )
+        const summary =
+          outcome.status === 'ok'
+            ? JSON.stringify(outcome.result).slice(0, 1024)
+            : `error: ${outcome.error.message}`
+        toolHistoryBlock += `\n- ${call.name}(${JSON.stringify(call.input).slice(0, 256)}) -> ${summary}`
+      }
+      toolDispatchTurn++
+    }
+  } catch (err) {
+    providerErr = err as Error
+  }
+
+  if (providerErr !== null) {
+    const code = 'audit_provider_error'
+    const rule = `auditor invocation failed: ${providerErr.message}`
+    const actionableSuggestions = [
+      'inspect events.jsonl for the underlying provider error',
+      'address the underlying error and re-run AUDIT',
+    ]
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: 'auditor',
+      code,
+      rule,
+      detail: providerErr.message,
+      actionableSuggestions,
+      now,
+    })
+    return Object.freeze({
+      status: 'intervention',
+      code,
+      rule,
+      actionableSuggestions,
+      userMessage: 'AUDIT phase failed: the auditor invocation errored.',
+    })
+  }
+
+  if (toolDispatchTurn >= MAX_TOOL_DISPATCH_TURNS && auditText === '') {
+    const code = 'audit_tool_loop_exhausted'
+    const rule = `auditor exceeded ${MAX_TOOL_DISPATCH_TURNS} tool-dispatch turns without producing a final AUDIT.md`
+    const actionableSuggestions = [
+      'narrow the operator problem statement or simplify the auditor persona body',
+      'or raise MAX_TOOL_DISPATCH_TURNS in src/phases/audit.ts',
+    ]
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: 'auditor',
+      code,
+      rule,
+      actionableSuggestions,
+      now,
+    })
+    return Object.freeze({
+      status: 'intervention',
+      code,
+      rule,
+      actionableSuggestions,
+      userMessage: `AUDIT phase did not converge: the auditor exceeded ${MAX_TOOL_DISPATCH_TURNS} tool-dispatch turns.`,
+    })
+  }
 
   // Strip the AUDIT ready signal before validate/write. The persona emits
   // `<audit-ready/>` on its own line, THEN the canonical AUDIT.md (frontmatter

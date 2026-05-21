@@ -218,7 +218,7 @@ describe('M17 C4-prep — operator problemStatement persisted on run_started (ev
 })
 
 describe('M17 C3 — runAudit skeleton (auditor persona missing)', () => {
-  test('emits repo_context_searched, never invokes auditor, returns persona-missing intervention', async () => {
+  test('emits no synthetic repo_context_searched, never invokes auditor, returns persona-missing intervention', async () => {
     const invokeCtx: InvokeContext = {
       registry: providerRegistry,
       runPaths: paths,
@@ -259,10 +259,12 @@ describe('M17 C3 — runAudit skeleton (auditor persona missing)', () => {
       ),
     ).toBe(true)
 
-    // repo_context_searched emitted with honest empty selectedPaths (rule 18).
-    const repoSearch = events.find((e) => e.type === 'repo_context_searched')
-    expect(repoSearch).toBeDefined()
-    expect((repoSearch as { selectedPaths: readonly string[] }).selectedPaths).toEqual([])
+    // A11 R1 fix: no SYNTHETIC repo_context_searched marker is emitted on the
+    // persona-missing path. The repo_context loop only runs once the auditor
+    // resolves and issues real tool_calls (the runner emits the REAL event with
+    // actual results). When the auditor is missing, no search happened, so no
+    // repo_context_searched event is honest (rule 18 truthfulness).
+    expect(events.some((e) => e.type === 'repo_context_searched')).toBe(false)
 
     // The auditor persona is NOT invoked (it does not exist until C4).
     expect(
@@ -291,6 +293,218 @@ describe('M17 C3 — runAudit skeleton (auditor persona missing)', () => {
         (e) => e.type === 'intervention' && (e as { code?: string }).code === 'auditor_persona_not_registered',
       ),
     ).toBe(true)
+  })
+})
+
+describe('M17 A11 — runAudit dispatches the repo_context tool loop (live auditor reads the repo)', () => {
+  // RED-first (A11 R1 block-push): runAudit advertised repo_context tools to
+  // the auditor but never ran the dispatch/continuation loop — it called
+  // invokeAgent once, ignored `tool_call` events, and emitted a SYNTHETIC
+  // empty `repo_context_searched` marker. A live auditor got NO repo access.
+  //
+  // This test scripts a FakeProvider auditor that (turn 1) emits a `grep`
+  // repo_context tool_call, then (turn 2) emits the valid AUDIT.md. It asserts
+  // the orchestrator RAN the tool (a REAL repo_context_searched event with the
+  // grep query + non-empty resultPaths), invoked the auditor, and produced the
+  // AUDIT.md from the second turn.
+
+  // A valid AUDIT.md the auditor emits on its SECOND turn (after the tool
+  // result comes back). runId is interpolated to match the run. The body
+  // mirrors docs/contracts/AUDIT.md Fixture 1 shape (the same one the
+  // full-cycle e2e uses) so parseAuditMarkdown accepts it.
+  function validAuditReply(runId: string): string {
+    return `${AUDIT_READY_SIGNAL}
+---
+artifact: AUDIT.md
+version: "0.1"
+runId: ${runId}
+phase: audit
+profile: brownfield
+generatedAt: 2026-05-21T09:00:00Z
+operatorStatement: refactor the add helper for clarity
+---
+
+# AUDIT
+
+## Localization
+
+- src/widget.ts:1-3 — the add helper lives here; grep found the marker token.
+
+## Reproduction
+
+- Proposed: the add helper is hard to read.
+- Observed: src/widget.ts:1-3 — confirmed via grep for AUDIT_GREP_MARKER.
+
+## Constraints
+
+- Preserve: existing behavior of add().
+- Require: clarity-only refactor, no signature change.
+
+## Audit sources
+
+- src/widget.ts:1-3 — grep AUDIT_GREP_MARKER returned this file.
+`
+  }
+
+  const SCIENTIST_AUDIT_REPLY = `<scientist-ready/>
+# HYPOTHESES
+
+## H-001: add helper is unclear
+
+- Phase: audit
+- Status: open
+- Falsifier: a reader can restate add()'s contract from its body alone.
+- Evidence: AUDIT.md ## Localization bullet 1.
+- Risk if false: refactor churn with no clarity gain.
+
+# OPEN QUESTIONS
+
+## Q-001: rename the parameters?
+
+- Phase: audit
+- Status: open
+- Importance: low
+- DueBy: 2026-12-31
+- Context: AUDIT scoped clarity only.
+- Resolution attempts: none yet.
+`
+
+  // An auditor fixture WITH a repo_context scope so the dispatch loop can run
+  // its tool calls. This is an inert test stub, not persona prose (rule 16).
+  const auditorWithToolsDef = Object.freeze({
+    file: 'fixture://auditor.md',
+    name: 'auditor',
+    type: 'agent' as const,
+    phase: 'audit' as const,
+    provider: 'fake' as const,
+    modelPolicy: 'any' as const,
+    permissions: Object.freeze({
+      tool_use: Object.freeze({
+        repo_context: Object.freeze({
+          tools: Object.freeze(['glob', 'grep', 'read']),
+          roots: Object.freeze(['.']),
+          maxResults: 50,
+          maxBytesPerResult: 16_384,
+          maxFilesForNextManifest: 20,
+          timeoutMs: 5_000,
+          network: 'none' as const,
+        }),
+      }),
+    }),
+    description: 'audit phase tool-loop test fixture (not persona prose)',
+    body: 'FIXTURE auditor body — not persona prose.',
+  })
+
+  const scientistDef = Object.freeze({
+    file: 'fixture://scientist.md',
+    name: 'scientist',
+    type: 'agent' as const,
+    phase: 'audit' as const,
+    provider: 'fake' as const,
+    modelPolicy: 'any' as const,
+    permissions: Object.freeze({ read: '*', write: ['HYPOTHESES.md', 'OPEN_QUESTIONS.md'], bash: 'deny' }),
+    description: 'scientist phase-tail test fixture (not persona prose)',
+    body: 'FIXTURE scientist body — not persona prose.',
+  })
+
+  function auditorOnlyRegistry(): AgentRegistry {
+    return Object.freeze({
+      getByName: (name: string) =>
+        name === 'auditor' ? auditorWithToolsDef : name === 'scientist' ? scientistDef : undefined,
+      getByPhase: () => Object.freeze([]),
+      listAll: () => Object.freeze([auditorWithToolsDef, scientistDef]),
+    }) as unknown as AgentRegistry
+  }
+
+  test('runs the grep tool, emits a REAL repo_context_searched event, then produces AUDIT.md from the second turn', async () => {
+    // A real file the grep tool can find. The marker token guarantees a
+    // non-empty result so the test proves the tool actually ran against disk.
+    await mkdir(join(projectRoot, 'src'), { recursive: true })
+    await import('node:fs/promises').then((fs) =>
+      fs.writeFile(
+        join(projectRoot, 'src/widget.ts'),
+        '// AUDIT_GREP_MARKER\nexport function add(a: number, b: number) { return a + b }\n',
+        'utf8',
+      ),
+    )
+
+    // Scripted auditor: turn 1 emits a grep tool_call (no final text), turn 2
+    // emits the valid AUDIT.md. FIFO consumption on the (audit, auditor) match.
+    const scriptedFake = new FakeProvider()
+    scriptedFake
+      .expect({ phase: 'audit', agent: 'auditor' })
+      .respondWith({
+        content: '',
+        stopReason: 'tool_use',
+        toolCalls: [
+          { id: 't1', name: 'grep', input: { pattern: 'AUDIT_GREP_MARKER', roots: ['src'] } },
+        ],
+      })
+      .respondWith({ content: validAuditReply(RUN), stopReason: 'end_turn' })
+    scriptedFake
+      .expect({ phase: 'audit', agent: 'scientist' })
+      .respondWith({ content: SCIENTIST_AUDIT_REPLY, stopReason: 'end_turn' })
+    const scriptedRegistry = new ProviderRegistry({ providers: [scriptedFake] })
+
+    const invokeCtx: InvokeContext = {
+      registry: scriptedRegistry,
+      runPaths: paths,
+      projectRoot,
+      config: DEFAULT_CONFIG,
+      now: () => '2026-05-21T11:00:02.000Z',
+    }
+
+    const result = await runAudit({
+      invokeCtx,
+      runPaths: paths,
+      runId: RUN,
+      agentRegistry: auditorOnlyRegistry(),
+      scientistAgent: scientistDef,
+      problemStatement: 'refactor the add helper for clarity',
+      now: () => '2026-05-21T11:00:02.000Z',
+    })
+
+    expect(result.status).toBe('complete')
+
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+
+    // The auditor was invoked (rule 13 chokepoint).
+    expect(
+      events.some((e) => e.type === 'agent_invoked' && (e as { agent?: string }).agent === 'auditor'),
+    ).toBe(true)
+
+    // The orchestrator RAN the grep tool: exactly one REAL repo_context_searched
+    // event, carrying the grep query and NON-EMPTY resultPaths (the marker file).
+    // No synthetic empty marker (selectedPaths-only, resultPaths: []) survives.
+    const searches = events.filter((e) => e.type === 'repo_context_searched') as Array<{
+      tool?: string
+      query?: string
+      resultPaths?: readonly string[]
+    }>
+    expect(searches.length).toBe(1)
+    expect(searches[0]!.tool).toBe('grep')
+    expect(searches[0]!.query).toBe('AUDIT_GREP_MARKER')
+    expect((searches[0]!.resultPaths ?? []).length).toBeGreaterThan(0)
+    expect((searches[0]!.resultPaths ?? []).some((p) => /widget\.ts/.test(p))).toBe(true)
+
+    // The synthetic "**/*" glob marker with empty resultPaths is GONE: no
+    // repo_context_searched event has both an empty resultPaths and the old
+    // synthetic query.
+    expect(
+      searches.some((s) => s.query === '**/*' && (s.resultPaths ?? []).length === 0),
+    ).toBe(false)
+
+    // AUDIT.md was produced from the second turn (audit_completed + gate).
+    expect(events.some((e) => e.type === 'audit_completed')).toBe(true)
+    expect(
+      events.some((e) => e.type === 'gate_required' && (e as { phase?: string }).phase === 'audit'),
+    ).toBe(true)
+
+    // The AUDIT.md on disk depends on the tool result: it cites the marker file
+    // the grep loop fed back into the continuation.
+    const auditOnDisk = await readFile(join(paths.artifactRoot, 'AUDIT.md'), 'utf8')
+    expect(auditOnDisk).toContain('src/widget.ts')
+    expect(auditOnDisk).toContain('AUDIT_GREP_MARKER')
   })
 })
 
