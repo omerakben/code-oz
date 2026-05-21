@@ -195,9 +195,9 @@ shape and design rationale live in
 | `xai`    | `xai-api-key`              | every phase (`XAI_API_KEY` required at invoke; explicit model binding required via persona frontmatter or `company.<role>.model`)                                  |
 
 "Eligible for phase X" means *the provider may run an agent declared with
-`phase: X`*. It does not mean phase X's runtime exists — SHIP and AUDIT
-remain stubbed in v0.1, and exercising them surfaces those stubs as the
-actionable error.
+`phase: X`*. It does not mean phase X's runtime exists — the SHIP phase
+runtime remains stubbed in v0.1, and exercising it surfaces that stub as
+the actionable error. The AUDIT phase runtime shipped in M17 (v0.21.0-alpha.0).
 
 For `xai`, "eligible" also assumes the upstream API has not changed shape
 since PE-1 shipped. Adapter-level failure modes (missing key, missing

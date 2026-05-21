@@ -4,7 +4,7 @@ This page shows concrete evidence that code-oz's governed-delivery machinery run
 
 ## Two evidence tiers — never conflated
 
-**Tier 1 — real model reviews.** An actual `gpt-5.5` model reviewed actual code and produced actual findings. The W3a R2, M14, and M15 transcripts below are Tier 1: real tokens, real bugs, real fix commits.
+**Tier 1 — real model reviews.** An actual `gpt-5.5` model reviewed actual code and produced actual findings. The W3a R2, M14, and M15 transcripts below are Tier 1: real model output, backed by the fix commits in git history.
 
 **Tier 2 — real machinery, simulated models.** The demo `events.jsonl` ledgers. The gate, review, debate-scheduler, and approval EVENT MACHINERY genuinely executed and is deterministic and network-free, but every model response was produced by the built-in `FakeProvider`, not a real model. The cross-family pairing (`buildFamily:"claude"`, `reviewerFamily:"codex"`) is recorded structurally in the ledger, but no real Codex model judged anything. These ledgers prove event mechanics and determinism, not model quality.
 
