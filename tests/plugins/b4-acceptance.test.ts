@@ -259,6 +259,12 @@ describe('B4 group 2 — wrapper never writes under .code-oz/', () => {
     /\bmkdir\b[^\n]*`?\.code-oz\//, // mkdir ... .code-oz/
     /\bdd\b[^\n]*of=`?\.code-oz\//, // dd of=.code-oz/
     /writeFile\s*\([^\n]*\.code-oz\//, // writeFile(... .code-oz/
+    /Bun\.write\s*\([^\n]*\.code-oz\//, // Bun.write(... .code-oz/   [Bun-first stack]
+    /writeFileSync\s*\([^\n]*\.code-oz\//, // writeFileSync(... .code-oz/
+    /open\s*\([^\n]*\.code-oz\/[^\n]*,\s*['"][wa]['"]/, // open("... .code-oz/...", 'w'/'a')
+    /Path\s*\([^\n]*\.code-oz\/[^\n]*\)\.write_(?:text|bytes)\s*\(/, // Path(...).write_text/bytes(
+    /\brsync\b[^\n]*`?\.code-oz\//, // rsync ... .code-oz/
+    /\binstall\b[^\n]*`?\.code-oz\//, // install (coreutils) ... .code-oz/
   ]
 
   test('no wrapper file performs a shell/JS write operation targeting .code-oz/', async () => {
@@ -284,6 +290,24 @@ describe('B4 group 2 — wrapper never writes under .code-oz/', () => {
     const prohibition = 'Do not write under `.code-oz/` for any reason.'
     const hit = (line: string) => WRITE_OP_PATTERNS.some((re) => re.test(line))
     expect(hit(offending)).toBe(true)
+    expect(hit(prohibition)).toBe(false)
+  })
+
+  test('control: Bun.write / writeFileSync / python / rsync targeting .code-oz/ are flagged; prohibition prose is not', () => {
+    // Positive controls for the expanded write-op patterns.
+    const offenders = [
+      'Bun.write(".code-oz/state/GATE_DEFINE_PASSED.json", x)',
+      'writeFileSync(".code-oz/state/active.json", data)',
+      'open(".code-oz/state/events.jsonl", "w") as f:',
+      "Path('.code-oz/state/run.json').write_text(content)",
+      'rsync -a build/ .code-oz/artifacts/',
+      'install -m 644 out.json .code-oz/state/',
+    ]
+    const prohibition = 'never write under `.code-oz/` for any reason'
+    const hit = (line: string) => WRITE_OP_PATTERNS.some((re) => re.test(line))
+    for (const line of offenders) {
+      expect(hit(line)).toBe(true)
+    }
     expect(hit(prohibition)).toBe(false)
   })
 
@@ -335,6 +359,12 @@ describe('B4 group 3 — wrapper claims no gate/review authority', () => {
     /\bwrite\s+AUDIT\.md/i,
     /\bemit\s+(?:a\s+)?GATE_/i,
     /\bwrite\s+(?:a\s+)?GATE_/i,
+    // Self-authority phrasings: the wrapper claiming it decides/declares/passes a gate.
+    // "decides" (3rd-person engine attribution) is intentionally not matched by \bdecide\b.
+    /\bdecide\s+the\s+gate\b/i, // "I decide the gate outcome" / "decide the gate"
+    /\bconfirm\s+it\s+passed\b/i, // "I will confirm it passed" / "confirm it passed"
+    /\bdeclare\s+the\s+gate\b/i, // "declare the gate passed/complete"
+    /\bpass\s+the\s+gate\b/i, // "I can pass the gate" / "pass the gate"
   ]
 
   test('no wrapper file claims gate/review authority for itself', async () => {
@@ -353,20 +383,48 @@ describe('B4 group 3 — wrapper claims no gate/review authority', () => {
   })
 
   test('GATE_ mentions are only ever prohibitions or engine attributions', async () => {
+    // A self-authority gate-write claim: the wrapper asserting it writes/sets/
+    // marks/emits/declares a GATE_ file.  Factual prose that merely names a
+    // GATE_ file ("GATE_DEFINE_PASSED.json records the approved phase") is not
+    // a claim and must not be flagged.  Group-3 test-1 already catches the
+    // broader self-authority verbs (emit GATE_, write GATE_); this test adds a
+    // targeted guard for any residual phrasing where a self-authority verb
+    // (write/set/mark/emit/declare) appears on the same line as GATE_ without
+    // an enclosing negation.
+    const gateWriteVerb =
+      /\b(?:write|set|mark|emit|declare)\b[^\n]*GATE_|GATE_[^\n]*\b(?:write|set|mark|emit|declare)\b/i
     const files = await wrapperFiles()
     for (const f of files) {
       for (const line of f.text.split('\n')) {
         if (!line.includes('GATE_')) continue
-        // Allowed contexts: the wrapper telling the host NOT to write/emit a
-        // gate, or attributing gate authorship to the engine.
+        // Only investigate lines where a self-authority write verb appears with GATE_.
+        if (!gateWriteVerb.test(line)) continue
+        // Allowed: the line is a prohibition / negation, or attributes ownership to the engine.
         const allowed =
           /do not|never|not write|no gate|cannot write|only gate writer|engine/i.test(line)
         if (!allowed) {
-          throw new Error(`unexpected GATE_ context in ${f.rel}: ${line.trim()}`)
+          throw new Error(`unexpected gate-write claim in ${f.rel}: ${line.trim()}`)
         }
         expect(allowed).toBe(true)
       }
     }
+  })
+
+  test('control: GATE_ factual prose passes; a wrapper gate-write claim fails', () => {
+    // Factual prose that names a GATE_ file without a self-authority verb must pass.
+    const factual = 'GATE_DEFINE_PASSED.json records the approved phase.'
+    // A self-authority claim (the wrapper saying it writes a GATE_ file) must be caught.
+    const selfClaim = 'I write GATE_DEFINE_PASSED.json when the phase is ready.'
+    const gateWriteVerb =
+      /\b(?:write|set|mark|emit|declare)\b[^\n]*GATE_|GATE_[^\n]*\b(?:write|set|mark|emit|declare)\b/i
+    const negation = /do not|never|not write|no gate|cannot write|only gate writer|engine/i
+
+    // Factual prose: gateWriteVerb does not match → no check → passes.
+    expect(gateWriteVerb.test(factual)).toBe(false)
+
+    // Self-claim: gateWriteVerb matches AND negation does not → would throw.
+    expect(gateWriteVerb.test(selfClaim)).toBe(true)
+    expect(negation.test(selfClaim)).toBe(false)
   })
 
   test('control: a self-authority sentence IS flagged but an engine attribution is not', () => {
@@ -375,6 +433,32 @@ describe('B4 group 3 — wrapper claims no gate/review authority', () => {
     const hit = (line: string) => SELF_AUTHORITY_PATTERNS.some((re) => re.test(line))
     expect(hit(selfClaim)).toBe(true)
     expect(hit(attribution)).toBe(false)
+  })
+
+  test('control: new self-authority phrasings are flagged; engine-attribution and prohibition are not', () => {
+    // Synthetic lines that MUST be flagged (wrapper claiming gate authority).
+    const selfClaims = [
+      'I decide the gate outcome here.',
+      'decide the gate before proceeding.',
+      'I will confirm it passed successfully.',
+      'confirm it passed once artifacts are ready.',
+      'declare the gate open for the next phase.',
+      'I can pass the gate when the spec looks good.',
+      'pass the gate and continue to BUILD.',
+    ]
+    // Lines that must NOT be flagged (engine attribution or negation/prohibition).
+    const notFlagged = [
+      'the engine decides the gate outcome, not the host.',
+      'You never declare a gate passed, never write under `.code-oz/`.',
+      'Do not declare or emit gate state (`GATE_*`).',
+    ]
+    const hit = (line: string) => SELF_AUTHORITY_PATTERNS.some((re) => re.test(line))
+    for (const line of selfClaims) {
+      expect(hit(line)).toBe(true)
+    }
+    for (const line of notFlagged) {
+      expect(hit(line)).toBe(false)
+    }
   })
 })
 
