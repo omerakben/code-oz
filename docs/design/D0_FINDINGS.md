@@ -15,7 +15,7 @@ Empirical test, clean isolated cache (`CODE_OZ_NPM_CACHE_DIR=$(mktemp -d)`):
 - Published npm version (`0.20.3-alpha.0`) matches the local `package.json` — npm publish is current.
 
 **Caveat (the `@tuel` scope-routing trap, already known to memory).** On a default `npx -y @tuel/code-oz` the command 404s on this machine because `~/.npmrc` routes `@tuel` → `npm.pkg.github.com` (GitHub Packages), where the package is not published:
-```
+```text
 npm error 404 Not Found - GET https://npm.pkg.github.com/@tuel%2fcode-oz
 ```
 Forcing `@tuel:registry=https://registry.npmjs.org/` resolves and the bootstrap works. **A clean external machine with default npm config resolves from public npm and works.** But any user who has `@tuel` scope routing (or copies a wrong recipe) breaks. → The bootstrap instruction must name this caveat and offer the Homebrew fallback (which bypasses npm scope routing entirely).

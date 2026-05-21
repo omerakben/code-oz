@@ -69,7 +69,9 @@ function liveGateOpen(): { ok: true } | { ok: false; reason: string } {
 }
 
 function claudeOnPath(): boolean {
-  const probe = Bun.spawnSync({ cmd: ['command', '-v', 'claude'], stdout: 'ignore', stderr: 'ignore' })
+  // `command` is a shell builtin, not an executable on PATH, so spawn it
+  // through `sh -c` to resolve it. A bare cmd: ['command', ...] always ENOENTs.
+  const probe = Bun.spawnSync({ cmd: ['sh', '-c', 'command -v claude'], stdout: 'ignore', stderr: 'ignore' })
   if (probe.exitCode === 0) return true
   const which = Bun.spawnSync({ cmd: ['which', 'claude'], stdout: 'ignore', stderr: 'ignore' })
   return which.exitCode === 0

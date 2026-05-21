@@ -4,7 +4,7 @@ This skill is the thinking aid. The enforcement is the engine. When you want
 file-based gates that actually block, a different-model review you did not write
 yourself, budget caps, and a recorded event log, run:
 
-```
+```bash
 code-oz run
 ```
 

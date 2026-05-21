@@ -9,8 +9,11 @@
 import { describe, test, expect } from 'bun:test'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const REPO_ROOT = new URL('../../', import.meta.url).pathname.replace(/\/$/, '')
+// fileURLToPath decodes percent-encoding (e.g. spaces in the repo path),
+// which URL.pathname leaves encoded and would break readFile.
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '')
 
 const PLUGIN_JSON_PATH = join(REPO_ROOT, 'plugins/code-oz/.claude-plugin/plugin.json')
 const MARKETPLACE_JSON_PATH = join(REPO_ROOT, 'plugins/.claude-plugin/marketplace.json')

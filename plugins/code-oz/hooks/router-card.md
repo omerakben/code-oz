@@ -17,7 +17,7 @@ Boundaries (load-bearing):
   engine output into pass/fail, never simulate review. The engine owns all of that.
 - `code-oz run` spawns providers and may cost money - run it only on explicit
   request or after the user confirms.
-- This card defers to the user's instructions and to CLAUDE.md. If another skills
+- This card defers to the user's instructions and to CLAUDE.md. If another skill
   system (e.g. superpowers) is installed, it keeps its own routing; this card only
   adds the engine-routing pointer.
 - This marker is an idempotence hint. If `<!-- code-oz-router v1 -->` appears more

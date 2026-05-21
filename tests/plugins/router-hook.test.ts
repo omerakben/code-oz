@@ -84,7 +84,9 @@ describe('hooks.json', () => {
     }
 
     const entry = parsed.hooks.SessionStart[0]!
-    expect(entry.matcher).toBe('startup|clear|compact')
+    // Includes `resume` so the router card is re-injected on resumed sessions,
+    // not only on fresh startup / clear / compact.
+    expect(entry.matcher).toBe('startup|clear|compact|resume')
 
     const command = entry.hooks[0]!.command
     expect(entry.hooks[0]!.type).toBe('command')

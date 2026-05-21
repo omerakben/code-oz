@@ -67,14 +67,15 @@ function liveGateOpen():
 }
 
 function claudeOnPath(): boolean {
+  // `command` is a shell builtin, not an executable on PATH, so spawn it
+  // through `sh -c` to resolve it. A bare cmd: ['command', ...] always ENOENTs.
   const probe = Bun.spawnSync({
-    cmd: ['command', '-v', 'claude'],
-    // `command` is a shell builtin; spawn through sh so it resolves.
-    // Fall back to a direct `which` if the builtin path fails.
+    cmd: ['sh', '-c', 'command -v claude'],
     stdout: 'ignore',
     stderr: 'ignore',
   })
   if (probe.exitCode === 0) return true
+  // Fall back to a direct `which` if the builtin probe fails.
   const which = Bun.spawnSync({ cmd: ['which', 'claude'], stdout: 'ignore', stderr: 'ignore' })
   return which.exitCode === 0
 }

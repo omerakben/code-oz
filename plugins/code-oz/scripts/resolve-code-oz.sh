@@ -29,7 +29,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_JSON="${SCRIPT_DIR}/../.claude-plugin/plugin.json"
 
 # ---------------------------------------------------------------------------
-# Read pinned version from plugin.json using grep + sed (no jq dependency).
+# Read pinned version from plugin.json. Prefer jq for correct JSON parsing;
+# fall back to a line-anchored grep + sed when jq is not installed. The loose
+# `grep '"version"'` of earlier revisions could match a nested or dependency
+# "version" key, so the fallback anchors the key to the start of the line.
 # The version line looks like:  "version": "0.20.3-alpha.0",
 # ---------------------------------------------------------------------------
 if [[ ! -f "${PLUGIN_JSON}" ]]; then
@@ -37,7 +40,11 @@ if [[ ! -f "${PLUGIN_JSON}" ]]; then
   exit 1
 fi
 
-PINNED_VERSION="$(grep '"version"' "${PLUGIN_JSON}" | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)"
+if command -v jq >/dev/null 2>&1; then
+  PINNED_VERSION="$(jq -r '.version // empty' "${PLUGIN_JSON}" 2>/dev/null || true)"
+else
+  PINNED_VERSION="$(grep -E '^[[:space:]]*"version"[[:space:]]*:' "${PLUGIN_JSON}" | head -1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+fi
 
 if [[ -z "${PINNED_VERSION}" ]]; then
   printf 'resolve-code-oz: could not parse version from %s\n' "${PLUGIN_JSON}" >&2
@@ -69,30 +76,37 @@ if command -v code-oz >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. npx available — exec via npx with the pinned package version.
-# If npx exits non-zero, print the scope-routing caveat and propagate the
-# exit code. (We cannot use exec here because we need to capture the result.)
-# Trade-off: without exec the bash wrapper sits between the host and the npx
-# child, so OS signals (SIGTERM/SIGINT) are not forwarded to the child process
-# on this branch — unlike branch 2 which uses exec for direct signal delivery.
+# 3. npx available — run npx with the pinned package version.
+# We cannot use exec here because we must print the scope-routing caveat after
+# npx returns. Without exec the bash wrapper sits between the host and the npx
+# child, so we run npx in the background and install a trap that forwards
+# SIGTERM/SIGINT to the child — otherwise Ctrl-C / a host kill would terminate
+# the wrapper but orphan the npx (and engine) process. Branch 2 needs no such
+# trap because exec replaces this shell and signals reach the binary directly.
 # ---------------------------------------------------------------------------
 if command -v npx >/dev/null 2>&1; then
-  # Use a subshell so set -e does not abort us before we can print the caveat.
-  if npx -y "@tuel/code-oz@${PINNED_VERSION}" "$@"; then
+  npx -y "@tuel/code-oz@${PINNED_VERSION}" "$@" &
+  NPX_PID=$!
+  # Forward termination signals to the npx child, then let `wait` reap it.
+  trap 'kill -TERM "${NPX_PID}" 2>/dev/null || true' TERM INT
+  # `wait` returns the child's exit status; with set -e a non-zero status would
+  # abort before we can print the caveat, so capture it with `|| NPX_EXIT=$?`.
+  NPX_EXIT=0
+  wait "${NPX_PID}" || NPX_EXIT=$?
+  trap - TERM INT
+  if [[ "${NPX_EXIT}" -eq 0 ]]; then
     exit 0
-  else
-    NPX_EXIT=$?
-    printf '\n' >&2
-    printf 'resolve-code-oz: npx invocation of @tuel/code-oz@%s failed (exit %s).\n' \
-      "${PINNED_VERSION}" "${NPX_EXIT}" >&2
-    printf 'A @tuel scope-routing trap may be 404ing on npm.pkg.github.com.\n' >&2
-    printf 'To fix:\n' >&2
-    printf '  Option A — install via Homebrew (bypasses npm scope routing):\n' >&2
-    printf '    brew install omerakben/tap/code-oz\n' >&2
-    printf '  Option B — set the @tuel registry in your .npmrc:\n' >&2
-    printf '    @tuel:registry=https://registry.npmjs.org/\n' >&2
-    exit "${NPX_EXIT}"
   fi
+  printf '\n' >&2
+  printf 'resolve-code-oz: npx invocation of @tuel/code-oz@%s failed (exit %s).\n' \
+    "${PINNED_VERSION}" "${NPX_EXIT}" >&2
+  printf 'A @tuel scope-routing trap may be 404ing on npm.pkg.github.com.\n' >&2
+  printf 'To fix:\n' >&2
+  printf '  Option A — install via Homebrew (bypasses npm scope routing):\n' >&2
+  printf '    brew install omerakben/tap/code-oz\n' >&2
+  printf '  Option B — set the @tuel registry in your .npmrc:\n' >&2
+  printf '    @tuel:registry=https://registry.npmjs.org/\n' >&2
+  exit "${NPX_EXIT}"
 fi
 
 # ---------------------------------------------------------------------------

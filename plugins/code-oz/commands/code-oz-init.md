@@ -13,7 +13,7 @@ This command only invokes the code-oz engine. Do not write `.code-oz/`, do not d
 ## How to run it
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-code-oz.sh" init $ARGUMENTS
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-code-oz.sh" init "$ARGUMENTS"
 ```
 
 The resolver finds the engine via PATH binary, then npx fallback, then stops with install guidance. If it stops, surface that guidance verbatim; do not work around it.

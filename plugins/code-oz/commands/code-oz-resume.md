@@ -17,7 +17,7 @@ This command spawns providers, may cost money, and changes files in the worktree
 ## How to run it
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-code-oz.sh" resume $ARGUMENTS
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-code-oz.sh" resume "$ARGUMENTS"
 ```
 
 The resolver finds the engine via PATH binary, then npx fallback, then stops with install guidance. If it stops, surface that guidance verbatim; do not work around it.
