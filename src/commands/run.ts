@@ -342,13 +342,21 @@ export async function runCommand(args: string[]): Promise<void> {
   // verbatim; file-input requests are a BA transcript fixture, not a single
   // problem statement, so we record a marker naming the source file rather
   // than dumping the transcript; TTY runs have no static request, so the key
-  // is omitted (greenfield + brownfield-without-request stay key-less).
+  // is omitted (brownfield-without-request stays key-less). This is a
+  // BROWNFIELD-only field: greenfield uses the conversational DEFINE/ask-me
+  // flow, not a single operator problem statement, so greenfield runs (with
+  // or without --request) keep their `run_started` payload byte-for-byte
+  // key-less exactly as before M17 — gating on `config.profile` here, not on
+  // the input kind, is what preserves greenfield's event shape (Codex C4-prep
+  // seam review: greenfield --request must not leak this key).
   const problemStatement: string | undefined =
-    parsed.input.kind === 'inline'
-      ? parsed.input.text
-      : parsed.input.kind === 'file'
-        ? `(from --request-file ${parsed.input.path})`
-        : undefined
+    config.profile !== 'brownfield'
+      ? undefined
+      : parsed.input.kind === 'inline'
+        ? parsed.input.text
+        : parsed.input.kind === 'file'
+          ? `(from --request-file ${parsed.input.path})`
+          : undefined
   await initRun({
     paths: runPaths,
     profile: config.profile,
