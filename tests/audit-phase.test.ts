@@ -18,7 +18,7 @@ import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { runAudit } from '../src/phases/audit.ts'
+import { runAudit, splitAuditResponse, AUDIT_READY_SIGNAL } from '../src/phases/audit.ts'
 import { FakeProvider } from '../src/providers/fake.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
 import type { InvokeContext } from '../src/providers/invoke.ts'
@@ -145,22 +145,40 @@ describe('M17 C4-prep — operator problemStatement persisted on run_started (ev
       listAll: () => Object.freeze([auditorDef]),
     }) as unknown as AgentRegistry
 
+    // M17 C8 (BUG B fix): runAudit now requires a scientistAgent for the
+    // Scientist phase-tail (rule 15). This invalid-draft path never reaches the
+    // tail (the FakeProvider stub has no <audit-ready/> signal, so it routes to
+    // `audit_validation_failed` first), so an inert stub satisfies the type.
+    const scientistDef = Object.freeze({
+      file: 'fixture://scientist.md',
+      name: 'scientist',
+      type: 'agent' as const,
+      phase: 'audit' as const,
+      provider: 'fake' as const,
+      modelPolicy: 'any' as const,
+      permissions: Object.freeze({ read: '*', write: ['HYPOTHESES.md', 'OPEN_QUESTIONS.md'], bash: 'deny' }),
+      description: 'scientist phase-tail test fixture (not persona prose)',
+      body: 'FIXTURE scientist body — not persona prose.',
+    })
+
     const result = await runAudit({
       invokeCtx,
       runPaths: paths,
       runId: RUN,
       agentRegistry: auditorOnlyRegistry,
+      scientistAgent: scientistDef,
       problemStatement: recovered,
       now: () => '2026-05-21T11:00:02.000Z',
     })
 
     // C6: the happy path now validates the drained draft against the locked
     // AUDIT.md schema before writing the canonical artifact (rule 11). The
-    // FakeProvider stub output is not a valid AUDIT.md, so runAudit routes the
-    // invalid draft through recordIntervention with `audit_validation_failed`
-    // — never a silent return, never a malformed gate artifact. The
-    // `audit_completed` + gate emission only fires once a registered persona
-    // produces a schema-valid AUDIT.md.
+    // FakeProvider stub output has no <audit-ready/> signal (BUG A fix routes
+    // a signal-less reply through the same intervention), so runAudit routes
+    // through recordIntervention with `audit_validation_failed` — never a
+    // silent return, never a malformed gate artifact. The `audit_completed` +
+    // gate emission only fires once a registered persona produces a
+    // protocol-faithful, schema-valid AUDIT.md.
     expect(result.status).toBe('intervention')
     if (result.status === 'intervention') {
       expect(result.code).toBe('audit_validation_failed')
@@ -208,11 +226,26 @@ describe('M17 C3 — runAudit skeleton (auditor persona missing)', () => {
       config: DEFAULT_CONFIG,
     }
 
+    // The auditor is missing, so runAudit returns the persona-missing
+    // intervention before the Scientist tail; an inert scientist stub
+    // satisfies the (now-required) type without being reached.
+    const scientistStub = Object.freeze({
+      file: 'fixture://scientist.md',
+      name: 'scientist',
+      type: 'agent' as const,
+      phase: 'audit' as const,
+      provider: 'fake' as const,
+      modelPolicy: 'any' as const,
+      permissions: Object.freeze({ read: '*', write: ['HYPOTHESES.md', 'OPEN_QUESTIONS.md'], bash: 'deny' }),
+      description: 'scientist phase-tail test fixture (not persona prose)',
+      body: 'FIXTURE scientist body — not persona prose.',
+    })
     const result = await runAudit({
       invokeCtx,
       runPaths: paths,
       runId: RUN,
       agentRegistry: emptyAgentRegistry,
+      scientistAgent: scientistStub,
       problemStatement: 'tidy up the add helper',
       now: () => '2026-05-21T11:00:01.000Z',
     })
@@ -258,5 +291,37 @@ describe('M17 C3 — runAudit skeleton (auditor persona missing)', () => {
         (e) => e.type === 'intervention' && (e as { code?: string }).code === 'auditor_persona_not_registered',
       ),
     ).toBe(true)
+  })
+})
+
+describe('M17 C8 — splitAuditResponse (BUG A: ready-signal stripping)', () => {
+  const DOC = ['---', 'artifact: AUDIT.md', '---', '', '# AUDIT', '', '## Localization', '- x'].join('\n')
+
+  test('strips the ready signal and returns the trimmed document that follows it', () => {
+    const reply = `${AUDIT_READY_SIGNAL}\n${DOC}\n`
+    const out = splitAuditResponse(reply)
+    expect(out).toBe(DOC.trim())
+    // The result begins on the frontmatter line (line 1), where the validator
+    // expects it — the whole point of the fix.
+    expect(out!.startsWith('---')).toBe(true)
+  })
+
+  test('tolerates preamble before the signal and a leading blank line after it', () => {
+    const reply = `here is my analysis\n${AUDIT_READY_SIGNAL}\n\n${DOC}\n`
+    expect(splitAuditResponse(reply)).toBe(DOC.trim())
+  })
+
+  test('ignores the signal when it is not alone on its line (the trimmed line must equal it)', () => {
+    const reply = `${AUDIT_READY_SIGNAL} ${DOC}`
+    // The signal+doc share one line, so no line equals the signal -> null.
+    expect(splitAuditResponse(reply)).toBeNull()
+  })
+
+  test('returns null when the signal is absent (protocol violation)', () => {
+    expect(splitAuditResponse(DOC)).toBeNull()
+  })
+
+  test('returns null when the signal is present but nothing follows it', () => {
+    expect(splitAuditResponse(`${AUDIT_READY_SIGNAL}\n   \n`)).toBeNull()
   })
 })

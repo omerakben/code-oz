@@ -12,36 +12,28 @@
 // AUDIT run → events → approve audit → PLAN reads AUDIT.md.
 //
 // ----------------------------------------------------------------------
-// TWO SRC BUGS IN `src/phases/audit.ts` BLOCK THE FULL CHAIN (C8 found these).
-// Per the C8 brief, src/ is NOT edited here; the bugs are reported to the
-// controller and the full-cycle test is `test.skip`-marked as the green target
-// for when they are fixed. A separate GREEN test below
-// (`runtime currently rejects the protocol-faithful auditor reply`) asserts
-// both defects so the suite stays green and the bugs are captured as facts.
+// TWO SRC BUGS IN `src/phases/audit.ts` BLOCKED THE FULL CHAIN (C8 found them;
+// both are now FIXED in src/phases/audit.ts + src/commands/run.ts).
 //
-//   BUG A — ready signal not stripped before validate/write. The AUDIT system
-//     instructions (src/prompts/audit-system.md § "Output protocol") and the
-//     auditor persona (src/agents/defaults/auditor.md § "Output protocol")
-//     instruct the persona to emit `<audit-ready/>` on its own line, THEN the
-//     canonical `# AUDIT` document. Every other phase strips its ready signal
-//     before parsing (PLAN: `splitPlanResponse`, src/phases/plan.ts:231-250).
-//     `runAudit` (src/phases/audit.ts:277-303) accumulates the raw reply into
-//     `auditText` and feeds it DIRECTLY to `parseAuditMarkdown` and
-//     `atomicWriteFile` WITHOUT stripping `AUDIT_READY_SIGNAL`. The signal line
-//     pushes the frontmatter off line 1, so the validator rejects every
-//     protocol-faithful draft with `audit_missing_frontmatter`. The run ends in
-//     an `audit_validation_failed` intervention and exits non-zero.
+//   BUG A — ready signal not stripped before validate/write. The auditor
+//     persona emits `<audit-ready/>` on its own line, THEN the canonical
+//     `# AUDIT` document. Every other phase strips its ready signal before
+//     parsing (PLAN: `splitPlanResponse`, src/phases/plan.ts:231-250).
+//     `runAudit` accumulated the raw reply and fed it DIRECTLY to
+//     `parseAuditMarkdown` + `atomicWriteFile` WITHOUT stripping the signal,
+//     so the signal line pushed the frontmatter off line 1 and the validator
+//     rejected every protocol-faithful draft with `audit_missing_frontmatter`.
+//     FIX: `splitAuditResponse` strips the signal before validate/write; an
+//     absent signal is a protocol violation routed to `audit_validation_failed`.
 //
-//   BUG B — Scientist phase-tail never runs in AUDIT. AUDIT is a primary-artifact
+//   BUG B — Scientist phase-tail never ran in AUDIT. AUDIT is a primary-artifact
 //     phase, so rule 15 + docs/contracts/AUDIT.md § "Scientist tail" require
-//     HYPOTHESES.md + OPEN_QUESTIONS.md, and SESSION_M17_KICKOFF.md C5b/C6 rows
-//     specify "Scientist sidecar reuse via existing `runScientistPhaseTail`".
-//     PLAN/BUILD/VERIFY/REVIEW all call `runScientistPhaseTail`
-//     (src/commands/run.ts:1533, 1841, 2084, 2410). AUDIT does not: `runAudit`
-//     is invoked without a scientist agent (src/commands/run.ts:1452-1458) and
-//     never calls `runScientistPhaseTail`. The sidecars are never written, so
-//     `code-oz approve audit` — which runs `validateScientistSidecars`
-//     (src/commands/approve.ts:642-655) — would fail even if BUG A were fixed.
+//     HYPOTHESES.md + OPEN_QUESTIONS.md. PLAN/BUILD/VERIFY/REVIEW all call
+//     `runScientistPhaseTail`; AUDIT did not, so the sidecars were never written
+//     and `code-oz approve audit` (validateScientistSidecars) could never pass.
+//     FIX: dispatchAudit resolves the `scientist` persona and passes it to
+//     runAudit, which runs `runScientistPhaseTail` for phase `audit` after
+//     emitting `audit_completed` and before `gate_required(audit)`.
 // ----------------------------------------------------------------------
 //
 // The behavior under test is driven exclusively by spawning the real CLI binary
@@ -74,7 +66,7 @@ import { runGit } from '../../src/worktree/create-run-worktree.ts'
 import { initRun, runPathsFor, writeActiveRun } from '../../src/state/run.ts'
 import { generateUlid } from '../../src/state/schemas.ts'
 import { paths as codeOzPaths } from '../../src/paths.ts'
-import { AUDIT_READY_SIGNAL } from '../../src/phases/audit.ts'
+import { AUDIT_READY_SIGNAL, splitAuditResponse } from '../../src/phases/audit.ts'
 import { validateAuditMarkdown } from '../../src/artifacts/audit-schema.ts'
 
 const REPO_ROOT = (() => {
@@ -159,7 +151,10 @@ interface ParsedEvent {
   readonly phase?: string
   readonly agent?: string
   readonly auditReportSha256?: string
-  readonly files?: readonly string[]
+  // agent_invoked records the attached files under `manifest.files[].path`
+  // (NOT a top-level `files` array) — see src/providers/invoke.ts and the
+  // established assertion in tests/plan-phase.test.ts:252-254.
+  readonly manifest?: { readonly files?: readonly { readonly path?: string }[] }
   readonly [key: string]: unknown
 }
 
@@ -372,12 +367,14 @@ describe('M17 C8 — brownfield AUDIT full-cycle e2e', () => {
     }
   })
 
-  // SKIPPED: blocked by BUG A + BUG B in src/phases/audit.ts (see file header).
-  // This is the green target for when the AUDIT runtime (1) strips the ready
-  // signal before validate/write and (2) runs the Scientist phase-tail. The
-  // fixture and assertions are protocol-faithful and complete; src/ is not
-  // edited per the C8 brief.
-  test.skip('AUDIT → approve → PLAN reads AUDIT.md (full brownfield chain)', async () => {
+  // GREEN (C8 bugs fixed): the AUDIT runtime now (1) strips the ready signal
+  // before validate/write (splitAuditResponse) and (2) runs the Scientist
+  // phase-tail. This drives the whole brownfield chain end-to-end:
+  //   phase_entered(audit) → repo_context_searched → agent_invoked(auditor) →
+  //   agent_completed(auditor) → audit_completed(sha) → gate_required(audit),
+  // with AUDIT.md + HYPOTHESES.md + OPEN_QUESTIONS.md on disk, then
+  // approve audit writes GATE_AUDIT_PASSED.json, then PLAN reads AUDIT.md.
+  test('AUDIT → approve → PLAN reads AUDIT.md (full brownfield chain)', async () => {
     fixture = await setupBrownfieldProject()
     const fx = fixture
 
@@ -415,7 +412,11 @@ describe('M17 C8 — brownfield AUDIT full-cycle e2e', () => {
     expect(has((e) => e.type === 'repo_context_searched' && e.phase === 'audit')).toBe(true)
     expect(has((e) => e.type === 'agent_invoked' && e.agent === 'auditor')).toBe(true)
     expect(has((e) => e.type === 'agent_completed' && e.agent === 'auditor')).toBe(true)
-    expect(has((e) => e.type === 'artifact_recorded' && /AUDIT\.md/.test(String(e.artifact ?? '')))).toBe(true)
+    // NOTE: the engine has no `artifact_recorded` event (the M17 kickoff doc
+    // anticipated one, but EVENT_TYPES never added it). The canonical
+    // "AUDIT.md was written" signal is `audit_completed`, which carries the
+    // artifact sha256 (asserted just below) — mirroring how DEFINE/BUILD record
+    // their artifacts. The AUDIT.md on-disk existence is also asserted below.
 
     const auditCompleted = afterAudit.find((e) => e.type === 'audit_completed')
     expect(auditCompleted).toBeDefined()
@@ -464,7 +465,8 @@ describe('M17 C8 — brownfield AUDIT full-cycle e2e', () => {
     // SPEC.md): this is the C7 brownfield handoff — PLAN reads AUDIT.md.
     const leadInvoked = afterPlan.find((e) => e.type === 'agent_invoked' && e.agent === 'lead')
     expect(leadInvoked).toBeDefined()
-    const leadFiles = (leadInvoked!.files ?? []).map((f) => String(f))
+    // The attached files live under `manifest.files[].path` (see ParsedEvent).
+    const leadFiles = (leadInvoked!.manifest?.files ?? []).map((f) => String(f.path ?? ''))
     expect(leadFiles.some((f) => /AUDIT\.md/.test(f))).toBe(true)
     expect(leadFiles.some((f) => /SPEC\.md/.test(f))).toBe(false)
 
@@ -482,28 +484,18 @@ describe('M17 C8 — brownfield AUDIT full-cycle e2e', () => {
     expect(scText).not.toContain('## Spec sources')
   }, 120_000)
 
-  // --- BUG anchors (GREEN; flip when the AUDIT runtime is fixed) ---------
-  // These assert the two src bugs that block the full chain, so the suite stays
-  // green AND the defects are captured as facts. When BUG A + BUG B are fixed,
-  // the `.skip` above flips on and these anchors should be revisited.
-  test('runtime currently rejects the protocol-faithful auditor reply (BUG A + BUG B)', async () => {
-    fixture = await setupBrownfieldProject()
-    const fx = fixture
-
+  // --- BUG A regression (validator isolation) ---------------------------
+  // Retained from the C8 RED anchors: proves the un-stripped ready signal was
+  // the SOLE defect behind BUG A. The protocol-faithful reply (signal on its
+  // own line, THEN the document) is rejected by the validator with
+  // `audit_missing_frontmatter`; the SAME document WITHOUT the leading signal
+  // validates cleanly. `splitAuditResponse` (the fix) is what removes the
+  // signal in the runtime, and the full-cycle test above proves the chain is
+  // green end-to-end. This unit-level isolation guards against a regression
+  // that re-introduces the raw-text feed.
+  test('the un-stripped ready signal is the sole BUG A defect (validator isolation)', async () => {
     const runId = generateUlid()
-    const runPaths = runPathsFor(fx.stateDir, fx.artifactRoot, runId)
-    await initRun({
-      paths: runPaths,
-      profile: 'brownfield',
-      runId,
-      problemStatement: OPERATOR_STATEMENT,
-    })
-    await writeActiveRun(runPaths.activeFile, runId)
 
-    // BUG A, isolated at the validator: the protocol-faithful reply (signal on
-    // its own line, THEN the canonical document) is rejected because the signal
-    // pushes the frontmatter off line 1. The SAME document WITHOUT the signal
-    // validates cleanly — proving the only defect is the un-stripped signal.
     const faithful = auditReply(runId)
     const rejected = validateAuditMarkdown(faithful, { expectedRunId: runId })
     expect(rejected.ok).toBe(false)
@@ -515,38 +507,18 @@ describe('M17 C8 — brownfield AUDIT full-cycle e2e', () => {
     const accepted = validateAuditMarkdown(stripped, { expectedRunId: runId })
     expect(accepted.ok).toBe(true)
 
-    // BUG A, observed end-to-end: the spawned AUDIT run feeds the faithful reply
-    // to the runtime, which does not strip the signal, so the run ends in an
-    // `audit_validation_failed` intervention and exits non-zero. (The auditor IS
-    // invoked first — the C1 anchor — so this is a validate/write defect, not a
-    // routing defect.)
-    const auditScript = join(fx.scriptDir, 'audit.jsonl')
-    await writeFakeScript(auditScript, [
-      { matcher: { phase: 'audit', agent: 'auditor' }, response: { content: faithful } },
-      { matcher: { phase: 'audit', agent: 'scientist' }, response: { content: SCIENTIST_AUDIT_REPLY } },
-    ])
-    const auditRun = await spawnCli(fx.projectRoot, ['run', '--provider', 'fake'], auditScript)
-    expect(auditRun.exitCode).not.toBe(0)
-    expect(auditRun.stderr).toContain('audit_validation_failed')
+    // splitAuditResponse strips exactly the signal: its output validates and
+    // matches the manually-stripped document.
+    const split = splitAuditResponse(faithful)
+    expect(split).not.toBeNull()
+    expect(validateAuditMarkdown(split!, { expectedRunId: runId }).ok).toBe(true)
+    expect(split).toBe(stripped.trim())
 
-    const events = await readEventsFromFile(runPaths.eventsFile)
-    // Auditor ran (C1 anchor holds), but no audit_completed and no AUDIT.md.
-    expect(events.some((e) => e.type === 'agent_invoked' && e.agent === 'auditor')).toBe(true)
-    expect(events.some((e) => e.type === 'audit_completed')).toBe(false)
-    expect(existsSync(join(fx.artifactRoot, 'AUDIT.md'))).toBe(false)
-
-    // BUG B: AUDIT never invokes the Scientist phase-tail, so the sidecars are
-    // never written (and `approve audit` would fail validateScientistSidecars
-    // even if BUG A were fixed). No scientist agent is invoked in the audit
-    // phase, and neither sidecar exists on disk.
-    expect(
-      events.some(
-        (e) => e.type === 'agent_invoked' && e.agent === 'scientist' && e.phase === 'audit',
-      ),
-    ).toBe(false)
-    expect(existsSync(join(fx.artifactRoot, 'HYPOTHESES.md'))).toBe(false)
-    expect(existsSync(join(fx.artifactRoot, 'OPEN_QUESTIONS.md'))).toBe(false)
-  }, 120_000)
+    // A reply with no signal is a protocol violation: splitAuditResponse
+    // returns null so the runtime routes it to `audit_validation_failed`
+    // rather than silently parsing the raw text.
+    expect(splitAuditResponse(stripped)).toBeNull()
+  })
 
   // --- greenfield regression (explicit) ---------------------------------
   // The greenfield path must be UNTOUCHED by M17: a greenfield `code-oz run`

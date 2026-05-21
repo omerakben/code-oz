@@ -40,11 +40,15 @@ import {
 import { appendEvent, type EventLogPaths } from '../state/events.ts'
 import { withLock } from '../state/lock.ts'
 import type { AgentRegistry } from '../agents/loader.ts'
+import type { AgentDefinition } from '../agents/schema.ts'
 import type { ProviderError } from '../providers/errors.ts'
+import { runScientistPhaseTail } from './scientist.ts'
+import { validateScientistSidecars } from './gate-preflight.ts'
 
-// The ready signal the auditor emits before its AUDIT.md draft. Parsing /
-// validation of the draft lands in C5b; C4 only wires the invocation, so this
-// constant is consumed by composeAuditPrompt today and by the C5b parser later.
+// The ready signal the auditor emits before its AUDIT.md draft. The persona
+// emits this on its own line, THEN the canonical AUDIT.md (frontmatter on line
+// 1). `splitAuditResponse` strips the signal before parse/validate/write so the
+// frontmatter sits on line 1 where validateAuditMarkdown expects it.
 export const AUDIT_READY_SIGNAL = '<audit-ready/>'
 
 // --- public API ----------------------------------------------------
@@ -83,6 +87,15 @@ export interface RunAuditOptions {
    * registry — the C3 failure endpoint.
    */
   readonly agentRegistry: AgentRegistry
+  /**
+   * The Scientist persona. AUDIT is a primary-artifact phase, so it runs the
+   * Scientist phase-tail (rule 15) after writing AUDIT.md to produce
+   * HYPOTHESES.md + OPEN_QUESTIONS.md — mirroring PLAN/BUILD/VERIFY/REVIEW.
+   * Passed in (rather than re-resolved from `agentRegistry`) so the caller
+   * (dispatchAudit) fails fast with one actionable message when either the
+   * auditor or the scientist persona is missing, matching PLAN's dispatcher.
+   */
+  readonly scientistAgent: AgentDefinition
   /** The operator's brownfield problem statement (from `code-oz run --request`). */
   readonly problemStatement: string
   readonly now?: () => string
@@ -106,6 +119,31 @@ function gatePathsFor(paths: RunPaths): GatePaths {
 
 function auditPath(paths: RunPaths): string {
   return join(paths.artifactRoot, CANONICAL_ARTIFACTS.audit) // AUDIT.md
+}
+
+// --- response splitter ---------------------------------------------
+
+/**
+ * Strip the AUDIT ready signal from the auditor's reply, returning the
+ * canonical AUDIT.md text that follows it. Mirrors `splitPlanResponse`
+ * (src/phases/plan.ts:231-250) but is simpler: AUDIT is a SINGLE document, so
+ * there is no second-marker split. Returns `null` when the signal is absent or
+ * nothing follows it — the caller treats that as a protocol violation (the
+ * raw text is never silently parsed, mirroring PLAN's `plan_no_ready_token`).
+ */
+export function splitAuditResponse(response: string): string | null {
+  const lines = response.split(/\r?\n/)
+  let readyIdx = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.trim() === AUDIT_READY_SIGNAL) {
+      readyIdx = i
+      break
+    }
+  }
+  if (readyIdx === -1) return null
+  const after = lines.slice(readyIdx + 1).join('\n').trim()
+  if (after.length === 0) return null
+  return after
 }
 
 async function recordIntervention(args: {
@@ -294,13 +332,47 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
   }
   const target = auditPath(opts.runPaths)
 
-  // C5b validation: the drained draft must satisfy the locked AUDIT.md schema
+  // Strip the AUDIT ready signal before validate/write. The persona emits
+  // `<audit-ready/>` on its own line, THEN the canonical AUDIT.md (frontmatter
+  // on line 1); feeding the raw reply to validateAuditMarkdown would push the
+  // frontmatter off line 1 and fail `audit_missing_frontmatter`. Mirrors PLAN's
+  // splitPlanResponse. AUDIT requires the signal: when it is absent (or nothing
+  // follows it) the reply violated the output protocol — route it through the
+  // same `audit_validation_failed` intervention (rule 11) rather than silently
+  // parsing the raw text.
+  const auditDoc = splitAuditResponse(auditText)
+  if (auditDoc === null) {
+    const code = 'audit_validation_failed'
+    const rule = `auditor reply missing the ${AUDIT_READY_SIGNAL} ready signal (or no document followed it)`
+    const actionableSuggestions = [
+      `the auditor must emit ${AUDIT_READY_SIGNAL} on its own line, then the canonical AUDIT.md (target: ${target})`,
+      're-run AUDIT once the auditor produces a protocol-faithful reply',
+    ]
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: 'auditor',
+      code,
+      rule,
+      detail: `expected the reply to begin (after any preamble) with a line containing only ${AUDIT_READY_SIGNAL}`,
+      actionableSuggestions,
+      now,
+    })
+    return Object.freeze({
+      status: 'intervention',
+      code,
+      rule,
+      actionableSuggestions,
+      userMessage: `AUDIT phase produced a reply missing the ${AUDIT_READY_SIGNAL} ready signal.`,
+    })
+  }
+
+  // C5b validation: the stripped draft must satisfy the locked AUDIT.md schema
   // before it becomes the canonical artifact (rule 11: a malformed draft never
   // reaches a gate). parseAuditMarkdown throws AuditLoadError with the issue
-  // list when invalid. Without a registered auditor the draft is always
-  // invalid, so this is the reached endpoint today.
+  // list when invalid.
   try {
-    parseAuditMarkdown(auditText, { file: target, expectedRunId: opts.runId })
+    parseAuditMarkdown(auditDoc, { file: target, expectedRunId: opts.runId })
   } catch (err) {
     const code = 'audit_validation_failed'
     const rule = 'AUDIT.md draft did not satisfy the locked schema'
@@ -337,8 +409,8 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
   // approve-time preApproveAuditHook can re-bind the on-disk artifact to this
   // event. No audit-specific gate primitive (rule 1): requireGate is the
   // generic phase-approval signal every phase uses.
-  await atomicWriteFile(target, auditText, { fsyncDir: opts.fsyncDir })
-  const auditReportSha256 = createHash('sha256').update(auditText, 'utf8').digest('hex')
+  await atomicWriteFile(target, auditDoc, { fsyncDir: opts.fsyncDir })
+  const auditReportSha256 = createHash('sha256').update(auditDoc, 'utf8').digest('hex')
   await appendEvent(eventPathsFor(opts.runPaths), {
     version: 1,
     type: 'audit_completed',
@@ -347,6 +419,74 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
     phase: 'audit',
     auditReportSha256,
   })
+
+  // Scientist phase-tail (rule 15). AUDIT is a primary-artifact phase, so it
+  // produces HYPOTHESES.md + OPEN_QUESTIONS.md from AUDIT.md before the gate is
+  // required — mirroring runPlan (src/phases/plan.ts:864-914): write canonical
+  // artifact → tail → gate-preflight → requireGate. The sidecars MUST exist
+  // before `gate_required(audit)` so `approve audit`'s validateScientistSidecars
+  // can pass.
+  const scientistResult = await runScientistPhaseTail({
+    invokeCtx: opts.invokeCtx,
+    runPaths: opts.runPaths,
+    runId: opts.runId,
+    agent: opts.scientistAgent,
+    phase: 'audit',
+    primaryArtifactPath: target,
+    fsyncDir: opts.fsyncDir,
+    now,
+  })
+  if (scientistResult.status === 'intervention') {
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: opts.scientistAgent.name,
+      code: scientistResult.code,
+      rule: scientistResult.rule,
+      actionableSuggestions: [
+        'inspect Scientist drafts (HYPOTHESES.draft.md, OPEN_QUESTIONS.draft.md) and rerun AUDIT',
+      ],
+      now,
+    })
+    return Object.freeze({
+      status: 'intervention',
+      code: scientistResult.code,
+      rule: scientistResult.rule,
+      actionableSuggestions: [
+        'inspect Scientist drafts (HYPOTHESES.draft.md, OPEN_QUESTIONS.draft.md) and rerun AUDIT',
+      ],
+      userMessage: 'AUDIT phase Scientist tail did not produce valid sidecars.',
+    })
+  }
+
+  // Gate-preflight: the sidecars must be present, parsable, non-blocking, and
+  // free of overdue open questions before the gate is required (rule 15).
+  // Mirrors runPlan's preflight call.
+  const preflight = await validateScientistSidecars({
+    phase: 'audit',
+    artifactRoot: opts.runPaths.artifactRoot,
+    today: now().slice(0, 10),
+  })
+  if (!preflight.ok) {
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: 'auditor',
+      code: preflight.code,
+      rule: preflight.rule,
+      ...(preflight.detail !== undefined ? { detail: preflight.detail } : {}),
+      actionableSuggestions: preflight.actionableSuggestions,
+      now,
+    })
+    return Object.freeze({
+      status: 'intervention',
+      code: preflight.code,
+      rule: preflight.rule,
+      actionableSuggestions: preflight.actionableSuggestions,
+      userMessage: 'AUDIT phase Scientist sidecar preflight failed.',
+    })
+  }
+
   await requireGate({
     paths: opts.runPaths,
     runId: opts.runId,

@@ -1431,6 +1431,24 @@ async function dispatchAudit(
   const { config } = await applyRecordedEffort(rawConfig, runPaths)
   const ctx = await bootstrap({ cwd, config })
 
+  // AUDIT is a primary-artifact phase: it runs the Scientist phase-tail
+  // (rule 15) after writing AUDIT.md. Resolve the scientist persona up front
+  // and fail fast with one actionable message when the auditor or scientist
+  // persona is missing — mirroring dispatchPlan's lead+scientist check.
+  // (runAudit re-checks the auditor itself for its persona-missing
+  // intervention; the auditor is resolved inside runAudit from agentRegistry.)
+  const scientist = ctx.registry.getByName('scientist')
+  if (scientist === undefined) {
+    process.stderr.write(
+      [
+        'code-oz run: AUDIT requires the bundled `scientist` persona (Scientist phase-tail, rule 15).',
+        '  Reinitialize the project (`code-oz init --force`) or restore .code-oz/agents/.',
+        '',
+      ].join('\n'),
+    )
+    process.exit(EXIT_INTERVENTION)
+  }
+
   // Carry --provider fake (or other override) + the fake-replay script
   // entries through to AUDIT, the same way dispatchPlan/dispatchBuild do.
   const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({ providerOverride })
@@ -1454,6 +1472,7 @@ async function dispatchAudit(
     runPaths,
     runId: activeRunId,
     agentRegistry: ctx.registry,
+    scientistAgent: scientist,
     problemStatement,
   })
 
