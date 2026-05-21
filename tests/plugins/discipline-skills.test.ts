@@ -26,6 +26,18 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderSkill, SKILL_NAMES } from '../../plugins/code-oz-discipline/scripts/render-skills'
+// C8: the hardened honesty guard now lives in ONE place — the shared corpus
+// module. This test imports it instead of redefining it, so there is exactly
+// one implementation of Guard A + Guard B (DRY). No assertion below is weakened
+// by the extraction.
+import {
+  BANNER,
+  SELF_AUTHORITY_EXEMPT,
+  SELF_AUTHORITY_PATTERNS,
+  findGateSenseOutcomeOffenders,
+  findSelfAuthorityOffenders,
+  gateSenseOutcomeHit,
+} from './e1-e9-corpus'
 
 const REPO_ROOT = (() => {
   const here = dirname(fileURLToPath(import.meta.url))
@@ -36,9 +48,7 @@ const PLUGIN_DIR = join(REPO_ROOT, 'plugins/code-oz-discipline')
 const SKILLS_DIR = join(PLUGIN_DIR, 'skills')
 const UNIVERSAL_RULES_PATH = join(REPO_ROOT, 'src/prompts/universal-rules.md')
 
-// The verbatim advisory banner — every skill must contain this exact string.
-const BANNER =
-  'Advisory only — not an enforced gate. For enforced gates and a different-model review, run `code-oz run`.'
+// BANNER is imported from the shared corpus module (single source of truth).
 
 const NAMES = ['brainstorming', 'source-check', 'red-first'] as const
 
@@ -195,109 +205,21 @@ describe('C7 — load-bearing disclaimer sentences are pinned verbatim', () => {
 //   loophole in the old ALLOWED_CONTEXT is deliberately removed.
 // ===========================================================================
 describe('C7 — advisory skills claim no gate/review authority in their own text', () => {
-  // Guard A: verb-level first-person authority patterns (kept from before).
-  const SELF_AUTHORITY_PATTERNS: ReadonlyArray<RegExp> = [
-    /\bI approve\b/i,
-    /\bI reviewed\b/i,
-    /\bI performed cross-family review\b/i,
-    /\bI ran cross-family review\b/i,
-    /mark[^.\n]*passed\b/i,
-    /\bwrite\s+REVIEW\.md/i,
-    /\bwrite\s+VERIFY\.md/i,
-    /\bwrite\s+AUDIT\.md/i,
-    /\bemit\s+(?:a\s+)?GATE_/i,
-    /\bwrite\s+(?:a\s+)?GATE_/i,
-    /\bdecide\s+the\s+gate\b/i,
-    /\bconfirm\s+it\s+passed\b/i,
-    /\bdeclare\s+the\s+gate\b/i,
-    /\bpass\s+the\s+gate\b/i,
-  ]
-
-  // Guard A exemption: the line is a prohibition, refusal, or engine attribution.
-  // Tightened from the old regex: no longer exempts on "instead" alone or a
-  // stray "never" that does not negate the claim. Requires that the negation or
-  // attribution actually governs the authority verb.
-  const SELF_AUTHORITY_EXEMPT =
-    /do not|don't|not write|no gate|cannot|can't|only the engine|the engine|refuse|advisory only/i
-
-  // Guard B: gate-sense OUTCOME denylist.
-  //
-  // A line is flagged when it satisfies EITHER of two sub-tests:
-  //
-  //   B1 — predicate-outcome: the line contains a gate-domain keyword AND an
-  //        outcome word used as a predicate (not as an adjective modifying a
-  //        noun). "approved" as an adjective in "the approved artifact
-  //        contracts" does NOT match; "is approved" / "approved and" / "the
-  //        gate passed" DO match.
-  //
-  //   B2 — surrogate-gate: the line contains a phrase that equates the skill
-  //        itself to a gate result ("counts as your source-check gate",
-  //        "engine-equivalent gate result", etc.) — even without a canonical
-  //        outcome word.
-  //
-  // A line is exempt from Guard B when it:
-  //   (a) attributes the action to the engine (\bthe engine\b or \bcode-oz\b
-  //       performing the gate/review), OR
-  //   (b) contains an explicit refusal or disclaimer token.
-  //
-  // "instead" and a stray "never" unrelated to the outcome are NOT exempt —
-  // they were the bypass vector in the old matcher.
-  const GATE_DOMAIN_RE =
-    /\b(?:gate|design|review|source[\s-]?check|audit|verify|build)\b/i
-
-  // "approved" matches only in predicate form (is/was/are/been/get/gets/got
-  // approved, or "approved and", "approved —"). Attributive use ("the approved
-  // artifact contracts") does NOT match because "approved" there is followed
-  // directly by a noun phrase, not a predicate complement.
-  const PREDICATE_OUTCOME_RE =
-    /\b(?:passed|(?:is|was|are|been|gets?|got)\s+approved|approved\s+(?:and|—|,)|satisfied|completed?|is done|ready for build|ready to ship)\b/i
-
-  // Surrogate-gate phrases: the skill positions itself as equivalent to a
-  // gate result, even without using a canonical outcome word.
-  //   - "counts as your source-check gate"
-  //   - "Treat this as the engine-equivalent gate result"
-  const SURROGATE_GATE_RE =
-    /(?:counts\s+as|treat\s+this\s+as)\s+(?:your\s+|the\s+)?(?:source[\s-]?check\s+gate|gate|engine[\s-]?equivalent)/i
-
-  // "the engine" only exempts when the engine is the ACTOR (followed by a
-  // space/EOL — i.e. "the engine writes", "the engine enforces"). "engine-"
-  // (hyphenated, as in "engine-equivalent") is NOT an engine-attribution and
-  // does not get the exemption.
-  const GATE_SENSE_OUTCOME_EXEMPT =
-    /\bthe engine\s|\bcode-oz\b|does not|do not|never\s+(?:claims?|satisf|approv|pass|complet|declar)|refuse|cannot|not an enforced|advisory only/i
-
-  function gateSenseOutcomeHit(line: string): boolean {
-    const exempt = GATE_SENSE_OUTCOME_EXEMPT.test(line)
-    if (exempt) return false
-    // B1: predicate-outcome + gate-domain
-    if (GATE_DOMAIN_RE.test(line) && PREDICATE_OUTCOME_RE.test(line)) return true
-    // B2: surrogate-gate phrase
-    if (SURROGATE_GATE_RE.test(line)) return true
-    return false
-  }
+  // Guard A + Guard B are imported from the shared corpus module
+  // (tests/plugins/e1-e9-corpus.ts). They are NOT redefined here — there is one
+  // implementation of the hardened honesty guard, used by both this acceptance
+  // harness and the E1-E9 corpus gate.
 
   for (const name of NAMES) {
     test(`${name}: no line claims gate/review authority (Guard A — verb patterns)`, async () => {
       const text = await readSkill(name)
-      const offenders: Array<{ line: string; pattern: string }> = []
-      for (const line of text.split('\n')) {
-        for (const re of SELF_AUTHORITY_PATTERNS) {
-          if (re.test(line) && !SELF_AUTHORITY_EXEMPT.test(line)) {
-            offenders.push({ line: line.trim(), pattern: re.source })
-          }
-        }
-      }
+      const offenders = findSelfAuthorityOffenders(text)
       expect(offenders).toEqual([])
     })
 
     test(`${name}: no line asserts a gate-sense outcome (Guard B — outcome denylist)`, async () => {
       const text = await readSkill(name)
-      const offenders: Array<string> = []
-      for (const line of text.split('\n')) {
-        if (gateSenseOutcomeHit(line)) {
-          offenders.push(line.trim())
-        }
-      }
+      const offenders = findGateSenseOutcomeOffenders(text)
       expect(offenders).toEqual([])
     })
   }
