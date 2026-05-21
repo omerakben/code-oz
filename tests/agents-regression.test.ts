@@ -32,7 +32,7 @@ async function expectLoadError(
 describe('M2 regression fixtures', () => {
   test('valid project-local override replaces the bundled persona body', async () => {
     const reg = await loadWithBundled(fix('valid-override'))
-    expect(reg.listAll()).toHaveLength(6)
+    expect(reg.listAll()).toHaveLength(7)
     const ba = reg.getByName('ba')!
     expect(ba.body).toContain('# BA (project override)')
     // Type and phase are preserved
@@ -60,6 +60,7 @@ describe('M2 regression fixtures', () => {
     const defaults = await loadBundledDefaults()
     const reg = await loadRegistry({ defaults, cwd: FIXTURES_DIR })
     expect(reg.listAll().map((d) => d.name).sort()).toEqual([
+      'auditor',
       'ba',
       'builder',
       'lead',

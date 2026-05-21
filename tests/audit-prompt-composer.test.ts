@@ -125,12 +125,14 @@ describe('composeAuditPrompt — full asset load (against the placeholder stub)'
     )
   })
 
-  test('the bundled audit-system.md is an explicit non-shippable placeholder (rule 16)', async () => {
+  test('the bundled audit-system.md is the co-authored prose, not the stub (rule 16)', async () => {
     _resetPromptAssetCache()
     const template = await loadAuditSystemTemplate()
-    // The stub must announce itself so it can never be mistaken for real
-    // persona prose. The co-authored prose replaces this marker.
-    expect(template).toContain('PENDING HUMAN CO-AUTHORSHIP')
-    expect(template).toContain('DO NOT SHIP')
+    // The co-authored prose has landed (hand-authored by Ozzy + Claude). The
+    // placeholder markers must be gone so a stub can never silently ship in
+    // place of the real AUDIT system instructions.
+    expect(template).not.toContain('PENDING HUMAN CO-AUTHORSHIP')
+    expect(template).not.toContain('DO NOT SHIP')
+    expect(template).toContain('AUDIT phase — system instructions')
   })
 })

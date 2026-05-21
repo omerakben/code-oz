@@ -18,10 +18,11 @@ async function loadDefaults(): Promise<readonly SourceFile[]> {
 }
 
 describe('bundled default personas', () => {
-  test('directory contains the v0.1 + v0.6 spine personas', async () => {
+  test('directory contains the v0.1 + v0.6 + v0.17 spine personas', async () => {
     const entries = await readdir(DEFAULTS_DIR)
     const mdFiles = entries.filter((f) => f.endsWith('.md')).sort()
     expect(mdFiles).toEqual([
+      'auditor.md',
       'ba.md',
       'builder.md',
       'lead.md',
@@ -34,7 +35,7 @@ describe('bundled default personas', () => {
   test('all default files pass schema validation', async () => {
     const sources = await loadDefaults()
     const reg = buildRegistry({ defaults: sources, overrides: [] })
-    expect(reg.listAll()).toHaveLength(6)
+    expect(reg.listAll()).toHaveLength(7)
   })
 
   test('each phase from DEFINE through REVIEW has the expected default personas', async () => {
@@ -48,11 +49,13 @@ describe('bundled default personas', () => {
     expect(reg.getByPhase('review').map((d) => d.name)).toEqual(['reviewer'])
   })
 
-  test('SHIP and AUDIT phases have no v0.1 default personas', async () => {
+  test('SHIP has no default persona; AUDIT has the auditor', async () => {
     const sources = await loadDefaults()
     const reg = buildRegistry({ defaults: sources, overrides: [] })
     expect(reg.getByPhase('ship')).toEqual([])
-    expect(reg.getByPhase('audit')).toEqual([])
+    const auditPersonas = reg.getByPhase('audit')
+    expect(auditPersonas).toHaveLength(1)
+    expect(auditPersonas[0]?.name).toBe('auditor')
   })
 
   test('builder and reviewer are in different provider families (rule 2)', async () => {
