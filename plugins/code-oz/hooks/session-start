@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# SessionStart hook for the code-oz plugin (Claude Code only).
+#
+# Injects the code-oz router card so the host agent knows when to route work to
+# the code-oz engine. The engine — not the host agent — owns gated execution,
+# provider calls, artifacts, events, and review. This hook only teaches routing;
+# it never claims engine authority and never writes under .code-oz/.
+#
+# Locked convergence decisions (docs/design/CODEX_RESPONSE_D1_CONVERGENCE.md):
+#   L3 — plain bash, Claude-only branch. We emit ONLY Claude's
+#        hookSpecificOutput.additionalContext. No Cursor (additional_context) or
+#        Copilot (top-level additionalContext) branch. Degrade silently (exit 0,
+#        emit nothing) if the card cannot be read.
+#   L1 — engine-first wording lives in router-card.md (single source).
+#   L5 — the marker is an idempotence hint, not suppression. This hook is
+#        stateless; it does not dedupe.
+#
+# Implementation notes borrowed from superpowers' session-start:
+#   - printf, not heredoc (bash 5.3+ heredoc hang; their issue #571).
+#   - escape_for_json uses bash parameter substitution (one C-level pass each),
+#     not a character-by-character loop.
+
+set -euo pipefail
+
+# Resolve the directory this script lives in, so the card lookup does not depend
+# on CLAUDE_PLUGIN_ROOT being correct (it lets the degrade-silently path work in
+# tests too).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CARD_FILE="${SCRIPT_DIR}/router-card.md"
+
+# Degrade silently: if the card is missing or unreadable, emit nothing, exit 0.
+if [ ! -r "$CARD_FILE" ]; then
+  exit 0
+fi
+
+card_content="$(cat "$CARD_FILE" 2>/dev/null)" || exit 0
+if [ -z "$card_content" ]; then
+  exit 0
+fi
+
+# Escape a string for embedding inside a JSON string literal. Each substitution
+# is a single C-level pass. Backslash MUST be escaped first.
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+card_escaped="$(escape_for_json "$card_content")"
+
+# Claude-only output. printf (not heredoc) to dodge the bash 5.3+ heredoc hang.
+printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$card_escaped"
+
+exit 0
