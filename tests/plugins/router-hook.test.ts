@@ -289,6 +289,17 @@ describe('router-card.md content', () => {
     expect(card).toContain('code-oz run')
     expect(card).toContain('code-oz doctor')
 
+    // Continuation routes to `code-oz resume` (the /code-oz-resume command),
+    // not `code-oz run`. The locked B1 contract routes setup/health/continuation
+    // to init / doctor / resume.
+    expect(card).toContain('code-oz resume')
+    // FORBID the old phrasing that routed continuation through `code-oz run`.
+    expect(card).not.toContain('`code-oz run` to resume')
+    expect(card).not.toContain('run to resume after')
+    // The doctor mention carries the convergence caveat that first run may
+    // download the engine.
+    expect(card).toMatch(/first run may\s+download the engine/i)
+
     // No coercive language.
     expect(card).not.toContain('1%')
     expect(card).not.toContain('no choice')

@@ -6,9 +6,10 @@ When to route to the engine:
 - Committable repo changes that affect production-bound, CI/release, or shared
   project behavior -> propose running `code-oz run` (the /code-oz-run command).
   Confirm before running.
-- Setup / health / continuation -> `code-oz doctor` (read-only, no provider
-  spend; run freely), `code-oz init`, and `code-oz run` to resume after a
-  NEEDS_INTERVENTION pause.
+- Health -> `code-oz doctor` (read-only, no provider spend; first run may
+  download the engine).
+- Setup -> `code-oz init`.
+- Continuation after a NEEDS_INTERVENTION / PAUSE -> `code-oz resume`.
 - Throwaway scripts, pure questions, or read-only exploration -> do NOT route to code-oz.
 
 Boundaries (load-bearing):

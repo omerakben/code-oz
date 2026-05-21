@@ -31,9 +31,13 @@ import { renderSkill, SKILL_NAMES } from '../../plugins/code-oz-discipline/scrip
 // one implementation of Guard A + Guard B (DRY). No assertion below is weakened
 // by the extraction.
 import {
+  AUTHORITY_INVERSION_NEGATIVE_CONTROLS,
+  AUTHORITY_INVERSION_POSITIVE_CONTROLS,
   BANNER,
   SELF_AUTHORITY_EXEMPT,
   SELF_AUTHORITY_PATTERNS,
+  authorityInversionHit,
+  findAuthorityInversionOffenders,
   findGateSenseOutcomeOffenders,
   findSelfAuthorityOffenders,
   gateSenseOutcomeHit,
@@ -222,6 +226,12 @@ describe('C7 — advisory skills claim no gate/review authority in their own tex
       const offenders = findGateSenseOutcomeOffenders(text)
       expect(offenders).toEqual([])
     })
+
+    test(`${name}: no line inverts authority precedence (Guard C — skill self-grant over user/CLAUDE.md/engine/universal rules)`, async () => {
+      const text = await readSkill(name)
+      const offenders = findAuthorityInversionOffenders(text)
+      expect(offenders).toEqual([])
+    })
   }
 
   // ---------------------------------------------------------------------------
@@ -266,6 +276,24 @@ describe('C7 — advisory skills claim no gate/review authority in their own tex
     ]
     for (const line of allows) {
       expect(gateSenseOutcomeHit(line)).toBe(false)
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // Control assertions for Guard C — DIRECTIONAL authority-precedence.
+  // The inversion (skill outranks/overrides/ignores/relaxes a protected
+  // authority) MUST be flagged; the legitimate lowest-authority direction
+  // MUST NOT. If the scanner degrades into a keyword match, these fail.
+  // ---------------------------------------------------------------------------
+  test('Guard C control: CATCHES authority-inversion self-grants', () => {
+    for (const line of AUTHORITY_INVERSION_POSITIVE_CONTROLS) {
+      expect(authorityInversionHit(line)).toBe(true)
+    }
+  })
+
+  test('Guard C control: ALLOWS legitimate lowest-authority statements (no false positives)', () => {
+    for (const line of AUTHORITY_INVERSION_NEGATIVE_CONTROLS) {
+      expect(authorityInversionHit(line)).toBe(false)
     }
   })
 })

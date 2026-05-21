@@ -22,13 +22,17 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  AUTHORITY_INVERSION_NEGATIVE_CONTROLS,
+  AUTHORITY_INVERSION_POSITIVE_CONTROLS,
   BANNER,
   CORPUS,
   INTEGRITY_ROWS,
   POSITIVE_CONTROL_ROWS,
   SKILL_NAMES,
+  authorityInversionHit,
   codeOzStateWriteOffenders,
   crossFamilyReviewClaimOffenders,
+  findAuthorityInversionOffenders,
   findGateSenseOutcomeOffenders,
   findSelfAuthorityOffenders,
   hasBanner,
@@ -165,8 +169,44 @@ describe('C8 — shared invariants hold over all three shipped skills', () => {
         const offenders = codeOzStateWriteOffenders(text)
         expect(offenders).toEqual([])
       })
+
+      test('Guard C finds no authority-inversion leak (skill self-grant over user/CLAUDE.md/engine/universal rules)', async () => {
+        const text = await readSkill(name)
+        const offenders = findAuthorityInversionOffenders(text)
+        expect(offenders).toEqual([])
+      })
     })
   }
+})
+
+// ===========================================================================
+// Guard C controls — DIRECTIONAL authority-precedence scanner.
+//
+// Positive controls (the inversion) MUST be flagged; negative controls (the
+// legitimate lowest-authority direction) MUST NOT. This is the regression proof
+// that the scanner stays directional and does not degrade into a keyword match.
+// ===========================================================================
+describe('C8 — Guard C directional authority-precedence controls', () => {
+  test('CATCHES authority-inversion self-grants', () => {
+    for (const line of AUTHORITY_INVERSION_POSITIVE_CONTROLS) {
+      expect(authorityInversionHit(line)).toBe(true)
+    }
+  })
+
+  test('ALLOWS legitimate lowest-authority statements', () => {
+    for (const line of AUTHORITY_INVERSION_NEGATIVE_CONTROLS) {
+      expect(authorityInversionHit(line)).toBe(false)
+    }
+  })
+
+  test('does NOT false-positive on the real rendered _instruction-priority block', async () => {
+    // The shipped instruction-priority prose is phrased in the legitimate
+    // direction; it must not trip Guard C on any skill.
+    for (const name of SKILL_NAMES) {
+      const text = await readSkill(name)
+      expect(findAuthorityInversionOffenders(text)).toEqual([])
+    }
+  })
 })
 
 // ===========================================================================
