@@ -89,7 +89,7 @@ describe('validatePlanSourceCoverage (Codex M6 review block-push #4)', () => {
       tasks: [{ id: 'T-001', sources: ['SC-REF-001', 'SC-DOC-NONE-001'] }],
       sourceCheck: sc,
     })
-    expect(issues.some((s) => s.includes('missing a SPEC source'))).toBe(true)
+    expect(issues.some((s) => s.includes('missing a SPEC or AUDIT source'))).toBe(true)
   })
 
   test('returns issue when a task lacks a REF or REF-NONE source', () => {

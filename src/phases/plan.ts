@@ -21,7 +21,7 @@ import {
   appendEvent,
   type EventLogPaths,
 } from '../state/events.ts'
-import { CANONICAL_ARTIFACTS } from '../state/schemas.ts'
+import { CANONICAL_ARTIFACTS, type Profile } from '../state/schemas.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import {
   writeNeedsInterventionGate,
@@ -79,6 +79,14 @@ export interface RunPlanOptions {
   readonly runId: string
   readonly leadAgent: AgentDefinition
   readonly scientistAgent: AgentDefinition
+  /**
+   * The run's profile, event-derived from `run_started` (rule 1). Brownfield
+   * runs read AUDIT.md as PLAN's upstream artifact; greenfield runs read
+   * SPEC.md. The caller (dispatchPlan) MUST pass `loaded.state.profile`, NOT
+   * a value re-derived from the mutable `.code-oz/config.yaml`. Defaults to
+   * `'greenfield'` so existing greenfield call sites are unaffected (M17 C7a).
+   */
+  readonly profile?: Profile
   readonly fsyncDir?: boolean
   readonly now?: () => string
   /**
@@ -115,8 +123,14 @@ function sourceCheckPath(paths: RunPaths): string {
 function sourceCheckDraftPath(paths: RunPaths): string {
   return join(paths.artifactRoot, 'SOURCE_CHECK.draft.md')
 }
-function specPath(paths: RunPaths): string {
-  return join(paths.artifactRoot, CANONICAL_ARTIFACTS.define) // SPEC.md
+// M17 C7a: PLAN's upstream artifact is profile-dependent. Greenfield reads
+// SPEC.md (DEFINE output); brownfield reads AUDIT.md (AUDIT output). The two
+// consumption paths are mutually exclusive per run.
+function upstreamArtifactName(profile: Profile): string {
+  return profile === 'brownfield' ? CANONICAL_ARTIFACTS.audit : CANONICAL_ARTIFACTS.define
+}
+function specPath(paths: RunPaths, profile: Profile): string {
+  return join(paths.artifactRoot, upstreamArtifactName(profile))
 }
 
 async function recordIntervention(args: {
@@ -400,9 +414,16 @@ async function runPlanDebate(args: {
 
 export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
   const now = opts.now ?? (() => new Date().toISOString())
+  // M17 C7a: event-derived profile (rule 1). The caller passes
+  // loaded.state.profile (from the run_started event), never a value
+  // re-derived from mutable config. Defaults to greenfield.
+  const profile: Profile = opts.profile ?? 'greenfield'
+  const upstreamName = upstreamArtifactName(profile) // SPEC.md | AUDIT.md
+  const upstreamMissingRule = `PLAN cannot run without an approved ${upstreamName}`
 
-  // 1. Load SPEC.md (verify exists before invoking provider)
-  const specAbs = specPath(opts.runPaths)
+  // 1. Load the upstream artifact (verify exists before invoking provider).
+  //    Greenfield -> SPEC.md; brownfield -> AUDIT.md.
+  const specAbs = specPath(opts.runPaths, profile)
   try {
     await readFile(specAbs, 'utf8')
   } catch {
@@ -411,16 +432,18 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
       runId: opts.runId,
       agent: opts.leadAgent.name,
       code: 'plan_spec_missing',
-      rule: 'PLAN cannot run without an approved SPEC.md',
+      rule: upstreamMissingRule,
       actionableSuggestions: [
-        'rerun DEFINE and approve before re-attempting PLAN',
+        profile === 'brownfield'
+          ? 'rerun AUDIT and approve before re-attempting PLAN'
+          : 'rerun DEFINE and approve before re-attempting PLAN',
       ],
       now,
     })
     return {
       status: 'intervention',
       code: 'plan_spec_missing',
-      rule: 'PLAN cannot run without an approved SPEC.md',
+      rule: upstreamMissingRule,
     }
   }
 
@@ -432,7 +455,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
     opts.leadAgent.permissions.tool_use?.repo_context?.tools !== undefined
       ? [...opts.leadAgent.permissions.tool_use.repo_context.tools]
       : []
-  const baseUserTurn = opts.initialUserInput ?? 'Read the attached SPEC.md and produce PLAN.md + SOURCE_CHECK.md per the locked schemas.'
+  const baseUserTurn = opts.initialUserInput ?? `Read the attached ${upstreamName} and produce PLAN.md + SOURCE_CHECK.md per the locked schemas.`
   const specRel = relative(opts.invokeCtx.projectRoot, specAbs)
 
   // 3. Invoke Lead persona — SPEC.md attached via manifest. Tool-use
@@ -476,7 +499,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
             role: 'user' as const,
             text:
               `${userTurn}\n\n` +
-              `The provider has been given SPEC.md as an attached file at \`${specRel}\` (see the manifest). ` +
+              `The provider has been given ${upstreamName} as an attached file at \`${specRel}\` (see the manifest). ` +
               `Refer to that attachment instead of expecting inline content.` +
               continuationBlock +
               (toolHistoryBlock.length > 0
@@ -778,7 +801,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
 
   let sourceCheckArt
   try {
-    sourceCheckArt = parseSourceCheck(split.sourceCheckText, sourceCheckPath(opts.runPaths))
+    sourceCheckArt = parseSourceCheck(split.sourceCheckText, sourceCheckPath(opts.runPaths), profile)
   } catch (err) {
     await atomicWriteFile(sourceCheckDraftPath(opts.runPaths), split.sourceCheckText, { fsyncDir: opts.fsyncDir })
     await recordIntervention({
@@ -834,7 +857,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<PlanResult> {
 
   // 6. Atomic write canonical artifacts
   await atomicWriteFile(planPath(opts.runPaths), serializePlan(planArt), { fsyncDir: opts.fsyncDir })
-  await atomicWriteFile(sourceCheckPath(opts.runPaths), serializeSourceCheck(sourceCheckArt), {
+  await atomicWriteFile(sourceCheckPath(opts.runPaths), serializeSourceCheck(sourceCheckArt, profile), {
     fsyncDir: opts.fsyncDir,
   })
 

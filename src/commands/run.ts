@@ -25,7 +25,7 @@ import { stdin as input, stdout as output } from 'node:process'
 
 import { appendEvent, readEvents } from '../state/events.ts'
 import { isKnownPhaseEvent } from '../state/schemas.ts'
-import type { LoggedEvent, Phase, PhaseEvent } from '../state/schemas.ts'
+import type { LoggedEvent, Phase, PhaseEvent, Profile } from '../state/schemas.ts'
 
 import {
   bootstrap,
@@ -1171,7 +1171,17 @@ async function handleActiveRun(
       )
       process.exit(EXIT_USAGE)
     }
-    await dispatchPlan(stateDir, artifactRoot, activeRunId, providerOverride, fakeScriptEntries)
+    // M17 C7a: pass the event-derived profile (rule 1) from the loaded run
+    // state. loaded.state.profile comes from the run_started event, so editing
+    // .code-oz/config.yaml between AUDIT approval and PLAN cannot flip it.
+    await dispatchPlan(
+      stateDir,
+      artifactRoot,
+      activeRunId,
+      loaded.state.profile,
+      providerOverride,
+      fakeScriptEntries,
+    )
     return
   }
   if (phase === 'build') {
@@ -1475,6 +1485,7 @@ async function dispatchPlan(
   stateDir: string,
   artifactRoot: string,
   activeRunId: string,
+  profile: Profile,
   providerOverride?: ProviderOverride,
   fakeScriptEntries?: readonly FakeScriptEntry[],
 ): Promise<void> {
@@ -1520,6 +1531,7 @@ async function dispatchPlan(
     runId: activeRunId,
     leadAgent: lead,
     scientistAgent: scientist,
+    profile,
   })
   if (result.status === 'intervention') {
     process.stderr.write(

@@ -88,8 +88,12 @@ describe('parseSourceCheck', () => {
 
   test('parses field values per kind', () => {
     const sc = parseSourceCheck(VALID, FILE)
-    expect(sc.specSources[0]!.spec).toContain('Acceptance criteria')
-    expect(sc.specSources[0]!.quote).toContain('Given a surname')
+    const spec0 = sc.specSources[0]!
+    expect(spec0.kind).toBe('SPEC')
+    if (spec0.kind === 'SPEC') {
+      expect(spec0.spec).toContain('Acceptance criteria')
+    }
+    expect(spec0.quote).toContain('Given a surname')
     const ref = sc.referenceSources[0]!
     if (ref.kind === 'REF') {
       expect(ref.path).toContain('agent-skills')

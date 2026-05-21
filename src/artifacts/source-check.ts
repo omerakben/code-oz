@@ -13,6 +13,7 @@
 
 import { SourceCheckLoadError, type SourceCheckLoadIssue } from './errors.ts'
 import { parseInlineList } from './yaml-tolerance.ts'
+import type { Profile } from '../state/schemas.ts'
 
 // --- types ---------------------------------------------------------
 
@@ -44,16 +45,48 @@ export const SOURCE_CHECK_SECTION_HEADINGS: Readonly<Record<SourceCheckSectionKe
     openQuestions: 'Open questions',
   })
 
+// M17 C7d: the first source section's H2 heading is profile-dependent.
+// Greenfield SOURCE_CHECK uses `## Spec sources` (the `specSources` key's
+// default heading above); brownfield REPLACES it with `## Audit sources`
+// (AUDIT.md § C5a, locked R1 M3 — not optional, not additive). All other
+// section headings are profile-independent.
+export const SPEC_SOURCES_HEADING = SOURCE_CHECK_SECTION_HEADINGS.specSources // 'Spec sources'
+export const AUDIT_SOURCES_HEADING = 'Audit sources' as const
+
+/**
+ * The displayed H2 heading for the first source section, by profile.
+ * Brownfield -> 'Audit sources'; greenfield (and default) -> 'Spec sources'.
+ */
+export function specSourcesHeading(profile: Profile = 'greenfield'): string {
+  return profile === 'brownfield' ? AUDIT_SOURCES_HEADING : SPEC_SOURCES_HEADING
+}
+
+/**
+ * Per-profile heading -> section-key map. Only the first source section's
+ * heading differs by profile; the matching heading maps to `specSources`,
+ * and the *other* profile's heading is deliberately ABSENT so the parser
+ * rejects it (greenfield rejects `## Audit sources`; brownfield rejects
+ * `## Spec sources`).
+ */
+function headingToKeyForProfile(
+  profile: Profile,
+): Readonly<Record<string, SourceCheckSectionKey>> {
+  const entries: Array<readonly [string, SourceCheckSectionKey]> = []
+  for (const k of SOURCE_CHECK_SECTION_KEYS) {
+    // The first source section's heading is profile-dependent; emit only the
+    // profile-correct heading so the other profile's heading is rejected.
+    const heading = k === 'specSources' ? specSourcesHeading(profile) : SOURCE_CHECK_SECTION_HEADINGS[k]
+    entries.push([heading, k] as const)
+  }
+  return Object.freeze(Object.fromEntries(entries) as Record<string, SourceCheckSectionKey>)
+}
+
 export const SOURCE_CHECK_HEADING_TO_KEY: Readonly<Record<string, SourceCheckSectionKey>> =
-  Object.freeze(
-    Object.fromEntries(
-      SOURCE_CHECK_SECTION_KEYS.map((k) => [SOURCE_CHECK_SECTION_HEADINGS[k], k] as const),
-    ) as Record<string, SourceCheckSectionKey>,
-  )
+  headingToKeyForProfile('greenfield')
 
-export type SourceKind = 'SPEC' | 'REF' | 'REF-NONE' | 'DOC' | 'DOC-NONE'
+export type SourceKind = 'SPEC' | 'AUDIT' | 'REF' | 'REF-NONE' | 'DOC' | 'DOC-NONE'
 
-export const SOURCE_ID_PATTERN = /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE)-\d{3,}$/
+export const SOURCE_ID_PATTERN = /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE|AUDIT)-\d{3,}$/
 
 export const TASK_ID_PATTERN = /^T-\d{3,}$/
 
@@ -66,6 +99,16 @@ interface BaseSource {
 export interface SpecSource extends BaseSource {
   readonly kind: 'SPEC'
   readonly spec: string
+  readonly quote: string
+}
+
+// M17 C7c: brownfield SOURCE_CHECK cites AUDIT.md findings via SC-AUDIT-NNN
+// blocks under `## Audit sources`. Fields are `Audit` + `Quote` (AUDIT.md
+// § "SC-AUDIT-NNN source block grammar"). An AuditSource occupies the first
+// source section in place of a SpecSource for brownfield runs.
+export interface AuditSource extends BaseSource {
+  readonly kind: 'AUDIT'
+  readonly audit: string
   readonly quote: string
 }
 
@@ -96,7 +139,13 @@ export interface DocNoneSource extends BaseSource {
   readonly whyExplicit: string
 }
 
-export type Source = SpecSource | RefSource | RefNoneSource | DocSource | DocNoneSource
+export type Source =
+  | SpecSource
+  | AuditSource
+  | RefSource
+  | RefNoneSource
+  | DocSource
+  | DocNoneSource
 
 export interface CoverageEntry {
   readonly taskId: string
@@ -105,7 +154,9 @@ export interface CoverageEntry {
 
 export interface SourceCheckArtifact {
   readonly title: string                              // 'SOURCE_CHECK'
-  readonly specSources: readonly SpecSource[]
+  // M17 C7c: the first source section holds SpecSource[] for greenfield runs
+  // and AuditSource[] for brownfield runs (mutually exclusive per profile).
+  readonly specSources: ReadonlyArray<SpecSource | AuditSource>
   readonly referenceSources: ReadonlyArray<RefSource | RefNoneSource>
   readonly docsSources: ReadonlyArray<DocSource | DocNoneSource>
   readonly coverage: readonly CoverageEntry[]
@@ -140,6 +191,13 @@ const YAML_SC_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
   spec_sources: 'Spec sources',
   specsources: 'Spec sources',
   'spec-sources': 'Spec sources',
+  // M17 C7d: brownfield SOURCE_CHECK uses `## Audit sources` in place of
+  // `## Spec sources`. Section-level YAML drift normalizes to the canonical
+  // heading; the strict parser then enforces the per-profile match.
+  'audit sources': 'Audit sources',
+  audit_sources: 'Audit sources',
+  auditsources: 'Audit sources',
+  'audit-sources': 'Audit sources',
   'reference sources': 'Reference sources',
   reference_sources: 'Reference sources',
   referencesources: 'Reference sources',
@@ -157,7 +215,7 @@ const YAML_SC_KEY_MAP: Readonly<Record<string, string>> = Object.freeze({
   'open-questions': 'Open questions',
 })
 
-const YAML_SC_KEY_PROBE = /^(?:spec[ _-]?sources|reference[ _-]?sources|references|docs[ _-]?sources|docs|coverage|open[ _-]?questions):\s*(?:\[.*\])?\s*$/im
+const YAML_SC_KEY_PROBE = /^(?:spec[ _-]?sources|audit[ _-]?sources|reference[ _-]?sources|references|docs[ _-]?sources|docs|coverage|open[ _-]?questions):\s*(?:\[.*\])?\s*$/im
 
 const YAML_SC_KEY_LINE = /^([A-Za-z][A-Za-z _-]*?):\s*(.*)$/
 
@@ -306,6 +364,8 @@ interface SectionBuf {
   startLine: number
 }
 
+// M17 C7d: the first source section accepts SPEC ids for greenfield and
+// AUDIT ids for brownfield (profile-resolved via `allowedKindsForSection`).
 const SECTION_TO_REQUIRED_PREFIX: Readonly<Record<string, readonly SourceKind[]>> = Object.freeze({
   specSources: ['SPEC'],
   referenceSources: ['REF', 'REF-NONE'],
@@ -314,16 +374,37 @@ const SECTION_TO_REQUIRED_PREFIX: Readonly<Record<string, readonly SourceKind[]>
   openQuestions: [],
 } as const)
 
+function allowedKindsForSection(
+  key: SourceCheckSectionKey,
+  profile: Profile,
+): readonly SourceKind[] {
+  if (key === 'specSources') return profile === 'brownfield' ? ['AUDIT'] : ['SPEC']
+  return SECTION_TO_REQUIRED_PREFIX[key]!
+}
+
 const REQUIRED_FIELDS_PER_KIND: Readonly<Record<SourceKind, readonly string[]>> = Object.freeze({
   SPEC: ['Spec', 'Quote'],
+  AUDIT: ['Audit', 'Quote'],
   REF: ['Path', 'Lines', 'Why'],
   'REF-NONE': ['Searched', 'Result', 'Why explicit'],
   DOC: ['Library', 'URL', 'Section', 'Why'],
   'DOC-NONE': ['Why explicit'],
 })
 
-export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceCheckArtifact {
+export function parseSourceCheck(
+  raw: string,
+  file = 'SOURCE_CHECK.md',
+  profile: Profile = 'greenfield',
+): SourceCheckArtifact {
   const issues: SourceCheckLoadIssue[] = []
+  const headingToKey = headingToKeyForProfile(profile)
+  // The profile-correct heading for the first source section, and the set of
+  // valid headings for "unknown heading" diagnostics.
+  const expectedHeadings = SOURCE_CHECK_SECTION_KEYS.map((k) =>
+    k === 'specSources' ? specSourcesHeading(profile) : SOURCE_CHECK_SECTION_HEADINGS[k],
+  )
+  const headingForKey = (k: SourceCheckSectionKey): string =>
+    k === 'specSources' ? specSourcesHeading(profile) : SOURCE_CHECK_SECTION_HEADINGS[k]
   const adapted = adaptYamlStyleSourceCheck(raw)
   const text = adapted.startsWith(BOM) ? adapted.slice(BOM.length) : adapted
 
@@ -375,12 +456,12 @@ export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceC
 
     if (line.startsWith('## ')) {
       const heading = line.slice(3).trimEnd()
-      const key = SOURCE_CHECK_HEADING_TO_KEY[heading]
+      const key = headingToKey[heading]
       if (key === undefined) {
         issues.push({
           file,
           code: 'source_check_section_unknown',
-          rule: `unknown section heading; expected one of: ${Object.values(SOURCE_CHECK_SECTION_HEADINGS).join(', ')}`,
+          rule: `unknown section heading; expected one of: ${expectedHeadings.join(', ')}`,
           detail: heading,
           line: lineNo,
         })
@@ -555,7 +636,7 @@ export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceC
       issues.push({
         file,
         code: 'source_check_missing_section',
-        rule: `required section \`## ${SOURCE_CHECK_SECTION_HEADINGS[key]}\` is missing`,
+        rule: `required section \`## ${headingForKey(key)}\` is missing`,
       })
     }
   }
@@ -570,8 +651,8 @@ export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceC
       issues.push({
         file,
         code: 'source_check_section_out_of_order',
-        rule: `sections must appear in canonical order: ${SOURCE_CHECK_REQUIRED_SECTIONS.map((k) => `## ${SOURCE_CHECK_SECTION_HEADINGS[k]}`).join(' → ')}`,
-        detail: `got: ${seenKeys.map((k) => `## ${SOURCE_CHECK_SECTION_HEADINGS[k]}`).join(' → ')}`,
+        rule: `sections must appear in canonical order: ${SOURCE_CHECK_REQUIRED_SECTIONS.map((k) => `## ${headingForKey(k)}`).join(' → ')}`,
+        detail: `got: ${seenKeys.map((k) => `## ${headingForKey(k)}`).join(' → ')}`,
         line: sections[0]?.startLine,
       })
     }
@@ -587,12 +668,12 @@ export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceC
         issues.push({
           file,
           code: 'source_check_section_empty',
-          rule: `section \`## ${SOURCE_CHECK_SECTION_HEADINGS[s.key]}\` must have ≥ 1 source block`,
+          rule: `section \`## ${headingForKey(s.key)}\` must have ≥ 1 source block`,
           line: s.startLine,
         })
         continue
       }
-      const allowedKinds = SECTION_TO_REQUIRED_PREFIX[s.key]!
+      const allowedKinds = allowedKindsForSection(s.key, profile)
       for (const block of s.blocks) {
         const kind = sourceIdKind(block.id)
         if (kind === null) continue // already reported as id_format
@@ -600,7 +681,7 @@ export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceC
           issues.push({
             file,
             code: 'source_check_id_kind_mismatch',
-            rule: `source id ${block.id} (${kind}) cannot live in \`## ${SOURCE_CHECK_SECTION_HEADINGS[s.key]}\`; allowed: ${allowedKinds.join(', ')}`,
+            rule: `source id ${block.id} (${kind}) cannot live in \`## ${headingForKey(s.key)}\`; allowed: ${allowedKinds.join(', ')}`,
             line: block.startLine,
             sourceId: block.id,
           })
@@ -700,12 +781,13 @@ export function parseSourceCheck(raw: string, file = 'SOURCE_CHECK.md'): SourceC
 
   if (issues.length > 0) throw new SourceCheckLoadError(issues)
 
-  const specSources: SpecSource[] = []
+  const specSources: Array<SpecSource | AuditSource> = []
   const referenceSources: Array<RefSource | RefNoneSource> = []
   const docsSources: Array<DocSource | DocNoneSource> = []
   for (const src of declaredSources) {
     switch (src.kind) {
       case 'SPEC':
+      case 'AUDIT':
         specSources.push(src)
         break
       case 'REF':
@@ -861,6 +943,13 @@ function buildSource(
         spec: map.get('Spec')!,
         quote: map.get('Quote')!,
       })
+    case 'AUDIT':
+      return Object.freeze({
+        ...base,
+        kind: 'AUDIT',
+        audit: map.get('Audit')!,
+        quote: map.get('Quote')!,
+      })
     case 'REF':
       return Object.freeze({
         ...base,
@@ -897,17 +986,27 @@ function buildSource(
 
 // --- serializer ----------------------------------------------------
 
-export function serializeSourceCheck(art: SourceCheckArtifact): string {
+export function serializeSourceCheck(
+  art: SourceCheckArtifact,
+  profile: Profile = 'greenfield',
+): string {
   const out: string[] = [SOURCE_CHECK_TITLE]
 
   out.push('')
-  out.push('## Spec sources')
+  // M17 C7d: brownfield writes `## Audit sources`; greenfield writes
+  // `## Spec sources`. The block field is `Audit:` for AUDIT sources and
+  // `Spec:` for SPEC sources.
+  out.push(`## ${specSourcesHeading(profile)}`)
   art.specSources.forEach((src, idx) => {
     if (idx > 0) out.push('')
     out.push('')
     out.push(`### ${src.id}: ${src.title}`)
     out.push('')
-    out.push(`- Spec: ${src.spec}`)
+    if (src.kind === 'AUDIT') {
+      out.push(`- Audit: ${src.audit}`)
+    } else {
+      out.push(`- Spec: ${src.spec}`)
+    }
     out.push(`- Quote: ${src.quote}`)
   })
 
@@ -1033,18 +1132,20 @@ export function validatePlanSourceCoverage(opts: {
         )
       }
     }
-    // The kind-coverage rule applies to the Coverage row.
+    // The kind-coverage rule applies to the Coverage row. The "primary"
+    // source is SPEC for greenfield and AUDIT for brownfield (M17 C7c) —
+    // either one satisfies the first-source requirement.
     let hasSpec = false
     let hasRef = false
     let hasDoc = false
     for (const sid of cited) {
       const kind = idToKind.get(sid)
       if (kind === undefined) continue
-      if (kind === 'SPEC') hasSpec = true
+      if (kind === 'SPEC' || kind === 'AUDIT') hasSpec = true
       else if (kind === 'REF' || kind === 'REF-NONE') hasRef = true
       else if (kind === 'DOC' || kind === 'DOC-NONE') hasDoc = true
     }
-    if (!hasSpec) issues.push(`task ${task.id} Coverage missing a SPEC source`)
+    if (!hasSpec) issues.push(`task ${task.id} Coverage missing a SPEC or AUDIT source`)
     if (!hasRef) issues.push(`task ${task.id} Coverage missing a REF or REF-NONE source`)
     if (!hasDoc) issues.push(`task ${task.id} Coverage missing a DOC or DOC-NONE source`)
   }
