@@ -9,33 +9,53 @@
 // on its own:
 //
 //   (a) fresh-run brownfield routing — `code-oz run` against a
-//       brownfield-configured git project must route into an AUDIT phase
-//       and must NOT invoke the DEFINE persona (`ba`, the Business
-//       Analyst). Today the fresh-run path falls through to `runDefine`
+//       brownfield-configured git project must route into an AUDIT phase,
+//       actually invoke the AUDIT persona (`auditor`), and must NOT invoke
+//       the DEFINE persona (`ba`, the Business Analyst). Today the
+//       fresh-run path falls through to `runDefine`
 //       (src/commands/run.ts:377), which invokes `ba`, so the
 //       no-`ba`-invocation assertion fails. (The brownfield `initRun`
 //       already emits `phase_entered(audit)` because
-//       `initialPhase('brownfield') === 'audit'`; the load-bearing half
-//       of (a) is the absence of the `ba` invocation, which only flips
-//       green once C2 routes brownfield to `dispatchAudit` instead of
-//       `runDefine`.)
+//       `initialPhase('brownfield') === 'audit'`.) The POSITIVE
+//       load-bearing anchor is the `agent_invoked(auditor)` assertion: it
+//       proves AUDIT actually ran, and only flips green once C3/C4 make the
+//       fresh brownfield run invoke the auditor persona. The absence
+//       checks (no `ba`, plus the `phase_entered(audit)` sanity) are
+//       secondary signals.
 //
 //   (b) active-run continuation — a run whose state is legitimately at
-//       `currentPhase: 'audit'` must dispatch the AUDIT phase, not hit
-//       the generic "in progress at phase <X>" no-dispatch fallback at
-//       the end of `handleActiveRun` (src/commands/run.ts:~1269; the
-//       kickoff doc calls this "the run.ts:1134 fallback" — line numbers
-//       have drifted, locate by content). Today the active-run dispatcher
-//       has no `audit` branch, so a run at `currentPhase: 'audit'` falls
-//       through every phase branch (define/plan/build/verify/review) to
-//       the terminal fallback and exits non-zero with that message. This
-//       check additionally guards against the wrong-route-to-BUILD shape
-//       the controller flagged: it asserts neither a BUILD dispatch
-//       (`phase_entered(build)` / `build_started`) nor the generic
-//       fallback occurs.
+//       `currentPhase: 'audit'` must dispatch the AUDIT phase — actually
+//       invoking the `auditor` persona — not hit the generic "in progress
+//       at phase <X>" no-dispatch fallback at the end of `handleActiveRun`
+//       (src/commands/run.ts:~1269; the kickoff doc calls this "the
+//       run.ts:1134 fallback" — line numbers have drifted, locate by
+//       content). Today the active-run dispatcher has no `audit` branch, so
+//       a run at `currentPhase: 'audit'` falls through every phase branch
+//       (define/plan/build/verify/review) to the terminal fallback and
+//       exits non-zero with that message. The POSITIVE load-bearing anchor
+//       is an `agent_invoked(auditor)` in the post-spawn `dispatchedEvents`
+//       slice: it proves the continuation genuinely dispatched AUDIT, not
+//       merely "didn't hit the old fallback." The no-fallback and
+//       no-BUILD-route guards remain as secondary belt-and-suspenders
+//       signals.
 //
 // ----------------------------------------------------------------------
 // ANTI-STUB CONTRACT (LOAD-BEARING — a Codex anti-stub reviewer audits this)
+//
+// POSITIVE AUDIT-OWNED ANCHORS (C1 fix-first hardening). A cross-family
+// Codex anti-stub review returned `fix-first`: both checks originally leaned
+// on ABSENCE assertions (no `ba`, no fallback, no BUILD route), which could
+// prematurely flip GREEN at C2 if `dispatchAudit` stubs or crashes WITHOUT
+// AUDIT actually running. Each check now carries a POSITIVE anchor that the
+// AUDIT runtime alone can satisfy: an `agent_invoked` event with
+// `agent: 'auditor'`. This is the existing event vocabulary — the codebase
+// has no `persona_invocation_started` event; the real kickoff event is
+// `agent_invoked` (see src/state/schemas.ts, src/state/events.ts), and the
+// auditor emits it the same way `ba` and the other personas already do
+// (LOCKED for C3). These positive anchors are RED today (no auditor fires
+// anywhere) and only flip GREEN once C3/C4 make the auditor persona actually
+// run. They cannot false-pass on a stubbed/crashing dispatch, because a stub
+// produces no `agent_invoked(auditor)` event.
 //
 // This test MUST NOT:
 //   - import and call phase functions to PRODUCE the behavior under test.
@@ -237,7 +257,18 @@ describe('M17 C1 — brownfield AUDIT CLI e2e (RED)', () => {
     )
     expect(enteredAudit).toBe(true)
 
-    // Load-bearing half: the DEFINE persona (`ba`) must NOT be invoked on a
+    // POSITIVE load-bearing anchor (C1 fix-first): the AUDIT persona
+    // (`auditor`) must actually be invoked. This proves AUDIT genuinely ran
+    // rather than being inferred from the absence of `ba`. It is RED today
+    // (no auditor fires anywhere) and only flips GREEN once C3/C4 make the
+    // fresh brownfield run invoke the auditor persona via `agent_invoked`.
+    // A stubbed/crashing `dispatchAudit` at C2 cannot satisfy this.
+    const auditorInvoked = events.some(
+      (e) => e.type === 'agent_invoked' && e.agent === 'auditor',
+    )
+    expect(auditorInvoked).toBe(true)
+
+    // Secondary signal: the DEFINE persona (`ba`) must NOT be invoked on a
     // brownfield run. Today the fresh-run path falls through to `runDefine`,
     // which invokes `ba` via `agent_invoked` (src/providers/invoke.ts), so
     // this assertion FAILS until C2 routes brownfield to AUDIT.
@@ -276,19 +307,31 @@ describe('M17 C1 — brownfield AUDIT CLI e2e (RED)', () => {
     const afterEvents = await readEventsFromFile(eventsFile)
     const dispatchedEvents = afterEvents.slice(beforeCount)
 
-    // Failure shape today: handleActiveRun has no `audit` branch, so the
+    // POSITIVE load-bearing anchor (C1 fix-first): the post-spawn slice must
+    // contain an `agent_invoked(auditor)` — proof the continuation genuinely
+    // dispatched AUDIT and ran the auditor persona, not merely "didn't hit
+    // the old fallback." It is RED today and only flips GREEN once C3/C4 wire
+    // the active-run AUDIT branch to invoke the auditor. A stubbed/crashing
+    // `dispatchAudit` at C2 cannot satisfy this anchor.
+    const auditorDispatched = dispatchedEvents.some(
+      (e) => e.type === 'agent_invoked' && e.agent === 'auditor',
+    )
+    expect(auditorDispatched).toBe(true)
+
+    // Secondary signal: handleActiveRun has no `audit` branch today, so the
     // run falls through to the terminal "in progress at phase <X>" fallback
     // and exits non-zero with that message. Assert that fallback did NOT
     // happen — this FAILS today and flips green once C2 adds the audit
-    // dispatch branch.
+    // dispatch branch. (Belt-and-suspenders behind the positive anchor.)
     const hitNoDispatchFallback =
       /an active run is in progress at phase audit/.test(result.stderr) &&
       result.exitCode !== 0
     expect(hitNoDispatchFallback).toBe(false)
 
-    // Guard against the wrong-route-to-BUILD shape: the audit run must
-    // never dispatch BUILD. (Both assertions are load-bearing; this one
-    // catches a misroute, the one above catches the no-dispatch fallback.)
+    // Secondary signal: guard against the wrong-route-to-BUILD shape — the
+    // audit run must never dispatch BUILD. (Belt-and-suspenders behind the
+    // positive anchor; this catches a misroute, the one above catches the
+    // no-dispatch fallback.)
     const routedToBuild = dispatchedEvents.some(
       (e) =>
         (e.type === 'phase_entered' && e.phase === 'build') ||
