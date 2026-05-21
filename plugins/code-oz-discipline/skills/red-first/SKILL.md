@@ -56,8 +56,8 @@ refuse and say why:
 
 - Do not write or emit any `GATE_*` file. Gate signals are file-based and
   engine-owned.
-- Do not write `VERIFY.md`, `REVIEW.md`, or `AUDIT.md`. Those are engine
-  artifacts.
+- Do not write `VERIFY.md`, `REVIEW.md`, `AUDIT.md`, `SOURCE_CHECK.md`, or
+  `BUILD_REPORT.md`. Those are engine artifacts.
 - Do not declare that anything "passed" or was "approved" in a gate sense. This
   skill cannot pass a gate.
 - Do not claim you performed a cross-family review. A different-model review
