@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 // M17 C4 — rule-16 CI guard: no leaked LLM-drafted auditor persona prose.
@@ -31,13 +32,27 @@ import { fileURLToPath } from 'node:url'
 //
 //   (B) auditor.md PRESENT (after human co-authorship): the guard switches to a
 //       verbatim-overlap check. It extracts the auditor persona BODY (the
-//       Markdown after the YAML frontmatter), normalizes whitespace, and
-//       asserts that no scanned doc contains a long contiguous run of that body
-//       verbatim. A verbatim match means the shipped persona prose was copied
-//       out of (or into) a generation-doc — flag it. The human-authored body
-//       carries a `AUDITOR_PERSONA_BODY_BEGIN` sentinel line near its top; the
-//       guard uses it both to locate the body and to assert the body is present
-//       (so condition B cannot silently degrade to a no-op).
+//       Markdown after the YAML frontmatter), STRIPS the provenance sentinel and
+//       any marker lines so the probes are drawn from real persona PROSE (not
+//       from the freshly-added sentinel), normalizes whitespace, and asserts
+//       that no scanned doc contains a long contiguous run of that prose
+//       verbatim. The probe is NOT a single first-slice: it is a set of
+//       non-overlapping windows spanning the WHOLE normalized prose, so a
+//       verbatim paste of any LATER part of the body is caught too. A verbatim
+//       match means the shipped persona prose was copied out of (or into) a
+//       generation-doc — flag it. The human-authored body still carries a
+//       `AUDITOR_PERSONA_BODY_BEGIN` sentinel line near its top; the guard uses
+//       it to assert the body is present (so condition B cannot silently
+//       degrade to a no-op) but never lets it leak into a probe.
+//
+//       WHY strip the sentinel before probing (Codex C4 fix-first finding): the
+//       sentinel sits at the TOP of the body, inside any first-slice probe. A
+//       future auditor.md copied verbatim from a CODEX_*/CLAUDE_* doc, then
+//       given a freshly-added sentinel, would PASS a naive first-slice check —
+//       the scanned doc lacks the new sentinel, so `doc.includes(probe)` is
+//       false. The sentinel poisons the probe. Stripping it (and probing
+//       multiple slices) closes both the sentinel-poison and first-slice-only
+//       evasion gaps.
 //
 // The sentinel name is published here so the human co-authoring auditor.md
 // knows the contract: place `AUDITOR_PERSONA_BODY_BEGIN` as the first content
@@ -83,6 +98,55 @@ function personaBody(raw: string): string {
   return m ? raw.slice(m[0].length) : raw
 }
 
+/** Drop the provenance sentinel and any marker-only lines from the body so the
+ *  probes are drawn from real persona PROSE. The sentinel lives at the TOP of
+ *  the body; if left in, it sits inside a first-slice probe and a doc that
+ *  lacks the freshly-added sentinel would never match (sentinel-poisoned probe,
+ *  Codex C4 finding). A "marker line" is a line whose content (whitespace
+ *  collapsed) is the sentinel, or is the sentinel preceded/followed only by
+ *  Markdown comment / punctuation scaffolding (e.g. `<!-- AUDITOR_PERSONA_BODY_BEGIN -->`). */
+function strippedProse(body: string): string {
+  return body
+    .split('\n')
+    .filter((line) => !line.includes(LEAK_SENTINEL))
+    .join('\n')
+}
+
+/** Build a set of non-overlapping normalized windows spanning the WHOLE prose,
+ *  so a verbatim paste of ANY part of the body (not just its head) is caught.
+ *  Window length is calibrated long enough to exclude incidental phrase overlap
+ *  with design sketches yet short enough to catch a pasted LLM draft block. */
+const PROBE_WINDOW = 200
+
+function probeWindows(normProse: string): string[] {
+  const probes: string[] = []
+  for (let i = 0; i < normProse.length; i += PROBE_WINDOW) {
+    const slice = normProse.slice(i, i + PROBE_WINDOW)
+    // Only keep windows long enough to be discriminating; a short trailing
+    // remainder cannot reliably distinguish a paste from incidental overlap.
+    if (slice.length >= 120) probes.push(slice)
+  }
+  // Guarantee at least one probe even for a short body (degenerate case).
+  if (probes.length === 0 && normProse.length >= 40) probes.push(normProse)
+  return probes
+}
+
+/** Core condition-B check, factored out so a temporary in-test fixture can
+ *  exercise the strengthened logic without creating the real auditor.md.
+ *  Returns the list of docs that contain ANY probe window verbatim. */
+function leakOffenders(personaRaw: string, docPaths: string[]): string[] {
+  const body = personaBody(personaRaw)
+  const prose = strippedProse(body)
+  const normProse = normalize(prose)
+  const probes = probeWindows(normProse)
+  const offenders = new Set<string>()
+  for (const f of docPaths) {
+    const text = normalize(readFileSync(f, 'utf8'))
+    if (probes.some((p) => text.includes(p))) offenders.add(f)
+  }
+  return [...offenders]
+}
+
 describe('M17 rule-16 guard — no leaked auditor persona prose in generation docs', () => {
   test('the scan covers the documented doc families (guard never no-ops silently)', async () => {
     const docs = await collectScannedDocs()
@@ -121,22 +185,93 @@ describe('M17 rule-16 guard — no leaked auditor persona prose in generation do
     const raw = readFileSync(AUDITOR_PERSONA_PATH, 'utf8')
     const body = personaBody(raw)
     // The co-authored body must carry the sentinel so this check cannot
-    // degrade to a no-op against an empty/placeholder body.
+    // degrade to a no-op against an empty/placeholder body. The sentinel is
+    // a REQUIRED provenance marker (rule 16); it is stripped only when
+    // BUILDING probes, never as a relaxation of this presence requirement.
     expect(body).toContain(LEAK_SENTINEL)
 
-    const normBody = normalize(body)
-    // A long contiguous slice of the body, normalized; a verbatim copy in a
-    // generation doc is the rule-16 leak. 200 chars is long enough to exclude
-    // incidental phrase overlap, short enough to catch a pasted block.
-    const probe = normBody.slice(0, Math.min(200, normBody.length))
-    expect(probe.length).toBeGreaterThan(40)
+    // Probes are drawn from the sentinel-stripped prose and span the whole
+    // body; assert we actually have something to probe.
+    const probes = probeWindows(normalize(strippedProse(body)))
+    expect(probes.length).toBeGreaterThan(0)
 
     const docs = await collectScannedDocs()
-    const offenders: string[] = []
-    for (const f of docs) {
-      const text = normalize(readFileSync(f, 'utf8'))
-      if (text.includes(probe)) offenders.push(f)
+    expect(leakOffenders(raw, docs)).toEqual([])
+  })
+
+  // --- Strengthened-logic coverage via temporary in-test fixtures ----------
+  // These exercise condition-B's verbatim-detection logic WITHOUT creating the
+  // real src/agents/defaults/auditor.md (which must stay absent until the human
+  // co-authors it — rule 16, and the audit-brownfield-cli e2e stays RED on it).
+
+  test('strengthened guard FLAGS a body pasted verbatim from a generation doc', () => {
+    // A realistic auditor-like body: a long verbatim slice of the auditor-body
+    // SKETCH that already lives in CODEX_BRIEFING_M17.md. This is the exact
+    // paste-the-draft failure rule 16 forbids.
+    const briefing = join(REPO_ROOT, 'docs', 'research', 'CODEX_BRIEFING_M17.md')
+    const sketch = normalize(readFileSync(briefing, 'utf8'))
+    // Take a ~1000-char contiguous run from deep inside the briefing body so we
+    // are testing a LATER slice (not the head) — the first-slice-only evasion.
+    const pasted = sketch.slice(800, 1800)
+    expect(pasted.length).toBeGreaterThan(600)
+
+    const tmp = mkdtempSync(join(tmpdir(), 'leak-guard-'))
+    try {
+      const fixtureDoc = join(tmp, 'CODEX_FIXTURE.md')
+      writeFileSync(fixtureDoc, readFileSync(briefing, 'utf8'), 'utf8')
+      // Build a persona body whose PROSE is the pasted run, with a freshly
+      // added sentinel at the top. Under the OLD first-slice logic the sentinel
+      // would poison the probe and this would PASS; the strengthened guard must
+      // FLAG it because it probes the stripped prose across the whole body.
+      const leakedPersona = `---\nname: auditor\n---\n${LEAK_SENTINEL}\n\n${pasted}\n`
+      const offenders = leakOffenders(leakedPersona, [fixtureDoc])
+      expect(offenders).toContain(fixtureDoc)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
     }
-    expect(offenders).toEqual([])
+  })
+
+  test('strengthened guard PASSES a clean hand-authored body (no verbatim run)', () => {
+    const briefing = join(REPO_ROOT, 'docs', 'research', 'CODEX_BRIEFING_M17.md')
+    const tmp = mkdtempSync(join(tmpdir(), 'leak-guard-'))
+    try {
+      const fixtureDoc = join(tmp, 'CODEX_FIXTURE.md')
+      writeFileSync(fixtureDoc, readFileSync(briefing, 'utf8'), 'utf8')
+      // A body that shares CONCEPTUAL overlap (same role words) but no long
+      // verbatim run with the briefing. Sentinel present at the top.
+      const cleanPersona = [
+        '---',
+        'name: auditor',
+        '---',
+        LEAK_SENTINEL,
+        '',
+        '# Auditor',
+        '',
+        'I read a repository and an operator complaint. I write down where the',
+        'trouble seems to sit, how someone could trigger it again, and which',
+        'guarantees a later change must keep intact. I never edit a file and I',
+        'never hand over a fix; that belongs to a different step entirely. When',
+        'I cannot open something I claimed to inspect, I say so plainly and leave',
+        'an open question rather than guess a line number.',
+      ].join('\n')
+      const offenders = leakOffenders(cleanPersona, [fixtureDoc])
+      expect(offenders).toEqual([])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  test('sentinel no longer poisons the probe (stripped before probing)', () => {
+    // Two bodies with IDENTICAL prose; one has the sentinel, one does not.
+    // They must produce the SAME probe set, proving the sentinel is excluded.
+    const prose = 'The auditor grounds every claim in file content read from the repository before writing it down here in prose form for the record.'
+    const withSentinel = `---\nname: auditor\n---\n${LEAK_SENTINEL}\n${prose}\n`
+    const withoutSentinel = `---\nname: auditor\n---\n${prose}\n`
+
+    const probesA = probeWindows(normalize(strippedProse(personaBody(withSentinel))))
+    const probesB = probeWindows(normalize(strippedProse(personaBody(withoutSentinel))))
+    expect(probesA).toEqual(probesB)
+    // And no probe contains the sentinel.
+    expect(probesA.some((p) => p.includes(LEAK_SENTINEL))).toBe(false)
   })
 })
