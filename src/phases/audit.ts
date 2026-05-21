@@ -26,6 +26,7 @@
 import { join } from 'node:path'
 
 import { invokeAgent, type InvokeContext } from '../providers/invoke.ts'
+import { composeAuditPrompt } from '../prompts/index.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
 import { CANONICAL_ARTIFACTS } from '../state/schemas.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
@@ -37,6 +38,11 @@ import { appendEvent, type EventLogPaths } from '../state/events.ts'
 import { withLock } from '../state/lock.ts'
 import type { AgentRegistry } from '../agents/loader.ts'
 import type { ProviderError } from '../providers/errors.ts'
+
+// The ready signal the auditor emits before its AUDIT.md draft. Parsing /
+// validation of the draft lands in C5b; C4 only wires the invocation, so this
+// constant is consumed by composeAuditPrompt today and by the C5b parser later.
+export const AUDIT_READY_SIGNAL = '<audit-ready/>'
 
 // --- public API ----------------------------------------------------
 
@@ -223,24 +229,73 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
     })
   }
 
-  // --- happy path (unreached in C3; structured for C4/C5b/C6) -------
+  // --- happy path (C4 wires invocation; C5b/C6 add artifact + gate) -
   //
   // C4 wires the single-shot auditor invocation through invokeAgent (the
   // existing rule-13 chokepoint), draining its ProviderEvents the same way
-  // runPlan does. C5b serializes + validates AUDIT.md; C6 emits the
-  // audit_completed event (with sha) and requires the gate. The minimal
-  // shape below is intentionally a stub: it neither invokes nor writes an
-  // artifact yet, so no premature behavior leaks into C3.
-  void invokeAgent
+  // runPlan does — invokeAgent appends agent_invoked / agent_completed itself.
+  // C5b serializes + validates AUDIT.md; C6 emits the audit_completed event
+  // (with sha) and requires the gate. AUDIT.md production + the gate are NOT
+  // added here, so after draining the invocation we fall through to the
+  // bookkept not-yet-implemented intervention below (rule 11).
+  //
+  // This path is only reached once a project registers an `auditor` persona;
+  // the bundled persona is human-co-authored (rule 16) and lands later, so
+  // the e2e (tests/e2e/audit-brownfield-cli.test.ts) stays RED on the
+  // agent_invoked(auditor) anchor until then.
   void atomicWriteFile
   void requireGate
+
+  // Tools the auditor may call (repo_context sub-scope, rule 18). Empty when
+  // the persona declares none — matches runPlan's derivation.
+  const availableTools =
+    auditor.permissions.tool_use?.repo_context?.tools !== undefined
+      ? [...auditor.permissions.tool_use.repo_context.tools]
+      : []
+
+  // Compose the AUDIT prompt: universal-rules-first (rule 16, guaranteed by
+  // composeAuditPromptPure) + the auditor body + the operator's brownfield
+  // problem statement carried in the user turn. The problem statement is
+  // plumbed in via run_started (C4-prep) and surfaced to the persona here.
+  const auditPrompt = await composeAuditPrompt({
+    agentBody: auditor.body,
+    readySignal: AUDIT_READY_SIGNAL,
+    availableTools,
+  })
+  const userTurn =
+    `Operator problem statement:\n\n${opts.problemStatement}\n\n` +
+    'Analyze the existing repository and produce AUDIT.md per the locked schema.'
+
+  // Drain the single-shot invocation. invokeAgent appends agent_invoked /
+  // agent_completed automatically (rule 13 chokepoint); we collect the
+  // streamed text for C5b's parser without acting on it yet.
+  let auditText = ''
+  for await (const event of invokeAgent(opts.invokeCtx, {
+    runId: opts.runId,
+    phase: 'audit',
+    agent: auditor,
+    files: [],
+    prompt: `${auditPrompt}\n\n## Operator request\n\n${userTurn}`,
+    // No `role`: `auditor` is outside M12_COMPANY_ROLES, so per-role budget
+    // gating does not apply (canonicalRoleFromAgent would return undefined).
+    // Adding the auditor to the role roster is a separate authority change
+    // (rule 20); the invocation still counts against global + per-phase
+    // budgets (rule 19).
+  })) {
+    if (event.type === 'content_chunk') auditText += event.text
+    else if (event.type === 'turn_completed' && auditText.length === 0) {
+      auditText = event.response.content
+    }
+  }
+  // auditText is intentionally not yet parsed/validated — that is C5b. Hold a
+  // reference so the drained output is not dead code before C5b consumes it.
+  void auditText
+
   const target = auditPath(opts.runPaths)
-  // This path is reachable once a project registers a custom `auditor`
-  // (the bundled persona lands in C4). It must NOT silently exit: route the
-  // not-yet-implemented stop through recordIntervention so the intervention
-  // event + NEEDS_INTERVENTION.json are written with an actionable message
-  // (rule 11). AUDIT.md production + the persona invocation land in C4/C5b;
-  // C3-prep keeps this a clean, bookkept not-yet-implemented intervention.
+  // The invocation ran, but AUDIT.md production + the gate are not implemented
+  // yet. Route the not-yet-implemented stop through recordIntervention so the
+  // intervention event + NEEDS_INTERVENTION.json carry an actionable message
+  // (rule 11) rather than a silent exit. AUDIT.md production lands in C5b/C6.
   const code = 'audit_runtime_not_yet_complete'
   const rule = 'AUDIT artifact production + gate land in M17 C5b/C6'
   const actionableSuggestions = [

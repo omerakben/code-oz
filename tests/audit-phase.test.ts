@@ -113,21 +113,35 @@ describe('M17 C4-prep — operator problemStatement persisted on run_started (ev
       runPaths: paths,
       projectRoot,
       config: DEFAULT_CONFIG,
+      // C4: the wired happy path now drains a real invokeAgent against
+      // FakeProvider, so the wrapper's wall-time budget check needs a clock
+      // consistent with the run_started timestamp (seeded at 11:00:00Z).
+      now: () => '2026-05-21T11:00:02.000Z',
     }
     // Register an auditor so the happy-path fallback is reachable; assert it
-    // is bookkept as an intervention (Fix 2: never silently exits).
+    // is bookkept as an intervention (Fix 2: never silently exits). C4 wired
+    // the happy path to compose the AUDIT prompt and drain a single-shot
+    // invokeAgent before falling through to the not-yet-implemented
+    // intervention, so the fixture is a complete AgentDefinition (provider
+    // `fake`, no repo_context tools) and the invocation runs against
+    // FakeProvider. The real bundled `auditor.md` (frontmatter + co-authored
+    // body) lands in the human co-authoring step (rule 16); this fixture body
+    // is NOT persona prose, it is an inert test stub.
+    const auditorDef = Object.freeze({
+      file: 'fixture://auditor.md',
+      name: 'auditor',
+      type: 'agent' as const,
+      phase: 'audit' as const,
+      provider: 'fake' as const,
+      modelPolicy: 'any' as const,
+      permissions: Object.freeze({}),
+      description: 'audit phase test fixture (not persona prose)',
+      body: 'FIXTURE auditor body — not persona prose.',
+    })
     const auditorOnlyRegistry: AgentRegistry = Object.freeze({
-      getByName: (name: string) =>
-        name === 'auditor'
-          ? Object.freeze({
-              name: 'auditor',
-              phase: 'audit',
-              type: 'agent',
-              prompt: 'auditor stub',
-            })
-          : undefined,
+      getByName: (name: string) => (name === 'auditor' ? auditorDef : undefined),
       getByPhase: () => Object.freeze([]),
-      listAll: () => Object.freeze([]),
+      listAll: () => Object.freeze([auditorDef]),
     }) as unknown as AgentRegistry
 
     const result = await runAudit({
@@ -147,6 +161,16 @@ describe('M17 C4-prep — operator problemStatement persisted on run_started (ev
       expect(result.code).toBe('audit_runtime_not_yet_complete')
     }
     const after = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    // C4 wiring proof: when the auditor resolves, runAudit composes the AUDIT
+    // prompt and drains a single-shot invokeAgent, which appends
+    // agent_invoked(auditor) (rule 13 chokepoint) BEFORE the not-yet-complete
+    // intervention. The bundled persona is still unregistered in production
+    // (rule 16), so the brownfield e2e stays RED until the human registers it.
+    expect(
+      after.some(
+        (e) => e.type === 'agent_invoked' && (e as { agent?: string }).agent === 'auditor',
+      ),
+    ).toBe(true)
     expect(
       after.some(
         (e) =>
