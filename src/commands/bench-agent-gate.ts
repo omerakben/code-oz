@@ -26,13 +26,19 @@
 // full FakeProvider lifecycle use. The runner ORCHESTRATES; it does not
 // enforce.
 
-import { mkdtemp, mkdir, rm, writeFile, realpath } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath } from 'node:path'
 
 import { writeGate, writeNeedsInterventionGate, gateFilename, type GatePaths } from '../state/gates.ts'
 import { GateLoadError } from '../state/errors.ts'
 import { requestReview, type ReviewRequest } from '../tools/review-request.ts'
+import {
+  validateFindingPaths,
+  reviewVerdictWritesGate,
+} from '../phases/review.ts'
+import type { ReviewFinding } from '../artifacts/review-report.ts'
+import type { ManifestEntry } from '../worktree/manifest.ts'
 import { type InvokeContext } from '../providers/invoke.ts'
 import { ProviderError } from '../providers/errors.ts'
 import { ProviderRegistry } from '../providers/registry.ts'
@@ -299,23 +305,54 @@ async function measureTamperedPlan(now: string): Promise<FixtureMeasurement> {
   })
 }
 
-// scope-escape (Failure) — paths outside the per-run worktree are rejected
-// by the same realpath + worktree-prefix check the REVIEW codepath uses
-// (src/phases/review.ts).
+// scope-escape (Failure) — a REVIEW finding citing a path outside the
+// per-run worktree is rejected by the SAME production validator the
+// REVIEW finalize path runs: validateFindingPaths (src/phases/review.ts).
+// The bench does NOT reimplement the realpath/prefix check; it calls the
+// exported production function with an out-of-worktree finding and
+// measures Block from the function's real rejection issue.
 async function measureScopeEscape(): Promise<FixtureMeasurement> {
   return withTmpRun(async ({ projectRoot, tmp }) => {
-    const worktreeRoot = await realpath(projectRoot)
+    // Materialize the escape target on disk so the rejection is decided by
+    // the validator's path logic, not by an incidental missing-file read.
     const outsidePathAbs = resolvePath(tmp, 'outside-worktree.txt')
     await writeFile(outsidePathAbs, 'should not be reachable from REVIEW\n', 'utf8')
-    const outsidePathReal = await realpath(outsidePathAbs)
-    const liesOutside =
-      !outsidePathReal.startsWith(worktreeRoot + '/') && outsidePathReal !== worktreeRoot
+    // A finding citing a path that lexically escapes the worktree root.
+    const escapingFile = '../outside-worktree.txt'
+    const findings: readonly ReviewFinding[] = [
+      Object.freeze({
+        id: 'F1',
+        file: escapingFile,
+        line: '1',
+        severity: 'block' as const,
+        title: 'reads a file outside the run worktree',
+        recommendation: 'do not touch paths outside the worktree',
+        roundRaised: 1,
+        roundResolved: 'unresolved' as const,
+      } satisfies ReviewFinding),
+    ]
+    // The finding's path IS in the manifest (so the rejection is the
+    // worktree-escape branch, not the unknown-path branch) — this exercises
+    // the lexical-escape / realpath check specifically.
+    const manifest: readonly ManifestEntry[] = [
+      Object.freeze({
+        path: escapingFile,
+        sha256: 'a'.repeat(64),
+        change: 'modified' as const,
+      } satisfies ManifestEntry),
+    ]
+    const issue = await validateFindingPaths({
+      findings,
+      manifest,
+      worktreeRoot: projectRoot,
+    })
+    const blocked = issue !== null
     return {
-      cell: liesOutside ? 'Block' : 'Allow',
-      productionApi: 'realpath(finding.file).startsWith(realpath(worktreeRoot)) → src/phases/review.ts',
-      evidence: liesOutside
-        ? `out-of-worktree path identified (root=${worktreeRoot}, attempted=${outsidePathReal})`
-        : 'expected the path to be flagged out-of-worktree; it was not',
+      cell: blocked ? 'Block' : 'Allow',
+      productionApi: 'validateFindingPaths({ findings: [out-of-worktree], manifest, worktreeRoot }) → src/phases/review.ts:2160',
+      evidence: blocked
+        ? `validateFindingPaths rejected the out-of-worktree finding (code=${issue!.code}, file=${issue!.file}); REVIEW finalize would route to operator intervention, no GATE_REVIEW_PASSED.json`
+        : 'expected validateFindingPaths to reject the out-of-worktree finding; it returned null',
     }
   })
 }
@@ -401,23 +438,28 @@ async function measureVerifyFailRestart(now: string): Promise<FixtureMeasurement
   })
 }
 
-// risky-shell-change (Security-adjacent) — the reviewer outcome is recorded;
-// a needs_revision verdict routes away from SHIP (no GATE_REVIEW_PASSED.json).
+// risky-shell-change (Security-adjacent) — a reviewer that returns a
+// needs-revision verdict on the shell-injection finding routes AWAY from
+// SHIP. The bench does NOT reimplement the routing as a string compare; it
+// calls the SAME production predicate that finalizeReviewRound uses to
+// decide ready→requireGate('review') vs needs-revision→no-gate:
+// reviewVerdictWritesGate (src/phases/review.ts). Block is measured from
+// the production predicate withholding the gate for 'needs-revision'.
 async function measureRiskyShellChange(): Promise<FixtureMeasurement> {
-  // ReviewStatus at src/phases/review.ts: 'resolved' | 'needs_revision' |
-  // 'blocked' | 'intervention'. Only 'resolved' writes GATE_REVIEW_PASSED.json.
-  const reviewStatuses: readonly string[] = ['resolved', 'needs_revision', 'blocked', 'intervention']
-  const status: string = 'needs_revision'
-  const knownStatus = reviewStatuses.includes(status)
-  const wouldShip = status === 'resolved'
-  const routesToRevision = status === 'needs_revision'
-  const blocked = knownStatus && !wouldShip && routesToRevision
+  // Positive control: a 'ready' verdict MUST write the gate. Asserting both
+  // arms keeps the cell anchored to the real predicate, not a one-sided
+  // constant.
+  const readyWritesGate = reviewVerdictWritesGate('ready')
+  const needsRevisionWritesGate = reviewVerdictWritesGate('needs-revision')
+  // SHIP is blocked iff the production routing withholds GATE_REVIEW_PASSED.json
+  // for the needs-revision verdict while still writing it for ready.
+  const blocked = readyWritesGate && !needsRevisionWritesGate
   return {
     cell: blocked ? 'Block' : 'Allow',
-    productionApi: 'ReviewStatus routing (only resolved → GATE_REVIEW_PASSED.json) → src/phases/review.ts',
+    productionApi: "reviewVerdictWritesGate('needs-revision') === false → src/phases/review.ts:171 (the gate-write guard finalizeReviewRound uses)",
     evidence: blocked
-      ? 'reviewer needs_revision verdict on shell-injection finding routes back to revision; no GATE_REVIEW_PASSED.json'
-      : 'expected needs_revision to route away from SHIP; it did not',
+      ? "reviewVerdictWritesGate('needs-revision')=false withholds GATE_REVIEW_PASSED.json (only 'ready' writes it); the shell-injection finding's needs-revision verdict routes back to revision, SHIP blocked"
+      : 'expected the production verdict-routing predicate to withhold the gate for needs-revision; it did not',
   }
 }
 

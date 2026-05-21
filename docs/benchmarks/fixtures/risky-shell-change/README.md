@@ -21,16 +21,20 @@ false-negative, never a hidden silent pass.
 
 ## What code-oz adds (the measured Fake cell)
 
-The reviewer outcome is recorded as a `ReviewStatus`. Only a `resolved` verdict
-writes `GATE_REVIEW_PASSED.json`. A `needs_revision` verdict on the
-shell-injection finding routes back to revision and withholds the SHIP gate.
-The Fake measurement exercises the recorded-verdict routing: `needs_revision`
-does not ship.
+A completed REVIEW round routes to SHIP only when its verdict is `ready`. The
+production gate-write guard `finalizeReviewRound` uses is the predicate
+`reviewVerdictWritesGate(verdict)`: it returns `true` only for `ready`, so a
+`needs-revision` verdict on the shell-injection finding never reaches
+`requireGate('review')` and `GATE_REVIEW_PASSED.json` is not written. The bench
+runner calls that exact exported predicate and reads its real result; it does
+not compare verdict strings locally.
 
-Honesty note (per the protocol): this fixture proves the *routing* — that a
-needs-revision verdict cannot ship — not that any specific model would catch
-the injection. Reviewer false-negatives remain a measured metric, not a hidden
-pass.
+Honesty note (per the protocol): this fixture proves the *routing contract* via
+the production predicate — that a needs-revision verdict cannot write the SHIP
+gate — not that any specific model would catch the injection. It exercises the
+verdict→gate decision, not the full `runReview` loop. Reviewer false-negatives
+remain a measured metric, not a hidden pass.
 
-- Production API exercised: `ReviewStatus` routing — only `resolved` writes the gate (`src/phases/review.ts`)
-- Measured outcome: `needs_revision` routes away from SHIP; no `GATE_REVIEW_PASSED.json` → Block
+- Production API exercised: `reviewVerdictWritesGate('needs-revision') === false`, the gate-write guard in `finalizeReviewRound` (`src/phases/review.ts`)
+- Measured outcome: the production predicate withholds the gate for
+  `needs-revision` (only `ready` writes it) → Block; no `GATE_REVIEW_PASSED.json`

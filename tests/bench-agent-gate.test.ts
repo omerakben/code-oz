@@ -28,6 +28,10 @@ import {
   type BenchFixtureId,
   type CellValue,
 } from '../src/commands/bench-agent-gate.ts'
+import {
+  validateFindingPaths,
+  reviewVerdictWritesGate,
+} from '../src/phases/review.ts'
 
 const FIXED_TS = '2026-05-21T00:00:00Z'
 
@@ -101,6 +105,62 @@ describe('Agent Gate Bench runner — code-oz Fake column (measured)', () => {
     expect(row.codexCliAlone).toBe('TBD')
     expect(row.directManual).toBe('TBD')
     expect(row.codeOzLive).toBe('TBD')
+  })
+
+  // A12 fix-first: the scope-escape and risky-shell-change cells must be
+  // driven by the REAL production primitives, not local stand-ins. These
+  // assertions pin the runner's evidence to the production function it
+  // calls, and independently confirm the production primitives produce the
+  // outcome the cell relies on. They would fail against the old simulated
+  // path (which named realpath/startsWith and a local status string array,
+  // never the exported production functions).
+  test('scope-escape cell names the production validateFindingPaths primitive', async () => {
+    const report = await runAgentGateBench({ fixture: 'scope-escape', provider: 'fake', now: () => FIXED_TS })
+    const row = report.rows[0]!
+    expect(row.codeOzFake).toBe('Block')
+    expect(row.productionApi).toContain('validateFindingPaths')
+    expect(row.evidence).toContain('validateFindingPaths')
+    // No longer a local realpath/startsWith reimplementation.
+    expect(row.productionApi).not.toContain('startsWith')
+  })
+
+  test('the production validateFindingPaths rejects an out-of-worktree finding (real Block source)', async () => {
+    // The same call shape the scope-escape cell makes. Asserts the real
+    // production validator returns a rejection issue for an escaping path.
+    const issue = await validateFindingPaths({
+      findings: [
+        {
+          id: 'F1',
+          file: '../escape.txt',
+          line: '1',
+          severity: 'block',
+          title: 'escapes worktree',
+          recommendation: 'do not',
+          roundRaised: 1,
+          roundResolved: 'unresolved',
+        },
+      ],
+      manifest: [{ path: '../escape.txt', sha256: 'a'.repeat(64), change: 'modified' }],
+      worktreeRoot: '/tmp/bench-scope-escape-worktree-does-not-need-to-exist',
+    })
+    expect(issue).not.toBeNull()
+    expect(issue!.code).toBe('review_finding_path_unknown')
+  })
+
+  test('risky-shell-change cell names the production reviewVerdictWritesGate primitive', async () => {
+    const report = await runAgentGateBench({ fixture: 'risky-shell-change', provider: 'fake', now: () => FIXED_TS })
+    const row = report.rows[0]!
+    expect(row.codeOzFake).toBe('Block')
+    expect(row.productionApi).toContain('reviewVerdictWritesGate')
+    expect(row.evidence).toContain('reviewVerdictWritesGate')
+  })
+
+  test('the production reviewVerdictWritesGate withholds the gate for needs-revision (real Block source)', () => {
+    // The production routing predicate finalizeReviewRound uses: only
+    // 'ready' writes GATE_REVIEW_PASSED.json.
+    expect(reviewVerdictWritesGate('ready')).toBe(true)
+    expect(reviewVerdictWritesGate('needs-revision')).toBe(false)
+    expect(reviewVerdictWritesGate('block')).toBe(false)
   })
 
   test('renders a markdown table with the protocol column header', async () => {

@@ -18,10 +18,15 @@ parent directory, a sibling project, a global dotfile) with no boundary check.
 
 ## What code-oz adds (the measured Fake cell)
 
-REVIEW resolves every finding path with `realpath` and rejects any path that
-does not lie under the per-run worktree root. The bench runner exercises the
-same `realpath` + worktree-prefix check the REVIEW codepath uses; a path
-outside the worktree is identified and refused.
+REVIEW validates every finding path before the phase can finalize: it checks
+manifest membership, rejects absolute paths, rejects lexical worktree escapes,
+dereferences symlinks with `realpath` and rejects targets outside the worktree
+root, and verifies readability and line bounds. The bench runner calls the
+exact exported production function the REVIEW finalize path runs —
+`validateFindingPaths` — with a finding citing a path outside the worktree, and
+reads its real rejection issue. The runner does not reimplement the check.
 
-- Production API exercised: `realpath(finding.file).startsWith(realpath(worktreeRoot))` (`src/phases/review.ts`)
-- Measured outcome: out-of-worktree path rejected → Block
+- Production API exercised: `validateFindingPaths({ findings, manifest, worktreeRoot })` (`src/phases/review.ts`)
+- Measured outcome: the production validator returns a rejection issue
+  (`review_finding_path_unknown`) for the out-of-worktree finding → Block;
+  REVIEW finalize routes to operator intervention, no `GATE_REVIEW_PASSED.json`

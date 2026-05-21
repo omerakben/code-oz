@@ -159,6 +159,19 @@ import { isKnownPhaseEvent } from '../state/schemas.ts'
 
 export const REVIEW_READY_SIGNAL = '<review-ready/>'
 
+/**
+ * Verdict → SHIP routing decision. This is the single production
+ * predicate that decides whether a completed REVIEW round writes
+ * `GATE_REVIEW_PASSED.json` (`requireGate('review')`) and so unblocks
+ * SHIP. Only a `ready` verdict writes the gate; `needs-revision` and
+ * `block` route AWAY from SHIP (no gate file). Both the single-reviewer
+ * terminal branch (`finalizeReviewRound`) and the panel resolved branch
+ * consume this so the routing has exactly one definition.
+ */
+export function reviewVerdictWritesGate(verdict: ReviewVerdict): boolean {
+  return verdict === 'ready'
+}
+
 // --- public types --------------------------------------------------
 
 export interface RunReviewOptions {
@@ -1489,8 +1502,9 @@ async function finalizeReviewRound(
     interventionCtx: ictx,
   } = round
 
-  // 15. Branch on verdict.
-  if (verdict === 'ready') {
+  // 15. Branch on verdict. reviewVerdictWritesGate is the production
+  // routing predicate: only a 'ready' verdict reaches requireGate('review').
+  if (reviewVerdictWritesGate(verdict)) {
     await appendEvent(eventPathsFor(opts.runPaths), {
       version: 1,
       type: 'review_resolved',
@@ -2111,7 +2125,7 @@ function findUnknownPath(
 
 // --- bp#3 validation: deleted-file rejection + line-range existence ---
 
-interface PathValidationIssue {
+export interface PathValidationIssue {
   readonly code:
     | 'review_finding_path_unknown'
     | 'review_finding_path_deleted'
@@ -2123,7 +2137,7 @@ interface PathValidationIssue {
   readonly detail: string
 }
 
-interface ValidateFindingPathsInput {
+export interface ValidateFindingPathsInput {
   readonly findings: readonly ReviewFinding[]
   readonly manifest: readonly ManifestEntry[]
   readonly worktreeRoot: string
@@ -2143,7 +2157,7 @@ interface ValidateFindingPathsInput {
  * issue otherwise. The orchestrator surfaces the issue via the bounded
  * repair prompt path.
  */
-async function validateFindingPaths(
+export async function validateFindingPaths(
   input: ValidateFindingPathsInput,
 ): Promise<PathValidationIssue | null> {
   const { readFile, realpath } = await import('node:fs/promises')
