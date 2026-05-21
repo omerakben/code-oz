@@ -37,7 +37,7 @@ if [[ ! -f "${PLUGIN_JSON}" ]]; then
   exit 1
 fi
 
-PINNED_VERSION="$(grep '"version"' "${PLUGIN_JSON}" | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
+PINNED_VERSION="$(grep '"version"' "${PLUGIN_JSON}" | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)"
 
 if [[ -z "${PINNED_VERSION}" ]]; then
   printf 'resolve-code-oz: could not parse version from %s\n' "${PLUGIN_JSON}" >&2
@@ -72,6 +72,9 @@ fi
 # 3. npx available — exec via npx with the pinned package version.
 # If npx exits non-zero, print the scope-routing caveat and propagate the
 # exit code. (We cannot use exec here because we need to capture the result.)
+# Trade-off: without exec the bash wrapper sits between the host and the npx
+# child, so OS signals (SIGTERM/SIGINT) are not forwarded to the child process
+# on this branch — unlike branch 2 which uses exec for direct signal delivery.
 # ---------------------------------------------------------------------------
 if command -v npx >/dev/null 2>&1; then
   # Use a subshell so set -e does not abort us before we can print the caveat.

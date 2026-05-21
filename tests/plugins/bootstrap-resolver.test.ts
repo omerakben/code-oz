@@ -209,6 +209,69 @@ describe('resolve-code-oz.sh — hard-stop (no code-oz, no npm/npx)', () => {
   })
 })
 
+describe('resolve-code-oz.sh — npx exit-code propagation', () => {
+  test('propagates the exact exit code from a failing npx (not just non-zero)', async () => {
+    // Fake npx that exits with a distinctive code (42) to verify exact propagation.
+    const fakeDir = await makeFakeBinDir({
+      npx: `#!/bin/sh\nexit 42\n`,
+    })
+
+    const result = await runResolver({
+      path: `${fakeDir}:${SYSTEM_BIN}`,
+      args: ['run'],
+    })
+
+    expect(result.exitCode).toBe(42)
+  })
+})
+
+describe('resolve-code-oz.sh — malformed plugin.json', () => {
+  test('exits non-zero and prints "could not parse version" when plugin.json has no "version" key', async () => {
+    // Build a temp dir that mirrors the expected script + plugin layout:
+    //   <tmpDir>/scripts/resolve-code-oz.sh
+    //   <tmpDir>/.claude-plugin/plugin.json   (malformed — no "version" key)
+    const tmpBase = await mkdtemp(join(tmpdir(), 'code-oz-malformed-test-'))
+    tempDirs.push(tmpBase)
+
+    const scriptsDir = join(tmpBase, 'scripts')
+    const pluginDir = join(tmpBase, '.claude-plugin')
+    await mkdir(scriptsDir, { recursive: true })
+    await mkdir(pluginDir, { recursive: true })
+
+    // Copy the real script into the temp scripts dir so it uses the sibling plugin.json.
+    const realScript = await Bun.file(SCRIPT).text()
+    const scriptCopy = join(scriptsDir, 'resolve-code-oz.sh')
+    await writeFile(scriptCopy, realScript, 'utf8')
+    await chmod(scriptCopy, 0o755)
+
+    // Write a plugin.json that is valid JSON but has no "version" key.
+    await writeFile(
+      join(pluginDir, 'plugin.json'),
+      JSON.stringify({ name: 'code-oz', description: 'missing version field' }),
+      'utf8',
+    )
+
+    const proc = Bun.spawn({
+      cmd: ['bash', scriptCopy, 'run'],
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        PATH: SYSTEM_BIN,
+        HOME: process.env.HOME ?? '/tmp',
+        TERM: 'dumb',
+      },
+    })
+    const [stderr, exitCode] = await Promise.all([
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/could not parse version/)
+  })
+})
+
 describe('resolve-code-oz.sh — Windows rejection', () => {
   test('exits non-zero and prints v0.21+ message when CODE_OZ_FAKE_UNAME is Windows-like', async () => {
     // No fake binary needed — Windows rejection fires before any PATH resolution.
