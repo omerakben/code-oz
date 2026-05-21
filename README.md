@@ -16,7 +16,7 @@ AI agents are fast. `code-oz` makes their work auditable. It is for risky repos,
 [![Homebrew](https://img.shields.io/badge/Homebrew-omerakben%2Fcode--oz-orange)](https://github.com/omerakben/homebrew-code-oz)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/omerakben/code-oz/releases)
-[![Tests passing](https://img.shields.io/badge/tests-3390%20passing-brightgreen)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
+[![Tests passing](https://img.shields.io/badge/tests-3762%20passing-brightgreen)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
 
 > **macOS note:** code-oz binaries are not yet Apple-Developer-signed (signing + notarization deferred to v0.x stable). Gatekeeper may prompt on first launch; the install script applies `xattr -d com.apple.quarantine` as a workaround, and `brew install` handles this automatically.
 
@@ -36,8 +36,8 @@ Three channels deliver the same single binary, verified against the same `checks
 
 ```sh
 # curl | sh
-curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.20.1-alpha.0/install.sh \
-  | sh -s -- --version v0.20.1-alpha.0
+curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.21.0-alpha.0/install.sh \
+  | sh -s -- --version v0.21.0-alpha.0
 
 # npm (scoped under the TUEL AI publisher; binary still runs as `code-oz`)
 npm install -g @tuel/code-oz
@@ -89,9 +89,11 @@ Direct-agent workflow:
 | xAI auth         | `XAI_API_KEY` env var                                                |
 | Install channels | curl script, npm package, Homebrew tap                               |
 | Platforms        | macOS arm64, macOS x64, Linux arm64, Linux x64                       |
-| Tests            | 3395 offline tests in CI                                             |
+| Tests            | 3762 offline tests                                                  |
 
 The provider contract is intentionally narrow. The alpha is about proving governed delivery, not supporting every agent on day one.
+
+See [`docs/RECEIPTS.md`](docs/RECEIPTS.md) for verifiable evidence — real cross-family review transcripts that caught real bugs, plus event ledgers from gated runs.
 
 ## What is simulated or not ready yet?
 
@@ -221,13 +223,13 @@ mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
 
 Public summary at [`docs/design/ROADMAP.md#now-next-later`](docs/design/ROADMAP.md#now-next-later). The detailed milestone inventory follows in the same file.
 
-- **Now (v0.20.1-alpha.0)**: first-run polish, truth-corrected provider claims, failure demo, security and community files, agent-gate benchmark protocol.
-- **Next (v0.21.0-alpha.0)**: M17 AUDIT runtime for brownfield repos.
-- **Later**: signed checksums, broader provider adapters, Windows/Scoop, hosted launch artifacts.
+- **Now (v0.21.0-alpha.0)**: M17 brownfield AUDIT runtime shipped, proven by a deterministic full-cycle e2e.
+- **Next**: Phase 3 launch artifacts (honest README, comparison, receipts) and an M18 SWE-bench Verified adapter (v0.22).
+- **Later**: signed checksums, broader provider adapters, Windows/Scoop.
 
-## Architecture and historical context
+## How it works (architecture and historical context)
 
-For the dense architecture (hybrid phase-graph, agentic sub-orchestration spine, 23 non-negotiable rules), product thesis, influence library, and the project's historical "AI software company" framing: [`docs/ABOUT.md`](docs/ABOUT.md).
+Read [`docs/ABOUT.md`](docs/ABOUT.md) for how the runtime actually works: the hybrid phase-graph and agentic sub-orchestration spine, the 23 non-negotiable rules that govern every gate, the product thesis, the influence library, and the project's historical "AI software company" framing.
 
 ## Star this repo if...
 
