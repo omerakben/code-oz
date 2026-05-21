@@ -100,11 +100,11 @@ The provider contract is intentionally narrow. The alpha is about proving govern
 | FakeProvider demo              | Simulated model responses, real gates/artifacts/ledger      |
 | Gemini                         | Stub provider in v0.1; not a working invocation adapter     |
 | OpenCode / Roo Code            | Future adapter candidates, not v0.1 providers               |
-| Brownfield AUDIT runtime       | Detection works; AUDIT phase runtime lands in M17/v0.21     |
+| Brownfield AUDIT runtime       | Shipped in v0.21 (M17); proven by a deterministic full-cycle e2e, live brownfield smoke pending credentials |
 | Windows / Scoop                | Deferred                                                    |
 | Apple signing / notarization   | Deferred to v0.x stable; macOS may show Gatekeeper prompts  |
 | GPG/Sigstore-signed checksums  | Deferred to v0.x stable                                     |
-| Full benchmark proof           | Protocol shipped; measured rows land in v0.21 with runner   |
+| Full benchmark proof           | Runner shipped in v0.21; `code-oz Fake` column measured, direct-agent and live columns pending credentials |
 | Broad multi-agent consultation | Deferred                                                    |
 | Cloud IAM adapters             | Deferred                                                    |
 
@@ -122,7 +122,7 @@ Do not use the alpha as proof that one model writes better code than another. Us
 | Qodo / Sonar               | PR/code quality review                     | Earlier lifecycle gates before the PR review stage                          |
 | HivePipe / Devin / Factory | Managed agentic SDLC or agent workforce    | Local-first, source-visible CLI runtime for owned repos                     |
 
-Full footnote-sourced comparison: [`docs/comparisons/ai-coding-agents.md`](docs/comparisons/ai-coding-agents.md). Benchmark protocol: [`docs/benchmarks/agent-gate-bench.md`](docs/benchmarks/agent-gate-bench.md) (measured rows land in v0.21 with the runner).
+Full footnote-sourced comparison: [`docs/comparisons/ai-coding-agents.md`](docs/comparisons/ai-coding-agents.md). Benchmark protocol and first measured rows (the deterministic `code-oz Fake` column): [`docs/benchmarks/agent-gate-bench.md`](docs/benchmarks/agent-gate-bench.md). Direct-agent and live-provider columns require local credentials and are not yet measured.
 
 `code-oz` is not a replacement for coding agents. It is a governed delivery loop around them.
 

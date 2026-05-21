@@ -336,11 +336,11 @@ async function eventTypes(eventsFile: string): Promise<string[]> {
 }
 
 // M2 ships personas for the five v0.1 spine phases (define, plan, build,
-// verify, review). SHIP and AUDIT have no bundled personas yet — those come
-// with M5+ phase machinery and the brownfield audit work in W4. The
-// regression walks below stop at the last phase with a registered persona;
-// the FSM itself transitions further (currentPhase becomes 'ship' after
-// review approval), which is exactly what we assert.
+// verify, review). M17 adds the auditor persona for the AUDIT phase. SHIP
+// still has no bundled persona. The regression walks below stop at the last
+// greenfield phase with a registered persona; the FSM itself transitions
+// further (currentPhase becomes 'ship' after review approval), which is
+// exactly what we assert.
 const GREENFIELD_APPROVABLE: readonly Phase[] = ['define', 'plan', 'build', 'verify', 'review']
 
 describe('end-to-end greenfield walk (M2-persona-supported phases)', () => {
@@ -407,12 +407,15 @@ describe('end-to-end brownfield init', () => {
     expect(reloaded?.state.profile).toBe('brownfield')
     expect(reloaded?.state.currentPhase).toBe('audit')
 
-    // No bundled audit persona in M2; approving audit must surface that gap.
+    // M17 C4: auditor persona is now bundled. Approving audit with a stub AUDIT.md
+    // no longer fails at "no agent registered" — the auditor resolves and
+    // preApproveAuditHook validates the artifact structurally, rejecting the
+    // invalid stub with an audit_missing_frontmatter issue.
     const artifactRoot = join(cwd, '.code-oz', 'artifacts')
     await writeFile(join(artifactRoot, 'AUDIT.md'), 'audit body', 'utf8')
     await emitGateRequired('audit', runId)
     await expect(runApprove({ cwd, phase: 'audit', now: () => FIXED_TS })).rejects.toThrow(
-      /no agent registered for phase 'audit'/,
+      /cannot approve audit.*is not a valid AUDIT\.md/,
     )
   })
 })

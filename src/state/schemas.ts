@@ -331,6 +331,14 @@ export const EVENT_TYPES = [
   // envelope after every `loadConfig({ cwd })`. See PhaseEvent variant
   // below for the full payload shape and validator invariants.
   'effort_envelope_applied',
+  // M17 — AUDIT phase (brownfield entry). The brownfield analog of DEFINE's
+  // SPEC.md production, but single-shot: AUDIT produces AUDIT.md, then emits
+  // `audit_completed` (carrying the canonical AUDIT.md sha) BEFORE
+  // `gate_required(audit)`. The approve-time `preApproveAuditHook` binds the
+  // on-disk AUDIT.md sha to this event, mirroring `build_completed`'s
+  // post-edit-detection contract. No audit-specific gate primitive (rule 1):
+  // approval routes through the generic `approveGate` like every other phase.
+  'audit_completed',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
@@ -457,7 +465,20 @@ type OptionalActorAttributed<T> = T & OptionalActorAttribution
 // agent_invoked variant requires manifest + four metric fields per the M4
 // contract pinned in docs/references/file-based-gates.md § 13.
 export type PhaseEvent =
-  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'run_started'; readonly ts: string; readonly runId: string; readonly profile: Profile }>
+  | OptionalActorAttributed<{
+      readonly version: 1
+      readonly type: 'run_started'
+      readonly ts: string
+      readonly runId: string
+      readonly profile: Profile
+      /** M17 — the operator's brownfield problem statement (`code-oz run
+       *  --request`). OPTIONAL: greenfield runs and pre-M17 logs omit the
+       *  key entirely (back-compatible widening). When present, every reader
+       *  (dispatchAudit -> runAudit) consumes it from this event, never
+       *  re-derives it from the in-memory request — so the resume path
+       *  recovers it from the log (rule 1: event-derived state). */
+      readonly problemStatement?: string
+    }>
   | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'config_resolved'
@@ -1556,6 +1577,21 @@ export type PhaseEvent =
         readonly global: Record<string, unknown>
         readonly perPhase: Record<string, unknown>
       }
+    }
+  // M17 — AUDIT completion record. Mirrors `build_completed`'s sha-binding
+  // contract: emitted by `runAudit` after it writes the canonical AUDIT.md
+  // and BEFORE `gate_required(audit)`, carrying the artifact's sha256.
+  // `preApproveAuditHook` re-reads AUDIT.md at approve time and refuses when
+  // the sha diverges (post-edit detection). AUDIT is single-shot, so there is
+  // no `attempt` / `taskId` discriminator — one AUDIT.md per brownfield run.
+  | {
+      readonly version: 1
+      readonly type: 'audit_completed'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      /** 64-char lower-case hex sha of the canonical AUDIT.md content. */
+      readonly auditReportSha256: string
     }
 
 // UnknownPhaseEvent is the lenient read-side fallback. The validator (rule 12)

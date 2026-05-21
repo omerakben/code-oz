@@ -243,6 +243,12 @@ export async function initRun(opts: {
   /** B1a — post-`applyEffort` `CodeOzConfig['budgets']`. Same supply
    *  semantics as `originalBudgets` (see above). */
   readonly effectiveBudgets?: Budgets
+  /** M17 — operator's brownfield problem statement (`code-oz run
+   *  --request`). Persisted on the `run_started` event ONLY when provided,
+   *  so greenfield run_started shape stays byte-for-byte unchanged. Readers
+   *  (dispatchAudit -> runAudit) recover it from the event log on resume
+   *  (rule 1: event-derived state). */
+  readonly problemStatement?: string
 }): Promise<RunState> {
   if (!isUlid(opts.runId)) {
     throw new EventLogError([
@@ -294,6 +300,11 @@ export async function initRun(opts: {
         ts: now(),
         runId: opts.runId,
         profile: opts.profile,
+        // M17 — write the key only when provided so greenfield run_started
+        // shape is unchanged (and older logs stay compatible).
+        ...(opts.problemStatement !== undefined
+          ? { problemStatement: opts.problemStatement }
+          : {}),
       },
       { skipLock: true },
     )

@@ -14,6 +14,7 @@ import planSystemPath from './plan-system.md' with { type: 'file' }
 import buildSystemPath from './build-system.md' with { type: 'file' }
 import verifySystemPath from './verify-system.md' with { type: 'file' }
 import reviewSystemPath from './review-system.md' with { type: 'file' }
+import auditSystemPath from './audit-system.md' with { type: 'file' }
 import debateOpponentSystemPath from './debate-opponent-system.md' with { type: 'file' }
 import debateSynthesisSystemPath from './debate-synthesis-system.md' with { type: 'file' }
 
@@ -68,6 +69,18 @@ export async function loadVerifySystemTemplate(): Promise<string> {
 
 export async function loadReviewSystemTemplate(): Promise<string> {
   return loadAsset(reviewSystemPath)
+}
+
+/**
+ * M17 (AUDIT runtime): load the AUDIT system-prompt template. The bundled
+ * `audit-system.md` is a PLACEHOLDER STUB pending human co-authorship of the
+ * audit methodology prose (rule 16). The machinery (token layout +
+ * universal-rules-first injection) is exercised against the stub today; the
+ * stub's text is replaced — not its token set — when the co-authored prose
+ * lands.
+ */
+export async function loadAuditSystemTemplate(): Promise<string> {
+  return loadAsset(auditSystemPath)
 }
 
 export async function loadDebateOpponentSystemTemplate(): Promise<string> {
@@ -530,6 +543,87 @@ export async function composeReviewPrompt(input: ComposeReviewPromptInput): Prom
     readySignal: input.readySignal,
     availableTools: input.availableTools,
     reviewContext: input.reviewContext,
+  })
+}
+
+// --- AUDIT composer (M17) -----------------------------------------
+//
+// Mirrors the VERIFY composer: single-shot, token-bearing template with
+// {{UNIVERSAL_RULES}} placed BEFORE {{AGENT_BODY}} in the template body so the
+// rule-16 invariant (universal rules import first, persona body cannot relax
+// them) is structurally guaranteed by composition. AUDIT is single-shot — no
+// conversation history token — analogous to VERIFY.
+//
+// Persona body source: the caller (runAudit in src/phases/audit.ts) resolves
+// the `auditor` AgentDefinition from the agent registry and passes its `.body`
+// in as `agentBody`, exactly like define/plan/build/verify/review obtain the
+// persona body from the registry-loaded AgentDefinition. The composer never
+// reads src/agents/defaults/auditor.md itself — that file is human-co-authored
+// (rule 16) and lands later; until it is registered, runAudit never reaches
+// this composer (it intervenes on the unresolved persona instead).
+
+const AUDIT_REQUIRED_TOKENS = [
+  TOKEN_UNIVERSAL_RULES,
+  TOKEN_AGENT_BODY,
+  TOKEN_RATIONALIZATIONS,
+  TOKEN_AVAILABLE_TOOLS,
+  TOKEN_READY_SIGNAL,
+] as const
+
+export interface ComposeAuditPromptPureInput {
+  readonly templateBody: string
+  readonly universalRules: string
+  readonly commonRationalizations: string
+  readonly agentBody: string
+  readonly readySignal: string
+  /** Names of tools the AUDIT persona has access to (typically glob/grep/read). */
+  readonly availableTools: readonly string[]
+}
+
+/**
+ * Pure AUDIT composer (no I/O). The template MUST carry {{UNIVERSAL_RULES}}
+ * ahead of {{AGENT_BODY}}; the token-presence guard rejects a template missing
+ * either. Because the universal-rules token precedes the agent-body token in
+ * the bundled `audit-system.md`, the substituted universal rules always appear
+ * before the persona body in the output — the rule-16 invariant, enforced by a
+ * composition-time test.
+ */
+export function composeAuditPromptPure(args: ComposeAuditPromptPureInput): string {
+  for (const tok of AUDIT_REQUIRED_TOKENS) {
+    if (!args.templateBody.includes(tok)) {
+      throw new Error(`audit-system.md is missing required token ${tok}`)
+    }
+  }
+  return args.templateBody
+    .replaceAll(TOKEN_UNIVERSAL_RULES, args.universalRules.trim())
+    .replaceAll(TOKEN_AGENT_BODY, args.agentBody.trim())
+    .replaceAll(TOKEN_RATIONALIZATIONS, args.commonRationalizations.trim())
+    .replaceAll(TOKEN_AVAILABLE_TOOLS, renderAvailableTools(args.availableTools))
+    .replaceAll(TOKEN_READY_SIGNAL, args.readySignal)
+}
+
+export interface ComposeAuditPromptInput {
+  /** The auditor persona body (the file body of the registry-loaded
+   *  `auditor` AgentDefinition; src/agents/defaults/auditor.md is
+   *  human-co-authored and lands later, rule 16). */
+  readonly agentBody: string
+  readonly readySignal: string
+  readonly availableTools: readonly string[]
+}
+
+export async function composeAuditPrompt(input: ComposeAuditPromptInput): Promise<string> {
+  const [templateBody, commonRationalizations, universalRules] = await Promise.all([
+    loadAuditSystemTemplate(),
+    loadCommonRationalizations(),
+    loadUniversalRules(),
+  ])
+  return composeAuditPromptPure({
+    templateBody,
+    universalRules,
+    commonRationalizations,
+    agentBody: input.agentBody,
+    readySignal: input.readySignal,
+    availableTools: input.availableTools,
   })
 }
 

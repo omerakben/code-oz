@@ -142,6 +142,10 @@ describe('Phase 1.6 — fresh `code-oz run` propagates config.profile to run_sta
     const evt = await readRunStartedEvent(eventsFile!)
     expect(evt).not.toBeNull()
     expect(evt!.profile).toBe('brownfield')
+    // M17 C4-prep — brownfield --request carries the operator problem
+    // statement verbatim on run_started (event-derived, rule 1).
+    expect('problemStatement' in evt!).toBe(true)
+    expect(evt!.problemStatement).toBe('hello')
   }, 30_000)
 
   test('greenfield config -> run_started.profile === greenfield', async () => {
@@ -153,5 +157,14 @@ describe('Phase 1.6 — fresh `code-oz run` propagates config.profile to run_sta
     const evt = await readRunStartedEvent(eventsFile!)
     expect(evt).not.toBeNull()
     expect(evt!.profile).toBe('greenfield')
+    // M17 C4-prep seam fix — greenfield WITH --request must still omit
+    // problemStatement: greenfield uses the conversational DEFINE/ask-me
+    // flow, not a single operator problem statement, so its run_started
+    // payload stays byte-for-byte key-less regardless of --request. The
+    // derivation in src/commands/run.ts is gated on config.profile, not
+    // on the input kind. `spawnCodeOzRun` passes --request 'hello', so this
+    // is the exact greenfield-with-request path the Codex seam review
+    // flagged as leaking the key.
+    expect('problemStatement' in evt!).toBe(false)
   }, 30_000)
 })

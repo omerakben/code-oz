@@ -4,7 +4,7 @@ import { runCommand } from './commands/run.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { approveCommand } from './commands/approve.ts'
 
-export const PKG_VERSION = '0.20.3-alpha.0'
+export const PKG_VERSION = '0.21.0-alpha.0'
 
 function printHelp(): void {
   process.stdout.write(`code-oz v${PKG_VERSION}
@@ -28,6 +28,9 @@ Commands:
                      'doctor tools'     - required external tools (rg)
                      'doctor git'       - git version (worktree subsystem)
                      'doctor run'       - read-only run inspector
+  bench            Run a benchmark
+                     'bench agent-gate' - Agent Gate Bench (governance gates;
+                       measures the deterministic 'code-oz Fake' column)
   help             Show this help
 
 Run 'code-oz <command> --help' for command-specific options.
@@ -72,6 +75,20 @@ async function main(): Promise<void> {
     case 'doctor':
       await doctorCommand(subArgs)
       return
+    case 'bench': {
+      const benchSub = subArgs[0]
+      if (benchSub === 'agent-gate') {
+        const { benchAgentGateCommand } = await import('./commands/bench-agent-gate.ts')
+        await benchAgentGateCommand(subArgs.slice(1))
+        return
+      }
+      process.stderr.write(
+        `code-oz bench: unknown benchmark '${benchSub ?? '(none)'}'. ` +
+          `Available: agent-gate\n`,
+      )
+      process.exit(1)
+      return
+    }
     default:
       process.stderr.write(`code-oz: unknown command '${command}'\n\n`)
       printHelp()

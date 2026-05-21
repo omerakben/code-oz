@@ -70,7 +70,13 @@ export const PLAN_OPEN_QUESTIONS_NONE = '- None known at plan time.' as const
 
 export const TASK_ID_PATTERN = /^T-\d{3,}$/
 export const HYPOTHESIS_ID_PATTERN = /^H-\d{3,}$/
-export const SOURCE_ID_PATTERN = /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE)-\d{3,}$/
+// M17 C7c: SC-AUDIT-NNN is a valid source id (brownfield PLAN tasks cite
+// AUDIT.md findings the same way greenfield tasks cite SPEC.md). The PLAN-side
+// id grammar is profile-independent — a greenfield PLAN simply never emits
+// SC-AUDIT ids, and SOURCE_CHECK's per-profile heading + kind validation owns
+// the mutual-exclusion rule. Kept in sync with the SOURCE_CHECK source-id
+// pattern in src/artifacts/source-check.ts.
+export const SOURCE_ID_PATTERN = /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE|AUDIT)-\d{3,}$/
 
 export const TASK_BULLET_KEYS = ['Files', 'Validation', 'Risk', 'Hypotheses', 'Sources'] as const
 
@@ -726,7 +732,7 @@ export function parsePlan(raw: string, file = 'PLAN.md'): PlanArtifact {
                 issues.push({
                   file,
                   code: 'plan_task_malformed',
-                  rule: `task ${block.id}: Sources entry must match /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE)-\\d{3,}$/ (got ${JSON.stringify(entry)})`,
+                  rule: `task ${block.id}: Sources entry must match /^SC-(SPEC|REF|REF-NONE|DOC|DOC-NONE|AUDIT)-\\d{3,}$/ (got ${JSON.stringify(entry)})`,
                   line: bullet.line,
                   taskId: block.id,
                 })

@@ -25,7 +25,7 @@ import { stdin as input, stdout as output } from 'node:process'
 
 import { appendEvent, readEvents } from '../state/events.ts'
 import { isKnownPhaseEvent } from '../state/schemas.ts'
-import type { LoggedEvent, Phase, PhaseEvent } from '../state/schemas.ts'
+import type { LoggedEvent, Phase, PhaseEvent, Profile } from '../state/schemas.ts'
 
 import {
   bootstrap,
@@ -50,6 +50,7 @@ import {
 import { writeStopGate } from '../state/gates.ts'
 import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
+import { runAudit, type AuditResult } from '../phases/audit.ts'
 import { runPlan, type PlanResult } from '../phases/plan.ts'
 import { runBuild, type BuildResult, type WorktreeBinding } from '../phases/build.ts'
 import { runVerify, type VerifyResult } from '../phases/verify.ts'
@@ -334,6 +335,28 @@ export async function runCommand(args: string[]): Promise<void> {
   // then the fresh-run path still calls runDefine below, so brownfield
   // runs reach M17's C1 RED test without profile-selection bugs masking
   // the real AUDIT dispatch gap.
+  // M17 — persist the operator's brownfield problem statement on the
+  // run_started event (rule 1: event-derived). The active-run continuation
+  // path (dispatchAudit) recovers it from the log, never from the in-memory
+  // --request that a resume does not have. Inline requests carry their text
+  // verbatim; file-input requests are a BA transcript fixture, not a single
+  // problem statement, so we record a marker naming the source file rather
+  // than dumping the transcript; TTY runs have no static request, so the key
+  // is omitted (brownfield-without-request stays key-less). This is a
+  // BROWNFIELD-only field: greenfield uses the conversational DEFINE/ask-me
+  // flow, not a single operator problem statement, so greenfield runs (with
+  // or without --request) keep their `run_started` payload byte-for-byte
+  // key-less exactly as before M17 — gating on `config.profile` here, not on
+  // the input kind, is what preserves greenfield's event shape (Codex C4-prep
+  // seam review: greenfield --request must not leak this key).
+  const problemStatement: string | undefined =
+    config.profile !== 'brownfield'
+      ? undefined
+      : parsed.input.kind === 'inline'
+        ? parsed.input.text
+        : parsed.input.kind === 'file'
+          ? `(from --request-file ${parsed.input.path})`
+          : undefined
   await initRun({
     paths: runPaths,
     profile: config.profile,
@@ -341,8 +364,58 @@ export async function runCommand(args: string[]): Promise<void> {
     effort: parsed.effort,
     originalBudgets: rawConfig.budgets,
     effectiveBudgets: config.budgets,
+    ...(problemStatement !== undefined ? { problemStatement } : {}),
   })
   const disposeInterruptStopGate = installInterruptStopGate(runPaths, runId)
+
+  // M17 C2 — brownfield fresh-run routing. `initRun` above already emitted
+  // `phase_entered(audit)` for brownfield profiles (initialPhase('brownfield')
+  // === 'audit'), so the run is at AUDIT, not DEFINE. Route to `dispatchAudit`
+  // instead of `runDefine`, and return BEFORE the DEFINE-only invokeCtx /
+  // askMe / runDefine flow + its DefineResult gate-handling below. Greenfield
+  // (config.profile !== 'brownfield') is completely untouched: it falls
+  // through to the existing runDefine path. The fake-provider companion event
+  // is recorded here too for parity with the greenfield branch, so brownfield
+  // runs emit `fake_provider_warning_emitted` once per invocation as well.
+  if (config.profile === 'brownfield') {
+    // M17 C3 — the interrupt-stop gate must stay installed for the DURATION of
+    // `dispatchAudit` (real AUDIT work), unlike the C2 placeholder which
+    // exited immediately and could dispose early. We close the interactive
+    // input source up front (AUDIT is single-shot, not a TTY ask-me loop), but
+    // keep the stop gate installed across `runAudit` and dispose it only after
+    // dispatchAudit returns (per the C2 Codex seam review).
+    await inputSource.close()
+    try {
+      if (runtimeProviderOverride === 'fake') {
+        try {
+          await recordFakeProviderWarning({
+            eventPaths: { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+            runId,
+            ...(parsed.fakeScriptPath !== undefined
+              ? { fakeScriptPath: parsed.fakeScriptPath }
+              : {}),
+          })
+        } catch (err) {
+          process.stderr.write(
+            `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
+          )
+        }
+      }
+      // dispatchAudit returns on the (C5b+) success path and calls
+      // process.exit on the intervention path; either way the finally disposes
+      // the stop gate. The `return` after keeps greenfield untouched below.
+      await dispatchAudit(
+        ctx.paths.state,
+        ctx.paths.artifacts,
+        runId,
+        runtimeProviderOverride,
+        fakeScriptEntries,
+      )
+    } finally {
+      disposeInterruptStopGate()
+    }
+    return
+  }
 
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
@@ -825,6 +898,22 @@ interface RecordedEnvelope {
   }
 }
 
+// M17 — recover the operator problem statement from the run_started event
+// (rule 1: event-derived; the resume path has no in-memory --request). Returns
+// '' when the run_started event omitted it (greenfield / pre-M17 / TTY runs).
+async function readRecordedProblemStatement(runPaths: RunPaths): Promise<string> {
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'run_started') continue
+    return e.problemStatement ?? ''
+  }
+  return ''
+}
+
 function findLatestEffortEnvelopeEvent(
   events: readonly LoggedEvent[],
 ): RecordedEnvelope | null {
@@ -1082,7 +1171,17 @@ async function handleActiveRun(
       )
       process.exit(EXIT_USAGE)
     }
-    await dispatchPlan(stateDir, artifactRoot, activeRunId, providerOverride, fakeScriptEntries)
+    // M17 C7a: pass the event-derived profile (rule 1) from the loaded run
+    // state. loaded.state.profile comes from the run_started event, so editing
+    // .code-oz/config.yaml between AUDIT approval and PLAN cannot flip it.
+    await dispatchPlan(
+      stateDir,
+      artifactRoot,
+      activeRunId,
+      loaded.state.profile,
+      providerOverride,
+      fakeScriptEntries,
+    )
     return
   }
   if (phase === 'build') {
@@ -1266,6 +1365,23 @@ async function handleActiveRun(
     process.exit(result.exitCode)
   }
 
+  // M17 C2 — AUDIT active-run branch. A run legitimately at
+  // `currentPhase: 'audit'` (brownfield runs start here because
+  // `initialPhase('brownfield') === 'audit'`) routes to `dispatchAudit`
+  // instead of falling through to the terminal "in progress at phase
+  // <X>" fallback below. Placed mirroring the `plan` branch's shape.
+  // `--task` is BUILD-only, same as plan/verify/review.
+  if (phase === 'audit') {
+    if (taskOverride !== undefined) {
+      process.stderr.write(
+        `code-oz run: --task ${taskOverride} only applies to the BUILD phase (current phase: audit).\n`,
+      )
+      process.exit(EXIT_USAGE)
+    }
+    await dispatchAudit(stateDir, artifactRoot, activeRunId, providerOverride, fakeScriptEntries)
+    return
+  }
+
   process.stderr.write(
     [
       `code-oz run: an active run is in progress at phase ${phase} (${activeRunId}).`,
@@ -1276,10 +1392,116 @@ async function handleActiveRun(
   process.exit(1)
 }
 
+/**
+ * Production CLI dispatch for the AUDIT phase (brownfield entry phase).
+ *
+ * M17 C3. Mirrors `dispatchPlan`'s bootstrap shape: load config, re-apply the
+ * recorded effort envelope (rule 23), bootstrap the agent registry, build the
+ * provider registry, then call `runAudit({...})`.
+ *
+ * AUDIT is the brownfield analog of DEFINE: an analysis of the existing repo +
+ * the operator's problem statement that produces AUDIT.md. `runAudit` resolves
+ * the `auditor` persona from the agent registry, then runs the bounded
+ * repo_context dispatch loop (rule 18) so the auditor reads the repo via
+ * glob/grep/read — each tool call appends a REAL `repo_context_searched` event
+ * with actual results. Selected-path promotion into a later phase's manifest is
+ * deferred to M18. When the auditor persona is unresolved, `runAudit` returns
+ * an actionable `auditor_persona_not_registered` intervention (rule 11) WITHOUT
+ * emitting `agent_invoked(auditor)` or any `repo_context_searched` event.
+ *
+ * The operator's brownfield problem statement is recovered from the
+ * `run_started` event (event-derived, rule 1) and handed to `runAudit`.
+ */
+async function dispatchAudit(
+  stateDir: string,
+  artifactRoot: string,
+  activeRunId: string,
+  providerOverride?: ProviderOverride,
+  fakeScriptEntries?: readonly FakeScriptEntry[],
+): Promise<void> {
+  const cwd = process.cwd()
+  const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
+  // M12: load config BEFORE bootstrap so company:block routing applies to the
+  // agent registry. B1a Commit 2 (rule 23): re-apply the recorded effort
+  // envelope so AUDIT sees the same envelope the run was started with.
+  const rawConfig = await loadConfig({ cwd })
+  const { config } = await applyRecordedEffort(rawConfig, runPaths)
+  const ctx = await bootstrap({ cwd, config })
+
+  // AUDIT is a primary-artifact phase: it runs the Scientist phase-tail
+  // (rule 15) after writing AUDIT.md. Resolve the scientist persona up front
+  // and fail fast with one actionable message when the auditor or scientist
+  // persona is missing — mirroring dispatchPlan's lead+scientist check.
+  // (runAudit re-checks the auditor itself for its persona-missing
+  // intervention; the auditor is resolved inside runAudit from agentRegistry.)
+  const scientist = ctx.registry.getByName('scientist')
+  if (scientist === undefined) {
+    process.stderr.write(
+      [
+        'code-oz run: AUDIT requires the bundled `scientist` persona (Scientist phase-tail, rule 15).',
+        '  Reinitialize the project (`code-oz init --force`) or restore .code-oz/agents/.',
+        '',
+      ].join('\n'),
+    )
+    process.exit(EXIT_INTERVENTION)
+  }
+
+  // Carry --provider fake (or other override) + the fake-replay script
+  // entries through to AUDIT, the same way dispatchPlan/dispatchBuild do.
+  const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({ providerOverride })
+  applyRuntimeFakeResponses(fakeProvider, fakeScriptEntries, undefined)
+  const invokeCtx: InvokeContext = {
+    registry: providerRegistry,
+    runPaths,
+    projectRoot: cwd,
+    config,
+  }
+
+  // M17 — recover the operator problem statement from the run_started event
+  // (rule 1: event-derived). This is what makes the active-run continuation
+  // (resume) path work: the request is read from events.jsonl, not from an
+  // in-memory --request that a resumed dispatch never had. Explicit at the
+  // writer (initRun records it on run_started) requires explicit at the
+  // reader — we consume it from the event, never re-derive it.
+  const problemStatement = await readRecordedProblemStatement(runPaths)
+  const result: AuditResult = await runAudit({
+    invokeCtx,
+    runPaths,
+    runId: activeRunId,
+    agentRegistry: ctx.registry,
+    scientistAgent: scientist,
+    problemStatement,
+  })
+
+  if (result.status === 'intervention') {
+    process.stderr.write(
+      [
+        `code-oz run: AUDIT paused (${result.code}).`,
+        `  ${result.rule}`,
+        ...result.actionableSuggestions.map((s) => `  - ${s}`),
+        '',
+      ].join('\n'),
+    )
+    process.exit(EXIT_INTERVENTION)
+  }
+
+  // C5b/C6 will reach this success branch once AUDIT.md production + the gate
+  // land. Unreached in C3.
+  process.stdout.write(
+    [
+      'AUDIT phase complete. Review:',
+      `  ${result.auditPath}`,
+      'Then run: code-oz approve audit',
+      '',
+    ].join('\n'),
+  )
+}
+
 async function dispatchPlan(
   stateDir: string,
   artifactRoot: string,
   activeRunId: string,
+  profile: Profile,
   providerOverride?: ProviderOverride,
   fakeScriptEntries?: readonly FakeScriptEntry[],
 ): Promise<void> {
@@ -1325,6 +1547,7 @@ async function dispatchPlan(
     runId: activeRunId,
     leadAgent: lead,
     scientistAgent: scientist,
+    profile,
   })
   if (result.status === 'intervention') {
     process.stderr.write(

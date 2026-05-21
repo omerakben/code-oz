@@ -215,3 +215,63 @@ export class OpenQuestionsLoadError extends Error {
     this.issues = Object.freeze(issues.map((i) => Object.freeze({ ...i })))
   }
 }
+
+// --- AUDIT.md errors -----------------------------------------------
+//
+// Parse-time validator codes for the brownfield AUDIT.md artifact. The set
+// mirrors the rejection rules in docs/contracts/AUDIT.md. Two contract codes
+// are intentionally NOT emitted by the parse-time validator:
+//   - `audit_reproduction_unresolved_not_routed` (rule 15) is a cross-file
+//     check owned by gate-preflight (`validateScientistSidecars`), because
+//     OPEN_QUESTIONS.md is written by the Scientist phase-tail after AUDIT.md.
+//   - `audit_validation_failed` is an orchestrator-level outcome (the draft
+//     failed repair + finalize rituals), not a structural parse rule.
+
+export type AuditLoadErrorCode =
+  | 'audit_empty'
+  | 'audit_missing_frontmatter'
+  | 'audit_frontmatter_malformed'
+  | 'audit_frontmatter_wrong_artifact'
+  | 'audit_frontmatter_wrong_phase'
+  | 'audit_frontmatter_wrong_profile'
+  | 'audit_frontmatter_runid_mismatch'
+  | 'audit_title_missing'
+  | 'audit_missing_section'
+  | 'audit_section_out_of_order'
+  | 'audit_section_duplicated'
+  | 'audit_section_empty'
+  | 'audit_localization_missing_citation'
+  | 'audit_localization_citation_format'
+  | 'audit_localization_missing_separator'
+  | 'audit_reproduction_no_proposed'
+  | 'audit_reproduction_untagged_bullet'
+  | 'audit_reproduction_observed_no_citation'
+  | 'audit_reproduction_observed_unverified'
+  | 'audit_unexpected_content'
+  | 'audit_io_error'
+
+export interface AuditLoadIssue {
+  readonly file: string
+  readonly code: AuditLoadErrorCode
+  readonly rule: string
+  readonly detail?: string
+  readonly line?: number
+}
+
+export class AuditLoadError extends Error {
+  readonly issues: readonly AuditLoadIssue[]
+
+  constructor(issues: readonly AuditLoadIssue[]) {
+    if (issues.length === 0) {
+      throw new Error('AuditLoadError requires at least one issue')
+    }
+    const first = issues[0]!
+    const summary =
+      issues.length === 1
+        ? `${first.file}: ${first.rule}`
+        : `${issues.length} AUDIT issues across ${new Set(issues.map((i) => i.file)).size} file(s)`
+    super(summary)
+    this.name = 'AuditLoadError'
+    this.issues = Object.freeze(issues.map((i) => Object.freeze({ ...i })))
+  }
+}

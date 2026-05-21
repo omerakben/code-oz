@@ -4,6 +4,7 @@ import builderPath from './defaults/builder.md' with { type: 'file' }
 import verifierPath from './defaults/verifier.md' with { type: 'file' }
 import reviewerPath from './defaults/reviewer.md' with { type: 'file' }
 import scientistPath from './defaults/scientist.md' with { type: 'file' }
+import auditorPath from './defaults/auditor.md' with { type: 'file' }
 import type { SourceFile } from './loader.ts'
 
 interface BundledEntry {
@@ -18,6 +19,7 @@ const BUNDLED: readonly BundledEntry[] = [
   { file: 'src/agents/defaults/verifier.md', path: verifierPath },
   { file: 'src/agents/defaults/reviewer.md', path: reviewerPath },
   { file: 'src/agents/defaults/scientist.md', path: scientistPath },
+  { file: 'src/agents/defaults/auditor.md', path: auditorPath },
 ]
 
 export async function loadBundledDefaults(): Promise<readonly SourceFile[]> {

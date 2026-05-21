@@ -1,6 +1,6 @@
 {
   "name": "@tuel/code-oz",
-  "version": "0.20.3-alpha.0",
+  "version": "0.21.0-alpha.0",
   "description": "CI-style gates for AI coding agents — local-first governed delivery loop",
   "type": "module",
   "bin": {
@@ -17,6 +17,7 @@
     "skills:check": "bun run plugins/code-oz-discipline/scripts/render-skills.ts --check",
     "typecheck": "tsc --noEmit",
     "eval:repo_context": "bun run scripts/eval-repo-context.ts",
+    "bench:agent-gate": "bun run src/cli.ts bench agent-gate",
     "demo:todo-cli": "bun run scripts/demo/01-todo-cli/run-demo.ts",
     "demo:failure-gates": "bun run scripts/demo/02-failure-gates/run-demo.ts"
   },
