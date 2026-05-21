@@ -50,6 +50,7 @@ import {
 import { writeStopGate } from '../state/gates.ts'
 import { generateUlid } from '../state/schemas.ts'
 import { runDefine, type DefineResult } from '../phases/define.ts'
+import { runAudit, type AuditResult } from '../phases/audit.ts'
 import { runPlan, type PlanResult } from '../phases/plan.ts'
 import { runBuild, type BuildResult, type WorktreeBinding } from '../phases/build.ts'
 import { runVerify, type VerifyResult } from '../phases/verify.ts'
@@ -354,6 +355,13 @@ export async function runCommand(args: string[]): Promise<void> {
   // is recorded here too for parity with the greenfield branch, so brownfield
   // runs emit `fake_provider_warning_emitted` once per invocation as well.
   if (config.profile === 'brownfield') {
+    // M17 C3 — the interrupt-stop gate must stay installed for the DURATION of
+    // `dispatchAudit` (real AUDIT work), unlike the C2 placeholder which
+    // exited immediately and could dispose early. We close the interactive
+    // input source up front (AUDIT is single-shot, not a TTY ask-me loop), but
+    // keep the stop gate installed across `runAudit` and dispose it only after
+    // dispatchAudit returns (per the C2 Codex seam review).
+    await inputSource.close()
     try {
       if (runtimeProviderOverride === 'fake') {
         try {
@@ -370,18 +378,19 @@ export async function runCommand(args: string[]): Promise<void> {
           )
         }
       }
+      // dispatchAudit returns on the (C5b+) success path and calls
+      // process.exit on the intervention path; either way the finally disposes
+      // the stop gate. The `return` after keeps greenfield untouched below.
+      await dispatchAudit(
+        ctx.paths.state,
+        ctx.paths.artifacts,
+        runId,
+        runtimeProviderOverride,
+        fakeScriptEntries,
+      )
     } finally {
       disposeInterruptStopGate()
-      await inputSource.close()
     }
-    // dispatchAudit calls process.exit; control does not return here.
-    await dispatchAudit(
-      ctx.paths.state,
-      ctx.paths.artifacts,
-      runId,
-      runtimeProviderOverride,
-      fakeScriptEntries,
-    )
     return
   }
 
@@ -1337,46 +1346,85 @@ async function handleActiveRun(
 /**
  * Production CLI dispatch for the AUDIT phase (brownfield entry phase).
  *
- * M17 C2 placeholder. The AUDIT phase module (`src/phases/audit.ts`) and
- * the `auditor` persona invocation do not exist yet — they land in C3/C4.
- * This commit only wires the routing seam: brownfield fresh runs and
- * active runs at `currentPhase: 'audit'` reach HERE instead of misrouting
- * to DEFINE (`runDefine` → `ba`) or hitting the generic no-dispatch
- * fallback in `handleActiveRun`.
+ * M17 C3. Mirrors `dispatchPlan`'s bootstrap shape: load config, re-apply the
+ * recorded effort envelope (rule 23), bootstrap the agent registry, build the
+ * provider registry, then call `runAudit({...})`.
  *
- * Signature mirrors `dispatchPlan` so C3 can swap the placeholder body for
- * a `runAudit({...})` call against the same params without touching the
- * call sites.
+ * AUDIT is the brownfield analog of DEFINE: a single-shot analysis of the
+ * existing repo + the operator's problem statement that produces AUDIT.md.
+ * `runAudit` emits `repo_context_searched` (honest `selectedPaths: []` per
+ * rule 18) and then resolves the `auditor` persona from the agent registry.
+ * At C3 the auditor persona does not exist yet (src/agents/defaults/auditor.md
+ * is C4's human-co-authored work), so `runAudit` returns an actionable
+ * `auditor_persona_not_registered` intervention (rule 11) WITHOUT emitting
+ * `agent_invoked(auditor)`. The M17 C1 RED anchors therefore advance from the
+ * C2 placeholder failure to the correct missing-auditor failure mode, and
+ * never false-pass on a stub.
  *
- * Per rule 11 (provider/runtime failures become actionable signals, never
- * opaque stack traces), the placeholder surfaces a clear, actionable
- * not-yet-implemented message and exits with EXIT_INTERVENTION (the run
- * ended without reaching its gate; it becomes runnable once C3 lands). It
- * deliberately emits NO `agent_invoked(auditor)` event and never routes to
- * BUILD, so the M17 C1 RED anchors stay RED on the correct failure mode
- * (missing positive auditor anchor) rather than false-passing on a stub.
+ * C3 passes an empty problem statement: the `run_started` event does not yet
+ * carry the operator's request, and the auditor (which would consume it) does
+ * not run at C3. How AUDIT receives the brownfield request is C4's design
+ * choice when it wires the single-shot auditor invocation.
  */
 async function dispatchAudit(
   stateDir: string,
   artifactRoot: string,
   activeRunId: string,
-  _providerOverride?: ProviderOverride,
-  _fakeScriptEntries?: readonly FakeScriptEntry[],
+  providerOverride?: ProviderOverride,
+  fakeScriptEntries?: readonly FakeScriptEntry[],
 ): Promise<void> {
-  // Compute runPaths for parity with the other dispatchers and to keep the
-  // actionable message specific to this run. No state is mutated here.
-  void runPathsFor(stateDir, artifactRoot, activeRunId)
-  process.stderr.write(
+  const cwd = process.cwd()
+  const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
+  // M12: load config BEFORE bootstrap so company:block routing applies to the
+  // agent registry. B1a Commit 2 (rule 23): re-apply the recorded effort
+  // envelope so AUDIT sees the same envelope the run was started with.
+  const rawConfig = await loadConfig({ cwd })
+  const { config } = await applyRecordedEffort(rawConfig, runPaths)
+  const ctx = await bootstrap({ cwd, config })
+
+  // Carry --provider fake (or other override) + the fake-replay script
+  // entries through to AUDIT, the same way dispatchPlan/dispatchBuild do.
+  const { registry: providerRegistry, fakeProvider } = buildProviderRegistry({ providerOverride })
+  applyRuntimeFakeResponses(fakeProvider, fakeScriptEntries, undefined)
+  const invokeCtx: InvokeContext = {
+    registry: providerRegistry,
+    runPaths,
+    projectRoot: cwd,
+    config,
+  }
+
+  const result: AuditResult = await runAudit({
+    invokeCtx,
+    runPaths,
+    runId: activeRunId,
+    agentRegistry: ctx.registry,
+    // C4 decides how AUDIT receives the brownfield request; the auditor does
+    // not run at C3, so an empty problem statement is sufficient here.
+    problemStatement: '',
+  })
+
+  if (result.status === 'intervention') {
+    process.stderr.write(
+      [
+        `code-oz run: AUDIT paused (${result.code}).`,
+        `  ${result.rule}`,
+        ...result.actionableSuggestions.map((s) => `  - ${s}`),
+        '',
+      ].join('\n'),
+    )
+    process.exit(EXIT_INTERVENTION)
+  }
+
+  // C5b/C6 will reach this success branch once AUDIT.md production + the gate
+  // land. Unreached in C3.
+  process.stdout.write(
     [
-      `code-oz run: the AUDIT phase runtime is not yet implemented (run ${activeRunId}).`,
-      '  This brownfield run correctly routed to AUDIT, but the AUDIT phase',
-      '  module lands in a later M17 commit. No code or artifacts were',
-      '  produced for this phase.',
-      '  Track progress in docs/design/ROADMAP.md (M17 AUDIT runtime).',
+      'AUDIT phase complete. Review:',
+      `  ${result.auditPath}`,
+      'Then run: code-oz approve audit',
       '',
     ].join('\n'),
   )
-  process.exit(EXIT_INTERVENTION)
 }
 
 async function dispatchPlan(
