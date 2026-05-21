@@ -1,11 +1,11 @@
-// M17 C3 — focused RED test for the AUDIT phase skeleton (runAudit).
+// M17 AUDIT phase tests (runAudit) — persona-missing path + repo_context loop.
 //
-// Asserts the C3 failure endpoint: with NO auditor persona registered,
-// runAudit on a brownfield run
-//   - emits `repo_context_searched` (honest `selectedPaths: []` per rule 18;
-//     promotion deferred to M18),
-//   - does NOT emit `agent_invoked(auditor)` (the auditor cannot be invoked
-//     because `src/agents/defaults/auditor.md` does not exist until C4),
+// Persona-missing endpoint: when the auditor persona is absent from the
+// provided registry, runAudit on a brownfield run
+//   - does NOT emit a `repo_context_searched` event (the A11 R1 fix removed
+//     the old synthetic empty marker; real events come only from the
+//     repo-context tool loop, which never runs without a resolved auditor),
+//   - does NOT emit `agent_invoked(auditor)` (no auditor to invoke),
 //   - returns an intervention with the persona-missing code and writes
 //     NEEDS_INTERVENTION.json (rule 11: actionable signal, never a stack trace).
 //
