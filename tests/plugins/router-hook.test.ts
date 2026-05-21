@@ -14,7 +14,7 @@
 // CLAUDE_PLUGIN_ROOT so no real engine, network, or provider is touched.
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -92,6 +92,40 @@ describe('hooks.json', () => {
     expect(command).toContain('${CLAUDE_PLUGIN_ROOT}/hooks/session-start')
     // L3 — no polyglot launcher.
     expect(command).not.toContain('run-hook.cmd')
+    // F2 — the command degrades silently at the invocation layer.
+    expect(command).toContain('2>/dev/null')
+    expect(command).toContain('|| true')
+  })
+
+  // F2 — the hooks.json command itself must degrade silently in ALL cases,
+  // including before the script's own guards run. If CLAUDE_PLUGIN_ROOT is
+  // unset the path collapses to /hooks/session-start and bash exits 127; the
+  // `2>/dev/null || true` swallow must turn that into exit 0 with no output.
+  test('command degrades silently (exit 0) when CLAUDE_PLUGIN_ROOT is unset', async () => {
+    const raw = await readFile(HOOKS_JSON, 'utf8')
+    const parsed = JSON.parse(raw) as {
+      hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> }
+    }
+    const command = parsed.hooks.SessionStart[0]!.hooks[0]!.command
+
+    // Run the exact command string through a shell, with CLAUDE_PLUGIN_ROOT
+    // explicitly UNSET (env replaced, not inherited).
+    const proc = Bun.spawn({
+      cmd: ['sh', '-c', command],
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { PATH: SYSTEM_BIN, HOME: process.env.HOME ?? '/tmp', TERM: 'dumb' },
+    })
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(stdout.trim()).toBe('')
+    expect(stderr).toBe('')
   })
 })
 
@@ -162,6 +196,50 @@ describe('JSON escaping is correct', () => {
     expect(additionalContext).toContain('`code-oz run`')
     expect(additionalContext).toContain('->')
   })
+
+  // F4(a) — exercise the risky escaping paths the real card never hits. A
+  // synthetic card carries every JSON-forbidden / special character: double
+  // quote, backslash, tab, CR, backspace (0x08), form feed (0x0c), ESC (0x1b),
+  // backticks, and an arrow. The decoded additionalContext must round-trip
+  // byte-for-byte equal to the synthetic input. This proves F3 (complete C0
+  // escaping incl. \b, \f, and the generic \u00XX sweep).
+  test('synthetic edge-char card round-trips exactly through escaping', async () => {
+    const tempPlugin = await mkdtemp(join(tmpdir(), 'code-oz-router-hook-edge-'))
+    tempDirs.push(tempPlugin)
+    const tempHooks = join(tempPlugin, 'hooks')
+    await mkdir(tempHooks, { recursive: true })
+    const tempScript = join(tempHooks, 'session-start')
+    await copyFile(SESSION_START, tempScript)
+    await chmod(tempScript, 0o755)
+
+    // Edge chars: quote " backslash \ tab \t CR \r BS 0x08 FF 0x0c ESC 0x1b
+    // backticks ` arrow ->. No NUL (0x00): it cannot survive a shell variable.
+    const synthetic = [
+      'quote " end',
+      'backslash \\ end',
+      'tab \t end',
+      'cr \r end',
+      'bs \b end',
+      'ff \f end',
+      'esc \x1b end',
+      'tick `code-oz run` tick',
+      'arrow -> end',
+    ].join('\n')
+    await writeFile(join(tempHooks, 'router-card.md'), synthetic, 'utf8')
+
+    const result = await runSessionStart({
+      scriptPath: tempScript,
+      pluginRoot: tempPlugin,
+    })
+    expect(result.exitCode).toBe(0)
+
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>
+    const hso = parsed.hookSpecificOutput as Record<string, unknown>
+    const decoded = hso.additionalContext as string
+
+    // Byte-for-byte round-trip.
+    expect(decoded).toBe(synthetic)
+  })
 })
 
 // ===========================================================================
@@ -184,14 +262,11 @@ describe('degrade silently', () => {
       pluginRoot: tempPlugin,
     })
 
-    // Exit 0 (silent degrade) and no crash.
+    // F4(b) — strict silent degrade: exit 0, emit NOTHING, leak NO error. The
+    // script's guard exits before any output, so stdout and stderr are empty.
     expect(result.exitCode).toBe(0)
-    expect(result.stderr).not.toContain('No such file or directory')
-    // If anything is emitted, it must still be valid JSON or empty.
-    const out = result.stdout.trim()
-    if (out.length > 0) {
-      expect(() => JSON.parse(out)).not.toThrow()
-    }
+    expect(result.stdout.trim()).toBe('')
+    expect(result.stderr).toBe('')
   })
 })
 
@@ -233,13 +308,15 @@ describe('host-exec-manifest.json', () => {
   test('parses and declares all rule-9 fields for the hook script', async () => {
     const raw = await readFile(HOST_EXEC_MANIFEST, 'utf8')
     const m = JSON.parse(raw) as {
+      script: string
       command: string[]
       interpreter: string
       cwd: string
       file_roots: { read: string[]; write: string[]; default: string }
       network: string
       env: { allow: string[]; inherit: boolean }
-      timeout_seconds: number
+      timeout: number
+      timeout_seconds?: number
       output_caps: { stdout_bytes: number; stderr_bytes: number }
       enforcement: string
     }
@@ -252,6 +329,10 @@ describe('host-exec-manifest.json', () => {
     expect(m.interpreter).toBe('bash')
     expect(m.cwd).toBe('${CLAUDE_PLUGIN_ROOT}')
 
+    // F5 — script path is consistent with cwd (${CLAUDE_PLUGIN_ROOT}); the real
+    // script lives under ./hooks/session-start.
+    expect(m.script).toBe('./hooks/session-start')
+
     expect(m.file_roots.read).toContain('${CLAUDE_PLUGIN_ROOT}')
     expect(m.file_roots.write).toEqual([])
     expect(m.file_roots.default).toBe('none')
@@ -262,8 +343,10 @@ describe('host-exec-manifest.json', () => {
     expect(m.env.allow).toContain('CLAUDE_PLUGIN_ROOT')
     expect(m.env.inherit).toBe(false)
 
-    expect(typeof m.timeout_seconds).toBe('number')
-    expect(m.timeout_seconds).toBeGreaterThan(0)
+    // F1 — rule-9 field name is `timeout` (seconds), not `timeout_seconds`.
+    expect(typeof m.timeout).toBe('number')
+    expect(m.timeout).toBeGreaterThan(0)
+    expect('timeout_seconds' in m).toBe(false)
 
     expect(m.output_caps.stdout_bytes).toBeGreaterThan(0)
     expect(m.output_caps.stderr_bytes).toBeGreaterThan(0)

@@ -1,6 +1,6 @@
 {
   "note": "Rule-9 host-exec declaration for the SessionStart hook script. Claude Code command hooks run in-process with the user's own permissions; this manifest is NOT a runtime sandbox. It declares the intended execution surface (argv, interpreter, cwd, file roots, network, env allowlist, timeout, output caps) so CI and cross-family review can validate that the hook stays within bounds. enforcement is 'declaration'.",
-  "script": "./session-start",
+  "script": "./hooks/session-start",
   "command": ["bash", "${CLAUDE_PLUGIN_ROOT}/hooks/session-start"],
   "interpreter": "bash",
   "cwd": "${CLAUDE_PLUGIN_ROOT}",
@@ -15,7 +15,7 @@
     "inherit": false
   },
   "secrets": [],
-  "timeout_seconds": 5,
+  "timeout": 5,
   "output_caps": {
     "stdout_bytes": 65536,
     "stderr_bytes": 8192
