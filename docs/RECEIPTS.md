@@ -76,7 +76,7 @@ Reviewed branch: `feat/m14-reviewer-panel` at `3bb8b65`
 
 **R2 verdict: `fix-first`.** R2 found two block-push findings after R1 had already closed seven earlier bugs. Finding 1 (lines 61–75):
 
-```
+~~~
 ### 1. block-push — Panel mode cannot continue into a second REVIEW round
 
 Files: `src/phases/review.ts:575`, `src/phases/review-panel.ts:516`
@@ -98,7 +98,7 @@ F2 exists because panel artifacts require `parseReviewPanelReport`; a panel prio
 artifact contains `## Reviewers`, not single-mode `## Reviewer`. So panel round 1
 `needs_revision` followed by round 2 with the prior panel report fails before it
 reaches the panel branch.
-```
+~~~
 
 **R8 verdict: `push`.** After seven fix-first rounds, R8 found no new issues. From `docs/research/CODEX_REVIEW_M14_R8.md` (lines 8–14):
 
