@@ -235,13 +235,32 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
   void atomicWriteFile
   void requireGate
   const target = auditPath(opts.runPaths)
+  // This path is reachable once a project registers a custom `auditor`
+  // (the bundled persona lands in C4). It must NOT silently exit: route the
+  // not-yet-implemented stop through recordIntervention so the intervention
+  // event + NEEDS_INTERVENTION.json are written with an actionable message
+  // (rule 11). AUDIT.md production + the persona invocation land in C4/C5b;
+  // C3-prep keeps this a clean, bookkept not-yet-implemented intervention.
+  const code = 'audit_runtime_not_yet_complete'
+  const rule = 'AUDIT artifact production + gate land in M17 C5b/C6'
+  const actionableSuggestions = [
+    `the auditor persona resolved, but AUDIT.md production is not implemented yet (target: ${target})`,
+    'AUDIT artifact production + the approve gate land in M17 C5b/C6',
+  ]
+  await recordIntervention({
+    paths: opts.runPaths,
+    runId: opts.runId,
+    agent: 'auditor',
+    code,
+    rule,
+    actionableSuggestions,
+    now,
+  })
   return Object.freeze({
     status: 'intervention',
-    code: 'audit_runtime_not_yet_complete',
-    rule: 'AUDIT artifact production + gate land in M17 C5b/C6',
-    actionableSuggestions: [
-      `the auditor persona resolved, but AUDIT.md production is not implemented yet (target: ${target})`,
-    ],
+    code,
+    rule,
+    actionableSuggestions,
     userMessage: 'AUDIT phase runtime is incomplete (artifact production lands in M17 C5b).',
   })
 }

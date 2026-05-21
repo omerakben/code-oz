@@ -267,6 +267,18 @@ export function validateEvent(
           line,
         }
       }
+      // M17 — operator problem statement is OPTIONAL (greenfield runs and
+      // pre-M17 logs omit it). When present it must be a string. Absent is
+      // valid; back-compatible widening only validates the value's type.
+      if (e.problemStatement !== undefined && typeof e.problemStatement !== 'string') {
+        return {
+          file,
+          code: 'event_invalid_value',
+          rule: 'run_started.problemStatement must be a string when present',
+          detail: `got ${JSON.stringify(e.problemStatement)}`,
+          line,
+        }
+      }
       break
 
     case 'config_resolved': {

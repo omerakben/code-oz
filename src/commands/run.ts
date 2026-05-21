@@ -335,6 +335,20 @@ export async function runCommand(args: string[]): Promise<void> {
   // then the fresh-run path still calls runDefine below, so brownfield
   // runs reach M17's C1 RED test without profile-selection bugs masking
   // the real AUDIT dispatch gap.
+  // M17 — persist the operator's brownfield problem statement on the
+  // run_started event (rule 1: event-derived). The active-run continuation
+  // path (dispatchAudit) recovers it from the log, never from the in-memory
+  // --request that a resume does not have. Inline requests carry their text
+  // verbatim; file-input requests are a BA transcript fixture, not a single
+  // problem statement, so we record a marker naming the source file rather
+  // than dumping the transcript; TTY runs have no static request, so the key
+  // is omitted (greenfield + brownfield-without-request stay key-less).
+  const problemStatement: string | undefined =
+    parsed.input.kind === 'inline'
+      ? parsed.input.text
+      : parsed.input.kind === 'file'
+        ? `(from --request-file ${parsed.input.path})`
+        : undefined
   await initRun({
     paths: runPaths,
     profile: config.profile,
@@ -342,6 +356,7 @@ export async function runCommand(args: string[]): Promise<void> {
     effort: parsed.effort,
     originalBudgets: rawConfig.budgets,
     effectiveBudgets: config.budgets,
+    ...(problemStatement !== undefined ? { problemStatement } : {}),
   })
   const disposeInterruptStopGate = installInterruptStopGate(runPaths, runId)
 
@@ -875,6 +890,22 @@ interface RecordedEnvelope {
   }
 }
 
+// M17 — recover the operator problem statement from the run_started event
+// (rule 1: event-derived; the resume path has no in-memory --request). Returns
+// '' when the run_started event omitted it (greenfield / pre-M17 / TTY runs).
+async function readRecordedProblemStatement(runPaths: RunPaths): Promise<string> {
+  const events = await readEvents({
+    file: runPaths.eventsFile,
+    lockDir: runPaths.lockDir,
+  })
+  for (const e of events) {
+    if (!isKnownPhaseEvent(e)) continue
+    if (e.type !== 'run_started') continue
+    return e.problemStatement ?? ''
+  }
+  return ''
+}
+
 function findLatestEffortEnvelopeEvent(
   events: readonly LoggedEvent[],
 ): RecordedEnvelope | null {
@@ -1393,14 +1424,19 @@ async function dispatchAudit(
     config,
   }
 
+  // M17 — recover the operator problem statement from the run_started event
+  // (rule 1: event-derived). This is what makes the active-run continuation
+  // (resume) path work: the request is read from events.jsonl, not from an
+  // in-memory --request that a resumed dispatch never had. Explicit at the
+  // writer (initRun records it on run_started) requires explicit at the
+  // reader — we consume it from the event, never re-derive it.
+  const problemStatement = await readRecordedProblemStatement(runPaths)
   const result: AuditResult = await runAudit({
     invokeCtx,
     runPaths,
     runId: activeRunId,
     agentRegistry: ctx.registry,
-    // C4 decides how AUDIT receives the brownfield request; the auditor does
-    // not run at C3, so an empty problem statement is sufficient here.
-    problemStatement: '',
+    problemStatement,
   })
 
   if (result.status === 'intervention') {

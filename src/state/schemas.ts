@@ -457,7 +457,20 @@ type OptionalActorAttributed<T> = T & OptionalActorAttribution
 // agent_invoked variant requires manifest + four metric fields per the M4
 // contract pinned in docs/references/file-based-gates.md § 13.
 export type PhaseEvent =
-  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'run_started'; readonly ts: string; readonly runId: string; readonly profile: Profile }>
+  | OptionalActorAttributed<{
+      readonly version: 1
+      readonly type: 'run_started'
+      readonly ts: string
+      readonly runId: string
+      readonly profile: Profile
+      /** M17 — the operator's brownfield problem statement (`code-oz run
+       *  --request`). OPTIONAL: greenfield runs and pre-M17 logs omit the
+       *  key entirely (back-compatible widening). When present, every reader
+       *  (dispatchAudit -> runAudit) consumes it from this event, never
+       *  re-derives it from the in-memory request — so the resume path
+       *  recovers it from the log (rule 1: event-derived state). */
+      readonly problemStatement?: string
+    }>
   | OptionalActorAttributed<{
       readonly version: 1
       readonly type: 'config_resolved'

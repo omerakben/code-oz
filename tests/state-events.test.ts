@@ -51,6 +51,30 @@ describe('validateEvent — happy paths for every event type', () => {
     expect(validateEvent(e, 'events.jsonl')).toBeNull()
   })
 
+  test('run_started accepts an optional problemStatement string (M17 brownfield)', () => {
+    const e = {
+      version: 1,
+      type: 'run_started',
+      ts: '2026-04-29T17:00:00Z',
+      runId: RUN,
+      profile: 'brownfield',
+      problemStatement: 'refactor the add helper for clarity',
+    }
+    expect(validateEvent(e, 'events.jsonl')).toBeNull()
+  })
+
+  test('run_started rejects a non-string problemStatement', () => {
+    const e = {
+      version: 1,
+      type: 'run_started',
+      ts: '2026-04-29T17:00:00Z',
+      runId: RUN,
+      profile: 'brownfield',
+      problemStatement: 42,
+    }
+    expect(validateEvent(e, 'events.jsonl')).not.toBeNull()
+  })
+
   test('phase_entered, phase_exited', () => {
     expect(validateEvent(event({ type: 'phase_entered', phase: 'define' }), 'events.jsonl')).toBeNull()
     expect(

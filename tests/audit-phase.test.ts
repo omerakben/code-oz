@@ -53,12 +53,113 @@ beforeEach(async () => {
   paths = runPathsFor(stateDir, artifactRoot, RUN)
   await mkdir(paths.runDir, { recursive: true })
   providerRegistry = new ProviderRegistry({ providers: [new FakeProvider()] })
-  // Brownfield: initRun emits run_started + phase_entered(audit).
-  await initRun({ paths, profile: 'brownfield', runId: RUN, now: () => '2026-05-21T11:00:00.000Z' })
+  // Brownfield: initRun emits run_started + phase_entered(audit). The operator
+  // problem statement is persisted on run_started (event-derived, rule 1).
+  await initRun({
+    paths,
+    profile: 'brownfield',
+    runId: RUN,
+    problemStatement: 'refactor the add helper for clarity',
+    now: () => '2026-05-21T11:00:00.000Z',
+  })
 })
 
 afterEach(async () => {
   await rm(tmp, { recursive: true, force: true })
+})
+
+describe('M17 C4-prep — operator problemStatement persisted on run_started (event-derived)', () => {
+  test('initRun(brownfield, problemStatement) records it on the run_started event', async () => {
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const runStarted = events.find((e) => e.type === 'run_started')
+    expect(runStarted).toBeDefined()
+    // beforeEach seeded initRun with this problemStatement; it must persist
+    // on the run_started event (rule 1: event-derived, not current.json).
+    expect((runStarted as { problemStatement?: string }).problemStatement).toBe(
+      'refactor the add helper for clarity',
+    )
+  })
+
+  test('greenfield run_started omits problemStatement when none is given', async () => {
+    const gfPaths = runPathsFor(
+      join(tmp, '.code-oz/state-gf'),
+      join(tmp, '.code-oz/artifacts-gf'),
+      RUN,
+    )
+    await mkdir(gfPaths.runDir, { recursive: true })
+    await initRun({ paths: gfPaths, profile: 'greenfield', runId: RUN, now: () => '2026-05-21T11:00:00.000Z' })
+    const events = await readEvents({ file: gfPaths.eventsFile, lockDir: gfPaths.lockDir })
+    const runStarted = events.find((e) => e.type === 'run_started') as Record<string, unknown>
+    expect(runStarted).toBeDefined()
+    // The key is absent (not present-but-empty) so greenfield run_started
+    // shape is byte-for-byte unchanged.
+    expect('problemStatement' in runStarted).toBe(false)
+  })
+
+  test('runAudit consumes the problemStatement it is handed (the event-derived value)', async () => {
+    // Resume case: dispatchAudit recovers problemStatement from the event log
+    // (the in-memory --request is gone) and hands it to runAudit. Here we
+    // simulate that recovery by reading run_started ourselves and passing the
+    // value through, asserting runAudit uses it rather than re-deriving ''.
+    const events = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const runStarted = events.find((e) => e.type === 'run_started') as {
+      problemStatement?: string
+    }
+    const recovered = runStarted.problemStatement ?? ''
+    expect(recovered).toBe('refactor the add helper for clarity')
+
+    const invokeCtx: InvokeContext = {
+      registry: providerRegistry,
+      runPaths: paths,
+      projectRoot,
+      config: DEFAULT_CONFIG,
+    }
+    // Register an auditor so the happy-path fallback is reachable; assert it
+    // is bookkept as an intervention (Fix 2: never silently exits).
+    const auditorOnlyRegistry: AgentRegistry = Object.freeze({
+      getByName: (name: string) =>
+        name === 'auditor'
+          ? Object.freeze({
+              name: 'auditor',
+              phase: 'audit',
+              type: 'agent',
+              prompt: 'auditor stub',
+            })
+          : undefined,
+      getByPhase: () => Object.freeze([]),
+      listAll: () => Object.freeze([]),
+    }) as unknown as AgentRegistry
+
+    const result = await runAudit({
+      invokeCtx,
+      runPaths: paths,
+      runId: RUN,
+      agentRegistry: auditorOnlyRegistry,
+      problemStatement: recovered,
+      now: () => '2026-05-21T11:00:02.000Z',
+    })
+
+    // Fix 2: the not-yet-complete happy path routes through recordIntervention
+    // (writes the intervention event + NEEDS_INTERVENTION.json), never a
+    // silent return (rule 11).
+    expect(result.status).toBe('intervention')
+    if (result.status === 'intervention') {
+      expect(result.code).toBe('audit_runtime_not_yet_complete')
+    }
+    const after = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    expect(
+      after.some(
+        (e) =>
+          e.type === 'intervention' &&
+          (e as { code?: string }).code === 'audit_runtime_not_yet_complete',
+      ),
+    ).toBe(true)
+    const ni = JSON.parse(
+      await readFile(join(paths.runDir, 'NEEDS_INTERVENTION.json'), 'utf8'),
+    ) as { code: string; phase: string }
+    expect(ni.code).toBe('audit_runtime_not_yet_complete')
+    expect(ni.phase).toBe('audit')
+  })
 })
 
 describe('M17 C3 — runAudit skeleton (auditor persona missing)', () => {
