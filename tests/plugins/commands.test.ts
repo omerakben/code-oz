@@ -131,7 +131,7 @@ describe('plugins/code-oz commands', () => {
         expect(frontmatter).toMatch(/description\s*:/)
         const descMatch = frontmatter.match(/description\s*:\s*(.+)/)
         expect(descMatch).not.toBeNull()
-        expect(descMatch![1].trim().length).toBeGreaterThan(0)
+        expect(descMatch![1]!.trim().length).toBeGreaterThan(0)
       })
 
       test('frontmatter includes allowed-tools: Bash', async () => {

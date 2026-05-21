@@ -83,11 +83,11 @@ describe('hooks.json', () => {
       }
     }
 
-    const entry = parsed.hooks.SessionStart[0]
+    const entry = parsed.hooks.SessionStart[0]!
     expect(entry.matcher).toBe('startup|clear|compact')
 
-    const command = entry.hooks[0].command
-    expect(entry.hooks[0].type).toBe('command')
+    const command = entry.hooks[0]!.command
+    expect(entry.hooks[0]!.type).toBe('command')
     expect(command).toContain('bash')
     expect(command).toContain('${CLAUDE_PLUGIN_ROOT}/hooks/session-start')
     // L3 — no polyglot launcher.

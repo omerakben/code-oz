@@ -64,7 +64,7 @@ describe('plugins/code-oz manifest shape', () => {
     expect(Array.isArray(market.plugins)).toBe(true)
     expect(market.plugins).toHaveLength(1)
 
-    const entry = market.plugins[0]
+    const entry = market.plugins[0]!
     expect(entry.name).toBe('code-oz')
     expect(entry.source).toBe('./code-oz')
   })
@@ -77,6 +77,6 @@ describe('plugins/code-oz manifest shape', () => {
     const market = JSON.parse(marketRaw) as { plugins: Array<{ version: string }> }
     const plugin = JSON.parse(pluginRaw) as { version: string }
 
-    expect(market.plugins[0].version).toBe(plugin.version)
+    expect(market.plugins[0]!.version).toBe(plugin.version)
   })
 })
