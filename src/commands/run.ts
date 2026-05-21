@@ -344,6 +344,47 @@ export async function runCommand(args: string[]): Promise<void> {
   })
   const disposeInterruptStopGate = installInterruptStopGate(runPaths, runId)
 
+  // M17 C2 — brownfield fresh-run routing. `initRun` above already emitted
+  // `phase_entered(audit)` for brownfield profiles (initialPhase('brownfield')
+  // === 'audit'), so the run is at AUDIT, not DEFINE. Route to `dispatchAudit`
+  // instead of `runDefine`, and return BEFORE the DEFINE-only invokeCtx /
+  // askMe / runDefine flow + its DefineResult gate-handling below. Greenfield
+  // (config.profile !== 'brownfield') is completely untouched: it falls
+  // through to the existing runDefine path. The fake-provider companion event
+  // is recorded here too for parity with the greenfield branch, so brownfield
+  // runs emit `fake_provider_warning_emitted` once per invocation as well.
+  if (config.profile === 'brownfield') {
+    try {
+      if (runtimeProviderOverride === 'fake') {
+        try {
+          await recordFakeProviderWarning({
+            eventPaths: { file: runPaths.eventsFile, lockDir: runPaths.lockDir },
+            runId,
+            ...(parsed.fakeScriptPath !== undefined
+              ? { fakeScriptPath: parsed.fakeScriptPath }
+              : {}),
+          })
+        } catch (err) {
+          process.stderr.write(
+            `code-oz run: failed to record fake_provider_warning_emitted: ${(err as Error).message}\n`,
+          )
+        }
+      }
+    } finally {
+      disposeInterruptStopGate()
+      await inputSource.close()
+    }
+    // dispatchAudit calls process.exit; control does not return here.
+    await dispatchAudit(
+      ctx.paths.state,
+      ctx.paths.artifacts,
+      runId,
+      runtimeProviderOverride,
+      fakeScriptEntries,
+    )
+    return
+  }
+
   const invokeCtx: InvokeContext = {
     registry: providerRegistry,
     runPaths,
@@ -1266,6 +1307,23 @@ async function handleActiveRun(
     process.exit(result.exitCode)
   }
 
+  // M17 C2 — AUDIT active-run branch. A run legitimately at
+  // `currentPhase: 'audit'` (brownfield runs start here because
+  // `initialPhase('brownfield') === 'audit'`) routes to `dispatchAudit`
+  // instead of falling through to the terminal "in progress at phase
+  // <X>" fallback below. Placed mirroring the `plan` branch's shape.
+  // `--task` is BUILD-only, same as plan/verify/review.
+  if (phase === 'audit') {
+    if (taskOverride !== undefined) {
+      process.stderr.write(
+        `code-oz run: --task ${taskOverride} only applies to the BUILD phase (current phase: audit).\n`,
+      )
+      process.exit(EXIT_USAGE)
+    }
+    await dispatchAudit(stateDir, artifactRoot, activeRunId, providerOverride, fakeScriptEntries)
+    return
+  }
+
   process.stderr.write(
     [
       `code-oz run: an active run is in progress at phase ${phase} (${activeRunId}).`,
@@ -1274,6 +1332,51 @@ async function handleActiveRun(
     ].join('\n'),
   )
   process.exit(1)
+}
+
+/**
+ * Production CLI dispatch for the AUDIT phase (brownfield entry phase).
+ *
+ * M17 C2 placeholder. The AUDIT phase module (`src/phases/audit.ts`) and
+ * the `auditor` persona invocation do not exist yet — they land in C3/C4.
+ * This commit only wires the routing seam: brownfield fresh runs and
+ * active runs at `currentPhase: 'audit'` reach HERE instead of misrouting
+ * to DEFINE (`runDefine` → `ba`) or hitting the generic no-dispatch
+ * fallback in `handleActiveRun`.
+ *
+ * Signature mirrors `dispatchPlan` so C3 can swap the placeholder body for
+ * a `runAudit({...})` call against the same params without touching the
+ * call sites.
+ *
+ * Per rule 11 (provider/runtime failures become actionable signals, never
+ * opaque stack traces), the placeholder surfaces a clear, actionable
+ * not-yet-implemented message and exits with EXIT_INTERVENTION (the run
+ * ended without reaching its gate; it becomes runnable once C3 lands). It
+ * deliberately emits NO `agent_invoked(auditor)` event and never routes to
+ * BUILD, so the M17 C1 RED anchors stay RED on the correct failure mode
+ * (missing positive auditor anchor) rather than false-passing on a stub.
+ */
+async function dispatchAudit(
+  stateDir: string,
+  artifactRoot: string,
+  activeRunId: string,
+  _providerOverride?: ProviderOverride,
+  _fakeScriptEntries?: readonly FakeScriptEntry[],
+): Promise<void> {
+  // Compute runPaths for parity with the other dispatchers and to keep the
+  // actionable message specific to this run. No state is mutated here.
+  void runPathsFor(stateDir, artifactRoot, activeRunId)
+  process.stderr.write(
+    [
+      `code-oz run: the AUDIT phase runtime is not yet implemented (run ${activeRunId}).`,
+      '  This brownfield run correctly routed to AUDIT, but the AUDIT phase',
+      '  module lands in a later M17 commit. No code or artifacts were',
+      '  produced for this phase.',
+      '  Track progress in docs/design/ROADMAP.md (M17 AUDIT runtime).',
+      '',
+    ].join('\n'),
+  )
+  process.exit(EXIT_INTERVENTION)
 }
 
 async function dispatchPlan(
