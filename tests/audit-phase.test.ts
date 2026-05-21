@@ -119,10 +119,11 @@ describe('M17 C4-prep — operator problemStatement persisted on run_started (ev
       now: () => '2026-05-21T11:00:02.000Z',
     }
     // Register an auditor so the happy-path fallback is reachable; assert it
-    // is bookkept as an intervention (Fix 2: never silently exits). C4 wired
-    // the happy path to compose the AUDIT prompt and drain a single-shot
-    // invokeAgent before falling through to the not-yet-implemented
-    // intervention, so the fixture is a complete AgentDefinition (provider
+    // is bookkept as an intervention (never silently exits). C4 wired the
+    // happy path to compose the AUDIT prompt and drain a single-shot
+    // invokeAgent; C6 validates the drained draft and routes the invalid
+    // FakeProvider stub through `audit_validation_failed`, so the fixture is a
+    // complete AgentDefinition (provider
     // `fake`, no repo_context tools) and the invocation runs against
     // FakeProvider. The real bundled `auditor.md` (frontmatter + co-authored
     // body) lands in the human co-authoring step (rule 16); this fixture body
@@ -153,17 +154,21 @@ describe('M17 C4-prep — operator problemStatement persisted on run_started (ev
       now: () => '2026-05-21T11:00:02.000Z',
     })
 
-    // Fix 2: the not-yet-complete happy path routes through recordIntervention
-    // (writes the intervention event + NEEDS_INTERVENTION.json), never a
-    // silent return (rule 11).
+    // C6: the happy path now validates the drained draft against the locked
+    // AUDIT.md schema before writing the canonical artifact (rule 11). The
+    // FakeProvider stub output is not a valid AUDIT.md, so runAudit routes the
+    // invalid draft through recordIntervention with `audit_validation_failed`
+    // — never a silent return, never a malformed gate artifact. The
+    // `audit_completed` + gate emission only fires once a registered persona
+    // produces a schema-valid AUDIT.md.
     expect(result.status).toBe('intervention')
     if (result.status === 'intervention') {
-      expect(result.code).toBe('audit_runtime_not_yet_complete')
+      expect(result.code).toBe('audit_validation_failed')
     }
     const after = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
     // C4 wiring proof: when the auditor resolves, runAudit composes the AUDIT
     // prompt and drains a single-shot invokeAgent, which appends
-    // agent_invoked(auditor) (rule 13 chokepoint) BEFORE the not-yet-complete
+    // agent_invoked(auditor) (rule 13 chokepoint) BEFORE the validation
     // intervention. The bundled persona is still unregistered in production
     // (rule 16), so the brownfield e2e stays RED until the human registers it.
     expect(
@@ -175,13 +180,21 @@ describe('M17 C4-prep — operator problemStatement persisted on run_started (ev
       after.some(
         (e) =>
           e.type === 'intervention' &&
-          (e as { code?: string }).code === 'audit_runtime_not_yet_complete',
+          (e as { code?: string }).code === 'audit_validation_failed',
       ),
     ).toBe(true)
+    // No audit_completed event and no gate_required(audit) on the invalid-draft
+    // path — the C6 emission is strictly downstream of schema validation.
+    expect(after.some((e) => e.type === 'audit_completed')).toBe(false)
+    expect(
+      after.some(
+        (e) => e.type === 'gate_required' && (e as { phase?: string }).phase === 'audit',
+      ),
+    ).toBe(false)
     const ni = JSON.parse(
       await readFile(join(paths.runDir, 'NEEDS_INTERVENTION.json'), 'utf8'),
     ) as { code: string; phase: string }
-    expect(ni.code).toBe('audit_runtime_not_yet_complete')
+    expect(ni.code).toBe('audit_validation_failed')
     expect(ni.phase).toBe('audit')
   })
 })

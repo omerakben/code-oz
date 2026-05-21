@@ -24,10 +24,13 @@
 // and the `audit_completed` event are deliberately NOT added in C3.
 
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 import { invokeAgent, type InvokeContext } from '../providers/invoke.ts'
 import { composeAuditPrompt } from '../prompts/index.ts'
 import { atomicWriteFile } from '../artifacts/atomic-write.ts'
+import { parseAuditMarkdown } from '../artifacts/audit-parser.ts'
+import { AuditLoadError } from '../artifacts/errors.ts'
 import { CANONICAL_ARTIFACTS } from '../state/schemas.ts'
 import { requireGate, type RunPaths } from '../state/run.ts'
 import {
@@ -229,22 +232,24 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
     })
   }
 
-  // --- happy path (C4 wires invocation; C5b/C6 add artifact + gate) -
+  // --- happy path (C4 wires invocation; C5b validates; C6 gate) ----
   //
   // C4 wires the single-shot auditor invocation through invokeAgent (the
   // existing rule-13 chokepoint), draining its ProviderEvents the same way
   // runPlan does — invokeAgent appends agent_invoked / agent_completed itself.
-  // C5b serializes + validates AUDIT.md; C6 emits the audit_completed event
-  // (with sha) and requires the gate. AUDIT.md production + the gate are NOT
-  // added here, so after draining the invocation we fall through to the
-  // bookkept not-yet-implemented intervention below (rule 11).
+  // C5b's parser (parseAuditMarkdown) validates the draft; C6 (this commit)
+  // writes the canonical AUDIT.md, emits `audit_completed` (with sha) BEFORE
+  // `gate_required(audit)` — mirroring build.ts:800-812 — and the approve-time
+  // preApproveAuditHook re-binds the on-disk sha to this event.
   //
   // This path is only reached once a project registers an `auditor` persona;
   // the bundled persona is human-co-authored (rule 16) and lands later, so
   // the e2e (tests/e2e/audit-brownfield-cli.test.ts) stays RED on the
-  // agent_invoked(auditor) anchor until then.
-  void atomicWriteFile
-  void requireGate
+  // agent_invoked(auditor) anchor until then. With no real auditor, the
+  // drained draft never satisfies parseAuditMarkdown, so this path routes the
+  // invalid draft through recordIntervention (rule 11) rather than writing a
+  // malformed gate artifact — the emission below is structurally correct and
+  // only fires once a persona produces a schema-valid AUDIT.md.
 
   // Tools the auditor may call (repo_context sub-scope, rule 18). Empty when
   // the persona declares none — matches runPlan's derivation.
@@ -287,35 +292,75 @@ export async function runAudit(opts: RunAuditOptions): Promise<AuditResult> {
       auditText = event.response.content
     }
   }
-  // auditText is intentionally not yet parsed/validated — that is C5b. Hold a
-  // reference so the drained output is not dead code before C5b consumes it.
-  void auditText
-
   const target = auditPath(opts.runPaths)
-  // The invocation ran, but AUDIT.md production + the gate are not implemented
-  // yet. Route the not-yet-implemented stop through recordIntervention so the
-  // intervention event + NEEDS_INTERVENTION.json carry an actionable message
-  // (rule 11) rather than a silent exit. AUDIT.md production lands in C5b/C6.
-  const code = 'audit_runtime_not_yet_complete'
-  const rule = 'AUDIT artifact production + gate land in M17 C5b/C6'
-  const actionableSuggestions = [
-    `the auditor persona resolved, but AUDIT.md production is not implemented yet (target: ${target})`,
-    'AUDIT artifact production + the approve gate land in M17 C5b/C6',
-  ]
-  await recordIntervention({
+
+  // C5b validation: the drained draft must satisfy the locked AUDIT.md schema
+  // before it becomes the canonical artifact (rule 11: a malformed draft never
+  // reaches a gate). parseAuditMarkdown throws AuditLoadError with the issue
+  // list when invalid. Without a registered auditor the draft is always
+  // invalid, so this is the reached endpoint today.
+  try {
+    parseAuditMarkdown(auditText, { file: target, expectedRunId: opts.runId })
+  } catch (err) {
+    const code = 'audit_validation_failed'
+    const rule = 'AUDIT.md draft did not satisfy the locked schema'
+    const detail =
+      err instanceof AuditLoadError
+        ? err.issues.map((i) => `${i.code}: ${i.rule}`).join('; ')
+        : (err as Error).message
+    const actionableSuggestions = [
+      `inspect the auditor draft and fix the schema issues, or re-run AUDIT (target: ${target})`,
+      'the bundled `auditor` persona that produces a schema-valid AUDIT.md is human-co-authored (rule 16) and lands later',
+    ]
+    await recordIntervention({
+      paths: opts.runPaths,
+      runId: opts.runId,
+      agent: 'auditor',
+      code,
+      rule,
+      detail,
+      actionableSuggestions,
+      now,
+    })
+    return Object.freeze({
+      status: 'intervention',
+      code,
+      rule,
+      actionableSuggestions,
+      userMessage: 'AUDIT phase produced an invalid AUDIT.md draft (schema validation failed).',
+    })
+  }
+
+  // Write the canonical AUDIT.md atomically, then emit `audit_completed`
+  // (carrying the artifact sha256) BEFORE `gate_required(audit)`. Mirrors
+  // build.ts:800-812: the sha is computed over the exact bytes written so the
+  // approve-time preApproveAuditHook can re-bind the on-disk artifact to this
+  // event. No audit-specific gate primitive (rule 1): requireGate is the
+  // generic phase-approval signal every phase uses.
+  await atomicWriteFile(target, auditText, { fsyncDir: opts.fsyncDir })
+  const auditReportSha256 = createHash('sha256').update(auditText, 'utf8').digest('hex')
+  await appendEvent(eventPathsFor(opts.runPaths), {
+    version: 1,
+    type: 'audit_completed',
+    ts: now(),
+    runId: opts.runId,
+    phase: 'audit',
+    auditReportSha256,
+  })
+  await requireGate({
     paths: opts.runPaths,
     runId: opts.runId,
-    agent: 'auditor',
-    code,
-    rule,
-    actionableSuggestions,
+    phase: 'audit',
+    blockedOn: 'user approval via `code-oz approve audit`',
     now,
   })
+
   return Object.freeze({
-    status: 'intervention',
-    code,
-    rule,
-    actionableSuggestions,
-    userMessage: 'AUDIT phase runtime is incomplete (artifact production lands in M17 C5b).',
+    status: 'complete',
+    auditPath: target,
+    userMessage: [
+      `AUDIT phase complete. Review ${target}, then run:`,
+      '  code-oz approve audit',
+    ].join('\n'),
   })
 }

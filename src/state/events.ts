@@ -957,6 +957,15 @@ export function validateEvent(
       break
     }
 
+    case 'audit_completed': {
+      if (!isPhase(e.phase)) return phaseInvalid(file, 'audit_completed', e.phase, line)
+      const reportIssue = idMatches(
+        file, e.auditReportSha256, /^[0-9a-f]{64}$/, 'audit_completed.auditReportSha256', line,
+      )
+      if (reportIssue) return reportIssue
+      break
+    }
+
     case 'build_failed': {
       if (!isPhase(e.phase)) return phaseInvalid(file, 'build_failed', e.phase, line)
       const agentIssue = nonEmptyString(file, e.agent, 'build_failed.agent', line)

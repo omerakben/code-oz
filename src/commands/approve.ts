@@ -54,6 +54,8 @@ import {
   ReviewReportLoadError,
 } from '../artifacts/review-report.ts'
 import { SpecLoadError } from '../artifacts/errors.ts'
+import { validateAuditMarkdown } from '../artifacts/audit-schema.ts'
+import { validateScientistSidecars } from '../phases/gate-preflight.ts'
 import { createHash } from 'node:crypto'
 import { removeRunWorktree } from '../worktree/remove-run-worktree.ts'
 import {
@@ -242,6 +244,22 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
       runId,
       runPaths,
       buildReportPath: join(ctx.paths.artifacts, artifactPath),
+    })
+  }
+
+  // AUDIT-specific approval (M17 C6): validate AUDIT.md structurally, run the
+  // Scientist sidecar preflight (rule 15), then confirm the on-disk AUDIT.md
+  // sha matches the latest `audit_completed` event sha. Mirrors
+  // preApproveBuildHook's sha+event contract (post-edit detection) — AUDIT is
+  // single-shot, so there is no attempt/taskId discriminator. No
+  // audit-specific gate primitive (rule 1): the dispatcher still calls the
+  // generic approveGate below after the hook resolves.
+  if (targetPhase === 'audit') {
+    await preApproveAuditHook({
+      runId,
+      runPaths,
+      artifactRoot: ctx.paths.artifacts,
+      auditReportPath: join(ctx.paths.artifacts, artifactPath),
     })
   }
 
@@ -548,6 +566,130 @@ function findLatestBuildCompletedFor(
       e.runId === runId &&
       e.taskId === taskId
     ) {
+      return e
+    }
+  }
+  return null
+}
+
+/**
+ * AUDIT-specific pre-approval hook (M17 C6). Mirrors preApproveBuildHook's
+ * event+sha contract, adapted to the single-shot brownfield AUDIT phase:
+ *
+ *   1. Read AUDIT.md from disk; reject ENOENT with an actionable message.
+ *   2. Run `validateAuditMarkdown`; reject malformed with the schema's
+ *      issue list (mirrors preApproveBuildHook's BUILD_REPORT.md handling).
+ *   3. Run `validateScientistSidecars` (rule 15): HYPOTHESES.md +
+ *      OPEN_QUESTIONS.md must exist, parse, and carry no blocking/overdue
+ *      open questions. Reject on failure with the preflight's actionable
+ *      suggestions.
+ *   4. Find the latest `audit_completed` event for the runId. Refuse if
+ *      none exists (AUDIT must complete and emit audit_completed first).
+ *   5. Refuse when sha256(AUDIT.md) does not match
+ *      `audit_completed.auditReportSha256` — same structural shape as
+ *      preApproveBuildHook's :500-503 post-edit detection.
+ *
+ * On success it returns/continues so `runApprove` calls the GENERIC
+ * approveGate (rule 1: no audit-specific gate-write primitive). Exported for
+ * direct testing — the brownfield e2e cannot reach approve until the auditor
+ * persona is registered, so C6's RED coverage is fixture-based.
+ */
+export interface PreApproveAuditHookInput {
+  readonly runId: string
+  readonly runPaths: { readonly eventsFile: string; readonly lockDir: string }
+  /** `.code-oz/artifacts/` — where AUDIT.md + the Scientist sidecars live. */
+  readonly artifactRoot: string
+  /** Absolute path to .code-oz/artifacts/AUDIT.md; passed by runApprove via
+   *  the canonical-artifacts mapping. */
+  readonly auditReportPath: string
+  /** ISO YYYY-MM-DD for the sidecar overdue check; defaults to today (UTC). */
+  readonly today?: string
+}
+
+export async function preApproveAuditHook(input: PreApproveAuditHookInput): Promise<void> {
+  // 1. Read AUDIT.md.
+  let auditText: string
+  try {
+    auditText = await readFile(input.auditReportPath, 'utf8')
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `cannot approve audit: ${input.auditReportPath} does not exist. Run AUDIT first.`,
+      )
+    }
+    throw err
+  }
+
+  // 2. Structural validation (validateAuditMarkdown returns ok+issues; it
+  //    never throws on a malformed artifact).
+  const validation = validateAuditMarkdown(auditText, { file: input.auditReportPath })
+  if (!validation.ok) {
+    const summary = validation.issues
+      .map((i) => `  - [${i.code}] ${i.rule}${i.detail ? ` (${i.detail})` : ''}`)
+      .join('\n')
+    throw new Error(
+      [
+        `cannot approve audit: ${input.auditReportPath} is not a valid AUDIT.md.`,
+        summary,
+        'Re-run AUDIT or repair the artifact before approving.',
+      ].join('\n'),
+    )
+  }
+
+  // 3. Scientist sidecars (rule 15). The phase-tail writes HYPOTHESES.md +
+  //    OPEN_QUESTIONS.md after AUDIT.md; the gate cannot pass with missing,
+  //    unparsable, blocking, or overdue sidecars.
+  const sidecarCheck = await validateScientistSidecars({
+    artifactRoot: input.artifactRoot,
+    phase: 'audit',
+    ...(input.today !== undefined ? { today: input.today } : {}),
+  })
+  if (!sidecarCheck.ok) {
+    throw new Error(
+      [
+        `cannot approve audit: Scientist sidecar preflight failed (${sidecarCheck.code}).`,
+        sidecarCheck.rule + (sidecarCheck.detail ? `: ${sidecarCheck.detail}` : ''),
+        ...sidecarCheck.actionableSuggestions.map((s) => `  - ${s}`),
+      ].join('\n'),
+    )
+  }
+
+  // 4. Find the latest audit_completed for the run.
+  const events = await readEvents({
+    file: input.runPaths.eventsFile,
+    lockDir: input.runPaths.lockDir,
+  })
+  const latest = findLatestAuditCompletedFor(events, input.runId)
+  if (latest === null) {
+    throw new Error(
+      [
+        `cannot approve audit: events.jsonl has no audit_completed event for run ${input.runId}.`,
+        'AUDIT must complete and emit audit_completed before approval.',
+      ].join('\n'),
+    )
+  }
+
+  // 5. Cross-check AUDIT.md sha against the event (post-edit detection).
+  const auditReportSha = sha256Of(auditText)
+  if (latest.auditReportSha256 !== auditReportSha) {
+    throw new Error(
+      [
+        `cannot approve audit: AUDIT.md sha256 (${auditReportSha}) does not match the audit_completed event sha (${latest.auditReportSha256}).`,
+        'The artifact on disk diverged from what AUDIT emitted. Re-run AUDIT or restore the canonical artifact.',
+      ].join('\n'),
+    )
+  }
+}
+
+type AuditCompletedEventShape = Extract<PhaseEvent, { readonly type: 'audit_completed' }>
+
+function findLatestAuditCompletedFor(
+  events: readonly LoggedEvent[],
+  runId: string,
+): AuditCompletedEventShape | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (isKnownPhaseEvent(e) && e.type === 'audit_completed' && e.runId === runId) {
       return e
     }
   }
