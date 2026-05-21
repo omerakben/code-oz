@@ -110,8 +110,17 @@ const REQUIRED_FRONTMATTER_FIELDS = [
 // --- citation grammar ----------------------------------------------
 
 // `[^:\s]+:\d+(-\d+)?` — a non-colon/non-space path token, a colon, a line
-// number, and an optional `-line` range. Anchored so the path cannot be empty.
+// number, and an optional `-line` range. Unanchored: used to *detect* whether a
+// citation appears anywhere in a bullet (e.g. an `Observed:` reproduction fact).
 export const AUDIT_CITATION_PATTERN = /([^:\s]+):(\d+)(?:-(\d+))?/
+
+// Anchored Localization-bullet grammar: a `## Localization` bullet MUST START
+// with a `file:line(-line)` citation token, immediately followed by the ` — `
+// em-dash separator and the rationale. No leading/trailing junk around the
+// citation token is allowed (C5b finding 3). `[^\s—]` keeps the path token from
+// swallowing the separator. The em dash here is U+2014, matching EM_DASH_SEP.
+export const AUDIT_LOCALIZATION_BULLET_PATTERN =
+  /^([^:\s]+):(\d+)(?:-(\d+))? — (.+)$/
 
 // The em-dash separator the contract requires between citation and rationale.
 const EM_DASH_SEP = ' — '
@@ -132,12 +141,15 @@ export const AUDIT_ERROR_CODES = [
   'audit_frontmatter_runid_mismatch',
   'audit_missing_section',
   'audit_section_out_of_order',
+  'audit_section_duplicated',
   'audit_section_empty',
   'audit_localization_missing_citation',
   'audit_localization_citation_format',
   'audit_localization_missing_separator',
   'audit_reproduction_no_proposed',
   'audit_reproduction_observed_unverified',
+  'audit_reproduction_untagged_bullet',
+  'audit_reproduction_observed_no_citation',
   'audit_unexpected_content',
   'audit_title_missing',
 ] as const
@@ -314,7 +326,7 @@ export function validateAuditMarkdown(
         continue
       }
       if (seen.has(key)) {
-        push('audit_unexpected_content', `section \`## ${heading}\` appears more than once`, heading, lineNo)
+        push('audit_section_duplicated', `section \`## ${heading}\` appears more than once`, heading, lineNo)
         current = null
         continue
       }
@@ -402,6 +414,18 @@ export function validateAuditMarkdown(
       push('audit_reproduction_no_proposed', '`## Reproduction` must include at least one `Proposed:` bullet (the operator statement)', undefined, repro.startLine)
     }
     for (const b of repro.bullets) {
+      // Every Reproduction bullet must carry one of the three tags. An untagged
+      // bullet used to validate and then be silently dropped by the parser —
+      // silent content loss in a gate artifact is unacceptable (C5b finding 1).
+      if (!/^(Proposed|Observed|Unresolved):/i.test(b.text)) {
+        push(
+          'audit_reproduction_untagged_bullet',
+          'every `## Reproduction` bullet must start with `Proposed:`, `Observed:`, or `Unresolved:`',
+          b.text,
+          b.line,
+        )
+        continue
+      }
       if (/^Observed:/i.test(b.text)) {
         const lower = b.text.toLowerCase()
         const phrase = UNCERTAINTY_PHRASES.find((p) => lower.includes(p))
@@ -410,6 +434,16 @@ export function validateAuditMarkdown(
             'audit_reproduction_observed_unverified',
             'an `Observed:` bullet must be verified; move uncertain claims to `Unresolved:`',
             `uncertainty phrase: "${phrase}"`,
+            b.line,
+          )
+        }
+        // An `Observed:` fact must name a file:line citation (C5b finding 2).
+        // Proposed:/Unresolved: bullets are not required to carry one.
+        if (!AUDIT_CITATION_PATTERN.test(b.text)) {
+          push(
+            'audit_reproduction_observed_no_citation',
+            'an `Observed:` bullet must name a `file:line` citation for the confirmed fact',
+            b.text,
             b.line,
           )
         }
@@ -434,14 +468,36 @@ type Push = (code: AuditLoadErrorCode, rule: string, detail?: string, line?: num
  * Exported so the parser can reuse the citation extraction.
  */
 function validateLocalizationBullet(text: string, line: number, push: Push): void {
-  const m = text.match(AUDIT_CITATION_PATTERN)
-  if (m === null) {
-    push('audit_localization_missing_citation', 'a `## Localization` bullet must contain a `file:line` citation', text, line)
+  // The bullet must START with a `file:line` citation immediately followed by
+  // the ` — ` separator (anchored — no leading/trailing junk around the citation
+  // token, C5b finding 3). If the anchored grammar fails, classify the failure:
+  // a citation exists somewhere but not anchored-with-separator → still a missing
+  // citation (the well-formed leading citation is absent); a citation exists and
+  // the separator is simply absent → missing-separator.
+  const anchored = text.match(AUDIT_LOCALIZATION_BULLET_PATTERN)
+  if (anchored === null) {
+    // The bullet is not the well-formed `<file:line> — <rationale>` shape.
+    // Classify the dominant failure. A bullet with no recognizable citation
+    // token at all is missing-citation; a bullet that has a leading citation
+    // but lacks the ` — ` separator is missing-separator; a bullet with junk
+    // around the citation (citation present, anchored grammar fails) is still
+    // missing-citation (the anchored leading citation is absent).
+    const hasCitationToken = AUDIT_CITATION_PATTERN.test(text)
+    const hasSeparator = text.includes(EM_DASH_SEP)
+    if (!hasCitationToken) {
+      push('audit_localization_missing_citation', 'a `## Localization` bullet must contain a `file:line` citation', text, line)
+    } else if (!hasSeparator) {
+      push('audit_localization_missing_separator', 'a `## Localization` bullet must use ` — ` (em dash) between citation and rationale', text, line)
+    } else {
+      // Citation token and separator both present, but not anchored cleanly:
+      // junk before the citation or between the citation and the separator.
+      push('audit_localization_missing_citation', 'a `## Localization` bullet must START with a `file:line` citation immediately followed by ` — ` (no leading/trailing junk)', text, line)
+    }
     return
   }
-  const path = m[1]!
-  const start = Number.parseInt(m[2]!, 10)
-  const end = m[3] !== undefined ? Number.parseInt(m[3], 10) : start
+  const path = anchored[1]!
+  const start = Number.parseInt(anchored[2]!, 10)
+  const end = anchored[3] !== undefined ? Number.parseInt(anchored[3], 10) : start
 
   // Format checks: line 0, inverted range, leading slash / dot-slash.
   if (start < 1 || end < 1) {
@@ -451,11 +507,6 @@ function validateLocalizationBullet(text: string, line: number, push: Push): voi
   }
   if (path.startsWith('/') || path.startsWith('./')) {
     push('audit_localization_citation_format', 'a citation path must be repo-relative (no leading `/` or `./`)', path, line)
-  }
-
-  // Separator: ` — ` (em dash with surrounding spaces) before the rationale.
-  if (!text.includes(EM_DASH_SEP)) {
-    push('audit_localization_missing_separator', 'a `## Localization` bullet must use ` — ` (em dash) between citation and rationale', text, line)
   }
 }
 
@@ -467,14 +518,14 @@ function validateLocalizationBullet(text: string, line: number, push: Push): voi
 export function parseLocalizationCitation(
   text: string,
 ): { path: string; startLine: number; endLine: number; rationale: string } | null {
-  const m = text.match(AUDIT_CITATION_PATTERN)
+  // Use the anchored bullet grammar so the parser extracts only from a
+  // well-formed `<file:line> — <rationale>` bullet (matches the validator).
+  const m = text.match(AUDIT_LOCALIZATION_BULLET_PATTERN)
   if (m === null) return null
-  const sepIdx = text.indexOf(EM_DASH_SEP)
-  if (sepIdx === -1) return null
   const path = m[1]!
   const startLine = Number.parseInt(m[2]!, 10)
   const endLine = m[3] !== undefined ? Number.parseInt(m[3], 10) : startLine
-  const rationale = text.slice(sepIdx + EM_DASH_SEP.length).trim()
+  const rationale = m[4]!.trim()
   return { path, startLine, endLine, rationale }
 }
 

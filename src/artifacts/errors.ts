@@ -244,6 +244,8 @@ export type AuditLoadErrorCode =
   | 'audit_localization_citation_format'
   | 'audit_localization_missing_separator'
   | 'audit_reproduction_no_proposed'
+  | 'audit_reproduction_untagged_bullet'
+  | 'audit_reproduction_observed_no_citation'
   | 'audit_reproduction_observed_unverified'
   | 'audit_unexpected_content'
   | 'audit_io_error'

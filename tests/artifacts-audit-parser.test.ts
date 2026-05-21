@@ -68,7 +68,7 @@ operatorStatement: audit the events.jsonl schema for fields that are documented 
 ## Reproduction
 
 - Proposed: some event types listed in contract docs are never emitted by the runtime.
-- Observed: grep:science_emitted in src/ — zero matches in src/state/events.ts. Confirmed by grep.
+- Observed: src/state/events.ts:1 — grep:science_emitted returns zero matches. Confirmed by grep.
 - Observed: src/state/schemas.ts:1 — science_emitted is declared in the schema but grep shows no call site. Confirmed by grep.
 - Unresolved: whether hypothesis_updated and question_deferred are emitted in practice requires tracing all phase-tail call sites. Routed to Q-001.
 - Unresolved: whether missing emit calls cause gate-preflight failures or are silent no-ops requires running the full lifecycle. Routed to Q-002.

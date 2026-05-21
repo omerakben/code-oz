@@ -110,7 +110,7 @@ operatorStatement: audit the events.jsonl schema for fields that are documented 
 ## Reproduction
 
 - Proposed: some event types listed in contract docs are never emitted by the runtime.
-- Observed: grep:science_emitted in src/ — zero matches in src/state/events.ts. The event type is documented in docs/contracts/SCIENTIST.md but has no emit call. Confirmed by grep.
+- Observed: src/state/events.ts:1 — grep:science_emitted returns zero matches; the event type is documented in docs/contracts/SCIENTIST.md but has no emit call. Confirmed by grep.
 - Observed: src/state/schemas.ts:1 — science_emitted is declared in the schema but grep of src/phases/ shows no call site. Confirmed by grep.
 - Unresolved: whether hypothesis_updated and question_deferred are emitted in practice requires tracing all phase-tail call sites and verifying against a live events.jsonl fixture. Scope exceeds static read. Routed to Q-001.
 - Unresolved: whether missing emit calls cause gate-preflight failures or are silent no-ops requires running the full lifecycle. Routed to Q-002.
@@ -259,12 +259,15 @@ describe('AUDIT_ERROR_CODES export', () => {
         'audit_frontmatter_runid_mismatch',
         'audit_missing_section',
         'audit_section_out_of_order',
+        'audit_section_duplicated',
         'audit_section_empty',
         'audit_localization_missing_citation',
         'audit_localization_citation_format',
         'audit_localization_missing_separator',
         'audit_reproduction_no_proposed',
         'audit_reproduction_observed_unverified',
+        'audit_reproduction_untagged_bullet',
+        'audit_reproduction_observed_no_citation',
         'audit_unexpected_content',
         'audit_title_missing',
       ]),
@@ -398,6 +401,78 @@ operatorStatement: x
       '## Constraints\n\n### Sub heading\n',
     )
     expect(codes(text)).toContain('audit_unexpected_content')
+  })
+
+  test('audit_section_duplicated — two ## Localization sections', () => {
+    // A duplicated required section is rejected with its own code, not folded
+    // into audit_unexpected_content (Codex C5b finding 4; spec_section_duplicated
+    // precedent).
+    const text = FIXTURE_REGRESSION.replace(
+      '## Reproduction\n',
+      '## Localization\n\n- src/dup.ts:1 — duplicate localization section.\n\n## Reproduction\n',
+    )
+    const c = codes(text)
+    expect(c).toContain('audit_section_duplicated')
+    // It must not be reported merely as unexpected content for this heading.
+    const dupIssues = validateAuditMarkdown(text).issues.filter(
+      (i) => i.code === 'audit_section_duplicated',
+    )
+    expect(dupIssues.length).toBeGreaterThan(0)
+  })
+})
+
+describe('validateAuditMarkdown — Localization citation anchoring (C5b finding 3)', () => {
+  test('audit_localization_missing_citation — junk prefix before the citation', () => {
+    // `prefix a.ts:1 suffix — x` must NOT validate: the bullet must START with a
+    // valid file:line citation immediately followed by ` — `.
+    const text = FIXTURE_REGRESSION.replace(
+      '- src/artifacts/plan.ts:214-230 — validatePlanMarkdown; Tasks section check is absent from the required-sections array.',
+      '- prefix src/artifacts/plan.ts:214-230 — validatePlanMarkdown.',
+    )
+    expect(codes(text)).toContain('audit_localization_missing_citation')
+  })
+
+  test('audit_localization_missing_citation — junk between citation and em dash', () => {
+    const text = FIXTURE_REGRESSION.replace(
+      '- src/artifacts/plan.ts:214-230 — validatePlanMarkdown; Tasks section check is absent from the required-sections array.',
+      '- src/artifacts/plan.ts:214-230 suffix — validatePlanMarkdown.',
+    )
+    expect(codes(text)).toContain('audit_localization_missing_citation')
+  })
+})
+
+describe('validateAuditMarkdown — Reproduction tag + citation rules (C5b findings 1 + 2)', () => {
+  test('audit_reproduction_untagged_bullet — bullet without Proposed/Observed/Unresolved tag', () => {
+    // A Reproduction bullet carrying none of the three tags used to validate and
+    // then be silently dropped by the parser. It must now be rejected.
+    const text = FIXTURE_REGRESSION.replace(
+      '- Observed: tests/artifacts/plan.test.ts:88-102 — no test exercises a Tasks-absent fixture. Confirmed by read.',
+      '- this bullet has no tag and should be rejected.',
+    )
+    expect(codes(text)).toContain('audit_reproduction_untagged_bullet')
+  })
+
+  test('audit_reproduction_observed_no_citation — Observed bullet without file:line', () => {
+    // An Observed: fact must name a file:line citation.
+    const text = FIXTURE_REGRESSION.replace(
+      '- Observed: tests/artifacts/plan.test.ts:88-102 — no test exercises a Tasks-absent fixture. Confirmed by read.',
+      '- Observed: the test suite has no fixture for this path.',
+    )
+    expect(codes(text)).toContain('audit_reproduction_observed_no_citation')
+  })
+
+  test('Proposed: bullets do NOT require a citation', () => {
+    // The regression fixture's Proposed bullet has no file:line; must stay clean.
+    const res = validateAuditMarkdown(FIXTURE_REGRESSION)
+    expect(res.ok).toBe(true)
+    expect(res.issues.map((i) => i.code)).not.toContain('audit_reproduction_observed_no_citation')
+  })
+
+  test('Unresolved: bullets do NOT require a citation (runtime fixture)', () => {
+    // FIXTURE_RUNTIME's Unresolved bullets carry no file:line; must stay clean.
+    const res = validateAuditMarkdown(FIXTURE_RUNTIME)
+    expect(res.ok).toBe(true)
+    expect(res.issues.map((i) => i.code)).not.toContain('audit_reproduction_observed_no_citation')
   })
 })
 

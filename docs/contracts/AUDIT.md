@@ -73,7 +73,8 @@ Rules:
 - `LINE` is a positive integer. `LINE-LINE` is a contiguous range where the second number is greater than or equal to the first.
 - A file citation without a line number is rejected by the parser (use `:1` for whole-file attribution when no narrower range is determinable).
 - Each entry is a single bullet: `- <file:line> — <one-line rationale>`.
-- The `—` separator (em dash, U+2014) is required between the citation and the rationale.
+- The bullet MUST START with the `file:line` (or `file:line-line`) citation token, with no leading text before it, and the citation token MUST be immediately followed by the ` — ` separator. Leading text before the citation, or junk between the citation token and the separator (for example `prefix a.ts:1 suffix — x`), is rejected as `audit_localization_missing_citation`.
+- The `—` separator (em dash, U+2014) with a single surrounding space on each side is required between the citation and the rationale.
 
 Example entries:
 
@@ -89,9 +90,11 @@ Example entries:
 
 This section records evidence for the problem. The Auditor MUST distinguish what it **observed** (with evidence from static analysis of the repo) from what the operator **proposed** as the problem description.
 
+**Every reproduction bullet MUST carry a tag.** Each `## Reproduction` bullet starts with exactly one of `Proposed:`, `Observed:`, or `Unresolved:`. An untagged bullet is rejected (`audit_reproduction_untagged_bullet`); the validator does not silently tolerate or drop it.
+
 **Observed-vs-operator-proposed distinction (locked rule):**
 
-- A bullet marked `Observed:` states a fact the Auditor confirmed by reading the repo (a code path, a missing branch, an incorrect constant, a failing test, etc.). Each observed fact MUST name a file:line citation from `## Localization` or an inline citation.
+- A bullet marked `Observed:` states a fact the Auditor confirmed by reading the repo (a code path, a missing branch, an incorrect constant, a failing test, etc.). Each `Observed:` bullet MUST contain a `file:line` citation (the same `file:line` / `file:line-line` token grammar used in `## Localization`); a citation may appear anywhere in the bullet, not only at the start. An `Observed:` bullet with no `file:line` citation is rejected (`audit_reproduction_observed_no_citation`). `Proposed:` and `Unresolved:` bullets are NOT required to carry a citation.
 - A bullet marked `Proposed:` records what the operator stated as the problem. The Auditor does not assert this as observed; it records it faithfully.
 - A bullet marked `Unresolved:` flags a reproduction claim that cannot be confirmed without runtime access the Auditor does not have (e.g., a crash that only occurs under a specific environment, a race condition, a production-only configuration). **Unresolved runtime facts MUST also be routed to `OPEN_QUESTIONS.md` per rule 15 (Scientist tail).** The validator rejects an AUDIT.md that marks a fact `Observed:` and then acknowledges (in the same or adjacent bullet) that runtime confirmation was not possible.
 
@@ -167,16 +170,19 @@ The AUDIT.md validator (implemented in `src/artifacts/audit-parser.ts`) rejects 
 6. **`audit_frontmatter_runid_mismatch`** — `runId` does not match the active run's id.
 7. **`audit_missing_section`** — one or more of the four required H2 sections (`## Localization`, `## Reproduction`, `## Constraints`, `## Audit sources`) is absent.
 8. **`audit_section_out_of_order`** — the four required sections are present but not in canonical order (Localization → Reproduction → Constraints → Audit sources).
-9. **`audit_section_empty`** — a required section has no bullets.
-10. **`audit_localization_missing_citation`** — a `## Localization` bullet does not contain a `file:line` citation matching the pattern `[^:\s]+:\d+(-\d+)?`.
-11. **`audit_localization_citation_format`** — a `## Localization` citation has a line number of 0, a range where the second number is less than the first, or a leading `/` or `./` in the path.
-12. **`audit_localization_missing_separator`** — a `## Localization` bullet contains a citation but no ` — ` (em-dash with surrounding spaces) separator before the rationale.
-13. **`audit_reproduction_no_proposed`** — `## Reproduction` has no bullet starting with `Proposed:`.
-14. **`audit_reproduction_observed_unverified`** — a bullet starts with `Observed:` but its text includes a phrase indicating uncertainty (`cannot confirm`, `not verified`, `unclear if`, `may be`, `possibly`). Observed claims must be verified; uncertainty belongs in `Unresolved:` bullets.
-15. **`audit_reproduction_unresolved_not_routed`** — a bullet starts with `Unresolved:` but the corresponding `OPEN_QUESTIONS.md` has no `Q-NNN` entry that references it. (Checked at gate-preflight, not at artifact validation time, because OPEN_QUESTIONS.md is written by the Scientist phase-tail after AUDIT.md.)
-16. **`audit_unexpected_content`** — a required section body contains a paragraph, code fence, or sub-heading that this contract does not permit.
-17. **`audit_title_missing`** — the `# AUDIT` H1 title is absent (must appear as the first non-frontmatter line).
-18. **`audit_validation_failed`** — the Auditor persona produced a draft that failed validation after both the repair ritual and the finalize ritual. The orchestrator writes `AUDIT.draft.md` and `NEEDS_INTERVENTION.json`; the canonical `AUDIT.md` is not written.
+9. **`audit_section_duplicated`** — a required H2 section heading (e.g. `## Localization`) appears more than once. A duplicate is rejected with this code, not folded into `audit_unexpected_content` (mirrors `spec_section_duplicated`).
+10. **`audit_section_empty`** — a required section has no bullets.
+11. **`audit_localization_missing_citation`** — a `## Localization` bullet does not START with a `file:line` citation matching the pattern `[^:\s]+:\d+(-\d+)?` immediately followed by the ` — ` separator. Leading text before the citation, or junk between the citation token and the separator, also trips this code (the well-formed leading citation is absent).
+12. **`audit_localization_citation_format`** — a `## Localization` citation has a line number of 0, a range where the second number is less than the first, or a leading `/` or `./` in the path.
+13. **`audit_localization_missing_separator`** — a `## Localization` bullet contains a `file:line` citation token but no ` — ` (em-dash with surrounding spaces) separator anywhere.
+14. **`audit_reproduction_no_proposed`** — `## Reproduction` has no bullet starting with `Proposed:`.
+15. **`audit_reproduction_untagged_bullet`** — a `## Reproduction` bullet does not start with one of `Proposed:`, `Observed:`, or `Unresolved:`. Untagged bullets are rejected rather than silently dropped.
+16. **`audit_reproduction_observed_no_citation`** — a bullet starts with `Observed:` but contains no `file:line` citation. `Proposed:` and `Unresolved:` bullets are exempt.
+17. **`audit_reproduction_observed_unverified`** — a bullet starts with `Observed:` but its text includes a phrase indicating uncertainty (`cannot confirm`, `not verified`, `unclear if`, `may be`, `possibly`). Observed claims must be verified; uncertainty belongs in `Unresolved:` bullets.
+18. **`audit_reproduction_unresolved_not_routed`** — a bullet starts with `Unresolved:` but the corresponding `OPEN_QUESTIONS.md` has no `Q-NNN` entry that references it. (Checked at gate-preflight, not at artifact validation time, because OPEN_QUESTIONS.md is written by the Scientist phase-tail after AUDIT.md.)
+19. **`audit_unexpected_content`** — a required section body contains a paragraph, code fence, or sub-heading that this contract does not permit.
+20. **`audit_title_missing`** — the `# AUDIT` H1 title is absent (must appear as the first non-frontmatter line).
+21. **`audit_validation_failed`** — the Auditor persona produced a draft that failed validation after both the repair ritual and the finalize ritual. The orchestrator writes `AUDIT.draft.md` and `NEEDS_INTERVENTION.json`; the canonical `AUDIT.md` is not written.
 
 ## Handoff section
 
@@ -230,10 +236,13 @@ Extended source-id pattern (implemented in `src/artifacts/source-check.ts`):
 | `audit_frontmatter_runid_mismatch` | `runId` does not match active run | Do not copy AUDIT.md between runs |
 | `audit_missing_section` | A required H2 section is absent | Add the section; rerun AUDIT |
 | `audit_section_out_of_order` | Sections present but not canonical | Reorder to: Localization → Reproduction → Constraints → Audit sources |
+| `audit_section_duplicated` | A required section heading appears twice | Merge the duplicate into a single section |
 | `audit_section_empty` | A required section has no bullets | Add at least one bullet |
-| `audit_localization_missing_citation` | A Localization bullet has no `file:line` citation | Add a citation or use `:1` for whole-file |
+| `audit_localization_missing_citation` | A Localization bullet does not start with a clean `file:line — ` citation | Lead the bullet with the citation, then ` — `, then the rationale |
 | `audit_localization_citation_format` | Citation has line 0, inverted range, or leading slash | Fix the path and line numbers |
 | `audit_reproduction_no_proposed` | Reproduction section has no `Proposed:` bullet | Add the operator's statement as a `Proposed:` bullet |
+| `audit_reproduction_untagged_bullet` | A Reproduction bullet has no `Proposed:`/`Observed:`/`Unresolved:` tag | Tag every Reproduction bullet |
+| `audit_reproduction_observed_no_citation` | An `Observed:` bullet has no `file:line` citation | Add the `file:line` for the confirmed fact |
 | `audit_reproduction_observed_unverified` | An `Observed:` bullet contains uncertainty language | Move uncertain claims to `Unresolved:` |
 | `audit_reproduction_unresolved_not_routed` | An `Unresolved:` claim has no matching Q-NNN | Scientist phase-tail must route it to OPEN_QUESTIONS.md |
 | `audit_validation_failed` | Draft failed repair + finalize rituals | Inspect `AUDIT.draft.md`; rerun AUDIT |
@@ -352,7 +361,7 @@ operatorStatement: audit the events.jsonl schema for fields that are documented 
 ## Reproduction
 
 - Proposed: some event types listed in contract docs are never emitted by the runtime.
-- Observed: grep:science_emitted in src/ — zero matches in src/state/events.ts. The event type is documented in docs/contracts/SCIENTIST.md but has no emit call. Confirmed by grep.
+- Observed: src/state/events.ts:1 — grep:science_emitted returns zero matches; the event type is documented in docs/contracts/SCIENTIST.md but has no emit call. Confirmed by grep.
 - Observed: src/state/schemas.ts:1 — science_emitted is declared in the schema but grep of src/phases/ shows no call site. Confirmed by grep.
 - Unresolved: whether hypothesis_updated and question_deferred are emitted in practice requires tracing all phase-tail call sites and verifying against a live events.jsonl fixture. Scope exceeds static read. Routed to Q-001.
 - Unresolved: whether missing emit calls cause gate-preflight failures or are silent no-ops requires running the full lifecycle. Routed to Q-002.
