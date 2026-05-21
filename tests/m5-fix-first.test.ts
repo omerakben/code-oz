@@ -45,7 +45,7 @@ describe('finding #1: versions report consistently across all surfaces', () => {
   // v0.20.1-alpha.0 first-run-polish C19.1 (Codex R2 B1 closure) and
   // v0.20.2-alpha.0 release prep (chore commit fb73128) both bumped the
   // trio together. The 'bump these three together' lesson holds.
-  const CURRENT = '0.20.3-alpha.0'
+  const CURRENT = '0.21.0-alpha.0'
 
   test('PKG_VERSION', () => {
     expect(PKG_VERSION).toBe(CURRENT)
