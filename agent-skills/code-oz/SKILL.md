@@ -18,26 +18,17 @@ write its state.
 
 ## How to drive it
 
-Set this ONCE at the start of your session so every code-oz call runs in
-fail-closed operator mode (the engine enforces it even if you forget the
-per-command flags):
-
+First, bind this project to you ONCE so the engine enforces operator mode on every command automatically:
 ```
-export CODE_OZ_OPERATOR=<your-agent-name>
+code-oz init --operator <your-agent-name>      # new project
+# or, if .code-oz already exists, add `operator: <your-agent-name>` to .code-oz/config.yaml
 ```
+Then drive normally — no per-command flags needed:
+- `code-oz run --request "<the task>"`
+- `code-oz approve <phase>`   (define, audit, plan, build, verify, review)
+- `code-oz resume`, `code-oz doctor`
 
-Then drive normally:
-
-- Start/advance a run: `code-oz run --request "<the task>"`
-- Approve a reversible gate when the engine asks (name the phase):
-  `code-oz approve <phase>` (phases: define, audit, plan, build, verify, review)
-- Continue/inspect: `code-oz resume`, `code-oz doctor`.
-
-Equivalent per-command flags also exist (`--operator <id> --non-interactive`) if
-you prefer not to use the env var:
-
-- `code-oz run --operator <agent> --non-interactive --request "<the task>"`
-- `code-oz approve --operator <agent> --non-interactive <phase>`
+(Alternatives if you cannot edit config: set `export CODE_OZ_OPERATOR=<agent>` for the session, or pass `--operator <agent> --non-interactive` per command.)
 
 Read the engine's stdout and the run's `state/` gate files + `events.jsonl` as
 the only source of truth for what happened.

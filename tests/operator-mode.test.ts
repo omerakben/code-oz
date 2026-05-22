@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { parseRunArgs, assertNonInteractiveProviderOk } from '../src/commands/run.ts'
 import { runApprove } from '../src/commands/approve.ts'
 import { initProject } from '../src/commands/init.ts'
+import { resolveOperatorMode } from '../src/config/operator-mode.ts'
+import { loadConfig } from '../src/config/load.ts'
 import { initRun, loadRun, requireGate, runPathsFor } from '../src/state/run.ts'
 import { writeGate } from '../src/state/gates.ts'
 import { appendEvent } from '../src/state/events.ts'
@@ -491,5 +493,176 @@ describe('runApprove — operator-derived approvedBy (Finding 3)', () => {
       .map((l) => JSON.parse(l))
       .find((e) => e.type === 'gate_written' && e.phase === 'define')
     expect(gateWritten?.approvedBy).toBe('operator:hermes')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveOperatorMode — the centralized precedence + fail-closed resolver.
+// Precedence: CLI flag > env > config. nonInteractive is true if ANY operator
+// source is set OR the --non-interactive flag was passed. A malformed id from
+// ANY source throws.
+// ---------------------------------------------------------------------------
+describe('resolveOperatorMode', () => {
+  test('flag wins over env and config', () => {
+    const m = resolveOperatorMode({
+      flagOperator: 'flag',
+      envOperator: 'env',
+      configOperator: 'cfg',
+    })
+    expect(m.operator).toBe('flag')
+    expect(m.nonInteractive).toBe(true)
+  })
+
+  test('env wins over config when no flag', () => {
+    const m = resolveOperatorMode({ envOperator: 'env', configOperator: 'cfg' })
+    expect(m.operator).toBe('env')
+    expect(m.nonInteractive).toBe(true)
+  })
+
+  test('config is used when neither flag nor env present', () => {
+    const m = resolveOperatorMode({ configOperator: 'hermes' })
+    expect(m.operator).toBe('hermes')
+    expect(m.nonInteractive).toBe(true)
+  })
+
+  test('empty-string sources are treated as absent', () => {
+    const m = resolveOperatorMode({ envOperator: '', configOperator: '' })
+    expect(m.operator).toBeUndefined()
+    expect(m.nonInteractive).toBe(false)
+  })
+
+  test('all absent yields { nonInteractive: false } and no operator', () => {
+    const m = resolveOperatorMode({})
+    expect(m.operator).toBeUndefined()
+    expect(m.nonInteractive).toBe(false)
+  })
+
+  test('--non-interactive flag forces nonInteractive even without an operator', () => {
+    const m = resolveOperatorMode({ flagNonInteractive: true })
+    expect(m.operator).toBeUndefined()
+    expect(m.nonInteractive).toBe(true)
+  })
+
+  test('malformed flag operator throws fail-closed', () => {
+    expect(() => resolveOperatorMode({ flagOperator: 'bad id!' })).toThrow(/operator id must match/)
+  })
+
+  test('malformed env operator throws fail-closed', () => {
+    expect(() => resolveOperatorMode({ envOperator: 'bad id!' })).toThrow(/operator id must match/)
+  })
+
+  test('malformed config operator throws fail-closed', () => {
+    expect(() => resolveOperatorMode({ configOperator: 'bad id!' })).toThrow(/operator id must match/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// config.yaml `operator:` field — loads cleanly, surfaces on CodeOzConfig.
+// ---------------------------------------------------------------------------
+describe('config.yaml operator binding', () => {
+  let cwd: string
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'code-oz-config-operator-'))
+  })
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true })
+  })
+
+  test('init --operator writes operator: into config.yaml and it loads', async () => {
+    await initProject({ cwd, operator: 'hermes' })
+    const config = await loadConfig({ cwd })
+    expect(config.operator).toBe('hermes')
+  })
+
+  test('config without operator still loads cleanly (operator absent)', async () => {
+    await initProject({ cwd })
+    const config = await loadConfig({ cwd })
+    expect(config.operator).toBeUndefined()
+  })
+
+  test('malformed operator: in config.yaml fails closed at load', async () => {
+    await initProject({ cwd })
+    const configPath = join(cwd, '.code-oz', 'config.yaml')
+    const raw = await readFile(configPath, 'utf8')
+    await writeFile(configPath, raw + '\noperator: "bad id!"\n', 'utf8')
+    await expect(loadConfig({ cwd })).rejects.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Config-bound operator mode (the LIVE-agent fix): a project whose config.yaml
+// carries operator: hermes enforces operator mode on a PLAIN `code-oz run`
+// (no flags, no env). Exercised through the real CLI subprocess so the fold
+// in runCommand (resolveOperatorMode reading config) is what makes it work.
+// ---------------------------------------------------------------------------
+describe('config-bound operator mode — plain code-oz run', () => {
+  let cwd: string
+  let emptyPath: string
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'code-oz-config-bound-run-'))
+    emptyPath = await mkdtemp(join(tmpdir(), 'code-oz-empty-path-'))
+  })
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true })
+    await rm(emptyPath, { recursive: true, force: true })
+  })
+
+  async function bindOperator(): Promise<void> {
+    await initProject({ cwd, operator: 'hermes' })
+  }
+
+  // Force the fake fallback by stripping the provider CLIs from PATH and the
+  // xAI/Gemini keys (mirrors tests/commands-run.test.ts). In a NON-operator
+  // project this completes via the first-run fake fixture; a config-bound
+  // operator project must instead FAIL CLOSED — proving config.operator flowed
+  // into opMode.nonInteractive (the silent fake fallback is banned in operator
+  // mode, rule 8 + cross-family REVIEW integrity).
+  const FAKE_FALLBACK_ENV = {
+    XAI_API_KEY: undefined,
+    GEMINI_API_KEY: undefined,
+  } as const
+
+  async function runConfigBound(args: readonly string[]): Promise<SubprocResult> {
+    const proc = Bun.spawn({
+      cmd: [process.execPath, 'run', CLI_ENTRY, ...args],
+      cwd,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        ...process.env,
+        FORCE_COLOR: '0',
+        PATH: emptyPath,
+        HOME: join(cwd, 'fresh-home'),
+        ...FAKE_FALLBACK_ENV,
+      },
+    })
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    const exitCode = await proc.exited
+    return { exitCode, stdout, stderr }
+  }
+
+  test('plain `run --request` is operator-bound from config (fail-closed fake fallback)', async () => {
+    await bindOperator()
+    // No --operator, no --non-interactive, no CODE_OZ_OPERATOR. The config
+    // binding alone must engage operator mode; with no real providers the
+    // silent fake fallback is refused fail-closed.
+    const r = await runConfigBound(['run', '--request', 'build me X'])
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr.toLowerCase()).toContain('non-interactive')
+  })
+
+  test('config-bound project bans explicit --provider fake (non-zero exit)', async () => {
+    await bindOperator()
+    const r = await runConfigBound(['run', '--provider', 'fake', '--request', 'build me X'])
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr.toLowerCase()).toContain('fake')
   })
 })

@@ -23,6 +23,8 @@ import { stdin, stdout } from 'node:process'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { bootstrap } from '../cli/bootstrap.ts'
+import { loadConfig } from '../config/load.ts'
+import { resolveOperatorMode } from '../config/operator-mode.ts'
 import {
   approveGate,
   approveReviewTaskGate,
@@ -96,6 +98,20 @@ export interface RunApproveResult {
 export async function runApprove(opts: RunApproveOptions = {}): Promise<RunApproveResult> {
   const ctx = await bootstrap({ cwd: opts.cwd })
 
+  // bootstrap does not expose the loaded config, so read it directly here to
+  // fold the project-level `operator:` binding into operator mode. This is the
+  // approve-side mirror of runCommand's fold: a project bound on disk enforces
+  // fail-closed operator mode on every `code-oz approve` with zero per-command
+  // flags. Precedence: opts.operator (CLI flag) > env CODE_OZ_OPERATOR >
+  // config.operator. A malformed id from any source throws (fail-closed).
+  const config = await loadConfig({ cwd: opts.cwd ?? process.cwd() })
+  const opMode = resolveOperatorMode({
+    ...(opts.operator !== undefined ? { flagOperator: opts.operator } : {}),
+    flagNonInteractive: opts.nonInteractive,
+    envOperator: process.env.CODE_OZ_OPERATOR,
+    configOperator: config.operator,
+  })
+
   const runId = await readActiveRun(ctx.paths.activeRun)
   if (runId === null) {
     throw new Error(
@@ -112,7 +128,7 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   // Non-interactive operator approve must name the phase explicitly. An
   // external operator cannot approve "whatever is current" against a stale
   // view of the run.
-  if (opts.nonInteractive === true && (opts.phase === undefined || opts.phase.length === 0)) {
+  if (opMode.nonInteractive && (opts.phase === undefined || opts.phase.length === 0)) {
     throw new Error(
       'non-interactive approve requires an explicit phase argument ' +
         '(an external operator must name the phase, not approve whatever is current against a stale view).',
@@ -155,7 +171,7 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   // SHIP is human-only: an external operator may approve reversible gates
   // non-interactively, but the irreversible SHIP gate fails closed. A human
   // must run `code-oz approve ship` interactively, then push manually.
-  if (opts.nonInteractive === true && targetPhase === 'ship') {
+  if (opMode.nonInteractive && targetPhase === 'ship') {
     throw new Error(
       'human approval required: SHIP cannot be approved in --non-interactive operator mode. ' +
         'A human must run `code-oz approve ship` interactively, then push manually.',
@@ -321,7 +337,7 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   // (parseApproveArgs), so this keeps that path identical while making the
   // RunApproveOptions.operator field meaningful for programmatic callers.
   const approvedBy =
-    opts.approvedBy ?? (opts.operator !== undefined ? `operator:${opts.operator}` : 'user')
+    opts.approvedBy ?? (opMode.operator !== undefined ? `operator:${opMode.operator}` : 'user')
   const gate: GateFile = {
     version: 1,
     runId,

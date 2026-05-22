@@ -302,6 +302,8 @@ export interface CodeOzConfig {
   // Runtime callers resolve via `cfg.debatePolicy ?? DEFAULT_DEBATE_POLICY`.
   // See docs/contracts/DEBATE_POLICY.md.
   debatePolicy?: DebatePolicyConfig
+  // External-operator binding (project-level). When set, every run/approve in this project runs in fail-closed operator mode (provenance + fake ban + SHIP block); set via `code-oz init --operator <id>` or by hand.
+  operator?: string
 }
 
 export const DEFAULT_CONFIG: CodeOzConfig = {

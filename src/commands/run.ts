@@ -39,6 +39,7 @@ import {
   EFFORT_LEVELS,
   type EffortLevel,
 } from '../config/effort.ts'
+import { resolveOperatorMode } from '../config/operator-mode.ts'
 import type { Budgets, CodeOzConfig } from '../config/schema.ts'
 import {
   initRun,
@@ -150,9 +151,51 @@ export async function runCommand(args: string[]): Promise<void> {
       `code-oz run: --effort ${parsed.effortAlias} is deprecated; use --effort ${parsed.effort}.\n`,
     )
   }
+
+  // Resolve effective operator mode by folding config.operator into the
+  // CLI flag + env that parseRunArgs already handled. This is the
+  // authoritative resolution: a project bound on disk (`operator:` in
+  // config.yaml, written by `code-oz init --operator <id>`) engages
+  // fail-closed operator mode for EVERY run with zero per-command flags —
+  // which is the whole point (a weak external agent that just runs bare
+  // `code-oz run` still gets provenance + fake ban + SHIP block). CLI
+  // --operator > env CODE_OZ_OPERATOR > config.operator; --non-interactive
+  // OR any operator source forces nonInteractive. A malformed id from any
+  // source throws (fail-closed) — surface it as a usage error.
+  let opMode: ReturnType<typeof resolveOperatorMode>
+  try {
+    opMode = resolveOperatorMode({
+      ...(parsed.operator !== undefined ? { flagOperator: parsed.operator } : {}),
+      flagNonInteractive: parsed.nonInteractive,
+      envOperator: process.env.CODE_OZ_OPERATOR,
+      configOperator: config.operator,
+    })
+  } catch (err) {
+    process.stderr.write(`code-oz run: ${(err as Error).message}\n`)
+    process.exit(EXIT_USAGE)
+  }
+
+  // Fake ban that parse-time could not know about (config-bound operator
+  // mode). When the project is operator-bound on disk, an explicit
+  // `--provider fake` / `--fake-script` voids cross-family REVIEW and is
+  // refused before any provider resolution. parseRunArgs already rejects
+  // these when --non-interactive / CODE_OZ_OPERATOR turned on operator
+  // mode at parse time; this catches the config-only binding.
+  if (
+    opMode.nonInteractive &&
+    (parsed.providerOverride === 'fake' || parsed.fakeScriptPath !== undefined)
+  ) {
+    process.stderr.write(
+      'code-oz run: this project is operator-bound (config operator/--operator/CODE_OZ_OPERATOR); ' +
+        'the fake provider is banned in operator mode (it would stub cross-family REVIEW). ' +
+        'Remove --provider fake / --fake-script, or unbind the operator.\n',
+    )
+    process.exit(2)
+  }
+
   const runtimeProviderOverride =
     parsed.providerOverride ?? (await defaultToFakeIfRequiredProvidersUnavailable(ctx))
-  assertNonInteractiveProviderOk(parsed.nonInteractive, runtimeProviderOverride)
+  assertNonInteractiveProviderOk(opMode.nonInteractive, runtimeProviderOverride)
   if (runtimeProviderOverride === 'fake' && parsed.providerOverride !== 'fake') {
     printFakeProviderBanner()
   }
@@ -247,7 +290,7 @@ export async function runCommand(args: string[]): Promise<void> {
         runtimeProviderOverride,
         fakeScriptEntries,
         parsed.taskOverride,
-        parsed.nonInteractive,
+        opMode.nonInteractive,
       )
     } finally {
       disposeInterruptStopGate()
@@ -367,7 +410,7 @@ export async function runCommand(args: string[]): Promise<void> {
     originalBudgets: rawConfig.budgets,
     effectiveBudgets: config.budgets,
     ...(problemStatement !== undefined ? { problemStatement } : {}),
-    ...(parsed.operator !== undefined ? { operator: parsed.operator } : {}),
+    ...(opMode.operator !== undefined ? { operator: opMode.operator } : {}),
   })
   const disposeInterruptStopGate = installInterruptStopGate(runPaths, runId)
 

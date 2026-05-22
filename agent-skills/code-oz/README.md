@@ -15,8 +15,10 @@ Then ensure the engine is installed: `npm i -g @tuel/code-oz` or
 `brew install omerakben/tap/code-oz`.
 
 The skill drives code-oz in fail-closed operator mode, which bans the fake
-provider, blocks SHIP/push, and records operator provenance. Set it once for the
-session with `export CODE_OZ_OPERATOR=<agent>` so every call enforces it even if
-a per-command flag is forgotten; the equivalent `--non-interactive --operator
+provider, blocks SHIP/push, and records operator provenance. Bind the project
+once with `code-oz init --operator <agent>` (or add `operator: <agent>` to
+`.code-oz/config.yaml`) so every run/approve enforces operator mode
+automatically — no per-command flags. The session env var `export
+CODE_OZ_OPERATOR=<agent>` and the per-command `--non-interactive --operator
 <agent>` flags also work. code-oz remains the only writer of gates, events, and
 reviews.

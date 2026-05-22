@@ -4,10 +4,15 @@ import { parseArgs } from 'node:util'
 import { stringify } from 'yaml'
 import { paths, type CodeOzPaths } from '../paths.ts'
 import { DEFAULT_CONFIG, type Profile } from '../config/schema.ts'
+import { OPERATOR_ID_PATTERN } from '../config/operator-mode.ts'
 
 export interface InitOptions {
   cwd?: string
   force?: boolean
+  /** External-operator binding. When set, `operator: <id>` is written into
+   *  config.yaml so every run/approve in this project runs in fail-closed
+   *  operator mode automatically (zero per-command flags). */
+  operator?: string
 }
 
 export interface InitResult {
@@ -228,7 +233,11 @@ export async function initProject(opts: InitOptions = {}): Promise<InitResult> {
   await mkdir(p.state, { recursive: true })
   await mkdir(p.runs, { recursive: true })
 
-  const config = { ...DEFAULT_CONFIG, profile }
+  const config = {
+    ...DEFAULT_CONFIG,
+    profile,
+    ...(opts.operator !== undefined ? { operator: opts.operator } : {}),
+  }
   await writeFile(p.config, stringify(config), 'utf8')
   await writeFile(join(p.root, '.gitignore'), renderScaffoldGitignore(), 'utf8')
   await writeFile(join(p.root, 'README.md'), renderProjectReadme(profile), 'utf8')
@@ -282,6 +291,7 @@ export async function initCommand(args: string[]): Promise<void> {
     args,
     options: {
       force: { type: 'boolean', default: false },
+      operator: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
     strict: true,
@@ -290,17 +300,31 @@ export async function initCommand(args: string[]): Promise<void> {
   if (values.help) {
     process.stdout.write(`code-oz init — scaffold a code-oz project in the current directory
 
-Usage: code-oz init [--force]
+Usage: code-oz init [--force] [--operator <id>]
 
 Options:
-  --force      Destructively reset an existing .code-oz/ directory: the entire
-               directory is removed and recreated from scratch
-  -h, --help   Show this help
+  --force          Destructively reset an existing .code-oz/ directory: the
+                   entire directory is removed and recreated from scratch
+  --operator <id>  Bind this project to an external operator. Writes
+                   operator: <id> into config.yaml so every run/approve runs in
+                   fail-closed operator mode automatically (no per-command
+                   flags). Id must match /^[A-Za-z0-9._:-]{1,64}$/.
+  -h, --help       Show this help
 `)
     return
   }
 
-  const { paths: p, profile } = await initProject({ force: values.force })
+  if (values.operator !== undefined && !OPERATOR_ID_PATTERN.test(values.operator)) {
+    process.stderr.write(
+      `code-oz init: --operator must match ${OPERATOR_ID_PATTERN.source} (got ${JSON.stringify(values.operator)})\n`,
+    )
+    process.exit(2)
+  }
+
+  const { paths: p, profile } = await initProject({
+    force: values.force,
+    ...(values.operator !== undefined ? { operator: values.operator } : {}),
+  })
   process.stdout.write(
     `code-oz: initialized ${profile} project at ${resolve(p.root)}\n` +
       `code-oz: profile = ${profile} (auto-detected from working directory)\n` +
