@@ -49,3 +49,6 @@ bun.lockb
 .code-oz/state/ralph-summary.md
 .code-oz/state/RALPH_HALT.md
 .code-oz/state/W3_LITE_DONE.json
+
+# Influence library / external agent templates (carried nested .git dirs)
+/template/
