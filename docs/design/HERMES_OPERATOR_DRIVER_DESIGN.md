@@ -110,7 +110,7 @@ plugin into the agentskills.io standard so Hermes/OpenClaw can load it. Behavior
   missing, stop with pinned install guidance. No `curl`/`npx`/`bunx` auto-install.
 - Drive only via `code-oz run --operator <agent> --non-interactive --request "..."`,
   `code-oz approve --operator <agent> --non-interactive <phase>`,
-  `code-oz resume` / `status` / `doctor`.
+  `code-oz resume` / `doctor`. (No `code-oz status` subcommand exists — deferred.)
 - Never write `.code-oz/`, gates, events, artifacts, or config. Never decide pass/fail.
   Never simulate cross-family review. Never use fake provider/script/`--artifact`,
   never push/merge/publish.

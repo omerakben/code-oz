@@ -597,7 +597,7 @@ Always pass `--operator <your-agent-name> --non-interactive`:
 - Approve a reversible gate when the engine asks for it (name the phase):
   `code-oz approve --operator <agent> --non-interactive <phase>`
   (phases: define, audit, plan, build, verify, review)
-- Check or continue: `code-oz status`, `code-oz resume`, `code-oz doctor`.
+- Check or continue: `code-oz resume`, `code-oz doctor`.
 
 Read the engine's stdout and the run's `state/` gate files + `events.jsonl` as
 the only source of truth for what happened.
