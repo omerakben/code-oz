@@ -233,6 +233,35 @@ model, network / 4xx / 5xx, malformed JSON) flow through the standard
 - Does not extend `AgentLoadIssue` with `actionableSuggestions` or any
   provider-error shape. Loader issues use `rule` + `detail`.
 
+## External-operator mode (v0.21.1)
+
+An external agent (e.g. Hermes, OpenClaw, or any autonomous driver) may drive
+code-oz non-interactively by passing two flags to `run` and `approve`:
+
+| Flag | Applies to | Description |
+|------|-----------|-------------|
+| `--operator <id>` | `run`, `approve` | Attributes the run or approval to the named operator. Id: `/^[A-Za-z0-9._:-]{1,64}$/`. Recorded on `run_started.operator` and as `approvedBy = "operator:<id>"` on every gate file written during the run. |
+| `--non-interactive` | `run`, `approve` | Fail-closed operator mode. Requires `--operator`. |
+
+`--non-interactive` enforces four invariants:
+
+1. **Fake provider banned.** Explicit `--provider fake`, `--fake-script`, and the
+   silent first-run FakeProvider fallback all exit non-zero. An operator-driven run
+   must use real providers so the cross-family REVIEW gate is not softened.
+2. **SHIP is human-only.** `code-oz approve --non-interactive ... ship` exits
+   non-zero. Any active-run continuation that reaches the SHIP phase under
+   non-interactive exits with "human approval required." Push and merge are not
+   code-oz engine operations; this guard covers the engine surface only.
+3. **Explicit phase required for approve.** `code-oz approve --non-interactive
+   --operator <id> <phase>` requires the PHASE argument. The current-phase default
+   is refused (an operator must name what it is approving).
+4. **Provenance recorded.** Operator identity flows through every gate write so
+   `events.jsonl` and gate files carry a full provenance chain.
+
+For an agentskills.io-compatible skill that exposes this interface to autonomous
+agents, see [`agent-skills/code-oz/SKILL.md`](../../agent-skills/code-oz/SKILL.md).
+Design rationale and chokepoint locations: [`docs/design/HERMES_OPERATOR_DRIVER_DESIGN.md`](../design/HERMES_OPERATOR_DRIVER_DESIGN.md).
+
 ## See also
 
 - [`docs/references/provider-contract.md`](../references/provider-contract.md) — IAgentProvider, request DTOs, ProviderFamily, error codes, M11 capability and eligibility

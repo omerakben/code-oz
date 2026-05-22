@@ -1172,12 +1172,19 @@ confirmation required). With PHASE, the argument must match the run's
 currentPhase — skipping ahead or backwards is rejected.
 
 Options:
-  --artifact <path>  Override the artifact path. Default: the canonical
-                     per-phase artifact (e.g., artifacts/SPEC.md for define).
-                     Subject to path-safety rules (relative, normalized,
-                     no '..' segments, no symlink escape from artifacts/).
-  --notes <string>   Notes recorded on the gate file's 'notes' field.
-  -h, --help         Show this help
+  --artifact <path>    Override the artifact path. Default: the canonical
+                       per-phase artifact (e.g., artifacts/SPEC.md for define).
+                       Subject to path-safety rules (relative, normalized,
+                       no '..' segments, no symlink escape from artifacts/).
+  --notes <string>     Notes recorded on the gate file's 'notes' field.
+  --operator <id>      Attribute this approval to an external operator. Id must
+                       match /^[A-Za-z0-9._:-]{1,64}$/. Recorded as
+                       approvedBy = "operator:<id>" on the gate file. Required
+                       when --non-interactive is passed.
+  --non-interactive    Fail-closed external-operator mode. Requires --operator
+                       and an explicit PHASE argument (no current-phase default).
+                       Refuses 'ship' — SHIP approval is human-only.
+  -h, --help           Show this help
 
 Idempotency: re-running the same approve with identical content is a
 no-op. Re-running with different content for an already-approved phase

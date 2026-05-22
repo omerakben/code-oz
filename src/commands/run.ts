@@ -2813,6 +2813,17 @@ Options:
                            reconstruct the recorded envelope from events.jsonl;
                            passing a different value than the run was started
                            with exits with code 2.
+  --operator <id>          Attribute this run to an external operator (e.g. an
+                           autonomous agent). Id must match /^[A-Za-z0-9._:-]{1,64}$/.
+                           Recorded on run_started.operator and on every gate file
+                           written during the run. Required when --non-interactive
+                           is passed.
+  --non-interactive        Fail-closed external-operator mode. Requires --operator.
+                           Bans the fake provider (explicit --provider fake, --fake-script,
+                           and the silent first-run fake fallback all exit non-zero).
+                           Blocks SHIP/push approval — that gate is human-only.
+                           Use code-oz approve --non-interactive --operator <id> <phase>
+                           to approve each reversible gate.
   -h, --help               Show this help.
 
 --request and --request-file are mutually exclusive.
