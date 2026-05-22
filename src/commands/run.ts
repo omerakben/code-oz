@@ -548,6 +548,10 @@ export function installInterruptStopGate(runPaths: RunPaths, runId: string): () 
 
 // --- helpers -------------------------------------------------------
 
+/** Bounded id for an external operator driving the CLI (rule: external-operator driving).
+ *  Alphanumeric plus `.`, `_`, `:`, `-`; max 64 chars. */
+const OPERATOR_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/
+
 interface InputSourceTTY {
   readonly kind: 'tty'
 }
@@ -584,6 +588,12 @@ interface ParsedOk {
    *  resume is always permitted). */
   readonly effortFlagPresent: boolean
   readonly resumeRequested: boolean
+  /** External-operator provenance (rule: external-operator driving).
+   *  Bounded id; recorded on run_started.operator. */
+  readonly operator?: string
+  /** Fail-closed external-operator mode: bans fake, blocks SHIP approval,
+   *  refuses silent fake fallback. Requires `operator` to be set. */
+  readonly nonInteractive: boolean
 }
 interface ParsedError {
   readonly kind: 'error'
@@ -610,6 +620,8 @@ export function parseRunArgs(
   let effortAlias: string | undefined
   let resumeRequested = false
   let help = false
+  let operator: string | null = null
+  let nonInteractive = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
@@ -715,6 +727,23 @@ export function parseRunArgs(
       effortAlias = parsedEffort.alias
       continue
     }
+    if (a === '--non-interactive') {
+      nonInteractive = true
+      continue
+    }
+    if (a === '--operator') {
+      const value = args[i + 1]
+      if (value === undefined) {
+        return { kind: 'error', message: '--operator requires an id', help: true }
+      }
+      operator = value
+      i++
+      continue
+    }
+    if (a.startsWith('--operator=')) {
+      operator = a.slice('--operator='.length)
+      continue
+    }
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
   }
 
@@ -777,6 +806,27 @@ export function parseRunArgs(
       }
     }
   }
+  if (operator !== null && !OPERATOR_ID_PATTERN.test(operator)) {
+    return {
+      kind: 'error',
+      message: `--operator must match ${OPERATOR_ID_PATTERN.source} (got ${JSON.stringify(operator)})`,
+      help: false,
+    }
+  }
+  if (nonInteractive && operator === null) {
+    return {
+      kind: 'error',
+      message: '--non-interactive requires --operator <id> (external-operator mode must be attributable)',
+      help: false,
+    }
+  }
+  if (nonInteractive && providerOverride === 'fake') {
+    return {
+      kind: 'error',
+      message: 'the fake provider is banned in --non-interactive operator mode (it would stub cross-family REVIEW)',
+      help: false,
+    }
+  }
   const effortFlagPresent = effort !== null
   const resolvedEffort: EffortLevel = effort ?? 'balanced'
   const base = (input: InputMode): ParsedOk => {
@@ -787,6 +837,7 @@ export function parseRunArgs(
       ...(effortAlias !== undefined ? { effortAlias } : {}),
       effortFlagPresent,
       resumeRequested,
+      nonInteractive,
     }
     return Object.freeze({
       ...out,
@@ -794,6 +845,7 @@ export function parseRunArgs(
       ...(fakeScriptPath !== null ? { fakeScriptPath } : {}),
       ...(input.kind === 'file' ? { requestFile: input.path } : {}),
       ...(taskOverride !== null ? { taskOverride } : {}),
+      ...(operator !== null ? { operator } : {}),
     })
   }
 
