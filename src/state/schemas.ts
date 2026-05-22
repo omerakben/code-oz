@@ -478,6 +478,8 @@ export type PhaseEvent =
        *  re-derives it from the in-memory request — so the resume path
        *  recovers it from the log (rule 1: event-derived state). */
       readonly problemStatement?: string
+      /** external-operator provenance — the agent id that drove this run. */
+      readonly operator?: string
     }>
   | OptionalActorAttributed<{
       readonly version: 1
@@ -587,7 +589,7 @@ export type PhaseEvent =
        *  invoke/complete pair. */
       readonly parentTaskId?: string
     }
-  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'gate_written'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly file: string }>
+  | OptionalActorAttributed<{ readonly version: 1; readonly type: 'gate_written'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly file: string; readonly approvedBy?: string }>
   | OptionalActorAttributed<{ readonly version: 1; readonly type: 'gate_required'; readonly ts: string; readonly runId: string; readonly phase: Phase; readonly blockedOn: string }>
   | OptionalActorAttributed<{ readonly version: 1; readonly type: 'intervention'; readonly ts: string; readonly runId: string; readonly code: string; readonly phase?: Phase }>
   | OptionalActorAttributed<{ readonly version: 1; readonly type: 'run_ended'; readonly ts: string; readonly runId: string; readonly outcome: RunOutcome }>

@@ -70,6 +70,8 @@ export interface RunApproveOptions {
   readonly artifact?: string
   readonly notes?: string
   readonly approvedBy?: string
+  readonly operator?: string
+  readonly nonInteractive?: boolean
   /**
    * Confirmation hook. Called only when no phase argument is provided
    * (auto-detected). Tests inject a deterministic confirm function;
@@ -107,6 +109,16 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     throw new Error(`active run '${runId}' has no events; cannot approve.`)
   }
 
+  // Non-interactive operator approve must name the phase explicitly. An
+  // external operator cannot approve "whatever is current" against a stale
+  // view of the run.
+  if (opts.nonInteractive === true && (opts.phase === undefined || opts.phase.length === 0)) {
+    throw new Error(
+      'non-interactive approve requires an explicit phase argument ' +
+        '(an external operator must name the phase, not approve whatever is current against a stale view).',
+    )
+  }
+
   // Resolve target phase: explicit arg or current phase from state.
   let targetPhase: Phase
   if (opts.phase !== undefined && opts.phase.length > 0) {
@@ -138,6 +150,16 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
         gateExisted: false,
       })
     }
+  }
+
+  // SHIP is human-only: an external operator may approve reversible gates
+  // non-interactively, but the irreversible SHIP gate fails closed. A human
+  // must run `code-oz approve ship` interactively, then push manually.
+  if (opts.nonInteractive === true && targetPhase === 'ship') {
+    throw new Error(
+      'human approval required: SHIP cannot be approved in --non-interactive operator mode. ' +
+        'A human must run `code-oz approve ship` interactively, then push manually.',
+    )
   }
 
   // Resolve agent for this phase from the registry. The registry
@@ -1076,6 +1098,8 @@ export async function approveCommand(args: string[]): Promise<void> {
       help: { type: 'boolean', short: 'h' },
       artifact: { type: 'string' },
       notes: { type: 'string' },
+      operator: { type: 'string' },
+      'non-interactive': { type: 'boolean' },
     },
     allowPositionals: true,
     strict: true,
@@ -1086,11 +1110,22 @@ export async function approveCommand(args: string[]): Promise<void> {
     return
   }
 
+  const operator = values.operator
+  if (operator !== undefined && !/^[A-Za-z0-9._:-]{1,64}$/.test(operator)) {
+    throw new Error('--operator must match /^[A-Za-z0-9._:-]{1,64}$/')
+  }
+  if (values['non-interactive'] === true && operator === undefined) {
+    throw new Error('--non-interactive requires --operator <id>')
+  }
+
   try {
     const result = await runApprove({
       phase: positionals[0],
       artifact: values.artifact,
       notes: values.notes,
+      operator,
+      nonInteractive: values['non-interactive'] === true,
+      ...(operator !== undefined ? { approvedBy: `operator:${operator}` } : {}),
     })
 
     if (!result.approved) {

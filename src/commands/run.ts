@@ -366,6 +366,7 @@ export async function runCommand(args: string[]): Promise<void> {
     originalBudgets: rawConfig.budgets,
     effectiveBudgets: config.budgets,
     ...(problemStatement !== undefined ? { problemStatement } : {}),
+    ...(parsed.operator !== undefined ? { operator: parsed.operator } : {}),
   })
   const disposeInterruptStopGate = installInterruptStopGate(runPaths, runId)
 
