@@ -18,17 +18,17 @@ write its state.
 
 ## How to drive it
 
-First, bind this project to you ONCE so the engine enforces operator mode on every command automatically:
-```
-code-oz init --operator <your-agent-name>      # new project
-# or, if .code-oz already exists, add `operator: <your-agent-name>` to .code-oz/config.yaml
-```
-Then drive normally — no per-command flags needed:
+Bind this project to you ONCE so the engine enforces operator mode on every command automatically:
+
+- **New project**: `code-oz init --operator <your-agent-name>` — init scaffolds the project and writes the binding; this is the only `.code-oz/` write an agent is allowed to trigger.
+- **Existing project (human setup required)**: you cannot edit `.code-oz/config.yaml` directly (see Hard boundaries). Ask the human to run `code-oz init --operator <your-agent-name>` or to set `operator: <your-agent-name>` in `.code-oz/config.yaml` themselves.
+- **Session-scoped alternative**: `export CODE_OZ_OPERATOR=<your-agent-name>` before running any commands — no file writes needed.
+- **Per-command alternative**: pass `--operator <your-agent-name> --non-interactive` on each invocation.
+
+Then drive normally — no per-command flags needed once bound:
 - `code-oz run --request "<the task>"`
 - `code-oz approve <phase>`   (define, audit, plan, build, verify, review)
 - `code-oz resume`, `code-oz doctor`
-
-(Alternatives if you cannot edit config: set `export CODE_OZ_OPERATOR=<agent>` for the session, or pass `--operator <agent> --non-interactive` per command.)
 
 Read the engine's stdout and the run's `state/` gate files + `events.jsonl` as
 the only source of truth for what happened.

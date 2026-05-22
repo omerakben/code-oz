@@ -814,8 +814,17 @@ export function parseRunArgs(
   // CODE_OZ_OPERATOR env var enforces operator mode session-wide (so an
   // external agent that omits the flags still gets fail-closed semantics:
   // operator provenance + fake ban + SHIP block). CLI --operator wins if both set.
+  // Validate CODE_OZ_OPERATOR when non-empty regardless of whether a flag is
+  // present — a malformed env var must fail closed even if the flag overrides it.
   const envOperator = env.CODE_OZ_OPERATOR
   if (envOperator !== undefined && envOperator !== '') {
+    if (!OPERATOR_ID_PATTERN.test(envOperator)) {
+      return {
+        kind: 'error',
+        message: `CODE_OZ_OPERATOR must match ${OPERATOR_ID_PATTERN.source} (got ${JSON.stringify(envOperator)})`,
+        help: false,
+      }
+    }
     if (operator === null) operator = envOperator
     nonInteractive = true
   }

@@ -22,13 +22,16 @@ export interface OperatorMode {
 }
 
 /** Resolve effective operator mode from CLI flag > env > config.
- *  Throws on a malformed operator id from any source (fail-closed). */
+ *  Validates ALL non-empty sources first, then applies precedence (fail-closed).
+ *  A malformed id from any source throws, regardless of which source wins. */
 export function resolveOperatorMode(inp: OperatorModeInputs): OperatorMode {
-  const sources = [inp.flagOperator, nonEmpty(inp.envOperator), nonEmpty(inp.configOperator)]
-  const operator = sources.find((s) => s !== undefined && s !== '')
-  if (operator !== undefined && !OPERATOR_ID_PATTERN.test(operator)) {
-    throw new Error(`operator id must match ${OPERATOR_ID_PATTERN.source} (got ${JSON.stringify(operator)})`)
+  const candidates = [inp.flagOperator, nonEmpty(inp.envOperator), nonEmpty(inp.configOperator)]
+  for (const s of candidates) {
+    if (s !== undefined && !OPERATOR_ID_PATTERN.test(s)) {
+      throw new Error(`operator id must match ${OPERATOR_ID_PATTERN.source} (got ${JSON.stringify(s)})`)
+    }
   }
+  const operator = candidates.find((s) => s !== undefined)
   const nonInteractive = inp.flagNonInteractive === true || operator !== undefined
   return Object.freeze(operator !== undefined ? { operator, nonInteractive } : { nonInteractive })
 }

@@ -108,7 +108,7 @@ describe('CODE_OZ_OPERATOR env var enforces operator mode session-wide', () => {
   test('malformed env operator id fails closed via the operator regex', () => {
     const r = parseRunArgs(['--request', 'hi'], { CODE_OZ_OPERATOR: 'bad id!' })
     expect(r.kind).toBe('error')
-    if (r.kind === 'error') expect(r.message).toContain('--operator')
+    if (r.kind === 'error') expect(r.message).toContain('CODE_OZ_OPERATOR')
   })
 
   test('explicit --operator wins over env CODE_OZ_OPERATOR', () => {
@@ -124,6 +124,15 @@ describe('CODE_OZ_OPERATOR env var enforces operator mode session-wide', () => {
     if (r.kind !== 'ok') return
     expect(r.operator).toBeUndefined()
     expect(r.nonInteractive).toBe(false)
+  })
+
+  // Finding P1: malformed CODE_OZ_OPERATOR must fail closed even when a valid
+  // --operator flag is present (env is a non-empty source and must be validated
+  // regardless of which source wins precedence).
+  test('malformed CODE_OZ_OPERATOR fails closed even when --operator flag is valid', () => {
+    const r = parseRunArgs(['--operator', 'good', '--request', 'hi'], { CODE_OZ_OPERATOR: 'bad id!' })
+    expect(r.kind).toBe('error')
+    if (r.kind === 'error') expect(r.message).toContain('CODE_OZ_OPERATOR')
   })
 })
 
@@ -553,6 +562,27 @@ describe('resolveOperatorMode', () => {
 
   test('malformed config operator throws fail-closed', () => {
     expect(() => resolveOperatorMode({ configOperator: 'bad id!' })).toThrow(/operator id must match/)
+  })
+
+  // Finding P1: malformed LOWER-priority source must throw even when a valid
+  // higher-priority source is present. Every non-empty source is validated
+  // before precedence is applied.
+  test('malformed env throws even when flag is valid (fail-closed on lower-priority)', () => {
+    expect(() =>
+      resolveOperatorMode({ flagOperator: 'good', envOperator: 'bad id!' }),
+    ).toThrow(/operator id must match/)
+  })
+
+  test('malformed config throws even when env is valid (fail-closed on lower-priority)', () => {
+    expect(() =>
+      resolveOperatorMode({ envOperator: 'ok', configOperator: 'bad id!' }),
+    ).toThrow(/operator id must match/)
+  })
+
+  test('two valid sources return the higher-priority one without throwing', () => {
+    const m = resolveOperatorMode({ flagOperator: 'good', configOperator: 'also-good' })
+    expect(m.operator).toBe('good')
+    expect(m.nonInteractive).toBe(true)
   })
 })
 
