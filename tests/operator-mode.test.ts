@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseRunArgs } from '../src/commands/run.ts'
+import { parseRunArgs, assertNonInteractiveProviderOk } from '../src/commands/run.ts'
 
 const OK_ENV = { CODE_OZ_TEST_FAKE_SCRIPT_OK: '1' } as const
 
@@ -47,5 +47,19 @@ describe('code-oz run --operator / --non-interactive parsing', () => {
     const r = parseRunArgs(['--provider', 'fake', '--request', 'hi'])
     expect(r.kind).toBe('ok')
     if (r.kind === 'ok') expect(r.providerOverride).toBe('fake')
+  })
+})
+
+describe('assertNonInteractiveProviderOk', () => {
+  test('throws when fallback would use fake in non-interactive mode', () => {
+    expect(() => assertNonInteractiveProviderOk(true, 'fake')).toThrow(/non-interactive/i)
+  })
+
+  test('allows fake fallback when NOT non-interactive (rule 8)', () => {
+    expect(() => assertNonInteractiveProviderOk(false, 'fake')).not.toThrow()
+  })
+
+  test('allows a real (undefined) override in non-interactive mode', () => {
+    expect(() => assertNonInteractiveProviderOk(true, undefined)).not.toThrow()
   })
 })

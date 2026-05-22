@@ -152,6 +152,7 @@ export async function runCommand(args: string[]): Promise<void> {
   }
   const runtimeProviderOverride =
     parsed.providerOverride ?? (await defaultToFakeIfRequiredProvidersUnavailable(ctx))
+  assertNonInteractiveProviderOk(parsed.nonInteractive, runtimeProviderOverride)
   if (runtimeProviderOverride === 'fake' && parsed.providerOverride !== 'fake') {
     printFakeProviderBanner()
   }
@@ -485,6 +486,24 @@ async function defaultToFakeIfRequiredProvidersUnavailable(
     if (health.authStatus !== 'ok') return 'fake'
   }
   return undefined
+}
+
+/**
+ * External-operator guard (rule: external-operator driving). In
+ * --non-interactive mode the silent fake fallback must fail closed —
+ * a stubbed reviewer voids cross-family REVIEW. Pure so it is
+ * unit-testable without bootstrap.
+ */
+export function assertNonInteractiveProviderOk(
+  nonInteractive: boolean,
+  resolvedOverride: ProviderOverride | undefined,
+): void {
+  if (nonInteractive && resolvedOverride === 'fake') {
+    throw new Error(
+      'code-oz run: --non-interactive operator mode requires healthy real providers; ' +
+        'refusing silent fake fallback. Run `code-oz doctor` and fix provider auth.',
+    )
+  }
 }
 
 function applyRuntimeFakeResponses(
