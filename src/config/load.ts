@@ -36,6 +36,7 @@ import {
   type PresetName,
 } from './schema.ts'
 import { AGENT_PROVIDERS, type AgentProvider } from '../agents/schema.ts'
+import { OPERATOR_ID_PATTERN } from './operator-mode.ts'
 import { familyOf } from '../providers/families.ts'
 import { capabilityOf } from '../providers/capabilities.ts'
 import type { ProviderId } from '../providers/types.ts'
@@ -160,6 +161,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
   const phases = mergePhases(raw.phases, file, issues)
   const company = mergeCompany(raw.company, defaultProvider, file, issues)
   const debatePolicy = mergeDebatePolicy(raw.debatePolicy, file, issues)
+  const operator = mergeOperator(raw.operator, file, issues)
 
   if (issues.length > 0) {
     throw new ConfigLoadError(issues)
@@ -176,6 +178,7 @@ function mergeConfig(raw: Record<string, unknown>, file: string): CodeOzConfig {
     phases,
     ...(company !== undefined ? { company } : {}),
     ...(debatePolicy !== undefined ? { debatePolicy } : {}),
+    ...(operator !== undefined ? { operator } : {}),
   })
 }
 
@@ -195,6 +198,29 @@ function mergePreset(
     return undefined
   }
   return raw as PresetName
+}
+
+// External-operator binding (project-level). Optional; absent by default.
+// When present it must be a string matching OPERATOR_ID_PATTERN — a malformed
+// id fails closed at load (mirrors the fail-closed CLI/env resolution in
+// src/config/operator-mode.ts), so a typo in config.yaml cannot silently
+// disable operator mode.
+function mergeOperator(
+  raw: unknown,
+  file: string,
+  issues: ConfigLoadIssue[],
+): string | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'string' || !OPERATOR_ID_PATTERN.test(raw)) {
+    issues.push({
+      file,
+      code: 'config_invalid_value',
+      rule: `operator must be a string matching ${OPERATOR_ID_PATTERN.source}`,
+      detail: `got ${JSON.stringify(raw)}`,
+    })
+    return undefined
+  }
+  return raw
 }
 
 function applyPresetDefaults(preset: PresetName | undefined): CodeOzConfig {

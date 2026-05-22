@@ -39,6 +39,7 @@ import {
   EFFORT_LEVELS,
   type EffortLevel,
 } from '../config/effort.ts'
+import { resolveOperatorMode } from '../config/operator-mode.ts'
 import type { Budgets, CodeOzConfig } from '../config/schema.ts'
 import {
   initRun,
@@ -150,8 +151,51 @@ export async function runCommand(args: string[]): Promise<void> {
       `code-oz run: --effort ${parsed.effortAlias} is deprecated; use --effort ${parsed.effort}.\n`,
     )
   }
+
+  // Resolve effective operator mode by folding config.operator into the
+  // CLI flag + env that parseRunArgs already handled. This is the
+  // authoritative resolution: a project bound on disk (`operator:` in
+  // config.yaml, written by `code-oz init --operator <id>`) engages
+  // fail-closed operator mode for EVERY run with zero per-command flags —
+  // which is the whole point (a weak external agent that just runs bare
+  // `code-oz run` still gets provenance + fake ban + SHIP block). CLI
+  // --operator > env CODE_OZ_OPERATOR > config.operator; --non-interactive
+  // OR any operator source forces nonInteractive. A malformed id from any
+  // source throws (fail-closed) — surface it as a usage error.
+  let opMode: ReturnType<typeof resolveOperatorMode>
+  try {
+    opMode = resolveOperatorMode({
+      ...(parsed.operator !== undefined ? { flagOperator: parsed.operator } : {}),
+      flagNonInteractive: parsed.nonInteractive,
+      envOperator: process.env.CODE_OZ_OPERATOR,
+      configOperator: config.operator,
+    })
+  } catch (err) {
+    process.stderr.write(`code-oz run: ${(err as Error).message}\n`)
+    process.exit(EXIT_USAGE)
+  }
+
+  // Fake ban that parse-time could not know about (config-bound operator
+  // mode). When the project is operator-bound on disk, an explicit
+  // `--provider fake` / `--fake-script` voids cross-family REVIEW and is
+  // refused before any provider resolution. parseRunArgs already rejects
+  // these when --non-interactive / CODE_OZ_OPERATOR turned on operator
+  // mode at parse time; this catches the config-only binding.
+  if (
+    opMode.nonInteractive &&
+    (parsed.providerOverride === 'fake' || parsed.fakeScriptPath !== undefined)
+  ) {
+    process.stderr.write(
+      'code-oz run: this project is operator-bound (config operator/--operator/CODE_OZ_OPERATOR); ' +
+        'the fake provider is banned in operator mode (it would stub cross-family REVIEW). ' +
+        'Remove --provider fake / --fake-script, or unbind the operator.\n',
+    )
+    process.exit(2)
+  }
+
   const runtimeProviderOverride =
     parsed.providerOverride ?? (await defaultToFakeIfRequiredProvidersUnavailable(ctx))
+  assertNonInteractiveProviderOk(opMode.nonInteractive, runtimeProviderOverride)
   if (runtimeProviderOverride === 'fake' && parsed.providerOverride !== 'fake') {
     printFakeProviderBanner()
   }
@@ -246,6 +290,7 @@ export async function runCommand(args: string[]): Promise<void> {
         runtimeProviderOverride,
         fakeScriptEntries,
         parsed.taskOverride,
+        opMode.nonInteractive,
       )
     } finally {
       disposeInterruptStopGate()
@@ -365,6 +410,7 @@ export async function runCommand(args: string[]): Promise<void> {
     originalBudgets: rawConfig.budgets,
     effectiveBudgets: config.budgets,
     ...(problemStatement !== undefined ? { problemStatement } : {}),
+    ...(opMode.operator !== undefined ? { operator: opMode.operator } : {}),
   })
   const disposeInterruptStopGate = installInterruptStopGate(runPaths, runId)
 
@@ -487,6 +533,24 @@ async function defaultToFakeIfRequiredProvidersUnavailable(
   return undefined
 }
 
+/**
+ * External-operator guard (rule: external-operator driving). In
+ * --non-interactive mode the silent fake fallback must fail closed —
+ * a stubbed reviewer voids cross-family REVIEW. Pure so it is
+ * unit-testable without bootstrap.
+ */
+export function assertNonInteractiveProviderOk(
+  nonInteractive: boolean,
+  resolvedOverride: ProviderOverride | undefined,
+): void {
+  if (nonInteractive && resolvedOverride === 'fake') {
+    throw new Error(
+      'code-oz run: --non-interactive operator mode requires healthy real providers; ' +
+        'refusing silent fake fallback. Run `code-oz doctor` and fix provider auth.',
+    )
+  }
+}
+
 function applyRuntimeFakeResponses(
   fakeProvider: FakeProvider | undefined,
   fakeScriptEntries: readonly FakeScriptEntry[] | undefined,
@@ -548,6 +612,10 @@ export function installInterruptStopGate(runPaths: RunPaths, runId: string): () 
 
 // --- helpers -------------------------------------------------------
 
+/** Bounded id for an external operator driving the CLI (rule: external-operator driving).
+ *  Alphanumeric plus `.`, `_`, `:`, `-`; max 64 chars. */
+const OPERATOR_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/
+
 interface InputSourceTTY {
   readonly kind: 'tty'
 }
@@ -584,6 +652,12 @@ interface ParsedOk {
    *  resume is always permitted). */
   readonly effortFlagPresent: boolean
   readonly resumeRequested: boolean
+  /** External-operator provenance (rule: external-operator driving).
+   *  Bounded id; recorded on run_started.operator. */
+  readonly operator?: string
+  /** Fail-closed external-operator mode: bans fake, blocks SHIP approval,
+   *  refuses silent fake fallback. Requires `operator` to be set. */
+  readonly nonInteractive: boolean
 }
 interface ParsedError {
   readonly kind: 'error'
@@ -610,6 +684,8 @@ export function parseRunArgs(
   let effortAlias: string | undefined
   let resumeRequested = false
   let help = false
+  let operator: string | null = null
+  let nonInteractive = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
@@ -715,7 +791,42 @@ export function parseRunArgs(
       effortAlias = parsedEffort.alias
       continue
     }
+    if (a === '--non-interactive') {
+      nonInteractive = true
+      continue
+    }
+    if (a === '--operator') {
+      const value = args[i + 1]
+      if (value === undefined) {
+        return { kind: 'error', message: '--operator requires an id', help: true }
+      }
+      operator = value
+      i++
+      continue
+    }
+    if (a.startsWith('--operator=')) {
+      operator = a.slice('--operator='.length)
+      continue
+    }
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
+  }
+
+  // CODE_OZ_OPERATOR env var enforces operator mode session-wide (so an
+  // external agent that omits the flags still gets fail-closed semantics:
+  // operator provenance + fake ban + SHIP block). CLI --operator wins if both set.
+  // Validate CODE_OZ_OPERATOR when non-empty regardless of whether a flag is
+  // present — a malformed env var must fail closed even if the flag overrides it.
+  const envOperator = env.CODE_OZ_OPERATOR
+  if (envOperator !== undefined && envOperator !== '') {
+    if (!OPERATOR_ID_PATTERN.test(envOperator)) {
+      return {
+        kind: 'error',
+        message: `CODE_OZ_OPERATOR must match ${OPERATOR_ID_PATTERN.source} (got ${JSON.stringify(envOperator)})`,
+        help: false,
+      }
+    }
+    if (operator === null) operator = envOperator
+    nonInteractive = true
   }
 
   if (help) {
@@ -777,6 +888,27 @@ export function parseRunArgs(
       }
     }
   }
+  if (operator !== null && !OPERATOR_ID_PATTERN.test(operator)) {
+    return {
+      kind: 'error',
+      message: `--operator must match ${OPERATOR_ID_PATTERN.source} (got ${JSON.stringify(operator)})`,
+      help: false,
+    }
+  }
+  if (nonInteractive && operator === null) {
+    return {
+      kind: 'error',
+      message: '--non-interactive requires --operator <id> (external-operator mode must be attributable)',
+      help: false,
+    }
+  }
+  if (nonInteractive && providerOverride === 'fake') {
+    return {
+      kind: 'error',
+      message: 'the fake provider is banned in --non-interactive operator mode (it would stub cross-family REVIEW)',
+      help: false,
+    }
+  }
   const effortFlagPresent = effort !== null
   const resolvedEffort: EffortLevel = effort ?? 'balanced'
   const base = (input: InputMode): ParsedOk => {
@@ -787,6 +919,7 @@ export function parseRunArgs(
       ...(effortAlias !== undefined ? { effortAlias } : {}),
       effortFlagPresent,
       resumeRequested,
+      nonInteractive,
     }
     return Object.freeze({
       ...out,
@@ -794,6 +927,7 @@ export function parseRunArgs(
       ...(fakeScriptPath !== null ? { fakeScriptPath } : {}),
       ...(input.kind === 'file' ? { requestFile: input.path } : {}),
       ...(taskOverride !== null ? { taskOverride } : {}),
+      ...(operator !== null ? { operator } : {}),
     })
   }
 
@@ -1085,6 +1219,7 @@ async function handleActiveRun(
   providerOverride?: ProviderOverride,
   fakeScriptEntries?: readonly FakeScriptEntry[],
   taskOverride?: string,
+  nonInteractive?: boolean,
 ): Promise<void> {
   const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
 
@@ -1128,6 +1263,21 @@ async function handleActiveRun(
     if (e.type === 'gate_written' && e.phase === phase) {
       gateRequiredForPhase = false
     }
+  }
+
+  // External-operator fail-closed: a run already at the irreversible SHIP
+  // phase cannot be advanced/approved in --non-interactive operator mode.
+  // Without this guard, a second `code-oz run --non-interactive --operator x`
+  // against a ship-phase run would fall through to the generic awaiting-
+  // approval / in-progress messaging below instead of failing closed. Mirrors
+  // the SHIP block in approve.ts (runApprove) — same message, so an operator
+  // sees identical guidance from both `run` and `approve`.
+  if (phase === 'ship' && nonInteractive === true) {
+    process.stderr.write(
+      'human approval required: SHIP cannot be approved in --non-interactive operator mode. ' +
+        'A human must run `code-oz approve ship` interactively, then push manually.\n',
+    )
+    process.exit(EXIT_USAGE)
   }
 
   if (phase === 'define') {
@@ -2724,6 +2874,17 @@ Options:
                            reconstruct the recorded envelope from events.jsonl;
                            passing a different value than the run was started
                            with exits with code 2.
+  --operator <id>          Attribute this run to an external operator (e.g. an
+                           autonomous agent). Id must match /^[A-Za-z0-9._:-]{1,64}$/.
+                           Recorded on run_started.operator and on every gate file
+                           written during the run. Required when --non-interactive
+                           is passed.
+  --non-interactive        Fail-closed external-operator mode. Requires --operator.
+                           Bans the fake provider (explicit --provider fake, --fake-script,
+                           and the silent first-run fake fallback all exit non-zero).
+                           Blocks SHIP/push approval — that gate is human-only.
+                           Use code-oz approve --non-interactive --operator <id> <phase>
+                           to approve each reversible gate.
   -h, --help               Show this help.
 
 --request and --request-file are mutually exclusive.

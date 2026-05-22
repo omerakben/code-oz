@@ -23,6 +23,8 @@ import { stdin, stdout } from 'node:process'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { bootstrap } from '../cli/bootstrap.ts'
+import { loadConfig } from '../config/load.ts'
+import { resolveOperatorMode } from '../config/operator-mode.ts'
 import {
   approveGate,
   approveReviewTaskGate,
@@ -70,6 +72,8 @@ export interface RunApproveOptions {
   readonly artifact?: string
   readonly notes?: string
   readonly approvedBy?: string
+  readonly operator?: string
+  readonly nonInteractive?: boolean
   /**
    * Confirmation hook. Called only when no phase argument is provided
    * (auto-detected). Tests inject a deterministic confirm function;
@@ -94,6 +98,20 @@ export interface RunApproveResult {
 export async function runApprove(opts: RunApproveOptions = {}): Promise<RunApproveResult> {
   const ctx = await bootstrap({ cwd: opts.cwd })
 
+  // bootstrap does not expose the loaded config, so read it directly here to
+  // fold the project-level `operator:` binding into operator mode. This is the
+  // approve-side mirror of runCommand's fold: a project bound on disk enforces
+  // fail-closed operator mode on every `code-oz approve` with zero per-command
+  // flags. Precedence: opts.operator (CLI flag) > env CODE_OZ_OPERATOR >
+  // config.operator. A malformed id from any source throws (fail-closed).
+  const config = await loadConfig({ cwd: opts.cwd ?? process.cwd() })
+  const opMode = resolveOperatorMode({
+    ...(opts.operator !== undefined ? { flagOperator: opts.operator } : {}),
+    flagNonInteractive: opts.nonInteractive,
+    envOperator: process.env.CODE_OZ_OPERATOR,
+    configOperator: config.operator,
+  })
+
   const runId = await readActiveRun(ctx.paths.activeRun)
   if (runId === null) {
     throw new Error(
@@ -105,6 +123,16 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   const loaded = await loadRun(runPaths)
   if (loaded === null) {
     throw new Error(`active run '${runId}' has no events; cannot approve.`)
+  }
+
+  // Non-interactive operator approve must name the phase explicitly. An
+  // external operator cannot approve "whatever is current" against a stale
+  // view of the run.
+  if (opMode.nonInteractive && (opts.phase === undefined || opts.phase.length === 0)) {
+    throw new Error(
+      'non-interactive approve requires an explicit phase argument ' +
+        '(an external operator must name the phase, not approve whatever is current against a stale view).',
+    )
   }
 
   // Resolve target phase: explicit arg or current phase from state.
@@ -138,6 +166,16 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
         gateExisted: false,
       })
     }
+  }
+
+  // SHIP is human-only: an external operator may approve reversible gates
+  // non-interactively, but the irreversible SHIP gate fails closed. A human
+  // must run `code-oz approve ship` interactively, then push manually.
+  if (opMode.nonInteractive && targetPhase === 'ship') {
+    throw new Error(
+      'human approval required: SHIP cannot be approved in --non-interactive operator mode. ' +
+        'A human must run `code-oz approve ship` interactively, then push manually.',
+    )
   }
 
   // Resolve agent for this phase from the registry. The registry
@@ -292,6 +330,14 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   }
 
   const now = opts.now ?? (() => new Date().toISOString())
+  // Provenance precedence: an explicit approvedBy wins; otherwise derive it
+  // from the operator id so a caller passing `{ operator: 'hermes' }` without
+  // approvedBy records `operator:hermes` instead of silently falling back to
+  // 'user'. The CLI already passes an explicit `approvedBy: operator:<id>`
+  // (parseApproveArgs), so this keeps that path identical while making the
+  // RunApproveOptions.operator field meaningful for programmatic callers.
+  const approvedBy =
+    opts.approvedBy ?? (opMode.operator !== undefined ? `operator:${opMode.operator}` : 'user')
   const gate: GateFile = {
     version: 1,
     runId,
@@ -299,7 +345,7 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     artifact: artifactPath,
     agent: agent.name,
     agentProvider: agent.provider,
-    approvedBy: opts.approvedBy ?? 'user',
+    approvedBy,
     approvedAt: now(),
     ...(opts.notes ? { notes: opts.notes } : {}),
   }
@@ -1076,6 +1122,8 @@ export async function approveCommand(args: string[]): Promise<void> {
       help: { type: 'boolean', short: 'h' },
       artifact: { type: 'string' },
       notes: { type: 'string' },
+      operator: { type: 'string' },
+      'non-interactive': { type: 'boolean' },
     },
     allowPositionals: true,
     strict: true,
@@ -1086,11 +1134,29 @@ export async function approveCommand(args: string[]): Promise<void> {
     return
   }
 
+  // CODE_OZ_OPERATOR env var enforces operator mode session-wide so an
+  // external agent that omits the flags still gets fail-closed semantics
+  // (operator provenance + SHIP block). CLI --operator wins if both set.
+  const envOperator = process.env.CODE_OZ_OPERATOR
+  const operator =
+    values.operator ?? (envOperator !== undefined && envOperator !== '' ? envOperator : undefined)
+  const nonInteractive =
+    values['non-interactive'] === true || (envOperator !== undefined && envOperator !== '')
+  if (operator !== undefined && !/^[A-Za-z0-9._:-]{1,64}$/.test(operator)) {
+    throw new Error('--operator must match /^[A-Za-z0-9._:-]{1,64}$/')
+  }
+  if (nonInteractive && operator === undefined) {
+    throw new Error('--non-interactive requires --operator <id>')
+  }
+
   try {
     const result = await runApprove({
       phase: positionals[0],
       artifact: values.artifact,
       notes: values.notes,
+      operator,
+      nonInteractive,
+      ...(operator !== undefined ? { approvedBy: `operator:${operator}` } : {}),
     })
 
     if (!result.approved) {
@@ -1129,12 +1195,19 @@ confirmation required). With PHASE, the argument must match the run's
 currentPhase — skipping ahead or backwards is rejected.
 
 Options:
-  --artifact <path>  Override the artifact path. Default: the canonical
-                     per-phase artifact (e.g., artifacts/SPEC.md for define).
-                     Subject to path-safety rules (relative, normalized,
-                     no '..' segments, no symlink escape from artifacts/).
-  --notes <string>   Notes recorded on the gate file's 'notes' field.
-  -h, --help         Show this help
+  --artifact <path>    Override the artifact path. Default: the canonical
+                       per-phase artifact (e.g., artifacts/SPEC.md for define).
+                       Subject to path-safety rules (relative, normalized,
+                       no '..' segments, no symlink escape from artifacts/).
+  --notes <string>     Notes recorded on the gate file's 'notes' field.
+  --operator <id>      Attribute this approval to an external operator. Id must
+                       match /^[A-Za-z0-9._:-]{1,64}$/. Recorded as
+                       approvedBy = "operator:<id>" on the gate file. Required
+                       when --non-interactive is passed.
+  --non-interactive    Fail-closed external-operator mode. Requires --operator
+                       and an explicit PHASE argument (no current-phase default).
+                       Refuses 'ship' — SHIP approval is human-only.
+  -h, --help           Show this help
 
 Idempotency: re-running the same approve with identical content is a
 no-op. Re-running with different content for an already-approved phase

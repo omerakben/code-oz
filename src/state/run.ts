@@ -249,6 +249,10 @@ export async function initRun(opts: {
    *  (dispatchAudit -> runAudit) recover it from the event log on resume
    *  (rule 1: event-derived state). */
   readonly problemStatement?: string
+  /** external-operator provenance — the agent id that drove this run.
+   *  Persisted on the `run_started` event ONLY when provided, so the
+   *  interactive-run shape stays unchanged. */
+  readonly operator?: string
 }): Promise<RunState> {
   if (!isUlid(opts.runId)) {
     throw new EventLogError([
@@ -305,6 +309,7 @@ export async function initRun(opts: {
         ...(opts.problemStatement !== undefined
           ? { problemStatement: opts.problemStatement }
           : {}),
+        ...(opts.operator !== undefined ? { operator: opts.operator } : {}),
       },
       { skipLock: true },
     )
@@ -507,6 +512,7 @@ export async function approveGate(opts: ApproveGateOptions): Promise<ApproveGate
       runId: opts.gate.runId,
       profile: opts.profile,
       gateFilename: writeResult.filename,
+      approvedBy: opts.gate.approvedBy,
       now,
     })
     if (appendedAny) events = await readEvents(eventPaths)
@@ -760,6 +766,7 @@ export async function approveReviewTaskGate(
         runId: opts.gate.runId,
         phase: 'review',
         file: writeResult.filename,
+        ...(opts.gate.approvedBy !== undefined ? { approvedBy: opts.gate.approvedBy } : {}),
       }
       await appendEvent(eventPaths, ev, { skipLock: true })
       working.push(ev)
@@ -1287,6 +1294,11 @@ async function recoverOrphanGates(
         runId: gate.runId,
         phase,
         file: gateFilename(phase),
+        // Preserve the operator/human provenance recorded on the gate file.
+        // Matches the clean path in completeTransitionForPhase (line 769);
+        // without this, crash-recovered gate_written events silently drop
+        // approvedBy and the provenance audit trail breaks.
+        ...(gate.approvedBy !== undefined ? { approvedBy: gate.approvedBy } : {}),
       },
       { skipLock: true },
     )
@@ -1505,6 +1517,7 @@ async function completeTransitionForPhase(opts: {
   runId: string
   profile: Profile
   gateFilename: string
+  approvedBy?: string
   now: () => string
 }): Promise<boolean> {
   const eventPaths = eventPathsFor(opts.paths)
@@ -1537,6 +1550,7 @@ async function completeTransitionForPhase(opts: {
       runId: opts.runId,
       phase: opts.phase,
       file: opts.gateFilename,
+      ...(opts.approvedBy !== undefined ? { approvedBy: opts.approvedBy } : {}),
     }
     await appendEvent(eventPaths, ev, { skipLock: true })
     working.push(ev)
