@@ -12,6 +12,7 @@ describe('code-oz agent skill boundaries', () => {
   })
 
   for (const phrase of [
+    'CODE_OZ_OPERATOR',
     '--operator',
     '--non-interactive',
     '.code-oz/',

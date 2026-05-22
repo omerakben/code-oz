@@ -1118,11 +1118,18 @@ export async function approveCommand(args: string[]): Promise<void> {
     return
   }
 
-  const operator = values.operator
+  // CODE_OZ_OPERATOR env var enforces operator mode session-wide so an
+  // external agent that omits the flags still gets fail-closed semantics
+  // (operator provenance + SHIP block). CLI --operator wins if both set.
+  const envOperator = process.env.CODE_OZ_OPERATOR
+  const operator =
+    values.operator ?? (envOperator !== undefined && envOperator !== '' ? envOperator : undefined)
+  const nonInteractive =
+    values['non-interactive'] === true || (envOperator !== undefined && envOperator !== '')
   if (operator !== undefined && !/^[A-Za-z0-9._:-]{1,64}$/.test(operator)) {
     throw new Error('--operator must match /^[A-Za-z0-9._:-]{1,64}$/')
   }
-  if (values['non-interactive'] === true && operator === undefined) {
+  if (nonInteractive && operator === undefined) {
     throw new Error('--non-interactive requires --operator <id>')
   }
 
@@ -1132,7 +1139,7 @@ export async function approveCommand(args: string[]): Promise<void> {
       artifact: values.artifact,
       notes: values.notes,
       operator,
-      nonInteractive: values['non-interactive'] === true,
+      nonInteractive,
       ...(operator !== undefined ? { approvedBy: `operator:${operator}` } : {}),
     })
 

@@ -768,6 +768,15 @@ export function parseRunArgs(
     return { kind: 'error', message: `unknown argument: ${a}`, help: true }
   }
 
+  // CODE_OZ_OPERATOR env var enforces operator mode session-wide (so an
+  // external agent that omits the flags still gets fail-closed semantics:
+  // operator provenance + fake ban + SHIP block). CLI --operator wins if both set.
+  const envOperator = env.CODE_OZ_OPERATOR
+  if (envOperator !== undefined && envOperator !== '') {
+    if (operator === null) operator = envOperator
+    nonInteractive = true
+  }
+
   if (help) {
     process.stdout.write(RUN_HELP + '\n')
     process.exit(0)

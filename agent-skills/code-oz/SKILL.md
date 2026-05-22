@@ -18,15 +18,26 @@ write its state.
 
 ## How to drive it
 
-Always pass `--operator <your-agent-name> --non-interactive`:
+Set this ONCE at the start of your session so every code-oz call runs in
+fail-closed operator mode (the engine enforces it even if you forget the
+per-command flags):
 
-- Start/advance a run:
-  `code-oz run --operator <agent> --non-interactive --request "<the task>"`
-- Approve a reversible gate when the engine asks for it (name the phase):
-  `code-oz approve --operator <agent> --non-interactive <phase>`
-  (phases: define, audit, plan, build, verify, review)
-- Resume an in-progress run: `code-oz resume`.
-- Check environment health: `code-oz doctor`.
+```
+export CODE_OZ_OPERATOR=<your-agent-name>
+```
+
+Then drive normally:
+
+- Start/advance a run: `code-oz run --request "<the task>"`
+- Approve a reversible gate when the engine asks (name the phase):
+  `code-oz approve <phase>` (phases: define, audit, plan, build, verify, review)
+- Continue/inspect: `code-oz resume`, `code-oz doctor`.
+
+Equivalent per-command flags also exist (`--operator <id> --non-interactive`) if
+you prefer not to use the env var:
+
+- `code-oz run --operator <agent> --non-interactive --request "<the task>"`
+- `code-oz approve --operator <agent> --non-interactive <phase>`
 
 Read the engine's stdout and the run's `state/` gate files + `events.jsonl` as
 the only source of truth for what happened.

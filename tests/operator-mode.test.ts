@@ -88,6 +88,43 @@ describe('code-oz run --operator / --non-interactive parsing', () => {
   })
 })
 
+describe('CODE_OZ_OPERATOR env var enforces operator mode session-wide', () => {
+  test('env operator with no flags turns on operator mode + non-interactive', () => {
+    const r = parseRunArgs(['--request', 'hi'], { CODE_OZ_OPERATOR: 'hermes' })
+    expect(r.kind).toBe('ok')
+    if (r.kind !== 'ok') return
+    expect(r.operator).toBe('hermes')
+    expect(r.nonInteractive).toBe(true)
+  })
+
+  test('env operator enforces the fake ban (env-triggered non-interactive)', () => {
+    const r = parseRunArgs(['--provider', 'fake', '--request', 'hi'], { CODE_OZ_OPERATOR: 'hermes' })
+    expect(r.kind).toBe('error')
+    if (r.kind === 'error') expect(r.message).toContain('fake')
+  })
+
+  test('malformed env operator id fails closed via the operator regex', () => {
+    const r = parseRunArgs(['--request', 'hi'], { CODE_OZ_OPERATOR: 'bad id!' })
+    expect(r.kind).toBe('error')
+    if (r.kind === 'error') expect(r.message).toContain('--operator')
+  })
+
+  test('explicit --operator wins over env CODE_OZ_OPERATOR', () => {
+    const r = parseRunArgs(['--operator', 'alice', '--request', 'hi'], { CODE_OZ_OPERATOR: 'hermes' })
+    expect(r.kind).toBe('ok')
+    if (r.kind !== 'ok') return
+    expect(r.operator).toBe('alice')
+  })
+
+  test('empty CODE_OZ_OPERATOR is treated as unset', () => {
+    const r = parseRunArgs(['--request', 'hi'], { CODE_OZ_OPERATOR: '' })
+    expect(r.kind).toBe('ok')
+    if (r.kind !== 'ok') return
+    expect(r.operator).toBeUndefined()
+    expect(r.nonInteractive).toBe(false)
+  })
+})
+
 describe('assertNonInteractiveProviderOk', () => {
   test('throws when fallback would use fake in non-interactive mode', () => {
     expect(() => assertNonInteractiveProviderOk(true, 'fake')).toThrow(/non-interactive/i)
