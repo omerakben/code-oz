@@ -247,6 +247,7 @@ export async function runCommand(args: string[]): Promise<void> {
         runtimeProviderOverride,
         fakeScriptEntries,
         parsed.taskOverride,
+        parsed.nonInteractive,
       )
     } finally {
       disposeInterruptStopGate()
@@ -1157,6 +1158,7 @@ async function handleActiveRun(
   providerOverride?: ProviderOverride,
   fakeScriptEntries?: readonly FakeScriptEntry[],
   taskOverride?: string,
+  nonInteractive?: boolean,
 ): Promise<void> {
   const runPaths = runPathsFor(stateDir, artifactRoot, activeRunId)
 
@@ -1200,6 +1202,21 @@ async function handleActiveRun(
     if (e.type === 'gate_written' && e.phase === phase) {
       gateRequiredForPhase = false
     }
+  }
+
+  // External-operator fail-closed: a run already at the irreversible SHIP
+  // phase cannot be advanced/approved in --non-interactive operator mode.
+  // Without this guard, a second `code-oz run --non-interactive --operator x`
+  // against a ship-phase run would fall through to the generic awaiting-
+  // approval / in-progress messaging below instead of failing closed. Mirrors
+  // the SHIP block in approve.ts (runApprove) — same message, so an operator
+  // sees identical guidance from both `run` and `approve`.
+  if (phase === 'ship' && nonInteractive === true) {
+    process.stderr.write(
+      'human approval required: SHIP cannot be approved in --non-interactive operator mode. ' +
+        'A human must run `code-oz approve ship` interactively, then push manually.\n',
+    )
+    process.exit(EXIT_USAGE)
   }
 
   if (phase === 'define') {

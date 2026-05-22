@@ -1294,6 +1294,11 @@ async function recoverOrphanGates(
         runId: gate.runId,
         phase,
         file: gateFilename(phase),
+        // Preserve the operator/human provenance recorded on the gate file.
+        // Matches the clean path in completeTransitionForPhase (line 769);
+        // without this, crash-recovered gate_written events silently drop
+        // approvedBy and the provenance audit trail breaks.
+        ...(gate.approvedBy !== undefined ? { approvedBy: gate.approvedBy } : {}),
       },
       { skipLock: true },
     )

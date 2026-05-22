@@ -314,6 +314,14 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
   }
 
   const now = opts.now ?? (() => new Date().toISOString())
+  // Provenance precedence: an explicit approvedBy wins; otherwise derive it
+  // from the operator id so a caller passing `{ operator: 'hermes' }` without
+  // approvedBy records `operator:hermes` instead of silently falling back to
+  // 'user'. The CLI already passes an explicit `approvedBy: operator:<id>`
+  // (parseApproveArgs), so this keeps that path identical while making the
+  // RunApproveOptions.operator field meaningful for programmatic callers.
+  const approvedBy =
+    opts.approvedBy ?? (opts.operator !== undefined ? `operator:${opts.operator}` : 'user')
   const gate: GateFile = {
     version: 1,
     runId,
@@ -321,7 +329,7 @@ export async function runApprove(opts: RunApproveOptions = {}): Promise<RunAppro
     artifact: artifactPath,
     agent: agent.name,
     agentProvider: agent.provider,
-    approvedBy: opts.approvedBy ?? 'user',
+    approvedBy,
     approvedAt: now(),
     ...(opts.notes ? { notes: opts.notes } : {}),
   }
