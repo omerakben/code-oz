@@ -34,7 +34,6 @@ Built on the v0.21.0-alpha.0 M17 brownfield AUDIT runtime (shipped 2026-05-21):
 - Windows / Scoop release channel
 - Live Gemini adapter (replaces the stub)
 - OpenCode and Roo Code adapters
-- SWE-bench Verified adapter (separate harder benchmark on real GitHub issues, deferred to v0.22 per Option D)
 - Cloud-IAM provider adapters (Azure / Bedrock / Vertex)
 - Broader multi-agent consultation primitives (`consult()`)
 
