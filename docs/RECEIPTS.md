@@ -245,7 +245,7 @@ A live brownfield bug-fix receipt (a real model run through the AUDIT phase catc
 
 ## Full test suite and further reading
 
-Current suite on this branch, measured by a local `bun test` run on 2026-05-21: **3762 pass, 2 skip, 0 fail — 3764 tests across 245 files** (the 2 skips are pre-existing live-gated xAI integration tests behind `CODE_OZ_LIVE_PROVIDER_TESTS=xai`). The v0.21.0-alpha.0 release notes corroborate the 3762 pass count.
+Current suite, measured by a local `bun test` run on 2026-05-24: **3810 pass, 2 skip, 0 fail — 3812 tests across 245 files** (the 2 skips are pre-existing live-gated xAI integration tests behind `CODE_OZ_LIVE_PROVIDER_TESTS=xai`). At the v0.21.0-alpha.0 release the suite measured 3762 pass; the v0.21.1-alpha.0 external-operator milestone added the remainder.
 
 Run it: `bun test`
 
