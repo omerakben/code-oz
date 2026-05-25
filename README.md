@@ -36,8 +36,8 @@ Three channels deliver the same single binary, verified against the same `checks
 
 ```sh
 # curl | sh
-curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.21.0-alpha.0/install.sh \
-  | sh -s -- --version v0.21.0-alpha.0
+curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.21.1-alpha.0/install.sh \
+  | sh -s -- --version v0.21.1-alpha.0
 
 # npm (scoped under the TUEL AI publisher; binary still runs as `code-oz`)
 npm install -g @tuel/code-oz
@@ -223,8 +223,8 @@ mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
 
 Public summary at [`docs/design/ROADMAP.md#now-next-later`](docs/design/ROADMAP.md#now-next-later). The detailed milestone inventory follows in the same file.
 
-- **Now (v0.21.0-alpha.0)**: M17 brownfield AUDIT runtime shipped, proven by a deterministic full-cycle e2e.
-- **Next**: Phase 3 launch artifacts (honest README, comparison, receipts) and an M18 SWE-bench Verified adapter (v0.22).
+- **Now (v0.21.1-alpha.0)**: external-operator driving — an external autonomous agent can drive the gated runtime non-interactively while code-oz stays the gate authority and fails closed. Built on the v0.21.0 M17 brownfield AUDIT runtime, proven by a deterministic full-cycle e2e.
+- **Next**: Phase 5 launch (essay, Show HN, thread) and an M18 SWE-bench Verified adapter (v0.22).
 - **Later**: signed checksums, broader provider adapters, Windows/Scoop.
 
 ## How it works (architecture and historical context)

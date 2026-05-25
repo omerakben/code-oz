@@ -4,25 +4,30 @@
 
 This is the public summary. The detailed milestone plan, decision matrix, and per-PR sequencing follow below for project-internal use.
 
-### Now (v0.21.0-alpha.0, shipped 2026-05-21)
+### Now (v0.21.1-alpha.0, shipped 2026-05-22)
 
-M17: AUDIT runtime for brownfield repositories. Tagged and live on the GitHub release, npm `@tuel/code-oz`, and the Homebrew tap.
+External-operator driving: an external autonomous agent (Hermes, OpenClaw, or any agent-first tool) can drive the `code-oz` CLI non-interactively while code-oz stays the gate authority and fails closed. Tagged and live on the GitHub release, npm `@tuel/code-oz`, and the Homebrew tap.
+
+- Three binding methods: per-command `--operator <id> --non-interactive`, session `CODE_OZ_OPERATOR=<id>`, project binding via `code-oz init --operator <id>`
+- Fail-closed guards: bans the fake provider, blocks SHIP approval (human-only), requires an explicit phase for non-interactive approve, records operator provenance (`run_started.operator`, gate `approvedBy: operator:<id>`) while keeping `actor: orchestrator`
+- One new authority boundary (rule 20): who may drive the existing gate machine, and how it is recorded — no new gate, no new provider
+- Text-only agentskills.io skill at `agent-skills/code-oz/` for installing into agent-first tools
+
+Built on the v0.21.0-alpha.0 M17 brownfield AUDIT runtime (shipped 2026-05-21):
 
 - `code-oz run` on a brownfield repo routes to `dispatchAudit` → `runAudit` → `auditor` persona → `AUDIT.md` (schema-validated) → `audit_completed` with `auditReportSha256` → Scientist phase-tail → `gate_required(audit)` → `code-oz approve audit`
 - `preApproveAuditHook` sha-binds AUDIT.md against the `audit_completed` event, validates schema, validates Scientist sidecars — via the generic `approveGate()` primitive (no new gate authority)
 - AUDIT-to-PLAN handoff slice: `runPlan` accepts `AUDIT.md` when the run's profile is brownfield; Lead persona gains an inline brownfield section; SOURCE_CHECK grammar extends to `SC-AUDIT-NNN`; brownfield SOURCE_CHECK uses `## Audit sources` replacing `## Spec sources`
 - Greenfield flow is unchanged
-- 3762 offline tests, 0 fail, 2 pre-existing live-gated skips
 - Live brownfield smoke pending provider credentials; the deterministic full-cycle e2e is the reproducible proof
 
 ### Next
 
-- Phase 3 launch artifacts: honest M17-backed README, re-verified comparison table, `docs/RECEIPTS.md`
+- Phase 5 launch: self-hosted-review essay, Show HN, thread, community submissions (Option D Phase 5)
 - M18: SWE-bench Verified adapter (v0.22)
 
 ### Later (post-v0.21, no committed dates)
 
-- W3a R2 self-hosted launch story — essay + Show HN + Twitter thread + community submissions per Option D Phase 5
 - Cryptographic signing of `checksums.txt` (GPG or Sigstore)
 - Apple Developer signing and notarization for macOS binaries
 - SLSA build provenance attestation
