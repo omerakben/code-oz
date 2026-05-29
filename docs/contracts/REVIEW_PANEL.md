@@ -211,7 +211,7 @@ The canonical `REVIEW.md` parser dispatches on the H2 heading line: an exact `##
 - id: reviewer-C
   providerId: claude
   providerFamily: claude
-  modelPolicy: claude-opus-4-7
+  modelPolicy: claude-opus-4-8
   role: advisory
   score: 9
   verdict: ready

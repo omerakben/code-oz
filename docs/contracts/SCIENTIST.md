@@ -105,7 +105,7 @@ If `retroSeedDefine` is `true`, DEFINE's gate-preflight runs the same sidecar va
 ```yaml
 provider: claude        # cross-family with Lead's claude default is acceptable in M6;
                         # M7 may flip Scientist to a Codex-family default to widen blind-spot coverage.
-modelPolicy: { primary: claude-opus-4-7, fallback: claude-sonnet-4-6 }
+modelPolicy: { primary: claude-opus-4-8, fallback: claude-sonnet-4-6 }
 permissions:
   read: ['.code-oz/artifacts/SPEC.md', '.code-oz/artifacts/PLAN.md',
          '.code-oz/artifacts/HYPOTHESES.md', '.code-oz/artifacts/OPEN_QUESTIONS.md']

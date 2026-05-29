@@ -26,10 +26,10 @@ describe('budgets.global extension', () => {
     // Codex Q4-bis lock: per-model Claude prices live in priceTable
     // (model-level), NOT in DEFAULT_CAPABILITY_BY_ID.claude.costPerMTok
     // (provider-level — has no model dimension). Source:
-    // https://platform.claude.com/docs/en/about-claude/pricing (2026-05-01).
+    // https://platform.claude.com/docs/en/about-claude/pricing (2026-05-29).
     const t = DEFAULT_CONFIG.budgets.global.priceTable
     expect(t).toBeDefined()
-    expect(t!['claude:claude-opus-4-7']).toEqual({ inputPerMTok: 5, outputPerMTok: 25 })
+    expect(t!['claude:claude-opus-4-8']).toEqual({ inputPerMTok: 5, outputPerMTok: 25 })
     expect(t!['claude:claude-sonnet-4-6']).toEqual({ inputPerMTok: 3, outputPerMTok: 15 })
     expect(t!['claude:claude-haiku-4-5-20251001']).toEqual({ inputPerMTok: 1, outputPerMTok: 5 })
   })

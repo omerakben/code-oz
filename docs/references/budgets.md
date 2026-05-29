@@ -46,7 +46,7 @@ budgets:
     maxWallTimeMinutes: 240      # since run_started.ts
     softWarnAtRatio: 0.75        # emit budget_warning at 75% of cap
     priceTable:
-      claude:claude-opus-4-7:
+      claude:claude-opus-4-8:
         inputPerMTok: 5
         outputPerMTok: 25
     byRole:
@@ -83,15 +83,15 @@ call has no role — see "Role-identity binding" below), only per-phase
 ### `budgets.global.priceTable` (M6, extended in M13)
 
 Operator-configured per-model rates for advisory dollar telemetry.
-Keyed by `<provider>:<model>` (e.g., `claude:claude-opus-4-7`). Values
+Keyed by `<provider>:<model>` (e.g., `claude:claude-opus-4-8`). Values
 are non-negative finite numbers (NaN, Infinity, negative all reject).
 
 Default `priceTable` populates Claude shipped models per
-`platform.claude.com/docs/en/about-claude/pricing` (lookup 2026-05-01):
+`platform.claude.com/docs/en/about-claude/pricing` (lookup 2026-05-29; Opus 4.8 $5/$25 unchanged from 4.7):
 
 | Model | inputPerMTok | outputPerMTok |
 |---|---|---|
-| `claude-opus-4-7` | $5 | $25 |
+| `claude-opus-4-8` | $5 | $25 |
 | `claude-sonnet-4-6` | $3 | $15 |
 | `claude-haiku-4-5-20251001` | $1 | $5 |
 

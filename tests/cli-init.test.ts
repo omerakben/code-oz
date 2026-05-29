@@ -55,7 +55,7 @@ describe('code-oz init', () => {
 
     expect(config.version).toBe('0.21.1-alpha.0')
     expect(config.defaultProvider).toBe('claude')
-    expect(config.models.primary).toBe('claude-opus-4-7')
+    expect(config.models.primary).toBe('claude-opus-4-8')
     expect(config.permissions.allowEscapeHatch).toBe(false)
   })
 

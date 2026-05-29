@@ -128,7 +128,7 @@ Populated only when `Verdict.Verdict = fail`. Mirrors [`BUILD.md`](./BUILD.md) Â
 
 ```yaml
 provider: claude
-modelPolicy: { primary: claude-opus-4-7, fallback: claude-sonnet-4-6 }
+modelPolicy: { primary: claude-opus-4-8, fallback: claude-sonnet-4-6 }
 permissions:
   read: ['.code-oz/artifacts/SPEC.md', '.code-oz/artifacts/PLAN.md',
          '.code-oz/artifacts/BUILD_REPORT.md',

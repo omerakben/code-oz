@@ -164,7 +164,7 @@ REVIEW-driven shape (M9 commit 10):
 
 ```yaml
 provider: claude
-modelPolicy: { primary: claude-opus-4-7, fallback: claude-sonnet-4-6 }
+modelPolicy: { primary: claude-opus-4-8, fallback: claude-sonnet-4-6 }
 permissions:
   read: ['.code-oz/artifacts/SPEC.md', '.code-oz/artifacts/PLAN.md',
          '.code-oz/artifacts/SOURCE_CHECK.md', '.code-oz/artifacts/HYPOTHESES.md',

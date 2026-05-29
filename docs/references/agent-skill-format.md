@@ -84,7 +84,7 @@ name: ba-discovery
 type: agent                       # agent | skill | phase | gate | hook
 phase: define                     # define | plan | build | verify | review | ship | audit
 provider: claude                  # claude | codex | gemini | fake
-model: claude-opus-4-7            # optional; falls back to provider default
+model: claude-opus-4-8            # optional; falls back to provider default
 modelPolicy: opus-default         # opus-default | strict-opus | any
 permissions:
   read: '*'
