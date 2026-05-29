@@ -36,6 +36,14 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Install ripgrep (repo_context grep/glob tools require it)
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y ripgrep
+          else
+            brew install ripgrep
+          fi
+
       - name: Test
         run: bun test ./tests
         env:

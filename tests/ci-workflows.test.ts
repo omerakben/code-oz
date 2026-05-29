@@ -79,6 +79,28 @@ describe('.github/workflows/test.yml', () => {
       .filter((value): value is string => typeof value === 'string')
     expect(usesEntries.some((u) => u.startsWith('oven-sh/setup-bun@'))).toBe(true)
   })
+
+  test('installs ripgrep before the test step (repo_context tools require rg)', () => {
+    // The repo_context grep/glob tools shell out to ripgrep (rg). A clean CI
+    // runner has no rg, so the rg-integration tests skip AND
+    // `M17 A11 — runAudit dispatches the repo_context tool loop` FAILS (its
+    // grep tool returns no resultPaths). The workflow must install rg before
+    // `bun test` so the repo_context surface is exercised, not silently skipped.
+    const doc = asObject(loadYaml(testYmlPath))
+    const jobs = asObject(doc.jobs)
+    const firstJob = asObject(Object.values(jobs)[0])
+    const steps = asArray(firstJob.steps).map((step) => asObject(step))
+    const rgIdx = steps.findIndex((step) => {
+      const run = step.run
+      return typeof run === 'string' && /\bripgrep\b/.test(run)
+    })
+    expect(rgIdx).toBeGreaterThan(-1)
+    const testIdx = steps.findIndex((step) => {
+      const run = step.run
+      return typeof run === 'string' && /\bbun test\b/.test(run)
+    })
+    expect(testIdx).toBeGreaterThan(rgIdx)
+  })
 })
 
 describe('.github/workflows/release.yml', () => {
