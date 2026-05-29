@@ -105,7 +105,7 @@ export interface GlobalBudget extends PhaseBudget {
   softWarnAtRatio: number
   /**
    * M6 (rule 19, optional): per-model price table for dollar telemetry. Keys
-   * are `<provider>:<model>` (e.g. `claude:claude-opus-4-7`). Values are the
+   * are `<provider>:<model>` (e.g. `claude:claude-opus-4-8`). Values are the
    * per-MTok prices from platform.claude.com. Telemetry only — never used
    * for budget enforcement.
    *
@@ -311,7 +311,7 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
   profile: 'greenfield',
   defaultProvider: 'claude',
   models: {
-    primary: 'claude-opus-4-7',
+    primary: 'claude-opus-4-8',
     reviewer: 'gpt-5.5',
   },
   budgets: {
@@ -333,9 +333,9 @@ export const DEFAULT_CONFIG: CodeOzConfig = {
       // Gemini is a stub, Fake is the offline test runtime. Operator
       // overrides via `.code-oz/config.yaml budgets.global.priceTable`.
       // Source: https://platform.claude.com/docs/en/about-claude/pricing
-      // Lookup date: 2026-05-01
+      // Lookup date: 2026-05-29 (Opus 4.8 is the default; $5/$25 unchanged from 4.7)
       priceTable: Object.freeze({
-        'claude:claude-opus-4-7': Object.freeze({ inputPerMTok: 5, outputPerMTok: 25 }),
+        'claude:claude-opus-4-8': Object.freeze({ inputPerMTok: 5, outputPerMTok: 25 }),
         'claude:claude-sonnet-4-6': Object.freeze({ inputPerMTok: 3, outputPerMTok: 15 }),
         'claude:claude-haiku-4-5-20251001': Object.freeze({
           inputPerMTok: 1,

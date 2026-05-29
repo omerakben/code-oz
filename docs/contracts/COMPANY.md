@@ -77,12 +77,12 @@ company:
     provider: codex
     model: gpt-5.5
   lead:
-    model: claude-opus-4-7
+    model: claude-opus-4-8
   reviewer:
     provider: gemini
 ```
 
-In this example the resolved values are: `ba` runs on `codex` with model `gpt-5.5`; `lead` keeps its frontmatter provider (`claude`) but runs on `claude-opus-4-7`; `reviewer` runs on `gemini`. The third row will fail load-time validation today because `gemini` is not eligible for any phase in v0.1 (`capabilityOf('gemini').eligiblePhases === []`); the resolved-provider eligibility check raises `loader_provider_phase_not_eligible` before the run starts.
+In this example the resolved values are: `ba` runs on `codex` with model `gpt-5.5`; `lead` keeps its frontmatter provider (`claude`) but runs on `claude-opus-4-8`; `reviewer` runs on `gemini`. The third row will fail load-time validation today because `gemini` is not eligible for any phase in v0.1 (`capabilityOf('gemini').eligiblePhases === []`); the resolved-provider eligibility check raises `loader_provider_phase_not_eligible` before the run starts.
 
 ## Validation rules
 
@@ -197,13 +197,13 @@ version: '0.12.0-alpha.0'
 profile: greenfield
 company:
   ba:
-    model: claude-opus-4-7
+    model: claude-opus-4-8
   lead:
     provider: codex
     model: gpt-5.5
   builder:
     provider: claude
-    model: claude-opus-4-7
+    model: claude-opus-4-8
   verifier:
     provider: claude
   reviewer:
@@ -211,19 +211,19 @@ company:
     model: gpt-5.5
   scientist:
     provider: claude
-    model: claude-opus-4-7
+    model: claude-opus-4-8
 ```
 
 Resolved registry after `bootstrap({ cwd, config })`:
 
 | Role | Frontmatter provider | Resolved provider | Resolved model |
 |---|---|---|---|
-| `ba` | claude | claude | claude-opus-4-7 |
+| `ba` | claude | claude | claude-opus-4-8 |
 | `lead` | claude | codex | gpt-5.5 |
-| `builder` | claude | claude | claude-opus-4-7 |
+| `builder` | claude | claude | claude-opus-4-8 |
 | `verifier` | claude | claude | persona frontmatter value |
 | `reviewer` | codex | codex | gpt-5.5 |
-| `scientist` | claude | claude | claude-opus-4-7 |
+| `scientist` | claude | claude | claude-opus-4-8 |
 
 Cross-family REVIEW holds: `reviewer` (codex) and `builder` (claude) resolve to different families. Eligibility holds: every (provider, phase) pair is in `capabilityOf(provider).eligiblePhases`. The `lead` override changes the debate-opposing-family calculation: if the bundled `lead.md` declares `opposingProviders: ['codex']`, the resolved family (`codex`) now appears in its own debate list — the post-override check raises `schema_invalid_permissions` at load time, before any debate call.
 

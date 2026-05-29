@@ -221,7 +221,7 @@ When neither resolves, the field is omitted on the event. The wrapper never emit
 - **`agent_invoked.costEstimateUSD?`** — pre-call upper-bound. Combines input from `prepared.metrics.tokensEstimate` (4-chars/token bound) with output from `req.maxOutputTokens ?? 0`. The output default is a known underestimate when `maxOutputTokens` is unset; advisory only.
 - **`agent_completed.costActualUSD?`** — post-call dollar actual with **output-tokens-only semantics** (Codex scope correction): today's Claude adapter reads `usage.output_tokens` and the xAI adapter reads `usage.completion_tokens`. Neither is full request cost. Operators reading this field as full invoice will understate spend.
 
-`config.budgets.global.priceTable` ships Claude shipped-model defaults (Opus 4.7 = $5/$25, Sonnet 4.6 = $3/$15, Haiku 4.5 = $1/$5; dated source comment). xAI / Codex / Gemini / Fake stay omitted per the rotting-data discipline (Codex Q4-bis lock). Operator overrides via `.code-oz/config.yaml budgets.global.priceTable`.
+`config.budgets.global.priceTable` ships Claude shipped-model defaults (Opus 4.8 = $5/$25, Sonnet 4.6 = $3/$15, Haiku 4.5 = $1/$5; dated source comment). xAI / Codex / Gemini / Fake stay omitted per the rotting-data discipline (Codex Q4-bis lock). Operator overrides via `.code-oz/config.yaml budgets.global.priceTable`.
 
 See [`docs/references/budgets.md`](./budgets.md) for the user-facing surface and the cap-layer cascade.
 

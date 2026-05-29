@@ -89,7 +89,7 @@ export const DEFAULT_CAPABILITY_BY_ID: Readonly<Record<ProviderId, ProviderCapab
       authSource: 'claude-cli-oauth' as const,
       eligiblePhases: ALL_PHASES,
       // costPerMTok / rateLimits omitted: per-provider granularity is
-      // M13's decision. Opus 4.7 / Sonnet 4.6 / Haiku 4.5 prices are
+      // M13's decision. Opus 4.8 / Sonnet 4.6 / Haiku 4.5 prices are
       // model-level, not provider-level.
     }),
     codex: Object.freeze({
