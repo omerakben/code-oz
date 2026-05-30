@@ -42,7 +42,11 @@ describe('plugins/code-oz manifest shape', () => {
     expect(plugin.name).toBe('code-oz')
     expect(typeof plugin.description).toBe('string')
     expect((plugin.description as string).length).toBeGreaterThan(0)
-    expect(plugin.hooks).toBe('./hooks/hooks.json')
+    // The standard hooks/hooks.json auto-loads. Declaring it in manifest.hooks
+    // makes Claude Code load it twice and the plugin fails to load entirely
+    // ("Duplicate hooks file detected"). manifest.hooks must reference only
+    // ADDITIONAL hook files, so the code-oz plugin must not set it.
+    expect(plugin.hooks).toBeUndefined()
     expect(Array.isArray(plugin.commands)).toBe(true)
     expect(plugin.commands).toEqual(EXPECTED_COMMANDS)
   })

@@ -12,6 +12,5 @@
     "./commands/code-oz-init.md",
     "./commands/code-oz-doctor.md",
     "./commands/code-oz-resume.md"
-  ],
-  "hooks": "./hooks/hooks.json"
+  ]
 }
