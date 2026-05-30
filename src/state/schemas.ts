@@ -214,6 +214,16 @@ export const EVENT_TYPES = [
   'review_panelist_completed',
   'review_panel_disagreement',
   'panel_quorum_rejected_same_family_vote',
+  // Observability hardening for PE-2 (OpenRouter) routed-provider lineage.
+  // Verdict-side rejection already exists (computeCanonicalPanelVerdict
+  // step 1: `providerFamily === 'unknown'` makes a voter ineligible; see
+  // tests/review-panel-canonical-verdict.test.ts T10). This event is the
+  // emission side: when the orchestrator observes a panelist excluded for
+  // unknown lineage, one event fires per excluded panelist so PE-2
+  // operators can debug "why did my voter not count?" by reading
+  // events.jsonl. Distinct from `panel_quorum_rejected_same_family_vote`
+  // (different rejection class: same-family vs unknown-lineage).
+  'panel_voter_lineage_unknown',
   'review_panel_completed',
   'review_panel_baseline_completed',
   // M15 — Debate-policy scheduler v1 (per docs/contracts/DEBATE_POLICY.md
@@ -1143,6 +1153,48 @@ export type PhaseEvent =
       /** Which of the 5-layer defense rejected the vote. */
       readonly layer: PanelQuorumRejectionLayer
       readonly detail?: string
+    }
+  // Observability hardening for PE-2 (OpenRouter) routed-provider lineage.
+  // Verdict-side rejection already excludes voters with
+  // `providerFamily === 'unknown'` from quorum (computeCanonicalPanelVerdict
+  // step 1; tests/review-panel-canonical-verdict.test.ts T10). This event
+  // is the emission side: the orchestrator emits one event per panelist
+  // that the verdict marked excluded for unknown lineage so PE-2 operators
+  // can grep events.jsonl for "why did my voter not count?". The
+  // discriminator vs `panel_quorum_rejected_same_family_vote` is the
+  // rejection class: this event names unknown-lineage; the same-family
+  // event names same-family. Both events may fire in the same round if a
+  // panel has both rejection classes — they are not mutually exclusive.
+  // The `agent` envelope is the orchestrator name (mirrors other panel
+  // events like `review_panelist_completed`); `voterId` names the panelist
+  // that was excluded.
+  | {
+      readonly version: 1
+      readonly type: 'panel_voter_lineage_unknown'
+      readonly ts: string
+      readonly runId: string
+      readonly phase: Phase
+      readonly agent: string
+      /** Panelist id (matches REVIEW.md Reviewers H3 heading; e.g.,
+       *  `reviewer-A`). The voter that was excluded from quorum. */
+      readonly voterId: string
+      /** ProviderId the panelist invoked under, when available. Optional
+       *  because the verdict computation only carries `providerFamily` —
+       *  the orchestrator looks up the providerId from the invocation
+       *  record. Absent when the lookup fails (defense-in-depth: a
+       *  miswired invocation should not block the audit event). */
+      readonly voterProviderId?: string
+      /** Role declared in panel config. Carried for ergonomics — most
+       *  unknown-lineage exclusions hit voters (advisory exclusion is
+       *  by role, not lineage), but the field exists symmetrically with
+       *  other panel events so future routed-provider advisory rejections
+       *  can reuse this event without a schema bump. */
+      readonly panelistRole: PanelistRole
+      /** The exact `excludeReason` string from the verdict's
+       *  `excludedReasons` entry (e.g., `routed-provider lineage unknown
+       *  (cannot be eligible voter)`). Recorded verbatim so audit trails
+       *  can grep on the canonical reason text without re-deriving it. */
+      readonly excludeReason: string
     }
   | {
       readonly version: 1

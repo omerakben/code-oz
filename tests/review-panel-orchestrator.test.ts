@@ -27,6 +27,7 @@ import {
 import type { Panelist, CompanyConfig } from '../src/config/schema.ts'
 import { DEFAULT_CONFIG, type CodeOzConfig } from '../src/config/schema.ts'
 import { ProviderRegistry } from '../src/providers/registry.ts'
+import type { ProviderFamily } from '../src/providers/types.ts'
 
 // Tests resolve provider family via registry.familyOf (Codex M14 R1
 // finding #3 closure). An empty provider list is sufficient — familyOf
@@ -1093,5 +1094,87 @@ describe('runReviewPanel — multi-round lifecycle (Codex M14 R2 finding #1)', (
     expect(reopened).toBeDefined()
     expect(reopened!.roundResolved).toBe('unresolved')
     expect(reopened!.roundRaised).toBe(1) // round raised stays at the original round
+  })
+})
+
+// PE-2 (OpenRouter) observability hardening — emission side of the
+// unknown-lineage exclusion. The verdict-side rejection already exists;
+// see tests/review-panel-canonical-verdict.test.ts T10 ("routed-provider
+// with unknown family is INELIGIBLE as voter (PE-2+ defense)"). This
+// describe block tests the orchestrator emits a `panel_voter_lineage_unknown`
+// event when the verdict surfaces a routed-provider exclusion so PE-2
+// operators can debug "why did my voter not count?" by reading
+// events.jsonl. Synthetic unknown lineage is injected via
+// ProviderRegistry.familyOverrides — the static family registry
+// (src/providers/families.ts) intentionally does NOT carry an `unknown`
+// sentinel; routed providers acquire unknown lineage at runtime in PE-2.
+describe('runReviewPanel — panel_voter_lineage_unknown emission (PE-2 observability)', () => {
+  test('voter resolved to unknown family emits exactly one panel_voter_lineage_unknown event', async () => {
+    // Inject unknown lineage via familyOverrides (cast required because
+    // ProviderFamily is a strict 5-id union; PE-2 routed providers will
+    // legitimately produce 'unknown' family at runtime via routed-provider
+    // lineage gating). The same-family-at-runtime guard at line 398 is
+    // bypassed because resolvedFamily ('unknown') !== buildFamily ('claude').
+    const routedRegistry = new ProviderRegistry({
+      providers: [],
+      familyOverrides: { codex: 'unknown' as ProviderFamily },
+    })
+    const panel: readonly Panelist[] = [
+      { provider: 'codex', role: 'voter' },
+      { provider: 'gemini', role: 'voter' },
+    ]
+    const result = await runReviewPanel({
+      runPaths: paths,
+      runId: RUN,
+      cwd: tmp,
+      panelistInvoker: happyInvoker(),
+      panel,
+      buildFamily: 'claude',
+      registry: routedRegistry,
+      config: testConfig,
+      events: [],
+      perPanelistTokensEstimate: PER_PANELIST_EST,
+      upstreamRefs: upstreamRefs(),
+      round: 1,
+      orchestratorAgent: 'panel-orchestrator',
+      now: () => NOW,
+      fsyncDir: false,
+    })
+    // Verdict outcome unchanged — only 1 eligible voter (gemini), so
+    // quorum count fails. This test specifically asserts the emission;
+    // the verdict semantics are covered by T10.
+    expect(result.status).toBe('needs_revision')
+    if (result.status === 'intervention') return
+    expect(result.panelVerdict).toBe('needs-revision')
+    expect(result.quorumReason).toContain('required exactly 2 eligible voters, got 1')
+
+    // Read events.jsonl from disk and filter for the new variant.
+    const events = await readEvents({
+      file: paths.eventsFile,
+      lockDir: paths.lockDir,
+    })
+    const lineageEvents = events.filter(
+      (e) => isKnownPhaseEvent(e) && e.type === 'panel_voter_lineage_unknown',
+    )
+    expect(lineageEvents).toHaveLength(1)
+    const evt = lineageEvents[0]!
+    if (evt.type !== 'panel_voter_lineage_unknown') {
+      throw new Error('unreachable')
+    }
+    expect(evt.voterId).toBe('reviewer-A') // codex voter (first in panel)
+    expect(evt.voterProviderId).toBe('codex')
+    expect(evt.panelistRole).toBe('voter')
+    expect(evt.excludeReason).toContain('lineage unknown')
+    expect(evt.phase).toBe('review')
+    expect(evt.agent).toBe('panel-orchestrator')
+    expect(evt.runId).toBe(RUN)
+
+    // Sanity: the cross-family voter (gemini) MUST NOT trigger the event.
+    expect(events.find(
+      (e) =>
+        isKnownPhaseEvent(e) &&
+        e.type === 'panel_voter_lineage_unknown' &&
+        (e as { voterId: string }).voterId === 'reviewer-B',
+    )).toBeUndefined()
   })
 })

@@ -473,6 +473,35 @@ export async function runReviewPanel(
     panelists: verdictInputs,
   })
 
+  // Observability hardening for PE-2 (OpenRouter) routed-provider lineage:
+  // emit one `panel_voter_lineage_unknown` event per panelist the verdict
+  // excluded for unknown lineage. The verdict-side rejection already exists
+  // (computeCanonicalPanelVerdict step 1; see
+  // tests/review-panel-canonical-verdict.test.ts T10); this is the
+  // emission side so PE-2 operators can grep events.jsonl for "why did
+  // my voter not count?". Walk verdict.excludedReasons because the
+  // canonical exclusion reason text lives there — matching on the
+  // 'lineage unknown' substring lets the verdict module own the reason
+  // string while this emitter stays decoupled from the exact wording
+  // beyond the discriminator. Behavior unchanged: this is a write-side
+  // addition only.
+  for (const excluded of verdict.excludedReasons) {
+    if (!excluded.reason.includes('lineage unknown')) continue
+    const inv = invocations.find(({ result: r }) => r.panelistId === excluded.id)
+    await emitEvent(opts, {
+      version: 1,
+      type: 'panel_voter_lineage_unknown',
+      ts: now(),
+      runId: opts.runId,
+      phase: 'review',
+      agent: opts.orchestratorAgent,
+      voterId: excluded.id,
+      ...(inv !== undefined ? { voterProviderId: inv.result.providerId } : {}),
+      panelistRole: inv !== undefined ? inv.result.role : 'voter',
+      excludeReason: excluded.reason,
+    })
+  }
+
   // 3. Build canonical REVIEW.md. Reviewers and crossFamilyCheck likewise
   // derive from the registry-resolved family, so a miswired invoker
   // cannot launder authority into the canonical artifact.
