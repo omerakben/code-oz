@@ -78,15 +78,21 @@ Common scopes: `readme`, `providers`, `gates`, `cli`, `demo`, `package`, the mil
 - **No squash-commit messages with raw model output.** Edit the message before committing.
 - **No secret material** (API keys, tokens, customer data, internal hostnames) anywhere in the diff or message.
 
-### Branch naming
+### Branching and merge workflow
 
-- `feat/<scope>-<topic>` for new features
-- `fix/<scope>-<topic>` for bug fixes
-- `refactor/<scope>-<topic>` for refactors
-- `docs/<scope>-<topic>` for docs-only changes
-- `test/<scope>-<topic>` for test-only additions
+The repo is **trunk-based** (locked 2026-05-29). `main` is the protected trunk; everything else is a short-lived branch.
 
-`main` is tag-only. Pushes to `main` happen at release time.
+- Branch from the latest `main`: `git fetch origin && git switch -c feat/<slug> origin/main`. Never branch from another topic branch.
+- Prefixes: `feat/`, `fix/`, `refactor/`, `test/`, `docs/`, `chore/`. After the slash, a short kebab-case slug, optionally issue-scoped: `fix/123-worktree-reset-on-restart`.
+- One branch = one PR = one concern. If a branch grows a second concern, cut a second branch.
+- Open the PR the same session and keep branches short-lived. On merge the branch **auto-deletes** — do not delete it by hand.
+- Never push `worktree-*` scratch branches; git worktrees stay local.
+
+**Merging.** PRs **squash-merge** into `main` (merge commits and rebase-merge are disabled), so one PR becomes exactly one conventional commit on `main`. The PR title is the squash commit subject, so it must be Conventional-Commit form.
+
+**`main` is protected.** Required status checks (`bun test on ubuntu-latest`, `bun test on macos-latest`), strict/up-to-date, linear history, no force-push, no deletion, PR-before-merge — enforced for everyone including admins. There are no direct pushes to `main`.
+
+**Releases.** Annotated SemVer tags (`vX.Y.Z-alpha.N`) on a green `main` commit, cut behind a `chore/release-*` PR (version bump + CHANGELOG) so the bump itself passes CI. One tag per release; tags are never moved.
 
 ## Pull request expectations
 
@@ -121,7 +127,7 @@ When adding a new provider adapter or modifying an existing one:
 - A maintainer triages within a few days. Triage adds labels and may ask for clarification.
 - Substantive PRs get a Codex review pass (see above). The review verdict is recorded in the PR conversation.
 - Block-push findings close in a follow-up commit on the PR branch before merge.
-- The merge strategy is squash-merge to `finalize/<release>` branches or rebase to feature branches. `main` only receives release tags.
+- The merge strategy is **squash-merge into `main`**; the head branch auto-deletes on merge. Release tags are cut on `main` behind a `chore/release-*` PR (see "Branching and merge workflow").
 
 ## Code of conduct
 
