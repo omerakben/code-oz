@@ -146,6 +146,20 @@ export interface ProviderResponse {
   readonly tokensUsed?: number
   readonly toolCalls?: readonly ProviderToolCall[]
   readonly model: string
+  /**
+   * The model the wrapper asked for. Adapters omit this when it equals
+   * `model` (the actual responding model). Audit-only, populated when
+   * upstream routing or fallback resolves to a different concrete model
+   * than was requested.
+   */
+  readonly requestedModel?: string
+  /**
+   * Upstream message / response identifier when the provider exposes one
+   * (Anthropic message_id, OpenAI response.id, etc.). Audit-only, lets a
+   * developer pull the exact transaction from a provider dashboard for
+   * post-mortem reproducibility.
+   */
+  readonly responseId?: string
   readonly stopReason: StopReason
 }
 

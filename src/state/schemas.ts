@@ -495,6 +495,13 @@ export type PhaseEvent =
       readonly runId: string
       readonly phase: Phase
       readonly agent: string
+      /** Audit-only: the model requested by the wrapper when it differs
+       *  from the actual responding model recorded by the provider. Omitted
+       *  when equal to keep the event compact. */
+      readonly requestedModel?: string
+      /** Audit-only: upstream message / response id when the adapter exposes
+       *  one, so an operator can locate the provider-side transaction. */
+      readonly responseId?: string
       readonly tokensUsed?: number
       /** M13 (Codex Q2 + scope correction): advisory dollar cost from the
        *  reported tokensUsed value. **Output-tokens-only semantics** — the

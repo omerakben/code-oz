@@ -145,6 +145,19 @@ describe('CodexProvider — invoke', () => {
     expect(calls[0]?.args[0]).toBe('exec')
   })
 
+  test('records responseId when stdout exposes a JSON id field', async () => {
+    const stdout = JSON.stringify({ id: 'resp_codex_test', object: 'response' })
+    const { runner } = makeRecordingRunner({
+      stdout,
+      stderr: '',
+      exitCode: 0,
+    })
+    const c = new CodexProvider({ runner })
+    const response = await collectProviderResponse(c.invoke(preparedRequest()))
+    expect(response.content).toBe(stdout)
+    expect(response.responseId).toBe('resp_codex_test')
+  })
+
   test('PRIVACY GUARD: cwd is a temp dir, NOT the projectRoot', async () => {
     let observedCwd: string | undefined
     const runner: Runner = async (_cmd, _args, options) => {

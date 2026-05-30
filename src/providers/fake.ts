@@ -41,6 +41,8 @@ export interface FakeResponse {
   readonly content?: string
   readonly tokensUsed?: number
   readonly model?: string
+  readonly requestedModel?: string
+  readonly responseId?: string
   readonly stopReason?: StopReason
   readonly toolCalls?: readonly ProviderToolCall[]
   /**
@@ -173,6 +175,8 @@ export class FakeProvider implements IAgentProvider {
         ...(response.tokensUsed !== undefined ? { tokensUsed: response.tokensUsed } : {}),
         ...(response.toolCalls !== undefined ? { toolCalls: response.toolCalls } : {}),
         model: response.model,
+        ...(response.requestedModel !== undefined ? { requestedModel: response.requestedModel } : {}),
+        ...(response.responseId !== undefined ? { responseId: response.responseId } : {}),
         stopReason: response.stopReason,
       },
     }
@@ -238,6 +242,8 @@ function mergeResponse(
   content: string
   tokensUsed?: number
   model: string
+  requestedModel?: string
+  responseId?: string
   stopReason: StopReason
   toolCalls?: readonly ProviderToolCall[]
   chunks?: readonly string[]
@@ -246,6 +252,8 @@ function mergeResponse(
     content: override.content ?? fallback.content ?? '',
     tokensUsed: override.tokensUsed ?? fallback.tokensUsed,
     model: override.model ?? fallback.model ?? 'fake-default',
+    requestedModel: override.requestedModel ?? fallback.requestedModel,
+    responseId: override.responseId ?? fallback.responseId,
     stopReason: override.stopReason ?? fallback.stopReason ?? 'end_turn',
     toolCalls: override.toolCalls,
     chunks: override.chunks,

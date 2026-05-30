@@ -83,6 +83,7 @@ export class ClaudeProvider implements IAgentProvider {
     const content = parsed?.content ?? result.stdout.trimEnd()
     const tokensUsed = parsed?.tokensUsed
     const model = parsed?.model ?? req.model ?? 'claude-default'
+    const responseId = parsed?.responseId
 
     yield { type: 'turn_started', model }
     if (content !== '') {
@@ -94,6 +95,7 @@ export class ClaudeProvider implements IAgentProvider {
         content,
         ...(tokensUsed !== undefined ? { tokensUsed } : {}),
         model,
+        ...(responseId !== undefined ? { responseId } : {}),
         stopReason: 'end_turn',
       },
     }
@@ -143,6 +145,10 @@ export class ClaudeProvider implements IAgentProvider {
 // --- helpers --------------------------------------------------------
 
 interface ClaudeJsonResult {
+  readonly id?: string
+  readonly message_id?: string
+  readonly message?: { readonly id?: string }
+  readonly response?: { readonly id?: string }
   readonly result?: string
   readonly model?: string
   readonly usage?: { readonly output_tokens?: number }
@@ -152,6 +158,7 @@ interface ParsedClaudeOutput {
   readonly content: string
   readonly model?: string
   readonly tokensUsed?: number
+  readonly responseId?: string
 }
 
 /**
@@ -179,12 +186,14 @@ export function parseClaudeOutput(raw: string): ParsedClaudeOutput | null {
   if (typeof parsed === 'object') {
     const obj = parsed as ClaudeJsonResult
     if (typeof obj.result !== 'string') return null
+    const responseId = pickClaudeResponseId(obj)
     const out: ParsedClaudeOutput = {
       content: obj.result,
       ...(obj.model !== undefined ? { model: obj.model } : {}),
       ...(obj.usage?.output_tokens !== undefined
         ? { tokensUsed: obj.usage.output_tokens }
         : {}),
+      ...(responseId !== undefined ? { responseId } : {}),
     }
     return out
   }
@@ -194,17 +203,39 @@ export function parseClaudeOutput(raw: string): ParsedClaudeOutput | null {
 
 /** Extract assistant text + usage from a stream-array stdout shape. */
 function extractFromStreamArray(events: readonly unknown[]): ParsedClaudeOutput | null {
-  let resultEvent: { result?: string; usage?: { output_tokens?: number }; modelUsage?: Record<string, { outputTokens?: number }> } | null = null
+  let resultEvent: {
+    result?: string
+    usage?: { output_tokens?: number }
+    modelUsage?: Record<string, { outputTokens?: number }>
+    id?: string
+    message_id?: string
+    response?: { id?: string }
+  } | null = null
   let initModel: string | undefined
+  let responseId: string | undefined
   const assistantTexts: string[] = []
 
   for (const ev of events) {
     if (ev === null || typeof ev !== 'object') continue
-    const e = ev as { type?: string; subtype?: string; model?: string; message?: { content?: unknown[] }; result?: string; usage?: { output_tokens?: number }; modelUsage?: Record<string, { outputTokens?: number }> }
+    const e = ev as {
+      type?: string
+      subtype?: string
+      model?: string
+      message?: { id?: string; content?: unknown[] }
+      result?: string
+      usage?: { output_tokens?: number }
+      modelUsage?: Record<string, { outputTokens?: number }>
+      id?: string
+      message_id?: string
+      response?: { id?: string }
+    }
     if (e.type === 'system' && e.subtype === 'init' && typeof e.model === 'string') {
       initModel = e.model
     }
     if (e.type === 'assistant' && Array.isArray(e.message?.content)) {
+      if (responseId === undefined && typeof e.message.id === 'string') {
+        responseId = e.message.id
+      }
       for (const block of e.message.content) {
         if (block !== null && typeof block === 'object') {
           const b = block as { type?: string; text?: string }
@@ -216,6 +247,7 @@ function extractFromStreamArray(events: readonly unknown[]): ParsedClaudeOutput 
     }
     if (e.type === 'result' && typeof e.result === 'string') {
       resultEvent = e
+      responseId = responseId ?? pickClaudeResponseId(e)
     }
   }
 
@@ -250,8 +282,32 @@ function extractFromStreamArray(events: readonly unknown[]): ParsedClaudeOutput 
     content,
     ...(initModel !== undefined ? { model: initModel } : {}),
     ...(tokensUsed !== undefined ? { tokensUsed } : {}),
+    ...(responseId !== undefined ? { responseId } : {}),
   }
   return out
+}
+
+function pickClaudeResponseId(value: unknown): string | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  const messageId = stringField(obj, 'message_id')
+  if (messageId !== undefined) return messageId
+  const message = obj.message
+  if (message !== null && typeof message === 'object' && !Array.isArray(message)) {
+    const nested = stringField(message as Record<string, unknown>, 'id')
+    if (nested !== undefined) return nested
+  }
+  const response = obj.response
+  if (response !== null && typeof response === 'object' && !Array.isArray(response)) {
+    const nested = stringField(response as Record<string, unknown>, 'id')
+    if (nested !== undefined) return nested
+  }
+  return stringField(obj, 'id')
+}
+
+function stringField(obj: Readonly<Record<string, unknown>>, key: string): string | undefined {
+  const value = obj[key]
+  return typeof value === 'string' ? value : undefined
 }
 
 function renderStdin(req: PreparedProviderRequest): string {

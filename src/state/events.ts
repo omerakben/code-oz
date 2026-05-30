@@ -304,6 +304,14 @@ export function validateEvent(
       if (!isPhase(e.phase)) return phaseInvalid(file, 'agent_completed', e.phase, line)
       const agentIssue = nonEmptyString(file, e.agent, 'agent_completed.agent', line)
       if (agentIssue) return agentIssue
+      const requestedModelIssue = optionalStringOrInvalid(
+        file, e.requestedModel, 'agent_completed.requestedModel', line,
+      )
+      if (requestedModelIssue) return requestedModelIssue
+      const responseIdIssue = optionalStringOrInvalid(
+        file, e.responseId, 'agent_completed.responseId', line,
+      )
+      if (responseIdIssue) return responseIdIssue
       if (e.tokensUsed !== undefined) {
         if (typeof e.tokensUsed !== 'number' || !Number.isInteger(e.tokensUsed) || e.tokensUsed < 0) {
           return {
@@ -2339,6 +2347,25 @@ function nonEmptyString(
       file,
       code: 'event_invalid_value',
       rule: `${field} must be a non-empty string`,
+      detail: `got ${JSON.stringify(value)}`,
+      line,
+    }
+  }
+  return null
+}
+
+function optionalStringOrInvalid(
+  file: string,
+  value: unknown,
+  field: string,
+  line?: number,
+): EventLogIssue | null {
+  if (value === undefined) return null
+  if (typeof value !== 'string') {
+    return {
+      file,
+      code: 'event_invalid_value',
+      rule: `${field} must be a string when present`,
       detail: `got ${JSON.stringify(value)}`,
       line,
     }

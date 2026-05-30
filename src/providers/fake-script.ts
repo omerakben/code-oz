@@ -328,14 +328,32 @@ function validateResponse(raw: unknown, line: number): FakeScriptIssue | null {
       detail: `got ${JSON.stringify(r.toolCalls)}`,
     }
   }
+  if (r.requestedModel !== undefined && typeof r.requestedModel !== 'string') {
+    return {
+      line,
+      code: 'fake_script_invalid_response',
+      rule: 'response.requestedModel must be a string when present',
+      detail: `got ${JSON.stringify(r.requestedModel)}`,
+    }
+  }
+  if (r.responseId !== undefined && typeof r.responseId !== 'string') {
+    return {
+      line,
+      code: 'fake_script_invalid_response',
+      rule: 'response.responseId must be a string when present',
+      detail: `got ${JSON.stringify(r.responseId)}`,
+    }
+  }
   // FakeResponse permits content-empty entries (uses the FakeProvider's
-  // default content); we still require some signal — at least one of
-  // content / chunks / model / stopReason — to catch hand-edits where
-  // the response object is empty by accident.
+  // default content); we still require some signal: at least one of
+  // content / chunks / model / stopReason / audit fields, to catch
+  // hand-edits where the response object is empty by accident.
   if (
     r.content === undefined &&
     r.chunks === undefined &&
     r.model === undefined &&
+    r.requestedModel === undefined &&
+    r.responseId === undefined &&
     r.stopReason === undefined &&
     r.tokensUsed === undefined &&
     r.toolCalls === undefined
@@ -343,7 +361,7 @@ function validateResponse(raw: unknown, line: number): FakeScriptIssue | null {
     return {
       line,
       code: 'fake_script_invalid_response',
-      rule: 'response must specify at least one field (content, chunks, model, stopReason, tokensUsed, or toolCalls)',
+      rule: 'response must specify at least one field (content, chunks, model, requestedModel, responseId, stopReason, tokensUsed, or toolCalls)',
     }
   }
   return null

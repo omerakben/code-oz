@@ -107,6 +107,7 @@ describe('ClaudeProvider — health', () => {
 describe('ClaudeProvider — invoke', () => {
   test('happy path: JSON response parses content + tokensUsed + model', async () => {
     const json = JSON.stringify({
+      id: 'msg_claude_test',
       result: 'the answer',
       model: 'claude-opus-4-7',
       usage: { output_tokens: 17 },
@@ -121,6 +122,7 @@ describe('ClaudeProvider — invoke', () => {
     expect(response.content).toBe('the answer')
     expect(response.tokensUsed).toBe(17)
     expect(response.model).toBe('claude-opus-4-7')
+    expect(response.responseId).toBe('msg_claude_test')
     expect(calls[0]?.args).toContain('--print')
     expect(calls[0]?.args).toContain('--output-format')
     expect(calls[0]?.args).toContain('json')
@@ -248,7 +250,7 @@ describe('ClaudeProvider — invoke', () => {
       { type: 'system', subtype: 'init', cwd: '/tmp', session_id: 'abc', model: 'claude-opus-4-7' },
       {
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'hello world' }] },
+        message: { id: 'msg_stream_test', content: [{ type: 'text', text: 'hello world' }] },
       },
       { type: 'result', subtype: 'success', result: 'hello world', usage: { output_tokens: 5 } },
     ]
@@ -262,6 +264,7 @@ describe('ClaudeProvider — invoke', () => {
     expect(response.content).toBe('hello world')
     expect(response.tokensUsed).toBe(5)
     expect(response.model).toBe('claude-opus-4-7')
+    expect(response.responseId).toBe('msg_stream_test')
   })
 
   test('stream-array without result event: falls back to assistant text concatenation', async () => {

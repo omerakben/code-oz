@@ -181,6 +181,48 @@ describe('invokeAgent — tokensUsed provenance', () => {
   })
 })
 
+describe('invokeAgent — provider audit fields', () => {
+  test('projects adapter responseId to agent_completed', async () => {
+    fake.expect({}).respondWith({
+      content: 'ok',
+      model: 'fake-1',
+      responseId: 'resp_fake_123',
+    })
+
+    await consumeAll(invokeAgent(ctx(), request()))
+
+    const logged = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const completed = logged[1] as Extract<LoggedEvent, { type: 'agent_completed' }>
+    expect(completed.responseId).toBe('resp_fake_123')
+  })
+
+  test('projects requestedModel when the responding model differs from prepared.model', async () => {
+    fake.expect({}).respondWith({
+      content: 'ok',
+      model: 'fake-routed',
+    })
+
+    await consumeAll(invokeAgent(ctx(), request({ model: 'fake-requested' })))
+
+    const logged = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const completed = logged[1] as Extract<LoggedEvent, { type: 'agent_completed' }>
+    expect(completed.requestedModel).toBe('fake-requested')
+  })
+
+  test('omits requestedModel when the responding model equals prepared.model', async () => {
+    fake.expect({}).respondWith({
+      content: 'ok',
+      model: 'fake-requested',
+    })
+
+    await consumeAll(invokeAgent(ctx(), request({ model: 'fake-requested' })))
+
+    const logged = await readEvents({ file: paths.eventsFile, lockDir: paths.lockDir })
+    const completed = logged[1] as Extract<LoggedEvent, { type: 'agent_completed' }>
+    expect('requestedModel' in completed).toBe(false)
+  })
+})
+
 describe('invokeAgent — budget refusal', () => {
   test('writes NEEDS_INTERVENTION + intervention when per-phase tokens would exceed cap', async () => {
     // Pre-load the event log with a completed call that already burned the

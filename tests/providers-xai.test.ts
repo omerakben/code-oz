@@ -205,6 +205,13 @@ describe('XaiProvider — invoke happy path', () => {
     expect(resp.stopReason).toBe('end_turn')
   })
 
+  test('records responseId from the upstream top-level id', async () => {
+    const { runner } = makeRunner(() => okResponse('output text', 42))
+    const p = new XaiProvider({ runner })
+    const resp = await collectProviderResponse(p.invoke(preparedRequest()))
+    expect(resp.responseId).toBe('chatcmpl-test')
+  })
+
   test('omits tokensUsed when usage absent', async () => {
     const { runner } = makeRunner(() => okResponse('output text'))
     const p = new XaiProvider({ runner })

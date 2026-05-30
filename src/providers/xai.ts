@@ -113,7 +113,7 @@ export class XaiProvider implements IAgentProvider {
       )
     }
 
-    const { content, tokensUsed, model } = extractResponseFields(parsed, requestedModel)
+    const { content, tokensUsed, model, responseId } = extractResponseFields(parsed, requestedModel)
 
     yield { type: 'turn_started', model }
     yield { type: 'content_chunk', text: content }
@@ -123,6 +123,7 @@ export class XaiProvider implements IAgentProvider {
         content,
         ...(tokensUsed !== undefined ? { tokensUsed } : {}),
         model,
+        ...(responseId !== undefined ? { responseId } : {}),
         stopReason: 'end_turn',
       },
     }
@@ -396,6 +397,7 @@ interface ParsedFields {
   readonly content: string
   readonly tokensUsed: number | undefined
   readonly model: string
+  readonly responseId: string | undefined
 }
 
 /**
@@ -440,9 +442,10 @@ function extractResponseFields(parsed: unknown, requestedModel: string): ParsedF
     typeof (usage as { completion_tokens?: unknown }).completion_tokens === 'number'
       ? ((usage as { completion_tokens: number }).completion_tokens)
       : undefined
-  const responseModel = typeof root.model === 'string' ? root.model : requestedModel
+  const actualModel = typeof root.model === 'string' ? root.model : requestedModel
+  const responseId = typeof root.id === 'string' ? root.id : undefined
 
-  return { content: messageContent, tokensUsed, model: responseModel }
+  return { content: messageContent, tokensUsed, model: actualModel, responseId }
 }
 
 // Exports for tests that need to assert the request-body allowlist or

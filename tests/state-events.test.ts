@@ -100,6 +100,12 @@ describe('validateEvent — happy paths for every event type', () => {
     } as const
     expect(validateEvent(e, 'events.jsonl')).toBeNull()
     expect(validateEvent({ ...e, tokensUsed: 1834 }, 'events.jsonl')).toBeNull()
+    expect(
+      validateEvent(
+        { ...e, requestedModel: 'claude-opus-4-7', responseId: 'msg_test_123' },
+        'events.jsonl',
+      ),
+    ).toBeNull()
   })
 
   test('gate_written with filename only', () => {

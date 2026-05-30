@@ -103,12 +103,22 @@ interface ProviderResponse {
   readonly content: string
   readonly tokensUsed?: number             // present only when adapter has a real value from the API
   readonly toolCalls?: readonly ProviderToolCall[]
-  readonly model: string
+  readonly model: string                   // actual responding model
+  readonly requestedModel?: string         // present only when requested model differs from model
+  readonly responseId?: string             // upstream message / response id, when exposed
   readonly stopReason: 'end_turn' | 'max_tokens' | 'tool_use' | 'budget_exceeded' | 'error'
 }
 ```
 
 Adapters yield `turn_started` once at the top of the stream, zero or more `content_chunk` and `tool_call` / `tool_result` pairs, and exactly one `turn_completed` at the end. The wrapper treats the stream as a state machine: it counts `tool_call` events for the streaming cap, reads `tokensUsed` from `turn_completed.response`, and never holds the per-run lock across this loop.
+
+## ProviderResponse fields
+
+`ProviderResponse.model` is the actual model that produced the response. Do not add a second "response model" field.
+
+`ProviderResponse.requestedModel?` is audit-only. It records the model the wrapper asked for only when that value differs from `model`, usually because upstream routing or fallback resolved to a different concrete model. When `requestedModel === model`, adapters and wrapper-emitted events omit `requestedModel`.
+
+`ProviderResponse.responseId?` is audit-only. It records the upstream message or response identifier when the provider exposes one, such as an Anthropic message id or an OpenAI-compatible response id. Adapters omit it when the subprocess or HTTP response does not expose a provider-side transaction id.
 
 ## ProviderFamily and cross-family REVIEW enforcement
 
@@ -361,7 +371,7 @@ The `appendEvent` and `writeGate` family already accept `{ skipLock: true }` for
 3. Adapters NEVER hold the per-run lock across a network call.
 4. Adapters NEVER post-count tokens from streamed text and report it as actual usage; `tokensUsed` on `turn_completed.response` is reported only when the API response carries a real value.
 5. Wrapper-emitted `agent_invoked` events ALWAYS carry `manifest`, `filesSent`, `bytesSent`, `tokensEstimate`, `fieldsRemovedByScope`. Manifest is non-empty `{ files }` (possibly empty array, never absent).
-6. Wrapper-emitted `agent_completed` events MAY omit `tokensUsed` when the adapter does not report it (the M3 schema accepts this).
+6. Wrapper-emitted `agent_completed` events MAY omit `tokensUsed`, `requestedModel`, and `responseId` when the adapter or routing comparison does not report them.
 7. Wrapper enforces tool-call cap via streaming counter, never via PLAN advisory hint.
 8. `ProviderRegistry.familyOf` is the only authority for cross-family comparison; never compare `ProviderId` fields directly.
 9. `requestReview` carries `buildProvider` explicitly; never infer from event log.

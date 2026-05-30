@@ -95,6 +95,7 @@ export class CodexProvider implements IAgentProvider {
 
     const content = result.stdout.trimEnd()
     const model = req.model ?? 'codex-default'
+    const responseId = extractCodexResponseId(result.stdout)
 
     yield { type: 'turn_started', model }
     if (content !== '') {
@@ -105,6 +106,7 @@ export class CodexProvider implements IAgentProvider {
       response: {
         content,
         model,
+        ...(responseId !== undefined ? { responseId } : {}),
         stopReason: 'end_turn',
         // tokensUsed deliberately omitted — codex exec text mode doesn't
         // expose token counts, and the wrapper falls back to the recorded
@@ -177,4 +179,52 @@ export class CodexProvider implements IAgentProvider {
       },
     })
   }
+}
+
+function extractCodexResponseId(raw: string): string | undefined {
+  const trimmed = raw.trim()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+  return findResponseId(parsed)
+}
+
+function findResponseId(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findResponseId(item)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  if (value === null || typeof value !== 'object') return undefined
+  const obj = value as Record<string, unknown>
+  const responseId = stringField(obj, 'response_id')
+  if (responseId !== undefined) return responseId
+  const response = obj.response
+  if (response !== null && typeof response === 'object' && !Array.isArray(response)) {
+    const nested = stringField(response as Record<string, unknown>, 'id')
+    if (nested !== undefined) return nested
+  }
+  const id = stringField(obj, 'id')
+  if (id !== undefined && looksLikeCodexMetadata(obj)) return id
+  return undefined
+}
+
+function looksLikeCodexMetadata(obj: Readonly<Record<string, unknown>>): boolean {
+  return (
+    stringField(obj, 'object') === 'response' ||
+    stringField(obj, 'type') === 'response' ||
+    (obj.usage !== null && typeof obj.usage === 'object') ||
+    typeof obj.model === 'string'
+  )
+}
+
+function stringField(obj: Readonly<Record<string, unknown>>, key: string): string | undefined {
+  const value = obj[key]
+  return typeof value === 'string' ? value : undefined
 }

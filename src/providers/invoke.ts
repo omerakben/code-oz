@@ -195,6 +195,8 @@ export async function* invokeAgent(
   )
   let toolCalls = 0
   let tokensUsed: number | undefined
+  let responseId: string | undefined
+  let requestedModel: string | undefined
 
   try {
     for await (const ev of adapter.invoke(prepared)) {
@@ -242,6 +244,17 @@ export async function* invokeAgent(
         }
         // Adapter-reported only — never post-count streamed text.
         tokensUsed = ev.response.tokensUsed
+        responseId = ev.response.responseId
+        const computedRequestedModel =
+          prepared.model !== undefined && prepared.model !== ev.response.model
+            ? prepared.model
+            : undefined
+        requestedModel =
+          computedRequestedModel ??
+          (ev.response.requestedModel !== undefined &&
+          ev.response.requestedModel !== ev.response.model
+            ? ev.response.requestedModel
+            : undefined)
       }
       yield ev
     }
@@ -272,6 +285,8 @@ export async function* invokeAgent(
         runId: req.runId,
         phase: req.phase,
         agent: req.agent.name,
+        ...(requestedModel !== undefined ? { requestedModel } : {}),
+        ...(responseId !== undefined ? { responseId } : {}),
         ...(tokensUsed !== undefined ? { tokensUsed } : {}),
         ...(costActual !== undefined ? { costActualUSD: costActual } : {}),
       },
