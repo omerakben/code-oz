@@ -16,7 +16,10 @@ import { fileURLToPath } from 'node:url'
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '')
 
 const PLUGIN_JSON_PATH = join(REPO_ROOT, 'plugins/code-oz/.claude-plugin/plugin.json')
-const MARKETPLACE_JSON_PATH = join(REPO_ROOT, 'plugins/.claude-plugin/marketplace.json')
+// The marketplace manifest lives at the REPO ROOT so `claude plugin marketplace
+// add <owner/repo>` discovers it — Claude Code only reads `.claude-plugin/
+// marketplace.json` at the cloned repo's root, never a subdirectory.
+const MARKETPLACE_JSON_PATH = join(REPO_ROOT, '.claude-plugin/marketplace.json')
 const PACKAGE_JSON_PATH = join(REPO_ROOT, 'package.json')
 
 const EXPECTED_COMMANDS = [
@@ -69,7 +72,9 @@ describe('plugins/code-oz manifest shape', () => {
 
     const entry = market.plugins.find((p) => p.name === 'code-oz')
     expect(entry).toBeDefined()
-    expect(entry!.source).toBe('./code-oz')
+    // source is resolved relative to the marketplace root (repo root), so the
+    // path includes the plugins/ directory the plugin actually lives in.
+    expect(entry!.source).toBe('./plugins/code-oz')
   })
 
   test('marketplace.json code-oz entry version matches plugin.json version', async () => {

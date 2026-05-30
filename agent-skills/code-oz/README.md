@@ -12,7 +12,7 @@ Copy this `code-oz/` folder into your agent's skills directory:
 - OpenClaw: your personal/project skills dir.
 
 Then ensure the engine is installed: `npm i -g @tuel/code-oz` or
-`brew install omerakben/tap/code-oz`.
+`brew install omerakben/code-oz/code-oz`.
 
 The skill drives code-oz in fail-closed operator mode, which bans the fake
 provider, blocks SHIP/push, and records operator provenance. Bind the project

@@ -20,7 +20,9 @@ const DISCIPLINE_PLUGIN_JSON_PATH = join(
   'plugins/code-oz-discipline/.claude-plugin/plugin.json',
 )
 const CODE_OZ_PLUGIN_JSON_PATH = join(REPO_ROOT, 'plugins/code-oz/.claude-plugin/plugin.json')
-const MARKETPLACE_JSON_PATH = join(REPO_ROOT, 'plugins/.claude-plugin/marketplace.json')
+// Repo-root manifest: `claude plugin marketplace add <owner/repo>` only finds
+// `.claude-plugin/marketplace.json` at the cloned repo's root.
+const MARKETPLACE_JSON_PATH = join(REPO_ROOT, '.claude-plugin/marketplace.json')
 
 describe('plugins/code-oz-discipline manifest shape', () => {
   test('plugin.json exists and parses as JSON', async () => {
@@ -73,22 +75,22 @@ describe('marketplace.json with both sibling plugins', () => {
     expect(market.plugins).toHaveLength(2)
   })
 
-  test('marketplace.json has a code-oz entry with source ./code-oz', async () => {
+  test('marketplace.json has a code-oz entry with source ./plugins/code-oz', async () => {
     const raw = await readFile(MARKETPLACE_JSON_PATH, 'utf8')
     const market = JSON.parse(raw) as { plugins: Array<Record<string, unknown>> }
 
     const entry = market.plugins.find((p) => p.name === 'code-oz')
     expect(entry).toBeDefined()
-    expect(entry!.source).toBe('./code-oz')
+    expect(entry!.source).toBe('./plugins/code-oz')
   })
 
-  test('marketplace.json has a code-oz-discipline entry with source ./code-oz-discipline', async () => {
+  test('marketplace.json has a code-oz-discipline entry with source ./plugins/code-oz-discipline', async () => {
     const raw = await readFile(MARKETPLACE_JSON_PATH, 'utf8')
     const market = JSON.parse(raw) as { plugins: Array<Record<string, unknown>> }
 
     const entry = market.plugins.find((p) => p.name === 'code-oz-discipline')
     expect(entry).toBeDefined()
-    expect(entry!.source).toBe('./code-oz-discipline')
+    expect(entry!.source).toBe('./plugins/code-oz-discipline')
   })
 
   test('both marketplace entries share the same version', async () => {
@@ -116,5 +118,27 @@ describe('marketplace.json with both sibling plugins', () => {
 
     expect(codeOzEntry!.version).toBe(codeOz.version)
     expect(disciplineEntry!.version).toBe(codeOz.version)
+  })
+
+  // Installability guard: every `source` path must resolve (relative to the
+  // marketplace root = repo root) to a real plugin directory whose plugin.json
+  // name matches the entry. A manifest that points at a non-existent or
+  // mismatched directory passes schema checks but fails at `plugin install`.
+  test('every marketplace source resolves to a real plugin dir with a matching plugin.json', async () => {
+    const raw = await readFile(MARKETPLACE_JSON_PATH, 'utf8')
+    const market = JSON.parse(raw) as {
+      plugins: Array<{ name: string; source: string }>
+    }
+
+    for (const entry of market.plugins) {
+      // sources are repo-relative, must descend (no `..` traversal).
+      expect(entry.source.startsWith('./')).toBe(true)
+      expect(entry.source.includes('..')).toBe(false)
+
+      const pluginJsonPath = join(REPO_ROOT, entry.source, '.claude-plugin/plugin.json')
+      const pluginRaw = await readFile(pluginJsonPath, 'utf8')
+      const plugin = JSON.parse(pluginRaw) as { name: string }
+      expect(plugin.name).toBe(entry.name)
+    }
   })
 })

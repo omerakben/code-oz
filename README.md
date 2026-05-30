@@ -51,6 +51,29 @@ Platform support: macOS arm64, macOS x64, Linux x64, Linux arm64. Windows and Sc
 
 If `npm install -g @tuel/code-oz` fails with a 404 or authentication error, your `~/.npmrc` is likely overriding the `@tuel` scope — see [`docs/TRUST.md` § Install gotchas](docs/TRUST.md#install-gotchas-npm-scope-routing-for-tuelcode-oz) for the fix.
 
+## Use it inside Claude Code (plugin)
+
+code-oz ships two Claude Code plugins through a marketplace declared at this repo's root. From a Claude Code session, add the marketplace and install:
+
+```sh
+/plugin marketplace add omerakben/code-oz
+/plugin install code-oz@code-oz-marketplace
+```
+
+The `code-oz` plugin is a thin wrapper. It adds `/code-oz-run`, `/code-oz-init`, `/code-oz-doctor`, and `/code-oz-resume`, and each command discovers the `code-oz` engine on your `PATH`, falling back to `npx @tuel/code-oz` when the binary is absent. Install the engine from the channels above for the fastest path. The plugin never writes gates, events, or reviews — the engine binary is the only writer, so the gate guarantees hold whether you drive code-oz from the CLI or through the plugin.
+
+A second plugin, `code-oz-discipline`, is optional. It installs advisory-only skills (brainstorming, source-check, RED-first) that are guidance, not enforcement:
+
+```sh
+/plugin install code-oz-discipline@code-oz-marketplace
+```
+
+Adding the marketplace clones this repository into Claude Code's plugin cache. The repo is the full engine source, so from the CLI you can restrict the checkout to just the plugin files:
+
+```sh
+claude plugin marketplace add omerakben/code-oz --sparse .claude-plugin plugins
+```
+
 ## Why not just Claude Code or Codex?
 
 Use Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Roo Code, or Aider directly when you want the fastest possible agent loop.

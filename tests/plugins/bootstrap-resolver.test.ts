@@ -184,6 +184,11 @@ describe('resolve-code-oz.sh — npx failure surfaces scope-routing caveat', () 
     expect(result.stderr).toMatch(/@tuel/)
     // Must suggest Homebrew as an alternative
     expect(result.stderr).toMatch(/[Hh]omebrew|brew/)
+    // The Homebrew hint must use the real tap (brew resolves omerakben/code-oz
+    // to github.com/omerakben/homebrew-code-oz), not the nonexistent
+    // omerakben/homebrew-tap that omerakben/tap/code-oz would target.
+    expect(result.stderr).toContain('omerakben/code-oz/code-oz')
+    expect(result.stderr).not.toContain('omerakben/tap/code-oz')
     // Must mention the registry workaround
     expect(result.stderr).toMatch(/@tuel:registry/)
   })
@@ -204,8 +209,10 @@ describe('resolve-code-oz.sh — hard-stop (no code-oz, no npm/npx)', () => {
     expect(result.stdout + result.stderr).toMatch(/npm/)
     // Must mention the package name
     expect(result.stdout + result.stderr).toMatch(/@tuel\/code-oz/)
-    // Must mention brew as alternative
+    // Must mention brew as alternative, with the correct tap form.
     expect(result.stdout + result.stderr).toMatch(/brew/)
+    expect(result.stdout + result.stderr).toContain('omerakben/code-oz/code-oz')
+    expect(result.stdout + result.stderr).not.toContain('omerakben/tap/code-oz')
   })
 })
 

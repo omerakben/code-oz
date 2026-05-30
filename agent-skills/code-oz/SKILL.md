@@ -13,7 +13,7 @@ write its state.
 
 1. Check it is installed: run `code-oz --version` (or `code-oz doctor`).
 2. If it is missing, STOP and tell the user to install it:
-   `npm i -g @tuel/code-oz`  OR  `brew install omerakben/tap/code-oz`.
+   `npm i -g @tuel/code-oz`  OR  `brew install omerakben/code-oz/code-oz`.
    Do NOT auto-run `curl`, `npx`, or `bunx` to install it yourself.
 
 ## How to drive it
