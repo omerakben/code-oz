@@ -122,6 +122,42 @@ describe('resolve-code-oz.sh — PATH binary present', () => {
     expect(result.stdout).toContain('--provider')
     expect(result.stdout).toContain('fake')
   })
+
+  test('strips an empty-string positional before exec (no-args plugin card artifact)', async () => {
+    // A plugin command card renders `<subcommand> "$ARGUMENTS"`. With no user
+    // arguments Claude Code substitutes an empty $ARGUMENTS, leaving a literal
+    // `doctor ""`. The empty positional must not reach the engine, whose 0.21.1
+    // subcommand dispatcher rejects '' as an unknown subcommand. The fake wraps
+    // each forwarded arg in brackets, so an empty arg would appear as `[]`.
+    const fakeDir = await makeFakeBinDir({
+      'code-oz': `#!/bin/sh\nprintf 'ARGS:'\nfor a in "$@"; do printf '[%s]' "$a"; done\nprintf '\\n'\n`,
+    })
+
+    const result = await runResolver({
+      path: `${fakeDir}:${SYSTEM_BIN}`,
+      args: ['doctor', ''],
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('[doctor]')
+    expect(result.stdout).not.toContain('[]')
+  })
+
+  test('preserves a non-empty positional that contains spaces', async () => {
+    // The empty-arg filter must not word-split or drop legitimate args.
+    const fakeDir = await makeFakeBinDir({
+      'code-oz': `#!/bin/sh\nprintf 'ARGS:'\nfor a in "$@"; do printf '[%s]' "$a"; done\nprintf '\\n'\n`,
+    })
+
+    const result = await runResolver({
+      path: `${fakeDir}:${SYSTEM_BIN}`,
+      args: ['run', 'fix the login bug'],
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('[run]')
+    expect(result.stdout).toContain('[fix the login bug]')
+  })
 })
 
 describe('resolve-code-oz.sh — npx fallback', () => {
@@ -164,6 +200,21 @@ describe('resolve-code-oz.sh — npx fallback', () => {
     expect(result.exitCode).toBe(0)
     // The exact pinned version string must appear in the npx invocation
     expect(result.stdout).toContain(pinnedVersion)
+  })
+
+  test('strips an empty-string positional before the npx invocation too', async () => {
+    const fakeDir = await makeFakeBinDir({
+      npx: `#!/bin/sh\nprintf 'ARGS:'\nfor a in "$@"; do printf '[%s]' "$a"; done\nprintf '\\n'\n`,
+    })
+
+    const result = await runResolver({
+      path: `${fakeDir}:${SYSTEM_BIN}`,
+      args: ['doctor', ''],
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('[doctor]')
+    expect(result.stdout).not.toContain('[]')
   })
 })
 

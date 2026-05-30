@@ -69,6 +69,22 @@ case "${OS_NAME}" in
 esac
 
 # ---------------------------------------------------------------------------
+# Drop empty-string positional arguments before resolution. A plugin command
+# card renders `<subcommand> "$ARGUMENTS"`; with no user arguments Claude Code
+# substitutes an empty $ARGUMENTS, leaving a literal "" that the engine's
+# subcommand dispatcher (0.21.1+) rejects as an unknown subcommand. An empty
+# positional is never meaningful to code-oz, so the launcher strips it before
+# both the PATH-exec and npx branches. The array form preserves args that
+# contain spaces; ${a[@]+"${a[@]}"} is the bash-3.2 + `set -u`-safe way to
+# expand a possibly-empty array.
+# ---------------------------------------------------------------------------
+filtered_args=()
+for arg in "$@"; do
+  [ -n "${arg}" ] && filtered_args+=("${arg}")
+done
+set -- ${filtered_args[@]+"${filtered_args[@]}"}
+
+# ---------------------------------------------------------------------------
 # 2. code-oz found on PATH — exec directly, forwarding all args.
 # ---------------------------------------------------------------------------
 if command -v code-oz >/dev/null 2>&1; then
