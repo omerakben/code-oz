@@ -103,7 +103,7 @@ if command -v npx >/dev/null 2>&1; then
   printf 'A @tuel scope-routing trap may be 404ing on npm.pkg.github.com.\n' >&2
   printf 'To fix:\n' >&2
   printf '  Option A — install via Homebrew (bypasses npm scope routing):\n' >&2
-  printf '    brew install omerakben/tap/code-oz\n' >&2
+  printf '    brew install omerakben/code-oz/code-oz\n' >&2
   printf '  Option B — set the @tuel registry in your .npmrc:\n' >&2
   printf '    @tuel:registry=https://registry.npmjs.org/\n' >&2
   exit "${NPX_EXIT}"
@@ -115,5 +115,5 @@ fi
 printf 'code-oz is not installed. Install:\n' >&2
 printf '  npm i -g @tuel/code-oz\n' >&2
 printf '  OR\n' >&2
-printf '  brew install omerakben/tap/code-oz\n' >&2
+printf '  brew install omerakben/code-oz/code-oz\n' >&2
 exit 1
