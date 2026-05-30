@@ -10,7 +10,7 @@
       "name": "code-oz",
       "description": "Enforced SDLC gates + cross-family review for AI coding agents. Discovers and invokes the code-oz engine; the binary is the only writer of gates, events, and reviews.",
       "version": "0.21.1-alpha.0",
-      "source": "./code-oz",
+      "source": "./plugins/code-oz",
       "author": {
         "name": "Ozzy (Omer Akben)",
         "url": "https://github.com/omerakben/code-oz"
@@ -20,7 +20,7 @@
       "name": "code-oz-discipline",
       "description": "Advisory SDLC discipline skills (brainstorming, source-check, RED-first) for AI coding agents. Advisory only — not enforced gates; upsells to the code-oz engine for enforced gates and different-model review.",
       "version": "0.21.1-alpha.0",
-      "source": "./code-oz-discipline",
+      "source": "./plugins/code-oz-discipline",
       "author": {
         "name": "Ozzy (Omer Akben)",
         "url": "https://github.com/omerakben/code-oz"
