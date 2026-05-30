@@ -77,7 +77,7 @@ The `templates/` collection in `~/Projects/agents/templates/` is the influence l
 ## Working in this repo
 
 1. **Run all commands from the repo root.** `bun install`, `bun test`, `bun run dev <command>`, `bun run build:binary`.
-2. **Branches:** `main` only on tagged releases. Feature branches: `feat/`, `fix/`, `refactor/`, `test/`, `docs/`. Conventional commit messages.
+2. **Branching is trunk-based (Option A, locked 2026-05-29).** `main` is the protected trunk and the only long-lived branch. Every change lands via a short-lived branch -> PR -> green CI -> **squash-merge** -> head branch auto-deletes (merge-commit and rebase-merge are disabled). Prefixes: `feat/`, `fix/`, `refactor/`, `test/`, `docs/`, `chore/`, with a kebab-case slug after the slash, optionally issue-scoped (`fix/123-worktree-reset`). One branch = one PR = one squashed conventional commit = one concern; branch from latest `main` (`git fetch origin && git switch -c feat/<slug> origin/main`), never from another topic branch; never push `worktree-*` scratch branches. Releases are annotated SemVer tags (`vX.Y.Z-alpha.N`) on a green `main`, cut behind a `chore/release-*` PR. `main` is protected for everyone including admins (required `bun test` checks, linear history, no force-push or deletion, PR-before-merge). Full contract: CONTRIBUTING.md § "Branching and merge workflow".
 3. **Tests must run offline.** Spine tests use `FakeProvider`. Live-provider tests are opt-in only and gated behind env flags.
 4. **No emojis in code or commit messages.** No "Co-Authored-By: Claude" footers unless asked.
 5. **Never push to GitHub without explicit user approval.** Local commits are fine.
