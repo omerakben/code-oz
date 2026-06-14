@@ -10,7 +10,8 @@ Thanks for your interest in `code-oz`. This guide covers the setup, the test dis
 git clone https://github.com/omerakben/code-oz.git
 cd code-oz
 bun install
-bun test
+bun run typecheck
+bun test ./tests
 ```
 
 Requirements:
@@ -19,7 +20,7 @@ Requirements:
 - **Node 18 or newer** for the npm wrapper smoke (`node --version`).
 - macOS arm64, macOS x64, Linux x64, or Linux arm64. Windows local development is not currently supported (the npm wrapper and binaries are Unix-only).
 
-The full offline test suite runs in under 30 seconds on a recent machine and should report `3750+ pass / 0 fail` against `main` (the pass count grows as suites are added; the 2 skipped tests are the opt-in live-provider tests described below).
+The root CI command is `bun test ./tests`. The broader local command `bun test` also picks up tests under `code-oz-gui/` when that sub-project's dependencies are installed. Exact test counts drift as suites are added; current receipts live in [`docs/RECEIPTS.md`](docs/RECEIPTS.md).
 
 ## Test discipline
 
@@ -28,9 +29,19 @@ The full offline test suite runs in under 30 seconds on a recent machine and sho
 Every test in `tests/` runs offline against `FakeProvider`. No live LLM call, no network egress, no provider credentials. CI does not have provider credentials and must stay green.
 
 ```sh
-bun test               # full suite
+bun test ./tests       # root CI suite
+bun test               # broader local suite, including code-oz-gui tests when its deps are installed
 bun test --watch       # iterative loop
 bun test path/to/file  # one file
+```
+
+If you are touching the GUI, install and test the sub-project separately:
+
+```sh
+cd code-oz-gui
+bun install
+bun run typecheck
+bun test tests/unit
 ```
 
 ### Opt-in live-provider tests
@@ -99,7 +110,7 @@ The repo is **trunk-based** (locked 2026-05-29). `main` is the protected trunk; 
 ### The basics
 
 - One coherent change per PR. If the PR description grows past three bullet points, consider splitting.
-- Tests pass locally (`bun test`) before opening the PR.
+- Tests pass locally (`bun test ./tests` from the repo root; add `bun test` or GUI commands when the change touches those surfaces) before opening the PR.
 - The PR template (`.github/pull_request_template.md`) walks you through the checklist: summary, files changed, testing, breaking-change flag.
 - Link any relevant design doc, GitHub issue, or Codex review thread in the description.
 

@@ -331,7 +331,7 @@ describe('resolve-code-oz.sh — malformed plugin.json', () => {
 })
 
 describe('resolve-code-oz.sh — Windows rejection', () => {
-  test('exits non-zero and prints v0.21+ message when CODE_OZ_FAKE_UNAME is Windows-like', async () => {
+  test('exits non-zero and prints future milestone message when CODE_OZ_FAKE_UNAME is Windows-like', async () => {
     // No fake binary needed — Windows rejection fires before any PATH resolution.
     const result = await runResolver({
       path: SYSTEM_BIN,
@@ -342,8 +342,8 @@ describe('resolve-code-oz.sh — Windows rejection', () => {
     expect(result.exitCode).not.toBe(0)
     // Must mention Windows
     expect(result.stdout + result.stderr).toMatch(/[Ww]indows/)
-    // Must mention the version when Windows will be supported
-    expect(result.stdout + result.stderr).toMatch(/v0\.21/)
+    // Must mention the support status without promising a stale version.
+    expect(result.stdout + result.stderr).toMatch(/future distribution milestone/)
   })
 
   test('rejects before touching PATH when fake uname is MSYS variant', async () => {

@@ -5,7 +5,7 @@ file-based gates that actually block, a different-model review you did not write
 yourself, budget caps, and a recorded event log, run:
 
 ```bash
-code-oz run
+code-oz run --provider fake --request "Create a tiny hello-world CLI"
 ```
 
 That is where enforced gates and a different-model review live. This skill only

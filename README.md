@@ -16,7 +16,6 @@ AI agents are fast. `code-oz` makes their work auditable. It is for risky repos,
 [![Homebrew](https://img.shields.io/badge/Homebrew-omerakben%2Fcode--oz-orange)](https://github.com/omerakben/homebrew-code-oz)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/omerakben/code-oz/releases)
-[![Tests passing](https://img.shields.io/badge/tests-3810%20passing-brightgreen)](https://github.com/omerakben/code-oz/actions/workflows/test.yml)
 
 > **macOS note:** code-oz binaries are not yet Apple-Developer-signed (signing + notarization deferred to v0.x stable). Gatekeeper may prompt on first launch; the install script applies `xattr -d com.apple.quarantine` as a workaround, and `brew install` handles this automatically.
 
@@ -36,8 +35,8 @@ Three channels deliver the same single binary, verified against the same `checks
 
 ```sh
 # curl | sh
-curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.21.1-alpha.0/install.sh \
-  | sh -s -- --version v0.21.1-alpha.0
+curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.21.2-alpha.0/install.sh \
+  | sh -s -- --version v0.21.2-alpha.0
 
 # npm (scoped under the TUEL AI publisher; binary still runs as `code-oz`)
 npm install -g @tuel/code-oz
@@ -112,7 +111,7 @@ Direct-agent workflow:
 | xAI auth         | `XAI_API_KEY` env var                                                |
 | Install channels | curl script, npm package, Homebrew tap                               |
 | Platforms        | macOS arm64, macOS x64, Linux arm64, Linux x64                       |
-| Tests            | 3812 offline tests (3810 pass, 2 live-gated skips)                  |
+| Tests            | Offline CI suite via `bun test ./tests`; full local suite via `bun test` |
 
 The provider contract is intentionally narrow. The alpha is about proving governed delivery, not supporting every agent on day one.
 
@@ -126,6 +125,7 @@ See [`docs/RECEIPTS.md`](docs/RECEIPTS.md) for verifiable evidence — real cros
 | Gemini                         | Stub provider in v0.1; not a working invocation adapter     |
 | OpenCode / Roo Code            | Future adapter candidates, not v0.1 providers               |
 | Brownfield AUDIT runtime       | Shipped in v0.21 (M17); proven by a deterministic full-cycle e2e, live brownfield smoke pending credentials |
+| SHIP automation                | Lifecycle boundary and approval state only; no push, merge, publish, or release-artifact automation |
 | Windows / Scoop                | Deferred                                                    |
 | Apple signing / notarization   | Deferred to v0.x stable; macOS may show Gatekeeper prompts  |
 | GPG/Sigstore-signed checksums  | Deferred to v0.x stable                                     |
@@ -216,7 +216,17 @@ Do not use `code-oz` yet if:
 
 ## Provider setup
 
-First-run CLI defaults to `FakeProvider` when no live provider is configured, so `code-oz init && code-oz run` can complete without spending provider tokens. Live Claude and Codex use their upstream CLI login sessions; xAI uses `XAI_API_KEY`. The separate `code-oz-gui` helper uses `GEMINI_API_KEY` for an in-app AI assistant; that key is not used by the CLI.
+First-run CLI exploration should use the deterministic fake path:
+
+```sh
+mkdir /tmp/code-oz-first-run && cd /tmp/code-oz-first-run
+code-oz init
+code-oz run --provider fake --request "Create a tiny hello-world CLI"
+```
+
+Expected result: code-oz writes `.code-oz/`, starts a run, records events under `.code-oz/state/runs/<runId>/events.jsonl`, and stops at the next required approval gate or completes the fake-provider lifecycle depending on the generated plan shape. It spends no provider tokens.
+
+Live Claude and Codex use their upstream CLI login sessions; xAI uses `XAI_API_KEY`. The separate `code-oz-gui` helper uses `GEMINI_API_KEY` for an in-app AI assistant; that key is not used by the CLI.
 
 See [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md) for the single provider setup table and [`docs/contracts/PROVIDERS.md`](docs/contracts/PROVIDERS.md) for the live / stub / future-candidate matrix.
 
@@ -230,7 +240,10 @@ bun run build:binary
 mkdir /tmp/code-oz-smoke && cd /tmp/code-oz-smoke
 ~/Projects/code-oz/dist/code-oz init
 ~/Projects/code-oz/dist/code-oz doctor tools
+~/Projects/code-oz/dist/code-oz run --provider fake --request "Create a tiny hello-world CLI"
 ```
+
+For package, plugin, and GUI release-readiness status, see [`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md).
 
 ## Trust and security
 
@@ -250,7 +263,7 @@ Release notes and version history are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 Public summary at [`docs/design/ROADMAP.md#now-next-later`](docs/design/ROADMAP.md#now-next-later). The detailed milestone inventory follows in the same file.
 
-- **Now (v0.21.1-alpha.0)**: external-operator driving — an external autonomous agent can drive the gated runtime non-interactively while code-oz stays the gate authority and fails closed. Built on the v0.21.0 M17 brownfield AUDIT runtime, proven by a deterministic full-cycle e2e.
+- **Now (v0.21.2-alpha.0)**: release-readiness truth sync — package/plugin/GUI status, install guidance, changelog, receipts, and validation docs now match the implementation. Built on the v0.21.1 external-operator release and v0.21.0 M17 brownfield AUDIT runtime.
 - **Next**: Phase 5 launch (essay, Show HN, thread) and an M18 SWE-bench Verified adapter (v0.22).
 - **Later**: signed checksums, broader provider adapters, Windows/Scoop.
 

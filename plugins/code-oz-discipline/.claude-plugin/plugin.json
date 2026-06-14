@@ -1,7 +1,7 @@
 {
   "name": "code-oz-discipline",
   "description": "Advisory SDLC discipline skills (brainstorming, source-check, RED-first) for AI coding agents. Advisory only — not enforced gates; upsells to the code-oz engine for enforced gates and different-model review.",
-  "version": "0.21.1-alpha.0",
+  "version": "0.21.2-alpha.0",
   "author": { "name": "Ozzy (Omer Akben)", "url": "https://github.com/omerakben/code-oz" },
   "homepage": "https://github.com/omerakben/code-oz",
   "repository": "https://github.com/omerakben/code-oz",

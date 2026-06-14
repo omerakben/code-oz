@@ -2,6 +2,65 @@
 
 All notable changes to `code-oz` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the `0.x-alpha` line — minor bumps may include breaking changes; patch bumps add behavior or fix bugs without breaking the contract.
 
+## [Unreleased]
+
+## [v0.21.2-alpha.0] — 2026-06-14
+
+### Release-readiness truth sync
+
+- Truth-synced README, provider setup, security policy, contributing guide, receipts, Homebrew docs, GUI README, and release-readiness docs against current implementation.
+- Added explicit package/plugin/GUI release-readiness status in `docs/RELEASE_READINESS.md`.
+- Corrected CLI help: SHIP is a lifecycle boundary and approval state today; code-oz does not push, merge, publish, or produce release artifacts for the user.
+- Fixed `scripts/release/fresh-clone-smoke.sh --help` and made its test summary parser line-oriented so `3815 pass` is not misread as `5 fail`.
+- Removed stale Windows `v0.21+` promises from the npm wrapper and Claude Code plugin resolver; Windows/Scoop is deferred to a future distribution milestone.
+
+### Plugin marketplace fixes
+
+- Root Claude Code marketplace metadata is present at `.claude-plugin/marketplace.json`.
+- The `code-oz` plugin manifest intentionally omits a redundant `hooks` key; hooks load from plugin files.
+- The resolver strips empty-string arguments from plugin command cards so no-argument slash commands such as `/code-oz-doctor` work.
+
+## [v0.21.1-alpha.0] — 2026-05-22
+
+### External-operator driving
+
+- Added fail-closed external-operator driving for Hermes/OpenClaw-style tools while keeping code-oz the gate authority.
+- Added three operator binding methods: per-command flags (`--operator <id> --non-interactive`), `CODE_OZ_OPERATOR`, and project binding via `code-oz init --operator <id>`.
+- Operator mode records provenance (`run_started.operator`, `approvedBy: operator:<id>`), bans fake provider use, blocks non-interactive SHIP approval, and requires explicit phase names for non-interactive approval.
+- Added the text-only `agent-skills/code-oz/` integration surface for agent-first tools.
+
+Detailed notes: [`docs/handoffs/2026-05-22-v0.21.1-release-notes.md`](docs/handoffs/2026-05-22-v0.21.1-release-notes.md).
+
+## [v0.21.0-alpha.0] — 2026-05-21
+
+### M17 brownfield AUDIT runtime
+
+- Added the brownfield entry phase: `AUDIT → PLAN → BUILD → VERIFY → REVIEW → SHIP`.
+- Added `AUDIT.md` artifact schema, auditor persona/prompt composition, `audit_completed` event, SHA-bound `approve audit`, and brownfield PLAN handoff through `SC-AUDIT-NNN` source IDs.
+- Added deterministic spawned-CLI brownfield full-cycle e2e proof while preserving greenfield routing.
+- Shipped the Agent Gate Bench runner and first measured deterministic `code-oz Fake` rows. Direct-agent and live-provider columns remain unmeasured until credentials are supplied.
+
+Detailed notes: [`docs/handoffs/2026-05-21-v0.21.0-release-notes.md`](docs/handoffs/2026-05-21-v0.21.0-release-notes.md).
+
+## [v0.20.3-alpha.0] — 2026-05-14
+
+### Friend-experience polish
+
+- Closed seven first-install and first-run findings from real dogfood: empty-repo intervention, INTENT.md greenfield seed detection, verify-fail worktree reset, long BUILD notes diagnostics, GUI persistence, stale-run surfacing, and npm scope-routing recipe correction.
+- Kept provider contract unchanged; brownfield AUDIT remained scheduled for v0.21 at this release.
+
+Detailed notes: [`docs/handoffs/2026-05-14-v0.20.3-release-notes.md`](docs/handoffs/2026-05-14-v0.20.3-release-notes.md).
+
+## [v0.20.2-alpha.0] — 2026-05-14
+
+### Real-provider BUILD showstopper fixes
+
+- Injected task blocks into BUILD prompts so Builder receives the per-task PLAN.md content.
+- Derived BUILD and REVIEW provider file manifests from `PlanTask` so agents receive real files instead of `filesSent: 0`.
+- Added real-provider dogfood evidence for greenfield BUILD and cross-family REVIEW returning substantive findings against actual code.
+
+Detailed notes: [`docs/handoffs/2026-05-14-v0.20.2-release-notes.md`](docs/handoffs/2026-05-14-v0.20.2-release-notes.md).
+
 ## [v0.20.1-alpha.0] — 2026-05-14
 
 ### First-run polish + public truth sync
@@ -118,5 +177,11 @@ The notes above the section are a backfill for v0.20.0-alpha.0 — the original 
 
 For earlier alpha releases (v0.13.x through v0.19.x), see the GitHub Releases page: <https://github.com/omerakben/code-oz/releases>. Per-milestone synthesis docs live under `docs/design/CODEX_RESPONSE_M*.md`.
 
+[Unreleased]: https://github.com/omerakben/code-oz/compare/v0.21.2-alpha.0...HEAD
+[v0.21.2-alpha.0]: https://github.com/omerakben/code-oz/releases/tag/v0.21.2-alpha.0
+[v0.21.1-alpha.0]: https://github.com/omerakben/code-oz/releases/tag/v0.21.1-alpha.0
+[v0.21.0-alpha.0]: https://github.com/omerakben/code-oz/releases/tag/v0.21.0-alpha.0
+[v0.20.3-alpha.0]: https://github.com/omerakben/code-oz/releases/tag/v0.20.3-alpha.0
+[v0.20.2-alpha.0]: https://github.com/omerakben/code-oz/releases/tag/v0.20.2-alpha.0
 [v0.20.1-alpha.0]: https://github.com/omerakben/code-oz/releases/tag/v0.20.1-alpha.0
 [v0.20.0-alpha.0]: https://github.com/omerakben/code-oz/releases/tag/v0.20.0-alpha.0

@@ -12,7 +12,7 @@
 #   4. `bun run demo:todo-cli`.
 #   5. `bun run demo:failure-gates`.
 #   6. Lightweight drift checks against the publicly-claimed provider story
-#      (no Gemini live; no 'simulation' word; test count badge matches).
+#      (no Gemini live; no 'simulation' word; README links resolve).
 #
 # Exits 0 on success; non-zero on the first failed step. Output prints each
 # step's status so the failing step is obvious.
@@ -22,6 +22,37 @@
 # scripts under scripts/demo/.
 
 set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/release/fresh-clone-smoke.sh
+
+Runs a pre-tag smoke check from a fresh clone of the current branch:
+  1. clone current branch into a temp directory
+  2. install root and code-oz-gui dependencies
+  3. run bun test
+  4. run demo:todo-cli
+  5. run demo:failure-gates
+  6. run lightweight README/provider drift checks
+
+Options:
+  -h, --help   Show this help.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  '')
+    ;;
+  *)
+    printf 'fresh-clone-smoke: unknown argument: %s\n\n' "$1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
 
 # ---------------------------------------------------------------------
 # config
@@ -95,8 +126,8 @@ fi
 step "3/6  bun test"
 
 if bun test 2>&1 | tee "$WORKDIR/test.out" | tail -10; then
-  TEST_PASS_COUNT=$(grep -oE '[0-9]+ pass' "$WORKDIR/test.out" | head -1 | grep -oE '[0-9]+' || echo "0")
-  TEST_FAIL_COUNT=$(grep -oE '[0-9]+ fail' "$WORKDIR/test.out" | head -1 | grep -oE '[0-9]+' || echo "0")
+  TEST_PASS_COUNT=$(awk '$2 == "pass" { pass=$1 } END { print pass + 0 }' "$WORKDIR/test.out")
+  TEST_FAIL_COUNT=$(awk '$2 == "fail" { fail=$1 } END { print fail + 0 }' "$WORKDIR/test.out")
   if [[ "$TEST_FAIL_COUNT" != "0" ]]; then
     fail "tests failed: $TEST_FAIL_COUNT failures"
   fi
@@ -203,7 +234,7 @@ for path in SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md docs/TRUST.md docs/de
     fail "README links target $path but the file does not exist"
   fi
 done
-pass "all README-linked v0.20.1 files exist"
+pass "all README-linked current public files exist"
 
 # ---------------------------------------------------------------------
 # done

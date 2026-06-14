@@ -302,7 +302,7 @@ async function runCli(): Promise<number> {
     arch: process.arch,
   })
   if (hostTarget === null) {
-    process.stderr.write('smoke can only run on darwin-{arm64,x64} or linux-{x64,arm64} hosts; Windows ships in v0.20.1 (W3a deferred per docs/design/CODEX_SYNTHESIS_W3A.md).\n')
+    process.stderr.write('smoke can only run on darwin-{arm64,x64} or linux-{x64,arm64} hosts; Windows/Scoop is deferred to a future distribution milestone.\n')
     return 2
   }
 

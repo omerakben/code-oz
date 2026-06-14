@@ -20,7 +20,7 @@ Do not open a public issue for a suspected vulnerability before it is fixed.
 
 | Version line | Status |
 |---|---|
-| `v0.20.x-alpha` | Latest alpha. Security fixes ship on the next alpha (`v0.20.x+1-alpha.0`). |
+| `v0.21.x-alpha` | Latest alpha. Security fixes ship on the next alpha (`v0.21.x+1-alpha.0`). |
 | Older `v0.x-alpha` | Unsupported. Upgrade to the latest line. |
 
 Public alpha caveat: any release in the `v0.x-alpha` line is not a stable security guarantee. The trust posture below describes the alpha contract; production hardening lands at `v0.x stable`.
@@ -97,6 +97,6 @@ The boundary is reinforced at [`docs/TRUST.md`](docs/TRUST.md), which describes 
 
 ## Public alpha disclaimer
 
-This is an alpha release line. The mechanisms described above work as documented and are tested (3395 offline tests, opt-in live-provider tests via `CODE_OZ_LIVE_PROVIDER_TESTS=xai`). The release itself is not yet hardened to production signing or provenance standards. Do not use `v0.x-alpha` as the sole control for code that goes to production without an additional review layer.
+This is an alpha release line. The mechanisms described above are covered by the offline test suite and opt-in live-provider tests via `CODE_OZ_LIVE_PROVIDER_TESTS=xai`; current local counts are tracked in [`docs/RECEIPTS.md`](docs/RECEIPTS.md). The release itself is not yet hardened to production signing or provenance standards. Do not use `v0.x-alpha` as the sole control for code that goes to production without an additional review layer.
 
 Track the signing and provenance milestones at [`docs/design/ROADMAP.md`](docs/design/ROADMAP.md).

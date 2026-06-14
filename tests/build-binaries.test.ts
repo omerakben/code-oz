@@ -67,7 +67,7 @@ describe('targetForHost', () => {
     expect(targetForHost({ os: 'darwin', arch: 'ppc' })).toBeNull()
   })
 
-  test('returns null for windows (deferred to v0.20.1 per W3a synthesis)', () => {
+  test('returns null for windows (deferred to a future distribution milestone)', () => {
     expect(targetForHost({ os: 'win32', arch: 'x64' })).toBeNull()
   })
 })

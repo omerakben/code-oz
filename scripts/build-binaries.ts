@@ -86,7 +86,7 @@ CODE_OZ_INSTALL_DIR="$HOME/bin" sh ./install.sh
 
 ## Status
 
-This is a W3a alpha distribution. The official curl|sh, npm, and Homebrew channels for the release tag land alongside this bundle on the GitHub release. Windows + Scoop is deferred to a future distribution milestone (v0.21+).
+This is a W3a alpha distribution. The official curl|sh, npm, and Homebrew channels for the release tag land alongside this bundle on the GitHub release. Windows/Scoop is deferred to a future distribution milestone.
 `
 
 export interface ManifestRow {

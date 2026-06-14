@@ -10,7 +10,7 @@ release.
 
 ## One-time tap-repo creation
 
-Run once when the v0.20.0-alpha.0 sweep ships:
+Run once before publishing the first Homebrew-backed release:
 
 ```sh
 gh repo create omerakben/homebrew-code-oz \
@@ -22,8 +22,8 @@ mkdir Formula
 ```
 
 The tap repo conventionally only contains the `Formula/` directory and a
-short README. No CI is required for v0.20; auto-bumping via GitHub
-Actions is a v0.21 polish item.
+short README. Formula bumping is still a manual release step after
+GitHub release assets and `checksums.txt` exist.
 
 ## Per-release formula bump
 
@@ -31,8 +31,10 @@ For each tagged release, the four per-arch tarball SHA256 values come
 from the release's `checksums.txt`. After `release.yml` publishes the
 release, fetch the checksums and render the formula:
 
+Example release tag: `v0.21.2-alpha.0`.
+
 ```sh
-VERSION=0.20.0-alpha.0
+VERSION=0.21.2-alpha.0
 TAG="v${VERSION}"
 TAP=~/Projects/homebrew-code-oz
 
@@ -74,8 +76,12 @@ After the tap is updated:
 brew untap omerakben/code-oz 2>/dev/null || true
 brew tap omerakben/code-oz
 brew install omerakben/code-oz/code-oz
-code-oz --version  # should print 0.20.0-alpha.0
-code-oz init /tmp/code-oz-brew-smoke
+code-oz --version  # should print the release version you rendered
+rm -rf /tmp/code-oz-brew-smoke
+mkdir /tmp/code-oz-brew-smoke
+cd /tmp/code-oz-brew-smoke
+code-oz init
+code-oz run --provider fake --request "Create a tiny hello-world CLI"
 ```
 
 Uninstall + re-tap:
@@ -91,5 +97,5 @@ The four SHA256 values only exist after the binaries are built and
 uploaded to the GitHub release. Keeping the formula as a template in
 this repo lets the source-of-truth ride with the build pipeline; the
 substituted output lives in the tap repo where Homebrew expects to find
-it. The substitution step is the manual hand-off in the v0.20 release
+it. The substitution step is still a manual hand-off in the alpha release
 flow.
