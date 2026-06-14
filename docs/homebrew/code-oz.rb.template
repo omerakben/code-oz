@@ -1,22 +1,14 @@
 # typed: false
 # frozen_string_literal: true
 
-# Formula template for the omerakben/homebrew-code-oz tap. Lives in this repo
-# so changes ride alongside the code that produces the release assets; the
-# rendered Formula/code-oz.rb file lives in the tap repo after substitution.
+# Formula source for the omerakben/homebrew-code-oz tap. Lives in this repo so
+# changes ride alongside the code that produces the release assets; the rendered
+# Formula/code-oz.rb file lives in the tap repo after substitution.
 #
-# Substitute the __TOKEN__ placeholders below before publishing the formula:
-#   sed -e "s/__VERSION__/0.20.0-alpha.0/g" \
-#       -e "s/__SHA256_DARWIN_ARM64__/<sha>/" \
-#       -e "s/__SHA256_DARWIN_X64__/<sha>/" \
-#       -e "s/__SHA256_LINUX_ARM64__/<sha>/" \
-#       -e "s/__SHA256_LINUX_X64__/<sha>/" \
-#       docs/homebrew/code-oz.rb.template > /tmp/code-oz.rb
-# Then copy /tmp/code-oz.rb into omerakben/homebrew-code-oz/Formula/code-oz.rb,
-# `brew audit --strict --online Formula/code-oz.rb`, commit, push.
+# Render instructions live in docs/homebrew/README.md.
 
 class CodeOz < Formula
-  desc "Repo-native agentic SDLC runtime — multi-agent software-company simulation CLI"
+  desc "CI-style gates for AI coding agents"
   homepage "https://github.com/omerakben/code-oz"
   license "MIT"
   # NOTE: no explicit `version "..."` line — `brew audit --strict --online`
@@ -54,7 +46,7 @@ class CodeOz < Formula
     # Exercise `code-oz init` in Homebrew's per-test temp dir. Verifies the
     # binary boots, parses flags, and writes the expected init artifacts —
     # a stronger smoke than `code-oz --version` alone.
-    system "#{bin}/code-oz", "init"
+    system bin/"code-oz", "init"
     assert_predicate testpath/".code-oz", :directory?
   end
 end
