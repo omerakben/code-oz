@@ -33,6 +33,10 @@
   },
   "homepage": "https://github.com/omerakben/code-oz",
   "bugs": "https://github.com/omerakben/code-oz/issues",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "keywords": [
     "ai",
     "coding-agent",
