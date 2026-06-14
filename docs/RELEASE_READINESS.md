@@ -65,6 +65,7 @@ CLI trigger after the workflow is on `main`:
 gh workflow run npm-publish.yml -f version=0.21.2-alpha.0
 gh run watch --exit-status
 npm view @tuel/code-oz@0.21.2-alpha.0 version
+npm view @tuel/code-oz dist-tags --json
 ```
 
 Fallback path: publish locally after authenticating to npm:
@@ -72,11 +73,11 @@ Fallback path: publish locally after authenticating to npm:
 ```sh
 npm login
 npm whoami
-npm publish --access public
+npm publish --access public --tag alpha
 npm view @tuel/code-oz@0.21.2-alpha.0 version
 ```
 
-Direct local publishing requires an npm account with publish rights to `@tuel/code-oz` and either account 2FA or a granular access token with publish rights and bypass 2FA enabled. The current machine is not authenticated to npm, so local publish returns `E401`.
+Direct local publishing requires an npm account with publish rights to `@tuel/code-oz` and either account 2FA or a granular access token with publish rights and bypass 2FA enabled. Alpha versions publish under the `alpha` dist-tag, not `latest`. The current machine is not authenticated to npm, so local publish returns `E401`.
 
 ## Plugin publishing checklist
 

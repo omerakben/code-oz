@@ -92,4 +92,4 @@ jobs:
 
       - name: Publish package
         if: steps.published.outputs.already != 'true'
-        run: npm publish --access public
+        run: npm publish --access public --tag alpha
