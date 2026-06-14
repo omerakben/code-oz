@@ -1,11 +1,11 @@
 # 2026-06-14 release-readiness audit
 
-This note captures the `v0.21.2-alpha.0` release-readiness truth sync after the shipped `v0.21.1-alpha.0` line.
+This note captures the `v0.21.2-alpha.0` release-readiness truth sync after the shipped `v0.21.1-alpha.0` line. It was later updated after the actual `v0.21.2-alpha.0` publication completed.
 
 ## Current state
 
-- Latest published release remains `v0.21.1-alpha.0`; this branch prepares `v0.21.2-alpha.0`.
-- npm currently publishes `@tuel/code-oz@0.21.1-alpha.0`; this branch bumps the package and plugin marketplace metadata to `0.21.2-alpha.0`.
+- GitHub release assets, curl install, Homebrew, and npm now publish `v0.21.2-alpha.0`.
+- npm publishes `@tuel/code-oz@0.21.2-alpha.0` under the `alpha` dist-tag and exact version. The `latest` dist-tag still points at `0.21.1-alpha.0` until a separate npm 2FA dist-tag promotion.
 - Recent post-tag commits fix Claude Code plugin marketplace installation and no-argument command handling.
 - The root npm package is a launcher package, not a binary bundle.
 - `code-oz-gui` is private and local-only; it is not a standalone packaged app.
@@ -36,6 +36,6 @@ This note captures the `v0.21.2-alpha.0` release-readiness truth sync after the 
 ## Still not proven
 
 - Live brownfield AUDIT dogfood still requires local provider credentials.
-- npm/Homebrew publishing still requires a new release tag and published GitHub assets for the exact version.
+- Unqualified npm installs still resolve through the `latest` dist-tag until `npm dist-tag add @tuel/code-oz@0.21.2-alpha.0 latest --otp=<code>` runs.
 - The isolated Claude Code marketplace install passed; a real user-profile install can still be repeated manually before announcement if desired.
 - GUI standalone packaging is not designed or implemented.

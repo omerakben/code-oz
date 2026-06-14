@@ -13,7 +13,7 @@
 ## Recommended first run
 
 ```sh
-npm install -g @tuel/code-oz
+npm install -g @tuel/code-oz@0.21.2-alpha.0
 mkdir /tmp/code-oz-first-run && cd /tmp/code-oz-first-run
 code-oz init
 code-oz run --provider fake --request "Create a tiny hello-world CLI"

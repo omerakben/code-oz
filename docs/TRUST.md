@@ -90,7 +90,7 @@ All three land at the `v0.x stable` milestone. Until then, treat the alpha insta
 
 ### Install gotchas: npm scope routing for `@tuel/code-oz`
 
-`@tuel/code-oz` is published on public npm under the `@tuel` scope. If your user-level `~/.npmrc` registers a custom registry for the `@tuel` scope (for example, a private registry from a different `@tuel`-scoped package at a previous employer), `npm install -g @tuel/code-oz` routes to that registry instead of public npm. The install fails with a 404 or an authentication error, not with a useful "scope is overridden" message.
+`@tuel/code-oz` is published on public npm under the `@tuel` scope. If your user-level `~/.npmrc` registers a custom registry for the `@tuel` scope (for example, a private registry from a different `@tuel`-scoped package at a previous employer), `npm install -g @tuel/code-oz@0.21.2-alpha.0` routes to that registry instead of public npm. The install fails with a 404 or an authentication error, not with a useful "scope is overridden" message.
 
 Check your scope routing the same way npm resolves it for a global install:
 
@@ -105,7 +105,7 @@ If the output is `undefined` (the npm CLI's literal string for an unconfigured k
 1. Per-command override (preferred, leaves your config untouched):
 
    ```sh
-   npm install -g @tuel/code-oz --@tuel:registry=https://registry.npmjs.org/
+   npm install -g @tuel/code-oz@0.21.2-alpha.0 --@tuel:registry=https://registry.npmjs.org/
    ```
 
    Use the `--@tuel:registry=` form, **not** `--registry=`. The plain `--registry=` flag sets npm's default registry, but a scope-specific `@tuel:registry` mapping in your `~/.npmrc` has higher precedence and wins; the `--@scope:registry=` form sets the scope-specific registry on the command line and overrides any `.npmrc` mapping. `npm install -g` does not consult a project-local `.npmrc`, so checking out this repo's `.npmrc` does not help — the per-command flag is the reliable path.

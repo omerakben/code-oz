@@ -129,7 +129,7 @@ fi
 # 4. Neither code-oz nor npx/npm available — hard-stop.
 # ---------------------------------------------------------------------------
 printf 'code-oz is not installed. Install:\n' >&2
-printf '  npm i -g @tuel/code-oz\n' >&2
+printf '  npm i -g @tuel/code-oz@%s\n' "${PINNED_VERSION}" >&2
 printf '  OR\n' >&2
 printf '  brew install omerakben/code-oz/code-oz\n' >&2
 exit 1

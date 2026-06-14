@@ -39,7 +39,7 @@ curl -fsSL https://github.com/omerakben/code-oz/releases/download/v0.21.2-alpha.
   | sh -s -- --version v0.21.2-alpha.0
 
 # npm (scoped under the TUEL AI publisher; binary still runs as `code-oz`)
-npm install -g @tuel/code-oz
+npm install -g @tuel/code-oz@0.21.2-alpha.0
 
 # Homebrew
 brew tap omerakben/code-oz
@@ -48,7 +48,7 @@ brew install omerakben/code-oz/code-oz
 
 Platform support: macOS arm64, macOS x64, Linux x64, Linux arm64. Windows and Scoop are deferred to a future distribution milestone.
 
-If `npm install -g @tuel/code-oz` fails with a 404 or authentication error, your `~/.npmrc` is likely overriding the `@tuel` scope — see [`docs/TRUST.md` § Install gotchas](docs/TRUST.md#install-gotchas-npm-scope-routing-for-tuelcode-oz) for the fix.
+If `npm install -g @tuel/code-oz@0.21.2-alpha.0` fails with a 404 or authentication error, your `~/.npmrc` is likely overriding the `@tuel` scope — see [`docs/TRUST.md` § Install gotchas](docs/TRUST.md#install-gotchas-npm-scope-routing-for-tuelcode-oz) for the fix.
 
 ## Use it inside Claude Code (plugin)
 
@@ -59,7 +59,7 @@ code-oz ships two Claude Code plugins through a marketplace declared at this rep
 /plugin install code-oz@code-oz-marketplace
 ```
 
-The `code-oz` plugin is a thin wrapper. It adds `/code-oz-run`, `/code-oz-init`, `/code-oz-doctor`, and `/code-oz-resume`, and each command discovers the `code-oz` engine on your `PATH`, falling back to `npx @tuel/code-oz` when the binary is absent. Install the engine from the channels above for the fastest path. The plugin never writes gates, events, or reviews — the engine binary is the only writer, so the gate guarantees hold whether you drive code-oz from the CLI or through the plugin.
+The `code-oz` plugin is a thin wrapper. It adds `/code-oz-run`, `/code-oz-init`, `/code-oz-doctor`, and `/code-oz-resume`, and each command discovers the `code-oz` engine on your `PATH`, falling back to the plugin-pinned `npx @tuel/code-oz@0.21.2-alpha.0` when the binary is absent. Install the engine from the channels above for the fastest path. The plugin never writes gates, events, or reviews — the engine binary is the only writer, so the gate guarantees hold whether you drive code-oz from the CLI or through the plugin.
 
 A second plugin, `code-oz-discipline`, is optional. It installs advisory-only skills (brainstorming, source-check, RED-first) that are guidance, not enforcement:
 

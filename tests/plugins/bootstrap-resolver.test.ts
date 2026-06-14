@@ -260,6 +260,8 @@ describe('resolve-code-oz.sh — hard-stop (no code-oz, no npm/npx)', () => {
     expect(result.stdout + result.stderr).toMatch(/npm/)
     // Must mention the package name
     expect(result.stdout + result.stderr).toMatch(/@tuel\/code-oz/)
+    // Must pin the plugin version instead of relying on npm's moving latest tag.
+    expect(result.stdout + result.stderr).toContain('@tuel/code-oz@0.21.2-alpha.0')
     // Must mention brew as alternative, with the correct tap form.
     expect(result.stdout + result.stderr).toMatch(/brew/)
     expect(result.stdout + result.stderr).toContain('omerakben/code-oz/code-oz')
