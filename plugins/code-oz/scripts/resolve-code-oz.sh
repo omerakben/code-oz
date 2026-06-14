@@ -8,7 +8,7 @@
 #        resolve-code-oz.sh resume
 #
 # Resolution order (frozen — D0_FINDINGS §2.1):
-#   1. Windows detection  -> hard-stop (v0.21+)
+#   1. Windows detection  -> hard-stop (future distribution milestone)
 #   2. code-oz on PATH    -> exec binary directly
 #   3. npx on PATH        -> exec npx -y @tuel/code-oz@<pinned> <args>
 #      on npx exit != 0   -> print scope-routing caveat, exit non-zero
@@ -63,7 +63,7 @@ fi
 
 case "${OS_NAME}" in
   MINGW*|MSYS*|CYGWIN*|Windows_NT*)
-    printf 'Windows is not supported until v0.21+. The code-oz engine binary is darwin/linux only.\n' >&2
+    printf 'Windows is not supported yet. The code-oz engine binary is darwin/linux only; Windows/Scoop is deferred to a future distribution milestone.\n' >&2
     exit 1
     ;;
 esac

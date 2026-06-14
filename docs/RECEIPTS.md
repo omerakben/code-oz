@@ -204,24 +204,24 @@ The `balanced` ledger is at `docs/demo/01-todo-cli/output/balanced/events.jsonl`
 **Line 55 — `review_started`**: records `buildFamily:"claude"`, `reviewerFamily:"codex"`, plus `baseCommitSha`, `patchSha256`, `buildReportSha256`, `verifyReportSha256`. The cross-family pairing is written into the event log as a structural fact — not inferred, not advisory.
 
 ```json
-{"version":1,"type":"review_started","ts":"2026-05-11T21:37:04.681Z",
-"runId":"01KRCFHR2N2GYBHG9JWMJR61A5","phase":"review","agent":"reviewer",
+{"version":1,"type":"review_started","ts":"2026-06-14T15:35:25.938Z",
+"runId":"01KV3CBZS8VWECFF477YFVQPW0","phase":"review","agent":"reviewer",
 "attempt":1,"taskId":"T-001",
-"baseCommitSha":"d5888a71c183728cd142aaa9b3335212841910dc",
+"baseCommitSha":"89e11f8de72ca99dfbab33a231c9f73e1c8d2b07",
 "patchSha256":"662a93563e3a34b0cabc71838ea6d751dcc99196d23295e3b16731a81ea1bec5",
-"buildReportSha256":"1aeb6d1a91bd2102417ad9fa98304ac2bc524b75f731ca74c0f7479cabfeff9f",
-"verifyReportSha256":"74d9a47c4f819e833dbe94c917416ae2eb28d1a0d2f54ae9fd9f83a0573f1ce2",
+"buildReportSha256":"5772d4f3c5d02afefa33f1f6bde8587f2a14d9fc685799404df3da20f2b6947a",
+"verifyReportSha256":"2a799486c81a08b8dfed77ac8a48c7e00921011decd29cf38647b28a9b5a926d",
 "buildFamily":"claude","reviewerFamily":"codex"}
 ```
 
 **Line 58 — `review_round_completed`**: `round:1, score:8, verdict:"ready", findingsRaised:0`. Proves the review machinery ran to a terminal verdict.
 
 ```json
-{"version":1,"type":"review_round_completed","ts":"2026-05-11T21:37:04.685Z",
-"runId":"01KRCFHR2N2GYBHG9JWMJR61A5","phase":"review","agent":"reviewer",
+{"version":1,"type":"review_round_completed","ts":"2026-06-14T15:35:25.943Z",
+"runId":"01KV3CBZS8VWECFF477YFVQPW0","phase":"review","agent":"reviewer",
 "attempt":1,"taskId":"T-001","round":1,"score":8,"verdict":"ready",
 "findingsRaised":0,"findingsResolved":0,
-"reviewReportSha256":"bda02db44dd9af86421494c6004f551aeb4f3538dd19a3c5da29cb54981b5641"}
+"reviewReportSha256":"c3602bdb2ee6091f9785e8b4441acd9f2e48dfdceb171be716f7d4303e360c21"}
 ```
 
 **Lines 59–60 — `debate_scheduler_evaluated` then `debate_scheduler_skipped`** (`reason:"mode_manual"`): proves the debate-scheduler hook ran, evaluated, and recorded its decision in the event log — even when the decision was to skip. The `decisionId` is stable and correlatable.
@@ -245,9 +245,18 @@ A live brownfield bug-fix receipt (a real model run through the AUDIT phase catc
 
 ## Full test suite and further reading
 
-Current suite, measured by a local `bun test` run on 2026-05-24: **3810 pass, 2 skip, 0 fail — 3812 tests across 245 files** (the 2 skips are pre-existing live-gated xAI integration tests behind `CODE_OZ_LIVE_PROVIDER_TESTS=xai`). At the v0.21.0-alpha.0 release the suite measured 3762 pass; the v0.21.1-alpha.0 external-operator milestone added the remainder.
+Current local validation measured on 2026-06-14:
 
-Run it: `bun test`
+- `bun test ./tests`: **3796 pass, 2 skip, 0 fail — 3798 tests across 241 files**.
+- `bun test`: **3818 pass, 2 skip, 0 fail — 3820 tests across 246 files**.
+- `bun run typecheck`: pass.
+- `bun run build:binary`: pass.
+
+The two skipped tests are deterministic tool-unavailable coverage for the repo-context path (`rg not installed`), not hidden live-provider calls. At the v0.21.0-alpha.0 release the suite measured 3762 pass; later milestones and GUI tests added the remainder.
+
+Run the root CI suite: `bun test ./tests`
+
+Run the broader local suite after installing `code-oz-gui` dependencies: `bun test`
 
 Further reading:
 - `README.md` — installation, quick-start, and claim summary

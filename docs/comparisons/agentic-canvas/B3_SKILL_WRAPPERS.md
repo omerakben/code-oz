@@ -16,7 +16,7 @@ The pattern is deliberate: skills wrap the CLI, the CLI is the only authority, m
 
 ## Why this is W3.x not deferred
 
-The held-back disagreement Codex named in round 1 of the comparison synthesis was "adoption can beat architecture." Discovery vs. authority is the load-bearing distinction here. code-oz's native binary distribution (W3 — npm + Homebrew + Scoop) is correct for *authority*: the binary is the single source of truth, gates are file-based, the orchestrator owns provider invocation, skills cannot bypass any of it. That is intentional and is not loosened by this borrow. But *authority is not adoption*. A binary distributed via three package managers is still invisible inside Claude Code and Codex CLI sessions unless the user knows it exists, knows its subcommands, and remembers to invoke it. agentic-canvas demonstrates that even technically inferior tools win adoption when they are present in the marketplace surfaces users already live in, because the agent's own skill discovery picks them up automatically.
+The held-back disagreement Codex named in round 1 of the comparison synthesis was "adoption can beat architecture." Discovery vs. authority is the load-bearing distinction here. code-oz's native binary distribution (W3 — curl installer, npm launcher, and Homebrew for macOS/Linux) is correct for *authority*: the binary is the single source of truth, gates are file-based, the orchestrator owns provider invocation, skills cannot bypass any of it. That is intentional and is not loosened by this borrow. But *authority is not adoption*. A binary distributed via package/install channels is still invisible inside Claude Code and Codex CLI sessions unless the user knows it exists, knows its subcommands, and remembers to invoke it. agentic-canvas demonstrates that even technically inferior tools win adoption when they are present in the marketplace surfaces users already live in, because the agent's own skill discovery picks them up automatically.
 
 Skill wrappers turn that asymmetry around without giving up anything. Two thin Markdown skill packs (one Claude plugin manifest + four `SKILL.md` files; one Codex `AGENTS.md` router + four routed Markdown skills) make `code-oz init`, `code-oz run`, and `code-oz doctor` discoverable from the first turn an agent encounters a code-oz repo. The skills do not ship runtime, do not embed orchestrator logic, do not add provider behavior, and do not produce gate writes — they are exec shells around the binary. The cost is one to two days of authoring + a CI publish workflow; the benefit is W3.x adoption parity with agentic-canvas and other marketplace-resident tools, plus a discovery story for the binary that does not depend on README scrolling. This is what makes the borrow strategic rather than cosmetic, and what justifies the W3.x target instead of "post-W3 polish, file it for v0.3".
 
@@ -70,8 +70,8 @@ and prepare the repo for a `code-oz run`.
 ## Prerequisite
 
 `code-oz` must be on PATH. If `command -v code-oz` returns nothing, ask the user
-to install via `npm i -g code-oz`, `brew install omerakben/tap/code-oz`, or
-`scoop install code-oz`. Do not fall back to a local copy — the skill never
+to install via `npm i -g @tuel/code-oz`, `brew install omerakben/code-oz/code-oz`,
+or the curl installer. Do not fall back to a local copy — the skill never
 ships its own runtime.
 
 ## Default flow
@@ -135,7 +135,7 @@ wrong, use `status.md`.
 ## Cross-cutting rules
 
 1. **Always check the binary first.** Run `command -v code-oz`. If not on
-   PATH, stop and ask the user to install via npm / Homebrew / Scoop.
+   PATH, stop and ask the user to install via npm, Homebrew, or the curl installer.
 2. **Never bypass gates.** Do not write or edit `state/GATE_*.json`,
    `state/events.jsonl`, or any artifact under `.code-oz/artifacts/`. The
    binary is the only writer.
@@ -167,7 +167,7 @@ the plan".
 ## Prerequisite
 
 `command -v code-oz` must succeed. If not, route the user to install via
-`npm i -g code-oz` (or Homebrew / Scoop) before continuing.
+`npm i -g @tuel/code-oz` (or Homebrew / curl installer) before continuing.
 
 ## Default flow
 
@@ -211,7 +211,7 @@ Skills MUST NOT, under any circumstance, do any of the following. These constrai
 - **Add hooks beyond what the binary exposes.** No pre-phase or post-phase hooks invented by the skill. If a hook is needed, it lands in the binary first; the skill calls it.
 - **Cache run state across invocations.** No skill-side memoization of `RunSummary`, gate status, event tails, or any other run state. Skills read fresh on each invocation. Caching becomes out-of-band state that drifts from the binary's truth.
 - **Implement fallback runtimes when the binary is missing.** A missing binary is a hard stop with an install instruction, not a "let me write `.code-oz/` files for you" path. The skill is a discovery shell; without the shell-target it has nothing to do.
-- **Bundle vendored copies of `code-oz`.** Skills do not ship the binary. Distribution is the binary's job (npm + Homebrew + Scoop); the skill resolves it from PATH.
+- **Bundle vendored copies of `code-oz`.** Skills do not ship the binary. Distribution is the binary's job (curl installer, npm launcher, and Homebrew for macOS/Linux); the skill resolves it from PATH.
 - **Embed model-specific prompts that duplicate persona prompts.** Persona prompts live in `src/prompts/`, are governed by Rule 16 (universal anti-slop rules), and are owned by the binary. Skills do not paraphrase, summarize, or wrap them.
 - **Translate `NEEDS_INTERVENTION.json` into a different schema.** The intervention surface is the canonical Rule 11 contract. Skills surface the JSON path and the suggested action, verbatim, never a summary.
 

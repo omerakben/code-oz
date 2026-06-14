@@ -25,7 +25,7 @@
 //
 // Rule 18 (`tool_use.repo_context`) is NOT realized by this helper.
 // No `repo_context_searched` events are emitted. The path is just an
-// explicit-manifest expansion. Rule 18 stays deferred to v0.21+.
+// explicit-manifest expansion. Broader repo_context tool-use remains future work.
 
 import { access, constants } from 'node:fs/promises'
 import { resolve as resolvePath, sep } from 'node:path'

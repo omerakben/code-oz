@@ -4,7 +4,7 @@ import { runCommand } from './commands/run.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { approveCommand } from './commands/approve.ts'
 
-export const PKG_VERSION = '0.21.1-alpha.0'
+export const PKG_VERSION = '0.21.2-alpha.0'
 
 function printHelp(): void {
   process.stdout.write(`code-oz v${PKG_VERSION}
@@ -19,8 +19,9 @@ Commands:
                      runs single-mode or panel cross-family review.
                      Multi-task PLAN.md cycles BUILD/VERIFY/REVIEW per task
                      until the cursor completes, then advances currentPhase
-                     to ship after the final review approval. SHIP runtime
-                     (artifact production beyond gate writer) lands in M17.
+                     to ship after the final review approval. SHIP is a
+                     human-owned boundary today; code-oz does not push, merge,
+                     publish, or produce release artifacts for you.
   approve          Approve the current phase of the active run
   resume           Resume the active run (alias for 'run --resume')
   doctor           Probe environment health

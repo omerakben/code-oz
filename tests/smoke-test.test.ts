@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { renderHandoffReadme } from '../scripts/build-binaries.ts'
 import { createSmokeTempDirs, runSmoke, runSpawn } from '../scripts/smoke-test.ts'
 
-const VERSION = '0.21.1-alpha.0'
+const VERSION = '0.21.2-alpha.0'
 const tempDirs: string[] = []
 
 afterEach(async () => {

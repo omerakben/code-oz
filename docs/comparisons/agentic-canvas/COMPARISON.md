@@ -7,6 +7,8 @@
 > **agentic-canvas status:** Milestones 0–6 complete, M7 partial (per `progress.md`)
 > **Templates rule (`CLAUDE.md`):** "Patterns are borrowed; **no code dependencies, no submodules, no copy-paste**."
 > **Process:** Pre-debate draft → Codex `gpt-5.5` xhigh peer review (round 1) → synthesis. Raw Codex response: `CODEX_RESPONSE.md`. Verdict: `agree-with-modifications`.
+>
+> **Current-status note (2026-06-14):** This comparison is a dated snapshot. code-oz has since moved to the v0.21.x alpha line, ships curl/npm/Homebrew for macOS/Linux, has repo-root Claude Code marketplace metadata, and still does not ship Windows/Scoop.
 
 ---
 
@@ -36,7 +38,7 @@ This comparison treats `package.json` + the `MEMORY.md` milestone trail (M14/M15
 | Debate primitive | None | First-class — M10 `requestDebate()` runtime + M15 Debate-policy scheduler v1 |
 | Provider abstraction | Plugin per platform (Claude Code, Codex CLI) interprets JSON | Strict `IAgentProvider` + capability contract (M11) + role-cost policy (M13) |
 | Test discipline | Not surfaced | ~3108 offline tests, FakeProvider, e2e via real binary spawn |
-| Distribution | Claude Code marketplace + Codex skills + local Node server | Bun-compiled native binary; W3 ⇒ npm/Homebrew/Scoop |
+| Distribution | Claude Code marketplace + Codex skills + local Node server | Bun-compiled native binary; W3 ⇒ curl/npm/Homebrew for macOS/Linux |
 | Maturity | M0–M6 complete, M7 partial, schema v0.4 | M16 closed, 16 milestones + PE-1, v0.17.0-alpha.0 |
 
 The two projects answer different questions today. agentic-canvas asks *"how do humans visually design a DAG that agents can execute?"* — code-oz asks *"how do multiple adversarial agents reach a verifiable, debated, gate-passed software outcome?"*
@@ -103,7 +105,7 @@ Each pattern is rated against code-oz invariants and given a milestone target. P
 
 **What agentic-canvas has.** Dual marketplace presence — `plugin-claude/` published to Claude Code marketplace, plus `skills-codex/` markdown skills for Codex CLI. Each wraps the same JSON contract.
 
-**What code-oz has today.** Native binary distributed via npm/Homebrew/Scoop (W3). No marketplace presence.
+**What code-oz had at snapshot time.** Native binary distribution was planned around npm/Homebrew/Scoop (W3), with no marketplace presence. Current v0.21.x reality is curl/npm/Homebrew for macOS/Linux plus repo-root Claude Code marketplace metadata; Windows/Scoop is still future work.
 
 **Why this is W3.x, not deferred polish (revised after Codex round 1).** code-oz's binary-first distribution is correct for *authority* — the binary is the single source of truth, gates are file-based, skills cannot bypass them. But *discovery* happens inside the agent surfaces (Claude Code, Codex CLI) where users already live. agentic-canvas demonstrates that even technically superior local tools lose adoption to weaker tools with marketplace presence. The held-back disagreement Codex named ("adoption can beat architecture") makes this strategic, not cosmetic.
 

@@ -26,7 +26,7 @@ print_usage() {
   cat <<'EOF'
 usage: install.sh [--version TAG] [--help]
 
-  --version TAG   pin to release tag (e.g. v0.20.0-alpha.0). Required when
+  --version TAG   pin to release tag (e.g. v0.21.2-alpha.0). Required when
                   no local bundle is present (network-mode install via
                   curl|sh). Ignored when install.sh is run from an
                   unpacked bundle.
@@ -148,7 +148,7 @@ case "$os" in
   darwin | linux)
     ;;
   *)
-    fail "unsupported OS: $os. Supported: darwin, linux. Windows is deferred to a future distribution milestone (v0.21+)."
+    fail "unsupported OS: $os. Supported: darwin, linux. Windows/Scoop is deferred to a future distribution milestone."
     ;;
 esac
 
@@ -171,7 +171,7 @@ esac
 # after a successful install.
 fetch_release_bundle() {
   if [ "$RELEASE_VERSION" = "latest" ]; then
-    fail "no local bundle found; --version <TAG> is required for network-mode install (e.g. --version v0.20.0-alpha.0)."
+    fail "no local bundle found; --version <TAG> is required for network-mode install (e.g. --version v0.21.2-alpha.0)."
   fi
 
   # Resolve downloader. CODE_OZ_FORCE_DOWNLOADER is a test-only override;

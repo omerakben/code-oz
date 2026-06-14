@@ -9,14 +9,15 @@
 ## TL;DR
 
 - **Kanban metaphor for the AI SDLC.** Six columns map to `code-oz`'s phases. Cards are runs (audit, plan) or tasks (build, verify, review). Click any card to see its artifact, events, and decisions.
-- **Cross-family by design.** Four LLM providers each own one role — Claude personas, OpenAI cross-family review, xAI integration, Google Gemini Flash for the in-GUI helper. The single-family-bias problem is the entire product thesis.
+- **Cross-family by design.** The CLI can route roles across Claude, Codex, xAI, and Fake providers; the GUI also has an optional Gemini-backed explanation helper. The single-family-bias problem is the product thesis, but provider availability still depends on local CLI auth and env vars.
 - **Cost-safe by default.** Fresh clones boot in `COST-FREE DEMO` mode (`--provider fake`). The cost-implication of switching to real providers is shown explicitly — no curious click can burn LLM tokens accidentally.
+- **Not shipped standalone.** `code-oz-gui` is a private local Next app today. It is not published to npm, not packaged as a desktop app, and not a supported production service.
 
 ## What this is
 
 `code-oz-gui` is a Next.js 15 App Router GUI for the [`code-oz`](https://github.com/omerakben/code-oz) CLI. It exists because the CLI is dense and operator-focused — events streaming across a terminal works for engineers but excludes the non-developer audience that benefits most from agentic software runs: BAs, PMs, QA, security reviewers, the founder-mode generalist.
 
-In v0.1, the GUI can render brownfield `AUDIT` state and fixture runs. The production CLI AUDIT runtime lands in M17/v0.21; until then, first-run live smoke should use the cost-free fake path or greenfield flow.
+In v0.1, the GUI can render fixture runs, render live run state from the CLI, and spawn `code-oz run` locally. The CLI brownfield AUDIT runtime shipped in v0.21; live brownfield smoke still depends on local provider credentials.
 
 The GUI surfaces a Kanban board of the SDLC phases the CLI orchestrates. Each phase is a column; each card carries its current state, artifact path, and decision count. Clicking a card opens a 520px right-side drawer with three tabs — **Artifact** (the rendered Markdown of `AUDIT.md` / `PLAN.md` / `BUILD_REPORT.md` etc., with section nav, SHA-bound provenance chip, and file:line citation linkification), **Events** (the SSE-fed monospace event log with filter chips and amber accents on failed events), and **Decisions** (gate approvals, AI verdicts, debate outcomes, open questions, budget warnings — five row shapes sharing one container).
 
@@ -67,17 +68,17 @@ The server-side bridge (`lib/code-oz-spawn.ts` + `lib/run-store.ts` + `lib/run-r
 
 | Family | Role | Model | Where it shows up |
 |---|---|---|---|
-| **Anthropic** | CLI personas — Auditor, Planner, Builder, Verifier, Reviewer | `claude-opus-4-7` | The `code-oz` CLI's primary agentic roles |
-| **OpenAI** | Cross-family REVIEW + debate opponent | `gpt-5.5` at `xhigh` | Wired in the CLI; appears in the GUI's Decisions tab as the AI-verdict row |
-| **xAI** | PE-1 outbound HTTP integration | `grok` variants | Independent CLI provider surface |
-| **Google** | In-GUI helper for non-developer explanations | `gemini-3-flash-preview` | The drawer's `Ask` pill — see the hero shot above |
+| **Anthropic** | CLI personas such as Auditor, Planner, Builder, Verifier, Reviewer | Configured by the CLI | The `code-oz` CLI's primary agentic roles |
+| **OpenAI** | Cross-family REVIEW + debate opponent | Configured by Codex CLI auth/config | Wired in the CLI; appears in the GUI's Decisions tab as the AI-verdict row |
+| **xAI** | PE-1 outbound HTTP integration | Configured by `XAI_API_KEY` and code-oz config | Independent CLI provider surface |
+| **Google** | In-GUI helper for non-developer explanations | Configured by `GEMINI_API_KEY` and the `@google/genai` SDK | The drawer's `Ask` pill; not a CLI provider |
 
 This distribution is deliberate. When a Claude-authored audit needs to be explained to a non-developer, the explanation runs on a different family. That's the whole product thesis on a single page.
 
 ## Quick start
 
 ```bash
-# 1. Clone and install (Bun 1.1+ required; Node 22+ for the spawned subprocess)
+# 1. Clone and install (Bun 1.3+ required; Node 20+ recommended for Next tooling)
 git clone https://github.com/omerakben/code-oz.git
 cd code-oz/code-oz-gui
 bun install
@@ -116,7 +117,7 @@ The single provider setup table lives at [`../docs/PROVIDER_SETUP.md`](../docs/P
 
 The TopBar shows a `DEMO MODE` amber pill when the active run was spawned in fake mode, so you always know which kind of run you're looking at.
 
-## What's working in v0.1.0-alpha
+## What's working in v0.1.0
 
 - ✓ Full fixture-mode demo with all six phase columns populated
 - ✓ ArtifactView with Markdown rendering, section nav, SHA-bound provenance, citation linkification
@@ -131,15 +132,15 @@ Known v0.1-alpha gaps (planned for v0.2):
 - Single concurrent live run per session (multi-run dashboard deferred)
 - The drawer's `Ask another` reset on the AI helper response is functional but the answer doesn't render Markdown (plain text only)
 - A11y baseline only — full WCAG 2.2 AA audit not yet complete
-- Live brownfield AUDIT runtime waits for CLI M17/v0.21; v0.1 renders the state and sample fixture honestly
 - Mobile breakpoint not designed; desktop-only for v0
+- Standalone desktop packaging, signing, update flow, and distribution are not designed yet
 
 ## Stack
 
 | | |
 |---|---|
-| Framework | Next.js 15.5 (App Router, RSC default) |
-| Runtime | Bun for dev server, Node 22 for spawned subprocess |
+| Framework | Next.js 15 (App Router, RSC default; `package.json` allows `next` `^15.4.9`) |
+| Runtime | Bun for dev/test scripts; Node 20+ recommended for Next tooling and subprocess compatibility |
 | Styling | Tailwind CSS v4, motion/react for transitions |
 | Icons | lucide-react |
 | Markdown | react-markdown + remark-gfm + @tailwindcss/typography |
@@ -149,7 +150,7 @@ Known v0.1-alpha gaps (planned for v0.2):
 
 `code-oz-gui` is one part of a larger thesis on cross-family agentic SDLC. The CLI it drives is at [omerakben/code-oz](https://github.com/omerakben/code-oz). The full design brief (`docs/CLAUDE_DESIGN_BRIEF.md`) explains every component, vocabulary swap, and CSS override.
 
-Built with Claude Opus 4.7 (architecture + review) and OpenAI gpt-5.5-codex via [Codex CLI](https://github.com/openai/codex) (implementation). The cross-family discipline is both the product and the way the product was built.
+Built as part of the broader `code-oz` cross-family development discipline. Do not treat this README as a standalone-product release note; the GUI is still a local prototype.
 
 ## License
 

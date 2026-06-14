@@ -53,7 +53,7 @@ describe('code-oz init', () => {
     const raw = await readFile(paths.config, 'utf8')
     const config = parseYaml(raw)
 
-    expect(config.version).toBe('0.21.1-alpha.0')
+    expect(config.version).toBe('0.21.2-alpha.0')
     expect(config.defaultProvider).toBe('claude')
     expect(config.models.primary).toBe('claude-opus-4-8')
     expect(config.permissions.allowEscapeHatch).toBe(false)
