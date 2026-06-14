@@ -1,6 +1,6 @@
 # Release readiness
 
-Current status as of 2026-06-14: this branch prepares `v0.21.2-alpha.0`. The latest published GitHub release and npm package are still `v0.21.1-alpha.0` / `0.21.1-alpha.0`; this branch needs a new release tag and matching GitHub release assets before it is available through normal install channels.
+Current status as of 2026-06-14: `v0.21.2-alpha.0` is published on GitHub release assets and Homebrew. npm `@tuel/code-oz@0.21.2-alpha.0` is package-ready but still pending publish authorization; the repo-side path is `.github/workflows/npm-publish.yml`, which uses npm trusted publishing with GitHub Actions OIDC.
 
 This page separates what is publishable today from what is manual, experimental, or future work.
 
@@ -9,8 +9,8 @@ This page separates what is publishable today from what is manual, experimental,
 | Surface | Package or path | Status | Notes |
 |---|---|---|---|
 | CLI binary | `src/cli.ts` compiled by `bun build --compile` | Publishable for macOS/Linux | GitHub release workflow builds per-arch tarballs and `checksums.txt`. Windows is not built. |
-| npm launcher | `@tuel/code-oz` | Publishable launcher package | `package.json.files` includes `npm-wrapper/`, `README.md`, and `LICENSE`. The wrapper downloads the matching GitHub release binary on first run. |
-| Homebrew formula | `docs/homebrew/code-oz.rb.template` | Manual tap bump | Render from release checksums, then commit to `omerakben/homebrew-code-oz`. |
+| npm launcher | `@tuel/code-oz` | Publish-ready, auth pending | `package.json.files` includes `npm-wrapper/`, `README.md`, and `LICENSE`. The wrapper downloads the matching GitHub release binary on first run. |
+| Homebrew formula | `docs/homebrew/code-oz.rb.template` | Published for `0.21.2-alpha.0` | Render from release checksums, then commit to `omerakben/homebrew-code-oz`. |
 | Claude Code plugin marketplace | `.claude-plugin/marketplace.json` | Repo-root marketplace metadata present | Contains `code-oz` engine wrapper plugin and advisory `code-oz-discipline` plugin. |
 | Agent skill bundle | `agent-skills/code-oz/` | Text-only integration surface | No executable. It teaches external agents how to drive the CLI without owning gates. |
 
@@ -43,6 +43,40 @@ Expected package shape for `npm pack --dry-run --json`: a small launcher tarball
 Do not publish npm before the GitHub release assets for the exact version exist, because the first npm invocation downloads `https://github.com/omerakben/code-oz/releases/download/v<version>/...`.
 
 `scripts/release/fresh-clone-smoke.sh` clones the current branch from git, so it validates committed `HEAD`, not uncommitted working-tree edits. Run it after the release-readiness patch is committed.
+
+## npm publish authorization
+
+Preferred path: use npm trusted publishing for `.github/workflows/npm-publish.yml`.
+
+Account-side setup on npmjs.com:
+
+1. Open `@tuel/code-oz` package settings.
+2. Add a trusted publisher:
+   - Provider: GitHub Actions
+   - Organization or user: `omerakben`
+   - Repository: `code-oz`
+   - Workflow filename: `npm-publish.yml`
+   - Allowed action: `npm publish`
+3. Run the workflow from GitHub Actions with `version=0.21.2-alpha.0`.
+
+CLI trigger after the workflow is on `main`:
+
+```sh
+gh workflow run npm-publish.yml -f version=0.21.2-alpha.0
+gh run watch --exit-status
+npm view @tuel/code-oz@0.21.2-alpha.0 version
+```
+
+Fallback path: publish locally after authenticating to npm:
+
+```sh
+npm login
+npm whoami
+npm publish --access public
+npm view @tuel/code-oz@0.21.2-alpha.0 version
+```
+
+Direct local publishing requires an npm account with publish rights to `@tuel/code-oz` and either account 2FA or a granular access token with publish rights and bypass 2FA enabled. The current machine is not authenticated to npm, so local publish returns `E401`.
 
 ## Plugin publishing checklist
 
@@ -103,4 +137,4 @@ Measured locally on 2026-06-14:
 - `code-oz-gui`: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun test tests/unit`, and `bun run build` pass.
 - Dogfood flows: first-run fake provider, `bun run demo:todo-cli`, `bun run demo:failure-gates`, `doctor providers`, `doctor tools`, `doctor git`, and `bench agent-gate --fixture todo-cli-real-tests --provider fake` pass.
 
-These are enough to call the docs/package/plugin/GUI release-prep patch ready for review. They are not enough to call a public release fully ready by themselves. A public release still needs the final tag workflow, matching GitHub release assets for the exact version, npm publish dry-run or publish authorization, Homebrew formula rendering from final checksums, and any live-provider checks relevant to the release scope.
+These are enough to call the docs/package/plugin/GUI release-prep patch ready for review. The public release is live through GitHub release assets, curl install, and Homebrew. npm still needs one authorization step through trusted publishing or an authenticated local publish.

@@ -1,0 +1,95 @@
+name: npm publish
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish @tuel/code-oz
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [ "${EVENT_NAME}" = "release" ]; then
+            VERSION="${RELEASE_TAG#v}"
+          else
+            VERSION="${INPUT_VERSION#v}"
+          fi
+          test -n "${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Use npm 11
+        run: npm install -g npm@^11.10.0
+
+      - name: Check package version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "${PACKAGE_VERSION}" != "${VERSION}" ]; then
+            echo "package.json version ${PACKAGE_VERSION} does not match requested ${VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Check matching GitHub release assets exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -eu
+          gh release view "${TAG}" --json tagName >/dev/null
+          gh release download "${TAG}" --pattern checksums.txt --dir /tmp/code-oz-release-check
+          test -s /tmp/code-oz-release-check/checksums.txt
+
+      - name: Skip if version is already published
+        id: published
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          if npm view "@tuel/code-oz@${VERSION}" version --registry=https://registry.npmjs.org/ >/tmp/npm-version.txt 2>/dev/null; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            cat /tmp/npm-version.txt
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify package contents
+        if: steps.published.outputs.already != 'true'
+        run: npm pack --dry-run --json
+
+      - name: Publish package
+        if: steps.published.outputs.already != 'true'
+        run: npm publish --access public
