@@ -1,6 +1,6 @@
 # Release readiness
 
-Current status as of 2026-06-14: `v0.21.2-alpha.0` is published on GitHub release assets and Homebrew. npm `@tuel/code-oz@0.21.2-alpha.0` is package-ready but still pending publish authorization; the repo-side path is `.github/workflows/npm-publish.yml`, which uses npm trusted publishing with GitHub Actions OIDC.
+Current status as of 2026-06-14: `v0.21.2-alpha.0` is published on GitHub release assets, Homebrew, and npm. npm `@tuel/code-oz@0.21.2-alpha.0` is available under the `alpha` dist-tag and by exact version; the unqualified `latest` tag still points at `0.21.1-alpha.0` until it is promoted with npm 2FA.
 
 This page separates what is publishable today from what is manual, experimental, or future work.
 
@@ -9,7 +9,7 @@ This page separates what is publishable today from what is manual, experimental,
 | Surface | Package or path | Status | Notes |
 |---|---|---|---|
 | CLI binary | `src/cli.ts` compiled by `bun build --compile` | Publishable for macOS/Linux | GitHub release workflow builds per-arch tarballs and `checksums.txt`. Windows is not built. |
-| npm launcher | `@tuel/code-oz` | Publish-ready, auth pending | `package.json.files` includes `npm-wrapper/`, `README.md`, and `LICENSE`. The wrapper downloads the matching GitHub release binary on first run. |
+| npm launcher | `@tuel/code-oz@0.21.2-alpha.0` | Published under `alpha` | `package.json.files` includes `npm-wrapper/`, `README.md`, and `LICENSE`. The wrapper downloads the matching GitHub release binary on first run. |
 | Homebrew formula | `docs/homebrew/code-oz.rb.template` | Published for `0.21.2-alpha.0` | Render from release checksums, then commit to `omerakben/homebrew-code-oz`. |
 | Claude Code plugin marketplace | `.claude-plugin/marketplace.json` | Repo-root marketplace metadata present | Contains `code-oz` engine wrapper plugin and advisory `code-oz-discipline` plugin. |
 | Agent skill bundle | `agent-skills/code-oz/` | Text-only integration surface | No executable. It teaches external agents how to drive the CLI without owning gates. |
@@ -44,7 +44,29 @@ Do not publish npm before the GitHub release assets for the exact version exist,
 
 `scripts/release/fresh-clone-smoke.sh` clones the current branch from git, so it validates committed `HEAD`, not uncommitted working-tree edits. Run it after the release-readiness patch is committed.
 
-## npm publish authorization
+## npm publish and dist-tags
+
+`0.21.2-alpha.0` is published. Verify:
+
+```sh
+npm view @tuel/code-oz@0.21.2-alpha.0 version
+npm view @tuel/code-oz dist-tags --json
+npx -y @tuel/code-oz@0.21.2-alpha.0 --version
+```
+
+Current npm install command for this exact release:
+
+```sh
+npm install -g @tuel/code-oz@0.21.2-alpha.0
+```
+
+The `latest` dist-tag still points at `0.21.1-alpha.0`. To promote this release to unqualified installs, run with npm 2FA:
+
+```sh
+npm dist-tag add @tuel/code-oz@0.21.2-alpha.0 latest --otp=<code>
+```
+
+## npm publish authorization for future releases
 
 Preferred path: use npm trusted publishing for `.github/workflows/npm-publish.yml`.
 
@@ -138,4 +160,4 @@ Measured locally on 2026-06-14:
 - `code-oz-gui`: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun test tests/unit`, and `bun run build` pass.
 - Dogfood flows: first-run fake provider, `bun run demo:todo-cli`, `bun run demo:failure-gates`, `doctor providers`, `doctor tools`, `doctor git`, and `bench agent-gate --fixture todo-cli-real-tests --provider fake` pass.
 
-These are enough to call the docs/package/plugin/GUI release-prep patch ready for review. The public release is live through GitHub release assets, curl install, and Homebrew. npm still needs one authorization step through trusted publishing or an authenticated local publish.
+These are enough to call the docs/package/plugin/GUI release-prep patch ready for review. The public release is live through GitHub release assets, curl install, Homebrew, and npm exact-version or `alpha` install. Unqualified npm `latest` remains one optional dist-tag promotion step.
